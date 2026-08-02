@@ -51,7 +51,7 @@ jobs:
 
       - name: Build NSIS installer
         working-directory: windows/source/build/windows
-        run: '& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" installer.nsi'
+        run: '& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 installer.nsi'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
