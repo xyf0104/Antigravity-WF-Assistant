@@ -1,0 +1,57 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: macos/source
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: macos/source/go.mod
+          cache-dependency-path: macos/source/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: macos/source/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: macos/source/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: macos/source/frontend
+        run: npm run build
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build Universal App
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform darwin/universal -trimpath -o "Antigravity WF助手"
+
+      - name: Package ZIP
+        run: ditto -c -k --sequesterRsrc --keepParent "build/bin/Antigravity WF助手.app" "build/bin/Antigravity-WF-Assistant-macOS-universal.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Antigravity-WF-Assistant-macOS-universal
+          path: macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal.zip
+          if-no-files-found: error

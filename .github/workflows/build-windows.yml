@@ -1,0 +1,63 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows/source
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: windows/source/go.mod
+          cache-dependency-path: windows/source/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/source/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: windows/source/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: windows/source/frontend
+        run: npm run build
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build Windows x64
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手.exe"
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build NSIS installer
+        working-directory: windows/source/build/windows
+        run: '& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" installer.nsi'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Antigravity-WF-Assistant-Windows-x64
+          path: |
+            windows/source/build/bin/Antigravity WF助手.exe
+            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.3.0-Setup.exe
+          if-no-files-found: error

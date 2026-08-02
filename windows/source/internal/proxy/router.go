@@ -1,0 +1,1456 @@
+package proxy
+
+import (
+	"bufio"
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"antigravity-byok/internal/storage"
+	"github.com/andybalholm/brotli"
+)
+
+const (
+	googleHost    = "daily-cloudcode-pa.googleapis.com"
+	googleBaseURL = "https://daily-cloudcode-pa.googleapis.com"
+	maxRetries    = 3
+	// Antigravity 1.23.x only recognises placeholder enum values M0-M150.
+	// Unknown values are decoded as MODEL_UNSPECIFIED and disappear from the
+	// built-in model picker.
+	modelPlaceholderCount = 151
+)
+
+var (
+	placeholderMu         sync.RWMutex
+	allocatedPlaceholders = map[string]string{}
+	slugMu                sync.RWMutex
+	allocatedSlugs        = map[string]string{}
+)
+
+// getModelSlug returns a stable routing slug for a model.
+func getModelSlug(m storage.CustomModel) string {
+	key := modelPlaceholderKey(m)
+	slugMu.RLock()
+	slug := allocatedSlugs[key]
+	slugMu.RUnlock()
+	if slug != "" {
+		return slug
+	}
+	return baseModelSlug(m)
+}
+
+func baseModelSlug(m storage.CustomModel) string {
+	src := m.ExternalModelName
+	if src == "" {
+		src = m.Name
+	}
+	src = strings.TrimPrefix(src, "models/")
+	var b strings.Builder
+	for _, r := range strings.ToLower(src) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "model"
+	}
+	return "custom-" + slug
+}
+
+func allocateModelSlugs(models []storage.CustomModel, usedModelIDs map[string]struct{}) map[string]string {
+	used := make(map[string]struct{}, len(usedModelIDs)+len(models))
+	for id := range usedModelIDs {
+		id = strings.TrimPrefix(id, "models/")
+		if id != "" {
+			used[id] = struct{}{}
+		}
+	}
+	ordered := append([]storage.CustomModel(nil), models...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return modelPlaceholderKey(ordered[i]) < modelPlaceholderKey(ordered[j])
+	})
+	assignments := make(map[string]string, len(ordered))
+	for _, model := range ordered {
+		base := baseModelSlug(model)
+		candidate := base
+		for suffix := 2; ; suffix++ {
+			if _, exists := used[candidate]; !exists {
+				break
+			}
+			candidate = fmt.Sprintf("%s-%d", base, suffix)
+		}
+		assignments[modelPlaceholderKey(model)] = candidate
+		used[candidate] = struct{}{}
+	}
+	slugMu.Lock()
+	allocatedSlugs = assignments
+	slugMu.Unlock()
+	return assignments
+}
+
+func modelPlaceholderKey(m storage.CustomModel) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	if m.ExternalModelName != "" {
+		return m.ExternalModelName
+	}
+	return m.DisplayName
+}
+
+func modelPlaceholderHash(m storage.CustomModel) uint32 {
+	src := strings.ToLower(m.DisplayName)
+	if src == "" {
+		src = strings.ToLower(modelPlaceholderKey(m))
+	}
+	var h uint32 = 5381
+	for _, c := range src {
+		h = (h << 5) + h + uint32(c)
+	}
+	return h
+}
+
+// getModelPlaceholder returns the placeholder allocated during the latest
+// model-list injection, with a valid deterministic fallback for unit-level
+// conversion calls.
+func getModelPlaceholder(m storage.CustomModel) string {
+	key := modelPlaceholderKey(m)
+	placeholderMu.RLock()
+	placeholder := allocatedPlaceholders[key]
+	placeholderMu.RUnlock()
+	if placeholder != "" {
+		return placeholder
+	}
+	return fmt.Sprintf("MODEL_PLACEHOLDER_M%d", modelPlaceholderHash(m)%modelPlaceholderCount)
+}
+
+// allocateModelPlaceholders selects valid enum values that do not collide with
+// models already present in Google's response. Assignments are kept in memory
+// so subsequent generation requests can be routed back to the matching BYOK
+// model.
+func allocateModelPlaceholders(models []storage.CustomModel, officialModels map[string]any) map[string]string {
+	used := make(map[string]struct{})
+	for _, raw := range officialModels {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if modelID, ok := entry["model"].(string); ok && modelID != "" {
+			used[modelID] = struct{}{}
+		}
+	}
+
+	ordered := append([]storage.CustomModel(nil), models...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return modelPlaceholderKey(ordered[i]) < modelPlaceholderKey(ordered[j])
+	})
+
+	assignments := make(map[string]string, len(ordered))
+	for _, model := range ordered {
+		start := int(modelPlaceholderHash(model) % modelPlaceholderCount)
+		for offset := 0; offset < modelPlaceholderCount; offset++ {
+			candidate := fmt.Sprintf("MODEL_PLACEHOLDER_M%d", (start+offset)%modelPlaceholderCount)
+			if _, exists := used[candidate]; exists {
+				continue
+			}
+			assignments[modelPlaceholderKey(model)] = candidate
+			used[candidate] = struct{}{}
+			break
+		}
+	}
+
+	placeholderMu.Lock()
+	allocatedPlaceholders = assignments
+	placeholderMu.Unlock()
+	return assignments
+}
+
+// buildFakeModelEntry builds the JSON entry injected into the model list.
+func buildFakeModelEntry(m storage.CustomModel, placeholder string) map[string]any {
+	return map[string]any{
+		"displayName":                  m.DisplayName,
+		"description":                  m.Description,
+		"recommended":                  true,
+		"maxTokens":                    1048576,
+		"maxOutputTokens":              65536,
+		"tokenizerType":                "LLAMA_WITH_SPECIAL",
+		"model":                        placeholder,
+		"apiProvider":                  "API_PROVIDER_GOOGLE_GEMINI",
+		"modelProvider":                "MODEL_PROVIDER_GOOGLE",
+		"supportsCumulativeContext":    true,
+		"supportsEstimateTokenCounter": true,
+		"supportsImages":               true,
+		"supportsVideo":                false,
+		"supportedMimeTypes": map[string]any{
+			"image/png":                 true,
+			"image/jpeg":                true,
+			"image/webp":                true,
+			"image/gif":                 true,
+			"text/plain":                true,
+			"text/markdown":             true,
+			"text/html":                 true,
+			"text/css":                  true,
+			"text/xml":                  true,
+			"text/csv":                  true,
+			"application/json":          true,
+			"application/pdf":           true,
+			"application/x-javascript":  true,
+			"application/x-typescript":  true,
+			"application/x-python-code": true,
+			"application/x-ipynb+json":  true,
+		},
+	}
+}
+
+var modelContainerKeys = []string{"models", "availableModels", "available_models"}
+var modelWrapperKeys = []string{"response", "result", "data"}
+var modelSortKeys = []string{"agentModelSorts", "battleModeModelSorts"}
+var modelIDIndexKeys = map[string]bool{
+	"tieredModelIds":      true,
+	"availableModelIds":   true,
+	"allowedModelIds":     true,
+	"allowlistedModelIds": true,
+}
+
+type modelResponseRoot struct {
+	path  string
+	value map[string]any
+}
+
+type modelInjectionSummary struct {
+	officialCount  int
+	customCount    int
+	customNames    []string
+	customSlugs    []string
+	containers     []string
+	indexPaths     []string
+	officialSample any
+	customSample   any
+}
+
+func modelDisplayName(m storage.CustomModel) string {
+	if strings.TrimSpace(m.DisplayName) != "" {
+		return m.DisplayName
+	}
+	if strings.TrimSpace(m.ExternalModelName) != "" {
+		return m.ExternalModelName
+	}
+	return strings.TrimPrefix(m.Name, "models/")
+}
+
+func collectModelResponseRoots(parsed map[string]any) []modelResponseRoot {
+	roots := make([]modelResponseRoot, 0, 4)
+	var visit func(map[string]any, string, int)
+	visit = func(value map[string]any, path string, depth int) {
+		roots = append(roots, modelResponseRoot{path: path, value: value})
+		if depth >= 6 {
+			return
+		}
+		for _, key := range modelWrapperKeys {
+			child, ok := value[key].(map[string]any)
+			if !ok {
+				continue
+			}
+			childPath := key
+			if path != "" {
+				childPath = path + "." + key
+			}
+			visit(child, childPath, depth+1)
+		}
+	}
+	visit(parsed, "", 0)
+	return roots
+}
+
+func modelPath(rootPath, key string) string {
+	if rootPath == "" {
+		return key
+	}
+	return rootPath + "." + key
+}
+
+func collectOfficialModelEntries(roots []modelResponseRoot) map[string]any {
+	official := make(map[string]any)
+	for _, root := range roots {
+		for _, key := range modelContainerKeys {
+			switch container := root.value[key].(type) {
+			case map[string]any:
+				for id, entry := range container {
+					official[modelPath(root.path, key)+":"+id] = entry
+				}
+			case []any:
+				for index, entry := range container {
+					official[fmt.Sprintf("%s:%d", modelPath(root.path, key), index)] = entry
+				}
+			}
+		}
+	}
+	return official
+}
+
+func collectUsedModelIDs(roots []modelResponseRoot) map[string]struct{} {
+	used := make(map[string]struct{})
+	for _, root := range roots {
+		for _, key := range modelContainerKeys {
+			switch container := root.value[key].(type) {
+			case map[string]any:
+				for id := range container {
+					used[id] = struct{}{}
+				}
+			case []any:
+				for _, raw := range container {
+					entry, ok := raw.(map[string]any)
+					if !ok {
+						continue
+					}
+					for _, field := range []string{"name", "id", "modelId", "model_id"} {
+						if value, ok := entry[field].(string); ok && value != "" {
+							used[value] = struct{}{}
+						}
+					}
+				}
+			}
+		}
+	}
+	return used
+}
+
+func buildArrayModelEntry(m storage.CustomModel, slug, placeholder string) map[string]any {
+	entry := buildFakeModelEntry(m, placeholder)
+	entry["name"] = "models/" + slug
+	entry["version"] = "1.0"
+	entry["inputTokenLimit"] = 1048576
+	entry["outputTokenLimit"] = 65536
+	entry["supportedGenerationMethods"] = []any{"generateContent", "streamGenerateContent", "countTokens"}
+	return entry
+}
+
+func arrayHasInjectedModel(entries []any, slug, placeholder string) bool {
+	for _, raw := range entries {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if entry["name"] == "models/"+slug || entry["name"] == slug || entry["model"] == placeholder {
+			return true
+		}
+	}
+	return false
+}
+
+// injectCustomModels supports root and wrapped model responses, map and array
+// containers, and every currently known picker index.
+func injectCustomModels(parsed map[string]any, models []storage.CustomModel) modelInjectionSummary {
+	summary := modelInjectionSummary{}
+	roots := collectModelResponseRoots(parsed)
+	official := collectOfficialModelEntries(roots)
+	usedModelIDs := collectUsedModelIDs(roots)
+	slugAssignments := allocateModelSlugs(models, usedModelIDs)
+	assignments := allocateModelPlaceholders(models, official)
+	slugs := make([]string, 0, len(models))
+
+	for _, model := range models {
+		key := modelPlaceholderKey(model)
+		if assignments[key] == "" || slugAssignments[key] == "" {
+			continue
+		}
+		slugs = append(slugs, slugAssignments[key])
+		summary.customNames = append(summary.customNames, modelDisplayName(model))
+		summary.customSlugs = append(summary.customSlugs, slugAssignments[key])
+	}
+	summary.customCount = len(slugs)
+
+	var indexedRoots []modelResponseRoot
+	for _, root := range roots {
+		rootInjected := false
+		for _, key := range modelContainerKeys {
+			raw, exists := root.value[key]
+			if !exists {
+				continue
+			}
+			switch container := raw.(type) {
+			case map[string]any:
+				summary.officialCount = max(summary.officialCount, len(container))
+				for _, entry := range container {
+					if summary.officialSample == nil {
+						summary.officialSample = entry
+					}
+					break
+				}
+				for _, model := range models {
+					modelKey := modelPlaceholderKey(model)
+					placeholder := assignments[modelKey]
+					slug := slugAssignments[modelKey]
+					if placeholder == "" || slug == "" {
+						continue
+					}
+					entry := buildFakeModelEntry(model, placeholder)
+					container[slug] = entry
+					if summary.customSample == nil {
+						summary.customSample = entry
+					}
+				}
+				summary.containers = append(summary.containers, modelPath(root.path, key)+":map")
+				rootInjected = true
+			case []any:
+				summary.officialCount = max(summary.officialCount, len(container))
+				if len(container) > 0 && summary.officialSample == nil {
+					summary.officialSample = container[0]
+				}
+				injected := make([]any, 0, len(models))
+				for _, model := range models {
+					modelKey := modelPlaceholderKey(model)
+					placeholder := assignments[modelKey]
+					slug := slugAssignments[modelKey]
+					if placeholder == "" || slug == "" || arrayHasInjectedModel(container, slug, placeholder) {
+						continue
+					}
+					entry := buildArrayModelEntry(model, slug, placeholder)
+					injected = append(injected, entry)
+					if summary.customSample == nil {
+						summary.customSample = entry
+					}
+				}
+				root.value[key] = append(injected, container...)
+				summary.containers = append(summary.containers, modelPath(root.path, key)+":array")
+				rootInjected = true
+			}
+		}
+		if rootInjected {
+			indexedRoots = append(indexedRoots, root)
+		}
+	}
+
+	if len(summary.containers) == 0 && len(models) > 0 {
+		target := roots[len(roots)-1]
+		container := make(map[string]any, len(models))
+		for _, model := range models {
+			modelKey := modelPlaceholderKey(model)
+			placeholder := assignments[modelKey]
+			slug := slugAssignments[modelKey]
+			if placeholder != "" && slug != "" {
+				entry := buildFakeModelEntry(model, placeholder)
+				container[slug] = entry
+				if summary.customSample == nil {
+					summary.customSample = entry
+				}
+			}
+		}
+		target.value["models"] = container
+		summary.containers = append(summary.containers, modelPath(target.path, "models")+":created-map")
+		indexedRoots = append(indexedRoots, target)
+	}
+
+	for _, root := range indexedRoots {
+		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs)...)
+	}
+	summary.indexPaths = uniqueStrings(summary.indexPaths)
+	return summary
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func addModelIndexes(parsed map[string]any, rootPath string, modelIDs []string) []string {
+	if len(modelIDs) == 0 {
+		return nil
+	}
+	var paths []string
+	agentPresent := false
+	for _, key := range modelSortKeys {
+		_, exists := parsed[key]
+		if key == "agentModelSorts" {
+			agentPresent = exists
+		}
+		if !exists {
+			continue
+		}
+		parsed[key] = addModelSortIDs(parsed[key], modelIDs)
+		paths = append(paths, modelPath(rootPath, key)+".groups[].modelIds")
+	}
+	if !agentPresent {
+		parsed["agentModelSorts"] = addModelSortIDs(nil, modelIDs)
+		paths = append(paths, modelPath(rootPath, "agentModelSorts")+".groups[].modelIds")
+	}
+	for key := range modelIDIndexKeys {
+		value, exists := parsed[key]
+		if !exists {
+			continue
+		}
+		updated, changed := prependModelIDs(value, modelIDs)
+		if changed {
+			parsed[key] = updated
+			paths = append(paths, modelPath(rootPath, key))
+		}
+	}
+	return paths
+}
+
+func addModelSortIDs(raw any, modelIDs []string) []any {
+	sorts, _ := raw.([]any)
+	inserted := false
+	for sortIndex, rawSort := range sorts {
+		sortEntry, ok := rawSort.(map[string]any)
+		if !ok {
+			continue
+		}
+		groups, _ := sortEntry["groups"].([]any)
+		for groupIndex, rawGroup := range groups {
+			group, ok := rawGroup.(map[string]any)
+			if !ok {
+				continue
+			}
+			ids, _ := group["modelIds"].([]any)
+			group["modelIds"] = prependUniqueModelIDs(ids, modelIDs)
+			groups[groupIndex] = group
+			inserted = true
+		}
+		sortEntry["groups"] = groups
+		sorts[sortIndex] = sortEntry
+	}
+	if !inserted {
+		ids := make([]any, len(modelIDs))
+		for index, modelID := range modelIDs {
+			ids[index] = modelID
+		}
+		sorts = append([]any{map[string]any{
+			"displayName": "Custom",
+			"groups":      []any{map[string]any{"modelIds": ids}},
+		}}, sorts...)
+	}
+	return sorts
+}
+
+func prependUniqueModelIDs(existing []any, modelIDs []string) []any {
+	custom := make([]any, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		found := false
+		for _, value := range existing {
+			if value == modelID || value == "models/"+modelID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			custom = append(custom, modelID)
+		}
+	}
+	return append(custom, existing...)
+}
+
+func prependModelIDs(value any, modelIDs []string) (any, bool) {
+	switch current := value.(type) {
+	case []any:
+		isStringList := len(current) == 0
+		for _, item := range current {
+			if _, ok := item.(string); ok {
+				isStringList = true
+				continue
+			}
+			isStringList = false
+			break
+		}
+		if isStringList {
+			return prependUniqueModelIDs(current, modelIDs), true
+		}
+		changed := false
+		for index, item := range current {
+			updated, itemChanged := prependModelIDs(item, modelIDs)
+			if itemChanged {
+				current[index] = updated
+				changed = true
+			}
+		}
+		return current, changed
+	case map[string]any:
+		changed := false
+		for key, item := range current {
+			updated, itemChanged := prependModelIDs(item, modelIDs)
+			if itemChanged {
+				current[key] = updated
+				changed = true
+			}
+		}
+		return current, changed
+	default:
+		return value, false
+	}
+}
+
+func validateModelInjection(parsed map[string]any, models []storage.CustomModel, summary modelInjectionSummary) error {
+	if len(models) == 0 {
+		return nil
+	}
+	if summary.customCount != len(models) {
+		return fmt.Errorf("只为 %d/%d 个自定义模型分配了有效标识", summary.customCount, len(models))
+	}
+	roots := collectModelResponseRoots(parsed)
+	for _, model := range models {
+		slug := getModelSlug(model)
+		placeholder := getModelPlaceholder(model)
+		if !responseContainsModel(roots, slug, placeholder) {
+			return fmt.Errorf("注入后未在模型容器中找到 %s", slug)
+		}
+		if !responseIndexesModel(roots, slug, placeholder) {
+			return fmt.Errorf("注入后没有模型选择索引引用 %s", slug)
+		}
+	}
+	return nil
+}
+
+func responseContainsModel(roots []modelResponseRoot, slug, placeholder string) bool {
+	for _, root := range roots {
+		for _, key := range modelContainerKeys {
+			switch container := root.value[key].(type) {
+			case map[string]any:
+				if _, ok := container[slug]; ok {
+					return true
+				}
+			case []any:
+				if arrayHasInjectedModel(container, slug, placeholder) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func responseIndexesModel(roots []modelResponseRoot, slug, placeholder string) bool {
+	wanted := map[string]bool{slug: true, "models/" + slug: true, placeholder: true, "models/" + placeholder: true}
+	for _, root := range roots {
+		for key, value := range root.value {
+			lower := strings.ToLower(key)
+			if strings.HasSuffix(lower, "modelids") || strings.HasSuffix(lower, "model_ids") ||
+				key == "agentModelSorts" || key == "battleModeModelSorts" {
+				if containsModelReference(value, wanted) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func containsModelReference(value any, wanted map[string]bool) bool {
+	switch current := value.(type) {
+	case string:
+		return wanted[current]
+	case []any:
+		for _, item := range current {
+			if containsModelReference(item, wanted) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range current {
+			if containsModelReference(item, wanted) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// handleFetchAvailableModels proxies fetchAvailableModels and injects custom models.
+func handleFetchAvailableModels(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, googleBaseURL+"/v1internal:fetchAvailableModels", bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	for key, values := range r.Header {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	req.Header.Set("Host", googleHost)
+	req.Header.Set("Accept-Encoding", "identity")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		trace("model-response-error", map[string]any{"message": err.Error()})
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		trace("model-response-error", map[string]any{
+			"statusCode": resp.StatusCode, "encoding": resp.Header.Get("Content-Encoding"), "message": err.Error(),
+		})
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	encoding := resp.Header.Get("Content-Encoding")
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		trace("model-response-error", map[string]any{
+			"statusCode": resp.StatusCode, "encoding": encoding, "contentType": resp.Header.Get("Content-Type"),
+			"message": fmt.Sprintf("模型上游返回 HTTP %d", resp.StatusCode),
+		})
+		forwardRawModelResponse(w, resp, respBody)
+		return
+	}
+	decoded, err := decodeModelResponse(respBody, encoding)
+	if err != nil {
+		trace("model-response-error", map[string]any{
+			"statusCode": resp.StatusCode, "encoding": encoding, "message": err.Error(),
+		})
+		forwardRawModelResponse(w, resp, respBody)
+		return
+	}
+
+	var decodedJSON any
+	if err := json.Unmarshal(decoded, &decodedJSON); err != nil {
+		trace("model-response-error", map[string]any{
+			"statusCode": resp.StatusCode, "encoding": encoding, "message": fmt.Sprintf("模型响应 JSON 解析失败: %v", err),
+		})
+		forwardRawModelResponse(w, resp, respBody)
+		return
+	}
+	parsed, ok := decodedJSON.(map[string]any)
+	if !ok {
+		trace("model-response-error", map[string]any{
+			"statusCode": resp.StatusCode, "encoding": encoding, "message": "模型响应 JSON 根节点不是对象",
+		})
+		forwardRawModelResponse(w, resp, respBody)
+		return
+	}
+
+	models, loadErr := storage.LoadModels()
+	if loadErr != nil {
+		trace("model-injection-error", map[string]any{"message": fmt.Sprintf("读取自定义模型失败: %v", loadErr)})
+		models = nil
+	}
+	summary := injectCustomModels(parsed, models)
+	validationErr := validateModelInjection(parsed, models, summary)
+	if validationErr != nil {
+		trace("model-injection-error", map[string]any{
+			"configuredCount": len(models), "customCount": summary.customCount, "containers": summary.containers,
+			"indexPaths": summary.indexPaths, "message": validationErr.Error(),
+		})
+	}
+	if snapshotErr := saveModelStructureSnapshot(parsed, summary, resp.StatusCode, encoding, validationErr); snapshotErr != nil {
+		trace("model-snapshot-error", map[string]any{"message": snapshotErr.Error()})
+	}
+
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		trace("model-response-error", map[string]any{"statusCode": resp.StatusCode, "encoding": encoding, "message": err.Error()})
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	copyDecodedModelHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	if _, err := w.Write(out); err != nil {
+		trace("model-response-error", map[string]any{"statusCode": resp.StatusCode, "message": err.Error()})
+		return
+	}
+	if validationErr == nil && loadErr == nil {
+		trace("models-injected", map[string]any{
+			"officialCount": summary.officialCount, "customCount": summary.customCount,
+			"customNames": summary.customNames, "customSlugs": summary.customSlugs,
+			"containers": summary.containers, "indexPaths": summary.indexPaths,
+		})
+	}
+}
+
+func decodeModelResponse(body []byte, encoding string) ([]byte, error) {
+	encoding = strings.ToLower(strings.TrimSpace(strings.Split(encoding, ",")[0]))
+	switch encoding {
+	case "", "identity":
+		return body, nil
+	case "gzip":
+		reader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("gzip 模型响应解码失败: %w", err)
+		}
+		defer reader.Close()
+		return io.ReadAll(reader)
+	case "deflate":
+		reader, err := zlib.NewReader(bytes.NewReader(body))
+		if err == nil {
+			defer reader.Close()
+			return io.ReadAll(reader)
+		}
+		raw := flate.NewReader(bytes.NewReader(body))
+		defer raw.Close()
+		decoded, rawErr := io.ReadAll(raw)
+		if rawErr != nil {
+			return nil, fmt.Errorf("deflate 模型响应解码失败: zlib=%v, raw=%w", err, rawErr)
+		}
+		return decoded, nil
+	case "br":
+		decoded, err := io.ReadAll(brotli.NewReader(bytes.NewReader(body)))
+		if err != nil {
+			return nil, fmt.Errorf("br 模型响应解码失败: %w", err)
+		}
+		return decoded, nil
+	default:
+		return nil, fmt.Errorf("不支持的模型响应 Content-Encoding: %s", encoding)
+	}
+}
+
+func copyDecodedModelHeaders(target, source http.Header) {
+	for key, values := range source {
+		lower := strings.ToLower(key)
+		if lower == "content-encoding" || lower == "content-length" || lower == "transfer-encoding" {
+			continue
+		}
+		for _, value := range values {
+			target.Add(key, value)
+		}
+	}
+	target.Set("Content-Type", "application/json; charset=utf-8")
+}
+
+func forwardRawModelResponse(w http.ResponseWriter, resp *http.Response, body []byte) {
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(body)
+}
+
+func saveModelStructureSnapshot(parsed map[string]any, summary modelInjectionSummary, statusCode int, encoding string, validationErr error) error {
+	rootKeys := make([]string, 0, len(parsed))
+	for key := range parsed {
+		rootKeys = append(rootKeys, key)
+	}
+	sort.Strings(rootKeys)
+	validation := "ok"
+	if validationErr != nil {
+		validation = "failed"
+	}
+	snapshot := map[string]any{
+		"updatedAt":       time.Now().UTC().Format(time.RFC3339Nano),
+		"statusCode":      statusCode,
+		"contentEncoding": encoding,
+		"rootFields":      rootKeys,
+		"containers":      summary.containers,
+		"indexes":         summary.indexPaths,
+		"officialSample":  jsonShape(summary.officialSample, 0),
+		"customSample":    jsonShape(summary.customSample, 0),
+		"validation":      validation,
+	}
+	encoded, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := storage.StorageDir()
+	if dir == "" {
+		return nil
+	}
+	path := filepath.Join(dir, "model-response-structure.json")
+	temp, err := os.CreateTemp(dir, ".model-response-structure-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(append(encoded, '\n')); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	_ = os.Remove(path)
+	return os.Rename(tempPath, path)
+}
+
+func jsonShape(value any, depth int) any {
+	if depth >= 6 {
+		return "object"
+	}
+	switch current := value.(type) {
+	case nil:
+		return "none"
+	case map[string]any:
+		shape := make(map[string]any, len(current))
+		for key, item := range current {
+			shape[key] = jsonShape(item, depth+1)
+		}
+		return shape
+	case []any:
+		shape := map[string]any{"type": "array", "length": len(current)}
+		if len(current) > 0 {
+			shape["item"] = jsonShape(current[0], depth+1)
+		}
+		return shape
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case float64, float32, int, int64, json.Number:
+		return "number"
+	default:
+		return fmt.Sprintf("%T", value)
+	}
+}
+
+func addAgentModelID(parsed *map[string]any, modelID string) {
+	addAgentModelIDs(*parsed, []string{modelID})
+}
+
+func addAgentModelIDs(parsed map[string]any, modelIDs []string) {
+	parsed["agentModelSorts"] = addModelSortIDs(parsed["agentModelSorts"], modelIDs)
+}
+
+// findModel returns the custom model matching a model ID or placeholder.
+func findModel(modelID string) *storage.CustomModel {
+	models, _ := storage.LoadModels()
+	for _, m := range models {
+		slug := getModelSlug(m)
+		placeholder := getModelPlaceholder(m)
+		if modelID == m.Name || modelID == m.ExternalModelName ||
+			modelID == slug || modelID == "models/"+slug || modelID == placeholder ||
+			modelID == "models/"+placeholder ||
+			modelID == strings.TrimPrefix(m.Name, "models/") {
+			mc := m
+			return &mc
+		}
+	}
+	return nil
+}
+
+// handleGenerate routes a streamGenerateContent request. cleanPath is the
+// already-normalised path, with any patcher prefix removed.
+func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid json", 400)
+		return
+	}
+
+	modelID, _ := req["model"].(string)
+	if modelID == "" {
+		if mid, ok := req["modelId"].(string); ok {
+			modelID = mid
+		}
+	}
+
+	requestID, _ := req["requestId"].(string)
+	if requestID == "" {
+		requestID = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	customModel := findModel(modelID)
+
+	trace("generation-request", map[string]any{
+		"requestId":     requestID,
+		"model":         modelID,
+		"customMatched": customModel != nil,
+	})
+
+	if customModel == nil {
+		// Passthrough to Google
+		passthroughRequest(w, r, body, cleanPath)
+		return
+	}
+
+	geminiReq, _ := req["request"].(map[string]any)
+	if geminiReq == nil {
+		geminiReq = req
+	}
+
+	if customModel.Provider == "anthropic" {
+		forwardAnthropic(w, r, customModel, geminiReq, requestID)
+	} else {
+		forwardOpenAI(w, r, customModel, geminiReq, requestID)
+	}
+}
+
+// forwardOpenAI translates and forwards to an OpenAI-compatible API.
+func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
+	openAIReq := toOpenAIRequest(geminiReq, m.ExternalModelName)
+	if m.ReasoningEffort != "" && m.ReasoningEffort != "auto" {
+		openAIReq["reasoning_effort"] = m.ReasoningEffort
+		delete(openAIReq, "temperature")
+	}
+	openAIReq["stream"] = true
+	openAIReq["stream_options"] = map[string]any{"include_usage": true}
+	cache := applyOpenAIPromptCaching(openAIReq, m, geminiReq)
+	cacheEnabled := true
+
+	apiURL := resolveOpenAIChatCompletionsURL(m.APIURL)
+
+	var lastErr error
+	extraAttempts := 0
+	for attempt := 1; attempt <= maxRetries+extraAttempts; attempt++ {
+		body, _ := json.Marshal(openAIReq)
+		trace("openai-upstream-request", map[string]any{
+			"requestId": requestID, "attempt": attempt,
+			"promptCache": cacheEnabled, "promptCacheExplicit": cacheEnabled && cache.explicit,
+			"promptCacheKeyHash": strings.TrimPrefix(cache.key, "antigravity:"),
+		})
+		req, err := http.NewRequestWithContext(incoming.Context(), "POST", apiURL, bytes.NewReader(body))
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+m.APIKey)
+
+		client := &http.Client{Timeout: 5 * time.Minute}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			trace("openai-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
+			if attempt < maxRetries+extraAttempts && incoming.Context().Err() == nil {
+				delay := retryDelay(attempt, "")
+				trace("openai-upstream-retry", map[string]any{"requestId": requestID, "attempt": attempt, "delayMs": delay.Milliseconds()})
+				time.Sleep(delay)
+				continue
+			}
+			break
+		}
+		lastErr = nil
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			trace("openai-upstream-error-response", map[string]any{
+				"requestId":  requestID,
+				"statusCode": resp.StatusCode,
+				"body":       string(errBody[:min(len(errBody), 500)]),
+			})
+			if cacheEnabled && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+				stripOpenAIPromptCaching(openAIReq)
+				cacheEnabled = false
+				extraAttempts = 1
+				trace("prompt-cache-fallback", map[string]any{
+					"requestId": requestID, "provider": "openai", "statusCode": resp.StatusCode,
+				})
+				continue
+			}
+			if isRetryableStatus(resp.StatusCode) && attempt < maxRetries+extraAttempts {
+				delay := retryDelay(attempt, resp.Header.Get("Retry-After"))
+				trace("openai-upstream-retry", map[string]any{"requestId": requestID, "attempt": attempt, "statusCode": resp.StatusCode, "delayMs": delay.Milliseconds()})
+				time.Sleep(delay)
+				continue
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
+			w.Write(errBody)
+			return
+		}
+
+		defer resp.Body.Close()
+		streamOpenAIResponse(w, resp, requestID, attempt)
+		return
+	}
+
+	if lastErr != nil {
+		http.Error(w, lastErr.Error(), 502)
+	}
+}
+
+func resolveOpenAIChatCompletionsURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		base := strings.TrimRight(trimmed, "/")
+		if strings.HasSuffix(base, "/chat/completions") {
+			return base
+		}
+		if strings.HasSuffix(base, "/v1") {
+			return base + "/chat/completions"
+		}
+		return base + "/v1/chat/completions"
+	}
+
+	path := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(path, "/chat/completions") {
+		parsed.Path = path
+		return parsed.String()
+	}
+	if path == "" {
+		parsed.Path = "/v1/chat/completions"
+	} else {
+		parsed.Path = path + "/chat/completions"
+	}
+	return parsed.String()
+}
+
+// forwardAnthropic translates and forwards to Anthropic Messages API.
+func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
+	anthReq := toAnthropicRequest(geminiReq, m.ExternalModelName)
+	if budget := reasoningBudget(m.ReasoningEffort); budget > 0 {
+		anthReq["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
+		delete(anthReq, "temperature")
+		if maxTokens, ok := numberAsInt(anthReq["max_tokens"]); !ok || maxTokens <= budget {
+			anthReq["max_tokens"] = budget + 8192
+		}
+	}
+	breakpointCount := applyAnthropicPromptCaching(anthReq)
+	cacheEnabled := true
+
+	apiURL := m.APIURL
+	if !strings.Contains(apiURL, "/messages") {
+		apiURL = strings.TrimRight(apiURL, "/") + "/v1/messages"
+	}
+
+	client := &http.Client{Timeout: 5 * time.Minute}
+	var lastErr error
+	extraAttempts := 0
+	for attempt := 1; attempt <= maxRetries+extraAttempts; attempt++ {
+		body, _ := json.Marshal(anthReq)
+		trace("anthropic-upstream-request", map[string]any{
+			"requestId": requestID, "attempt": attempt,
+			"promptCache": cacheEnabled, "promptCacheBreakpoints": func() int {
+				if cacheEnabled {
+					return breakpointCount
+				}
+				return 0
+			}(),
+		})
+		req, err := http.NewRequestWithContext(incoming.Context(), "POST", apiURL, bytes.NewReader(body))
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", m.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			trace("anthropic-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
+			if attempt < maxRetries+extraAttempts && incoming.Context().Err() == nil {
+				delay := retryDelay(attempt, "")
+				trace("anthropic-upstream-retry", map[string]any{"requestId": requestID, "attempt": attempt, "delayMs": delay.Milliseconds()})
+				time.Sleep(delay)
+				continue
+			}
+			break
+		}
+		lastErr = nil
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			trace("anthropic-upstream-error-response", map[string]any{
+				"requestId": requestID, "statusCode": resp.StatusCode,
+				"body": string(errBody[:min(len(errBody), 500)]),
+			})
+			if cacheEnabled && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+				stripAnthropicPromptCaching(anthReq)
+				cacheEnabled = false
+				extraAttempts = 1
+				trace("prompt-cache-fallback", map[string]any{
+					"requestId": requestID, "provider": "anthropic", "statusCode": resp.StatusCode,
+				})
+				continue
+			}
+			if isRetryableStatus(resp.StatusCode) && attempt < maxRetries+extraAttempts {
+				delay := retryDelay(attempt, resp.Header.Get("Retry-After"))
+				trace("anthropic-upstream-retry", map[string]any{"requestId": requestID, "attempt": attempt, "statusCode": resp.StatusCode, "delayMs": delay.Milliseconds()})
+				time.Sleep(delay)
+				continue
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
+			w.Write(errBody)
+			return
+		}
+
+		defer resp.Body.Close()
+		streamAnthropicResponse(w, resp, requestID, attempt)
+		return
+	}
+	if lastErr != nil {
+		http.Error(w, lastErr.Error(), 502)
+	}
+}
+
+func reasoningBudget(effort string) int {
+	switch effort {
+	case "low":
+		return 1024
+	case "medium":
+		return 4096
+	case "high":
+		return 8192
+	default:
+		return 0
+	}
+}
+
+func numberAsInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case float64:
+		return int(v), true
+	default:
+		return 0, false
+	}
+}
+
+// streamOpenAIResponse streams an OpenAI SSE response converting to Gemini format.
+func streamOpenAIResponse(w http.ResponseWriter, resp *http.Response, requestID string, attempt int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Content-Disposition", "attachment")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, canFlush := w.(http.Flusher)
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	streamState := openAIStreamState{traceID: requestID}
+	startedAt := time.Now()
+	var firstByteAt time.Time
+	wroteEvent := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if firstByteAt.IsZero() && len(line) > 0 {
+			firstByteAt = time.Now()
+		}
+		geminiLine := convertOpenAILineToGemini(line, &streamState)
+		if geminiLine != "" {
+			if !wroteEvent {
+				w.WriteHeader(http.StatusOK)
+				wroteEvent = true
+			}
+			w.Write([]byte(geminiLine))
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if !wroteEvent {
+			writeEmptyUpstreamStreamError(w, "openai", requestID, attempt, resp.Header.Get("Content-Type"), err.Error())
+			return
+		}
+		trace("openai-stream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error(), "downstreamCommitted": true})
+	}
+	if !wroteEvent {
+		writeEmptyUpstreamStreamError(w, "openai", requestID, attempt, resp.Header.Get("Content-Type"), "上游响应中没有可识别的 OpenAI SSE 事件")
+		return
+	}
+	if !streamState.finished {
+		trace("openai-stream-missing-stop", map[string]any{"requestId": requestID, "attempt": attempt})
+		w.Write([]byte(encodeAntigravityStreamEvent(finalStopResponse(streamState.modelVersion, streamState.responseID), requestID)))
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+
+	if streamState.usage != nil {
+		promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens := openAIUsage(streamState.usage)
+		trace("usage", map[string]any{
+			"requestId":        requestID,
+			"promptTokens":     promptTokens,
+			"completionTokens": completionTokens,
+			"cacheReadTokens":  cacheReadTokens,
+			"cacheWriteTokens": cacheWriteTokens,
+			"firstByteMs":      firstByteAt.Sub(startedAt).Milliseconds(),
+			"totalMs":          time.Since(startedAt).Milliseconds(),
+		})
+	}
+}
+
+func openAIUsage(usage map[string]any) (prompt, completion, cacheRead, cacheWrite int) {
+	prompt, _ = numberAsInt(usage["prompt_tokens"])
+	completion, _ = numberAsInt(usage["completion_tokens"])
+	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+		cacheRead, _ = numberAsInt(details["cached_tokens"])
+		if value, ok := numberAsInt(details["cache_write_tokens"]); ok {
+			cacheWrite = value
+		}
+	}
+	if value, ok := numberAsInt(usage["cache_read_input_tokens"]); ok {
+		cacheRead = value
+	}
+	if value, ok := numberAsInt(usage["cache_creation_input_tokens"]); ok {
+		cacheWrite = value
+	}
+	return
+}
+
+// streamAnthropicResponse streams an Anthropic SSE response converting to Gemini format.
+func streamAnthropicResponse(w http.ResponseWriter, resp *http.Response, requestID string, attempt int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Content-Disposition", "attachment")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, canFlush := w.(http.Flusher)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	startedAt := time.Now()
+	var firstByteAt time.Time
+	totals := anthropicUsageTotals{}
+	state := anthropicStreamState{traceID: requestID}
+	wroteEvent := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if firstByteAt.IsZero() && len(line) > 0 {
+			firstByteAt = time.Now()
+		}
+		collectAnthropicUsage(line, &totals)
+		geminiLine := convertAnthropicLineToGemini(line, &state)
+		if geminiLine != "" {
+			if !wroteEvent {
+				w.WriteHeader(http.StatusOK)
+				wroteEvent = true
+			}
+			w.Write([]byte(geminiLine))
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if !wroteEvent {
+			writeEmptyUpstreamStreamError(w, "anthropic", requestID, attempt, resp.Header.Get("Content-Type"), err.Error())
+			return
+		}
+		trace("anthropic-stream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error(), "downstreamCommitted": true})
+	}
+	if !wroteEvent {
+		writeEmptyUpstreamStreamError(w, "anthropic", requestID, attempt, resp.Header.Get("Content-Type"), "上游响应中没有可识别的 Anthropic SSE 事件")
+		return
+	}
+	if !state.finished {
+		trace("anthropic-stream-missing-stop", map[string]any{"requestId": requestID, "attempt": attempt})
+		w.Write([]byte(encodeAntigravityStreamEvent(finalStopResponse(state.modelVersion, state.responseID), requestID)))
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+
+	if totals.seen {
+		trace("usage", map[string]any{
+			"requestId":        requestID,
+			"promptTokens":     totals.input + totals.cacheRead + totals.cacheWrite,
+			"completionTokens": totals.output,
+			"cacheReadTokens":  totals.cacheRead,
+			"cacheWriteTokens": totals.cacheWrite,
+			"firstByteMs":      firstByteAt.Sub(startedAt).Milliseconds(),
+			"totalMs":          time.Since(startedAt).Milliseconds(),
+		})
+	}
+}
+
+func finalStopResponse(modelVersion, responseID string) map[string]any {
+	response := map[string]any{
+		"candidates": []any{map[string]any{
+			"content":      map[string]any{"role": "model", "parts": []any{}},
+			"finishReason": "STOP",
+		}},
+	}
+	if modelVersion != "" {
+		response["modelVersion"] = modelVersion
+	}
+	if responseID != "" {
+		response["responseId"] = responseID
+	}
+	return response
+}
+
+func writeEmptyUpstreamStreamError(w http.ResponseWriter, provider, requestID string, attempt int, contentType, message string) {
+	trace(provider+"-empty-stream", map[string]any{
+		"requestId":   requestID,
+		"attempt":     attempt,
+		"contentType": contentType,
+		"message":     message,
+	})
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Del("Content-Disposition")
+	w.Header().Del("Connection")
+	w.WriteHeader(http.StatusBadGateway)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "invalid_upstream_stream",
+		},
+	})
+}
+
+func isRetryableStatus(code int) bool {
+	return code == 429 || code == 502 || code == 503 || code == 504 || code == 524
+}
+
+func retryDelay(attempt int, retryAfter string) time.Duration {
+	if seconds, err := strconv.ParseFloat(retryAfter, 64); err == nil && seconds >= 0 {
+		return minDuration(time.Duration(seconds*float64(time.Second)), 10*time.Second)
+	}
+	if date, err := http.ParseTime(retryAfter); err == nil {
+		return minDuration(maxDuration(time.Until(date), 0), 10*time.Second)
+	}
+	delay := 250 * time.Millisecond * time.Duration(1<<(attempt-1))
+	return minDuration(delay, 2*time.Second)
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

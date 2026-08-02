@@ -1,0 +1,25 @@
+# macOS / editors
+.DS_Store
+*.swp
+*.tmp
+
+# Local credentials and runtime state
+.env
+.env.*
+!.env.example
+custom_models.json
+proxy-trace.jsonl
+*.log
+
+# Frontend dependencies and generated output
+frontend/node_modules/
+frontend/dist/
+frontend/wailsjs/
+
+# Wails build output
+build/bin/
+
+# Test and coverage output
+coverage/
+*.test
+*.out

@@ -1,0 +1,815 @@
+package proxy
+
+import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"antigravity-byok/internal/storage"
+	"github.com/andybalholm/brotli"
+)
+
+func decodeAntigravityStreamResponse(t *testing.T, out string) map[string]any {
+	t.Helper()
+	payload := strings.TrimSuffix(strings.TrimPrefix(out, "data: "), "\n\n")
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	response, ok := envelope["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing Antigravity response envelope: %v", envelope)
+	}
+	if _, ok := envelope["metadata"].(map[string]any); !ok {
+		t.Fatalf("missing Antigravity metadata envelope: %v", envelope)
+	}
+	if _, ok := envelope["traceId"].(string); !ok {
+		t.Fatalf("missing Antigravity traceId envelope: %v", envelope)
+	}
+	return response
+}
+
+func TestGetModelSlug(t *testing.T) {
+	cases := []struct {
+		model storage.CustomModel
+		want  string
+	}{
+		{storage.CustomModel{ExternalModelName: "claude-fable-5"}, "custom-claude-fable-5"},
+		{storage.CustomModel{ExternalModelName: "gpt-5.6-sol"}, "custom-gpt-5-6-sol"},
+		{storage.CustomModel{ExternalModelName: "GPT-4o"}, "custom-gpt-4o"},
+		{storage.CustomModel{Name: "models/fable5"}, "custom-fable5"},
+		{storage.CustomModel{ExternalModelName: "中文模型"}, "custom-model"},
+	}
+	for _, c := range cases {
+		got := getModelSlug(c.model)
+		if got != c.want {
+			t.Errorf("getModelSlug(%+v) = %q, want %q", c.model, got, c.want)
+		}
+	}
+}
+
+func TestGetModelPlaceholderStable(t *testing.T) {
+	m := storage.CustomModel{DisplayName: "测试模型"}
+	first := getModelPlaceholder(m)
+	second := getModelPlaceholder(m)
+	if first != second {
+		t.Errorf("placeholder not stable: %q vs %q", first, second)
+	}
+	if !strings.HasPrefix(first, "MODEL_PLACEHOLDER_M") {
+		t.Errorf("bad placeholder format: %q", first)
+	}
+	var placeholderNumber int
+	if _, err := fmt.Sscanf(first, "MODEL_PLACEHOLDER_M%d", &placeholderNumber); err != nil || placeholderNumber < 0 || placeholderNumber >= modelPlaceholderCount {
+		t.Errorf("placeholder is outside the supported enum range: %q", first)
+	}
+	// Different display names should differ
+	other := getModelPlaceholder(storage.CustomModel{DisplayName: "鸡皮提"})
+	if first == other {
+		t.Errorf("different models produced same placeholder %q", first)
+	}
+}
+
+func TestAddAgentModelID(t *testing.T) {
+	parsed := map[string]any{
+		"agentModelSorts": []any{
+			map[string]any{
+				"displayName": "Recommended",
+				"groups": []any{
+					map[string]any{"modelIds": []any{"gemini-3.6-flash-high"}},
+				},
+			},
+		},
+	}
+	addAgentModelID(&parsed, "custom-test-model")
+
+	sorts := parsed["agentModelSorts"].([]any)
+	group := sorts[0].(map[string]any)["groups"].([]any)[0].(map[string]any)
+	ids := group["modelIds"].([]any)
+
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 ids, got %d: %v", len(ids), ids)
+	}
+	if ids[0] != "custom-test-model" {
+		t.Errorf("custom model not first: %v", ids)
+	}
+
+	// Idempotent
+	addAgentModelID(&parsed, "custom-test-model")
+	ids = parsed["agentModelSorts"].([]any)[0].(map[string]any)["groups"].([]any)[0].(map[string]any)["modelIds"].([]any)
+	if len(ids) != 2 {
+		t.Errorf("duplicate insert: %v", ids)
+	}
+}
+
+func TestInjectCustomModelsSupportsMapAndEverySortGroup(t *testing.T) {
+	models := []storage.CustomModel{{
+		Name: "models/gpt-test", DisplayName: "GPT Test", ExternalModelName: "gpt-test",
+	}}
+	parsed := map[string]any{
+		"models": map[string]any{
+			"official": map[string]any{"model": "MODEL_PLACEHOLDER_M1"},
+		},
+		"agentModelSorts": []any{
+			map[string]any{"groups": []any{
+				map[string]any{"modelIds": []any{"official"}},
+				map[string]any{"modelIds": []any{"other"}},
+			}},
+			map[string]any{"groups": []any{
+				map[string]any{"modelIds": []any{"fast"}},
+			}},
+		},
+	}
+
+	summary := injectCustomModels(parsed, models)
+	if summary.customCount != 1 || summary.officialCount != 1 {
+		t.Fatalf("unexpected injection summary: %+v", summary)
+	}
+	modelMap := parsed["models"].(map[string]any)
+	entry, ok := modelMap["custom-gpt-test"].(map[string]any)
+	if !ok || entry["displayName"] != "GPT Test" {
+		t.Fatalf("custom map entry missing: %v", modelMap)
+	}
+	for _, rawSort := range parsed["agentModelSorts"].([]any) {
+		for _, rawGroup := range rawSort.(map[string]any)["groups"].([]any) {
+			ids := rawGroup.(map[string]any)["modelIds"].([]any)
+			if len(ids) == 0 || ids[0] != "custom-gpt-test" {
+				t.Fatalf("custom model missing from sort group: %v", ids)
+			}
+		}
+	}
+}
+
+func TestInjectCustomModelsSupportsArrayAndAlternateContainer(t *testing.T) {
+	models := []storage.CustomModel{{
+		Name: "models/claude-test", DisplayName: "Claude Test", ExternalModelName: "claude-test",
+	}}
+	parsed := map[string]any{
+		"availableModels": []any{map[string]any{
+			"name": "models/official", "displayName": "Official",
+		}},
+	}
+
+	summary := injectCustomModels(parsed, models)
+	if summary.customCount != 1 || summary.officialCount != 1 {
+		t.Fatalf("unexpected injection summary: %+v", summary)
+	}
+	entries := parsed["availableModels"].([]any)
+	if len(entries) != 2 {
+		t.Fatalf("expected injected and official array models: %v", entries)
+	}
+	custom := entries[0].(map[string]any)
+	if custom["name"] != "models/custom-claude-test" || custom["displayName"] != "Claude Test" {
+		t.Fatalf("unexpected custom array entry: %v", custom)
+	}
+	sorts := parsed["agentModelSorts"].([]any)
+	ids := sorts[0].(map[string]any)["groups"].([]any)[0].(map[string]any)["modelIds"].([]any)
+	if len(ids) != 1 || ids[0] != "custom-claude-test" {
+		t.Fatalf("custom sort was not created: %v", ids)
+	}
+}
+
+func TestInjectCustomModelsSupportsNestedResponseIndexesAndSlugCollisions(t *testing.T) {
+	models := []storage.CustomModel{
+		{Name: "models/a", DisplayName: "First", ExternalModelName: "Same Model"},
+		{Name: "models/b", DisplayName: "Second", ExternalModelName: "same-model"},
+	}
+	parsed := map[string]any{
+		"response": map[string]any{
+			"models": map[string]any{
+				"official": map[string]any{"model": "MODEL_PLACEHOLDER_M1"},
+			},
+			"agentModelSorts": []any{map[string]any{"groups": []any{
+				map[string]any{"modelIds": []any{"official"}},
+			}}},
+			"battleModeModelSorts": []any{map[string]any{"groups": []any{
+				map[string]any{"modelIds": []any{"official"}},
+			}}},
+			"tieredModelIds": map[string]any{"recommended": []any{"official"}},
+		},
+	}
+
+	summary := injectCustomModels(parsed, models)
+	if summary.customCount != 2 {
+		t.Fatalf("unexpected injection summary: %+v", summary)
+	}
+	if err := validateModelInjection(parsed, models, summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.customSlugs) != 2 || summary.customSlugs[0] == summary.customSlugs[1] {
+		t.Fatalf("slug collision was not resolved: %v", summary.customSlugs)
+	}
+	response := parsed["response"].(map[string]any)
+	modelMap := response["models"].(map[string]any)
+	for _, slug := range summary.customSlugs {
+		if _, ok := modelMap[slug]; !ok {
+			t.Fatalf("nested model %s missing: %v", slug, modelMap)
+		}
+	}
+	for _, key := range []string{"agentModelSorts", "battleModeModelSorts"} {
+		ids := response[key].([]any)[0].(map[string]any)["groups"].([]any)[0].(map[string]any)["modelIds"].([]any)
+		if len(ids) < 3 || ids[0] != summary.customSlugs[0] || ids[1] != summary.customSlugs[1] {
+			t.Fatalf("%s was not updated: %v", key, ids)
+		}
+	}
+	tiered := response["tieredModelIds"].(map[string]any)["recommended"].([]any)
+	if len(tiered) < 3 || tiered[0] != summary.customSlugs[0] || tiered[1] != summary.customSlugs[1] {
+		t.Fatalf("tiered model index was not updated: %v", tiered)
+	}
+	if len(summary.containers) != 1 || summary.containers[0] != "response.models:map" {
+		t.Fatalf("nested response path was not diagnosed: %v", summary.containers)
+	}
+}
+
+func TestValidateModelInjectionRejectsMissingPickerIndex(t *testing.T) {
+	models := []storage.CustomModel{{Name: "models/test", DisplayName: "Test", ExternalModelName: "test"}}
+	parsed := map[string]any{"models": map[string]any{}}
+	summary := injectCustomModels(parsed, models)
+	delete(parsed, "agentModelSorts")
+	if err := validateModelInjection(parsed, models, summary); err == nil {
+		t.Fatal("expected validation failure for model without a picker index")
+	}
+}
+
+func TestDecodeModelResponseEncodings(t *testing.T) {
+	payload := []byte(`{"models":{}}`)
+	encoders := map[string]func(*bytes.Buffer) io.WriteCloser{
+		"gzip": func(buffer *bytes.Buffer) io.WriteCloser { return gzip.NewWriter(buffer) },
+		"deflate": func(buffer *bytes.Buffer) io.WriteCloser {
+			writer := zlib.NewWriter(buffer)
+			return writer
+		},
+		"raw-deflate": func(buffer *bytes.Buffer) io.WriteCloser {
+			writer, err := flate.NewWriter(buffer, flate.DefaultCompression)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return writer
+		},
+		"br": func(buffer *bytes.Buffer) io.WriteCloser { return brotli.NewWriter(buffer) },
+	}
+	for name, makeWriter := range encoders {
+		var encoded bytes.Buffer
+		writer := makeWriter(&encoded)
+		if _, err := writer.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		encoding := name
+		if name == "raw-deflate" {
+			encoding = "deflate"
+		}
+		decoded, err := decodeModelResponse(encoded.Bytes(), encoding)
+		if err != nil || !bytes.Equal(decoded, payload) {
+			t.Fatalf("%s decode = %q, %v", name, decoded, err)
+		}
+	}
+	if _, err := decodeModelResponse(payload, "zstd"); err == nil {
+		t.Fatal("expected unsupported encoding error")
+	}
+}
+
+func TestJSONShapeRedactsValues(t *testing.T) {
+	shape, err := json.Marshal(jsonShape(map[string]any{
+		"displayName": "secret model name",
+		"model":       "MODEL_PLACEHOLDER_M42",
+		"recommended": true,
+	}, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(shape, []byte("secret model name")) || bytes.Contains(shape, []byte("M42")) {
+		t.Fatalf("shape leaked values: %s", shape)
+	}
+}
+
+func TestAllocateModelPlaceholdersAvoidsOfficialAndCustomCollisions(t *testing.T) {
+	models := []storage.CustomModel{
+		{Name: "first", DisplayName: "Same seed"},
+		{Name: "second", DisplayName: "Same seed"},
+	}
+	official := map[string]any{
+		"official": map[string]any{"model": getModelPlaceholder(models[0])},
+	}
+	assignments := allocateModelPlaceholders(models, official)
+	first := assignments["first"]
+	second := assignments["second"]
+	if first == "" || second == "" {
+		t.Fatalf("missing assignments: %v", assignments)
+	}
+	if first == second {
+		t.Fatalf("custom models collided on %q", first)
+	}
+	if first == official["official"].(map[string]any)["model"] || second == official["official"].(map[string]any)["model"] {
+		t.Fatalf("custom model collided with official model: %v", assignments)
+	}
+}
+
+func TestToOpenAIRequestBasic(t *testing.T) {
+	gemini := map[string]any{
+		"systemInstruction": map[string]any{
+			"parts": []any{map[string]any{"text": "You are helpful."}},
+		},
+		"contents": []any{
+			map[string]any{
+				"role":  "user",
+				"parts": []any{map[string]any{"text": "Hello"}},
+			},
+			map[string]any{
+				"role":  "model",
+				"parts": []any{map[string]any{"text": "Hi there"}},
+			},
+		},
+		"generationConfig": map[string]any{
+			"maxOutputTokens": 4096,
+			"temperature":     0.7,
+		},
+	}
+
+	out := toOpenAIRequest(gemini, "gpt-5.6-sol")
+
+	if out["model"] != "gpt-5.6-sol" {
+		t.Errorf("model = %v", out["model"])
+	}
+	if out["max_tokens"] != 4096 {
+		t.Errorf("max_tokens = %v", out["max_tokens"])
+	}
+
+	msgs := out["messages"].([]map[string]any)
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	}
+	if msgs[0]["role"] != "system" || msgs[0]["content"] != "You are helpful." {
+		t.Errorf("system message wrong: %+v", msgs[0])
+	}
+	if msgs[1]["role"] != "user" || msgs[1]["content"] != "Hello" {
+		t.Errorf("user message wrong: %+v", msgs[1])
+	}
+	if msgs[2]["role"] != "assistant" {
+		t.Errorf("model role not mapped to assistant: %+v", msgs[2])
+	}
+}
+
+func TestToOpenAIRequestTools(t *testing.T) {
+	gemini := map[string]any{
+		"contents": []any{},
+		"tools": []any{
+			map[string]any{
+				"functionDeclarations": []any{
+					map[string]any{
+						"name":        "read_file",
+						"description": "Read a file",
+						"parameters": map[string]any{
+							"type": "OBJECT",
+							"properties": map[string]any{
+								"path":  map[string]any{"type": "STRING"},
+								"wait":  map[string]any{"type": "BOOLEAN"},
+								"lines": map[string]any{"type": "ARRAY", "items": map[string]any{"type": "INTEGER"}},
+							},
+							"required": []any{"path"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	out := toOpenAIRequest(gemini, "gpt-4o")
+	tools := out["tools"].([]map[string]any)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	fn := tools[0]["function"].(map[string]any)
+	if fn["name"] != "read_file" {
+		t.Errorf("tool name = %v", fn["name"])
+	}
+	if tools[0]["type"] != "function" {
+		t.Errorf("tool type = %v", tools[0]["type"])
+	}
+	params := fn["parameters"].(map[string]any)
+	if params["type"] != "object" {
+		t.Fatalf("root schema type was not normalized: %v", params)
+	}
+	properties := params["properties"].(map[string]any)
+	if properties["path"].(map[string]any)["type"] != "string" || properties["wait"].(map[string]any)["type"] != "boolean" {
+		t.Fatalf("nested schema types were not normalized: %v", properties)
+	}
+	items := properties["lines"].(map[string]any)["items"].(map[string]any)
+	if items["type"] != "integer" {
+		t.Fatalf("array item schema type was not normalized: %v", items)
+	}
+}
+
+func TestResolveOpenAIChatCompletionsURL(t *testing.T) {
+	cases := map[string]string{
+		"https://api.xiass.com":                    "https://api.xiass.com/v1/chat/completions",
+		"https://api.xiass.com/":                   "https://api.xiass.com/v1/chat/completions",
+		"https://api.xiass.com/v1":                 "https://api.xiass.com/v1/chat/completions",
+		"https://example.com/openai/v1":            "https://example.com/openai/v1/chat/completions",
+		"https://example.com/v1/chat/completions":  "https://example.com/v1/chat/completions",
+		"https://example.com/proxy?workspace=test": "https://example.com/proxy/chat/completions?workspace=test",
+	}
+	for input, want := range cases {
+		if got := resolveOpenAIChatCompletionsURL(input); got != want {
+			t.Errorf("resolveOpenAIChatCompletionsURL(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestConvertOpenAILineToGeminiText(t *testing.T) {
+	state := &openAIStreamState{}
+	line := `data: {"choices":[{"delta":{"content":"Hello world"},"finish_reason":null}]}`
+
+	out := convertOpenAILineToGemini(line, state)
+	if out == "" {
+		t.Fatal("empty conversion")
+	}
+	if !strings.HasPrefix(out, "data: ") {
+		t.Errorf("missing SSE prefix: %q", out)
+	}
+
+	response := decodeAntigravityStreamResponse(t, out)
+	cands := response["candidates"].([]any)
+	content := cands[0].(map[string]any)["content"].(map[string]any)
+	if content["role"] != "model" {
+		t.Errorf("role = %v", content["role"])
+	}
+	parts := content["parts"].([]any)
+	if parts[0].(map[string]any)["text"] != "Hello world" {
+		t.Errorf("text = %v", parts[0])
+	}
+}
+
+func TestConvertOpenAIToolCallAccumulation(t *testing.T) {
+	state := &openAIStreamState{}
+
+	// Tool call arrives in fragments
+	convertOpenAILineToGemini(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":"{\"pa"}}]},"finish_reason":null}]}`, state)
+	convertOpenAILineToGemini(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"a.txt\"}"}}]},"finish_reason":null}]}`, state)
+	out := convertOpenAILineToGemini(`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`, state)
+
+	if out == "" {
+		t.Fatal("no output on finish")
+	}
+	response := decodeAntigravityStreamResponse(t, out)
+	parts := response["candidates"].([]any)[0].(map[string]any)["content"].(map[string]any)["parts"].([]any)
+	fc := parts[0].(map[string]any)["functionCall"].(map[string]any)
+	if fc["name"] != "read_file" {
+		t.Errorf("function name = %v", fc["name"])
+	}
+	args := fc["args"].(map[string]any)
+	if args["path"] != "a.txt" {
+		t.Errorf("args not accumulated correctly: %v", args)
+	}
+}
+
+func TestConvertOpenAIUsageCapture(t *testing.T) {
+	state := &openAIStreamState{}
+	convertOpenAILineToGemini(`data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50}}`, state)
+
+	if state.usage == nil {
+		t.Fatal("usage not captured")
+	}
+	if state.usage["prompt_tokens"] != float64(100) {
+		t.Errorf("prompt_tokens = %v", state.usage["prompt_tokens"])
+	}
+}
+
+func TestConvertOpenAIStopProducesFinalEnvelope(t *testing.T) {
+	state := &openAIStreamState{traceID: "request-123"}
+	out := convertOpenAILineToGemini(`data: {"id":"chatcmpl-1","model":"gpt-test","choices":[{"delta":{},"finish_reason":"stop"}]}`, state)
+	if out == "" {
+		t.Fatal("stop chunk must not be discarded")
+	}
+	response := decodeAntigravityStreamResponse(t, out)
+	candidate := response["candidates"].([]any)[0].(map[string]any)
+	if candidate["finishReason"] != "STOP" {
+		t.Fatalf("finishReason = %v", candidate["finishReason"])
+	}
+	if response["responseId"] != "chatcmpl-1" || response["modelVersion"] != "gpt-test" {
+		t.Fatalf("upstream identity was not preserved: %v", response)
+	}
+}
+
+func TestConvertOpenAIDoneAndEmpty(t *testing.T) {
+	state := &openAIStreamState{}
+	if out := convertOpenAILineToGemini("data: [DONE]", state); out != "" {
+		t.Errorf("[DONE] should produce nothing, got %q", out)
+	}
+	if out := convertOpenAILineToGemini("", state); out != "" {
+		t.Errorf("empty line should produce nothing")
+	}
+	if out := convertOpenAILineToGemini("event: ping", state); out != "" {
+		t.Errorf("non-data line should produce nothing")
+	}
+}
+
+func TestStreamOpenAIRejectsUnrecognizedSuccessfulBody(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+		Body:   io.NopCloser(strings.NewReader("<!doctype html><title>API dashboard</title>")),
+	}
+	recorder := httptest.NewRecorder()
+	streamOpenAIResponse(recorder, resp, "request-empty", 1)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid_upstream_stream") {
+		t.Fatalf("unexpected error body: %s", recorder.Body.String())
+	}
+}
+
+func TestStreamOpenAIAddsStopWhenUpstreamOmitsIt(t *testing.T) {
+	body := `data: {"id":"chatcmpl-1","model":"gpt-test","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n"
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+	recorder := httptest.NewRecorder()
+	streamOpenAIResponse(recorder, resp, "request-no-stop", 1)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"finishReason":"STOP"`) {
+		t.Fatalf("synthetic STOP was not appended: %s", recorder.Body.String())
+	}
+}
+
+func TestToAnthropicRequestCacheBreakpoints(t *testing.T) {
+	gemini := map[string]any{
+		"systemInstruction": map[string]any{
+			"parts": []any{map[string]any{"text": "System prompt"}},
+		},
+		"contents": []any{
+			map[string]any{"role": "user", "parts": []any{map[string]any{"text": "Q1"}}},
+			map[string]any{"role": "model", "parts": []any{map[string]any{"text": "A1"}}},
+			map[string]any{"role": "user", "parts": []any{map[string]any{"text": "Q2"}}},
+		},
+	}
+
+	out := toAnthropicRequest(gemini, "claude-sonnet-4-6")
+	breakpoints := applyAnthropicPromptCaching(out)
+	if breakpoints < 2 || breakpoints > 4 {
+		t.Fatalf("unexpected breakpoint count: %d", breakpoints)
+	}
+
+	// System should have cache_control
+	sys := out["system"].([]any)
+	sysBlock := sys[0].(map[string]any)
+	if sysBlock["cache_control"] == nil {
+		t.Error("system missing cache_control")
+	}
+
+	// Count total ephemeral breakpoints (Anthropic max 4)
+	count := 0
+	if sysBlock["cache_control"] != nil {
+		count++
+	}
+	msgs := out["messages"].([]map[string]any)
+	for _, m := range msgs {
+		blocks := m["content"].([]any)
+		for _, b := range blocks {
+			if bm, ok := b.(map[string]any); ok && bm["cache_control"] != nil {
+				count++
+			}
+		}
+	}
+	if count > 4 {
+		t.Errorf("too many cache breakpoints: %d (Anthropic max 4)", count)
+	}
+	if count < 2 {
+		t.Errorf("expected at least system + 1 message breakpoint, got %d", count)
+	}
+}
+
+func TestToAnthropicRoleMapping(t *testing.T) {
+	gemini := map[string]any{
+		"contents": []any{
+			map[string]any{"role": "model", "parts": []any{map[string]any{"text": "response"}}},
+		},
+	}
+	out := toAnthropicRequest(gemini, "claude-x")
+	msgs := out["messages"].([]map[string]any)
+	if msgs[0]["role"] != "assistant" {
+		t.Errorf("model should map to assistant, got %v", msgs[0]["role"])
+	}
+}
+
+func TestAnthropicToolConversion(t *testing.T) {
+	gemini := map[string]any{
+		"contents": []any{},
+		"tools": []any{
+			map[string]any{
+				"functionDeclarations": []any{
+					map[string]any{
+						"name":        "grep",
+						"description": "Search",
+						"parameters": map[string]any{
+							"type":       "OBJECT",
+							"properties": map[string]any{"fixed": map[string]any{"type": "BOOLEAN"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	out := toAnthropicRequest(gemini, "claude-x")
+	tools := out["tools"].([]map[string]any)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0]["name"] != "grep" {
+		t.Errorf("name = %v", tools[0]["name"])
+	}
+	if tools[0]["input_schema"] == nil {
+		t.Error("missing input_schema (Anthropic format)")
+	}
+	schema := tools[0]["input_schema"].(map[string]any)
+	if schema["type"] != "object" || schema["properties"].(map[string]any)["fixed"].(map[string]any)["type"] != "boolean" {
+		t.Fatalf("Anthropic schema types were not normalized: %v", schema)
+	}
+}
+
+func TestConvertAnthropicTextDelta(t *testing.T) {
+	state := &anthropicStreamState{}
+	out := convertAnthropicLineToGemini(`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}`, state)
+
+	if out == "" {
+		t.Fatal("empty conversion")
+	}
+	response := decodeAntigravityStreamResponse(t, out)
+	parts := response["candidates"].([]any)[0].(map[string]any)["content"].(map[string]any)["parts"].([]any)
+	if parts[0].(map[string]any)["text"] != "Hi" {
+		t.Errorf("text = %v", parts[0])
+	}
+}
+
+func TestConvertAnthropicToolUse(t *testing.T) {
+	state := &anthropicStreamState{}
+
+	convertAnthropicLineToGemini(`data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"view_file"}}`, state)
+	convertAnthropicLineToGemini(`data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"path\""}}`, state)
+	convertAnthropicLineToGemini(`data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":":\"x.go\"}"}}`, state)
+	out := convertAnthropicLineToGemini(`data: {"type":"content_block_stop"}`, state)
+
+	if out == "" {
+		t.Fatal("no output on content_block_stop")
+	}
+	response := decodeAntigravityStreamResponse(t, out)
+	parts := response["candidates"].([]any)[0].(map[string]any)["content"].(map[string]any)["parts"].([]any)
+	fc := parts[0].(map[string]any)["functionCall"].(map[string]any)
+
+	if fc["name"] != "view_file" {
+		t.Errorf("name = %v", fc["name"])
+	}
+	args := fc["args"].(map[string]any)
+	if args["path"] != "x.go" {
+		t.Errorf("args = %v", args)
+	}
+}
+
+func TestConvertAnthropicStopProducesFinalEnvelope(t *testing.T) {
+	state := &anthropicStreamState{traceID: "request-456"}
+	convertAnthropicLineToGemini(`data: {"type":"message_start","message":{"id":"msg_1","model":"claude-test"}}`, state)
+	out := convertAnthropicLineToGemini(`data: {"type":"message_stop"}`, state)
+	response := decodeAntigravityStreamResponse(t, out)
+	candidate := response["candidates"].([]any)[0].(map[string]any)
+	if candidate["finishReason"] != "STOP" {
+		t.Fatalf("finishReason = %v", candidate["finishReason"])
+	}
+	if response["responseId"] != "msg_1" || response["modelVersion"] != "claude-test" {
+		t.Fatalf("upstream identity was not preserved: %v", response)
+	}
+}
+
+func TestStreamAnthropicRejectsUnrecognizedSuccessfulBody(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"application/json"}},
+		Body:   io.NopCloser(strings.NewReader(`{"unexpected":"shape"}`)),
+	}
+	recorder := httptest.NewRecorder()
+	streamAnthropicResponse(recorder, resp, "request-empty-anthropic", 1)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid_upstream_stream") {
+		t.Fatalf("unexpected error body: %s", recorder.Body.String())
+	}
+}
+
+func TestCollectAnthropicUsage(t *testing.T) {
+	totals := anthropicUsageTotals{}
+
+	collectAnthropicUsage(`data: {"type":"message_start","message":{"usage":{"input_tokens":1000,"cache_read_input_tokens":800,"cache_creation_input_tokens":50}}}`, &totals)
+	collectAnthropicUsage(`data: {"type":"message_delta","usage":{"output_tokens":200}}`, &totals)
+
+	if !totals.seen {
+		t.Fatal("usage not seen")
+	}
+	if totals.input != 1000 {
+		t.Errorf("input = %d", totals.input)
+	}
+	if totals.output != 200 {
+		t.Errorf("output = %d", totals.output)
+	}
+	if totals.cacheRead != 800 {
+		t.Errorf("cacheRead = %d", totals.cacheRead)
+	}
+	if totals.cacheWrite != 50 {
+		t.Errorf("cacheWrite = %d", totals.cacheWrite)
+	}
+}
+
+func TestBuildFakeModelEntry(t *testing.T) {
+	m := storage.CustomModel{
+		DisplayName:       "测试模型",
+		Description:       "test",
+		ExternalModelName: "claude-fable-5",
+	}
+	placeholder := getModelPlaceholder(m)
+	entry := buildFakeModelEntry(m, placeholder)
+
+	if entry["displayName"] != "测试模型" {
+		t.Errorf("displayName = %v", entry["displayName"])
+	}
+	if entry["apiProvider"] != "API_PROVIDER_GOOGLE_GEMINI" {
+		t.Errorf("apiProvider must mimic Google for IDE compatibility, got %v", entry["apiProvider"])
+	}
+	if entry["model"] != placeholder {
+		t.Errorf("model placeholder mismatch")
+	}
+	if entry["recommended"] != true {
+		t.Error("should be recommended so it surfaces in menu")
+	}
+}
+
+func TestReasoningBudget(t *testing.T) {
+	cases := map[string]int{
+		"":       0,
+		"auto":   0,
+		"low":    1024,
+		"medium": 4096,
+		"high":   8192,
+	}
+	for effort, want := range cases {
+		if got := reasoningBudget(effort); got != want {
+			t.Errorf("reasoningBudget(%q) = %d, want %d", effort, got, want)
+		}
+	}
+}
+
+func TestRetryableStatusIncludesCloudflareTimeout(t *testing.T) {
+	for _, code := range []int{429, 502, 503, 504, 524} {
+		if !isRetryableStatus(code) {
+			t.Errorf("status %d should be retryable", code)
+		}
+	}
+	for _, code := range []int{400, 401, 500} {
+		if isRetryableStatus(code) {
+			t.Errorf("status %d should not be retryable", code)
+		}
+	}
+}
+
+func TestRetryDelay(t *testing.T) {
+	if got := retryDelay(1, "2"); got != 2*time.Second {
+		t.Errorf("numeric Retry-After delay = %v", got)
+	}
+	if got := retryDelay(1, "30"); got != 10*time.Second {
+		t.Errorf("Retry-After cap = %v", got)
+	}
+	if got := retryDelay(2, ""); got != 500*time.Millisecond {
+		t.Errorf("exponential delay = %v", got)
+	}
+}
+
+func TestCleanPatchedPath(t *testing.T) {
+	cases := map[string]string{
+		"/v1internal/antigravity-byok/v1internal:streamGenerateContent": "/v1internal:streamGenerateContent",
+		"/v1internal/antigravity-byok/v1internal/cascadeNuxes":          "/v1internal/cascadeNuxes",
+		"/v1internal/byokxxx/v1internal:generateContent":                "/v1internal:generateContent",
+		"/v1internal/byokxxx/v1internal/cascadeNuxes":                   "/v1internal/cascadeNuxes",
+		"/v1internal/byokxxx-sandbox/v1internal:fetchAvailableModels":   "/v1internal:fetchAvailableModels",
+		"/v1internal/byokxxx-sandbox/v1internal/cascadeNuxes":           "/v1internal/cascadeNuxes",
+		"/v1internal/xxxxxxxxxxxx/v1internal:fetchAvailableModels":      "/v1internal:fetchAvailableModels",
+		"/v1internal:retrieveUserQuota":                                 "/v1internal:retrieveUserQuota",
+	}
+	for input, want := range cases {
+		if got := cleanPatchedPath(input); got != want {
+			t.Errorf("cleanPatchedPath(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
