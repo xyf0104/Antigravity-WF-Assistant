@@ -1,8 +1,8 @@
-# Antigravity WF助手 Windows x64 v1.3.3
+# Antigravity WF助手 Windows x64 v1.3.4
 
 ## 安装
 
-1. 双击 `Antigravity-WF-Assistant-Windows-x64-v1.3.3-Setup.exe`。
+1. 双击 `Antigravity-WF-Assistant-Windows-x64-v1.3.4-Setup.exe`。
 2. 在“选择组件”页按需要勾选“在桌面创建快捷方式”，然后完成安装并从开始菜单或桌面打开“Antigravity WF助手”。
 3. 安装器默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Antigravity WF助手`，安装助手本身不需要管理员权限。
 
@@ -32,7 +32,7 @@
 - 右上角可选“浅色”、“深色”或“跟随系统”。
 - 模型、凭据、统计和备份保存在 `%USERPROFILE%\.antigravity-byok\`，旧目录名为兼容现有数据而保留。
 - 可在 Windows “设置 → 应用”或开始菜单的卸载入口删除助手。
-- 点击窗口右上角关闭按钮时，助手只会最小化到任务栏，代理与历史同步继续运行。需要完全退出并释放 `127.0.0.1:50999` 时，使用左侧栏底部的电源按钮并确认“退出助手”。
+- 点击窗口右上角关闭按钮时，助手只会最小化到任务栏，代理与历史同步继续运行。右下角 WF 托盘图标的菜单可“打开主界面”或“退出 Antigravity WF助手”；退出后会释放 `127.0.0.1:50999`。
 
 ## 提醒
 

@@ -20,5 +20,12 @@ if [[ -e "$SHORTCUT_PATH" || -L "$SHORTCUT_PATH" ]]; then
   exit 0
 fi
 
-/bin/ln -s "/Applications/Antigravity WF助手.app" "$SHORTCUT_PATH"
+APP_PATH="/Applications/Antigravity WF助手.app"
+if [[ ! -d "$APP_PATH" ]]; then
+  # Never create an unusable desktop entry if the application payload was not
+  # installed successfully. The main package must complete before this script.
+  exit 0
+fi
+
+/bin/ln -s "$APP_PATH" "$SHORTCUT_PATH"
 /usr/sbin/chown -h "$CONSOLE_USER":staff "$SHORTCUT_PATH" 2>/dev/null || true

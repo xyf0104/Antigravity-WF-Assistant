@@ -1,10 +1,9 @@
-# Antigravity WF助手 macOS v1.3.3
+# Antigravity WF助手 macOS v1.3.4
 
 ## 安装
 
-1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.3.3-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
-2. 也可双击 `Antigravity-WF-Assistant-macOS-universal-v1.3.3.dmg`，将 `Antigravity WF助手.app` 拖到 `Applications` 文件夹。
-3. 首次打开如果 macOS 显示开发者提示，请在 Finder 中右键 App，选择“打开”。
+1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.3.4-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
+2. 首次打开如果 macOS 显示开发者提示，请在 Finder 中右键 App，选择“打开”。
 
 App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时不需要 Python、Node.js 或外置补丁脚本。
 
@@ -28,7 +27,7 @@ App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时�
 - 右上角可选“浅色”、“深色”或“跟随系统”。
 - 模型、凭据、统计和备份继续保存在 `~/.antigravity-byok/`，这个旧目录名为兼容现有数据而保留。
 - 历史会话使用 `~/.gemini/antigravity/`；合并时只补充缺失文件，不覆盖现有会话。
-- 点击窗口左上角关闭按钮时，助手只会最小化到 Dock，代理与历史同步继续运行。需要完全退出并释放 `127.0.0.1:50999` 时，使用左侧栏底部的电源按钮并确认“退出助手”。
+- 点击窗口左上角关闭按钮时，助手只会最小化到 Dock，代理与历史同步继续运行。顶部菜单栏的 WF 图标可“打开主界面”或“退出 Antigravity WF助手”；退出后会释放 `127.0.0.1:50999`。
 
 ## 提醒
 

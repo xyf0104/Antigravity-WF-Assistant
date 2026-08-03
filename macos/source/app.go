@@ -49,6 +49,7 @@ func newApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.startTray()
 	if err := proxy.Start(a.storageDir); err != nil {
 		log.Printf("[wf] 代理启动失败: %v", err)
 	}
@@ -56,6 +57,7 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.stopTray()
 	_ = proxy.Stop()
 }
 
@@ -80,8 +82,7 @@ func (a *App) QuitApp() Result {
 	if a.ctx == nil {
 		return Result{OK: false, Message: "助手尚未完成启动，请稍后再试。"}
 	}
-	a.exitRequested.Store(true)
-	runtime.Quit(a.ctx)
+	a.requestQuit()
 	return Result{OK: true, Message: "正在退出助手并释放本地代理端口。"}
 }
 

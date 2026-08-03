@@ -28,7 +28,7 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 - 模型配置支持自定义显示名、上游模型名、API 地址、API Key、协议和推理等级；显示名留空时自动使用上游模型名。
 - 支持浅色、深色和跟随系统主题。
 - 提供“应用全部补丁”“仅 IDE 补丁”“恢复原始文件”三项操作，并在修改前创建本地备份。
-- 启动时安全合并历史会话；关闭窗口时最小化到 Dock 或任务栏，选择退出后释放本地端口。
+- 启动时安全合并历史会话；关闭窗口后继续驻留：Windows 右下角托盘、macOS 顶部菜单栏均可打开主界面或退出；选择退出后释放本地端口。
 - 可设置终端命令的自动批准范围；请只在完全可信的工作区和指令来源中启用。
 
 ## 下载
@@ -37,10 +37,10 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 
 | 系统 | 推荐下载 | 说明 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.3-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
-| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.3.3-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.4-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
+| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.3.4-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
 
-发布页还提供 macOS DMG、macOS ZIP、Windows 便携版和 `SHA256SUMS.txt` 供校验文件完整性。
+发布页仅提供以上两个标准安装包及 `SHA256SUMS.txt`，用于校验文件完整性。
 
 ## 使用方法
 

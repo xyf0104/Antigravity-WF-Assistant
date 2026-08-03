@@ -18,11 +18,20 @@ WORK_DIR="$(mktemp -d -t antigravity-wf-package)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 APP_ROOT="$WORK_DIR/root"
 PKG_DIR="$WORK_DIR/packages"
+COMPONENT_PLIST="$WORK_DIR/components.plist"
 mkdir -p "$APP_ROOT/Applications" "$PKG_DIR" "$(dirname "$OUTPUT_PATH")"
 ditto "$APP_PATH" "$APP_ROOT/Applications/Antigravity WF助手.app"
 
+# pkgbuild marks application bundles as relocatable by default. That makes
+# Installer search Spotlight for another bundle with the same identifier and
+# install there instead of /Applications, which also leaves a desktop link
+# pointing at a missing app. Explicitly disable relocation for this product.
+pkgbuild --analyze --root "$APP_ROOT" "$COMPONENT_PLIST"
+/usr/libexec/PlistBuddy -c 'Set :0:BundleIsRelocatable false' "$COMPONENT_PLIST"
+
 pkgbuild \
   --root "$APP_ROOT" \
+  --component-plist "$COMPONENT_PLIST" \
   --identifier "com.wufeng.antigravity-wf-assistant" \
   --version "$VERSION" \
   --install-location "/" \
