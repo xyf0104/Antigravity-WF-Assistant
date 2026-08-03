@@ -1,9 +1,9 @@
-# Antigravity WF助手 macOS v1.3.2
+# Antigravity WF助手 macOS v1.3.3
 
 ## 安装
 
-1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.3.2-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
-2. 也可双击 `Antigravity-WF-Assistant-macOS-universal-v1.3.2.dmg`，将 `Antigravity WF助手.app` 拖到 `Applications` 文件夹。
+1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.3.3-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
+2. 也可双击 `Antigravity-WF-Assistant-macOS-universal-v1.3.3.dmg`，将 `Antigravity WF助手.app` 拖到 `Applications` 文件夹。
 3. 首次打开如果 macOS 显示开发者提示，请在 Finder 中右键 App，选择“打开”。
 
 App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时不需要 Python、Node.js 或外置补丁脚本。
