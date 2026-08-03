@@ -32,10 +32,23 @@ const (
 var (
 	placeholderMu         sync.RWMutex
 	allocatedPlaceholders = map[string]string{}
+	slugMu                sync.RWMutex
+	allocatedSlugs        = map[string]string{}
 )
 
 // getModelSlug returns a stable routing slug for a model.
 func getModelSlug(m storage.CustomModel) string {
+	key := modelPlaceholderKey(m)
+	slugMu.RLock()
+	slug := allocatedSlugs[key]
+	slugMu.RUnlock()
+	if slug != "" {
+		return slug
+	}
+	return baseModelSlug(m)
+}
+
+func baseModelSlug(m storage.CustomModel) string {
 	src := m.ExternalModelName
 	if src == "" {
 		src = m.Name
@@ -153,7 +166,8 @@ func buildFakeModelEntry(m storage.CustomModel, placeholder string) map[string]a
 		"supportsCumulativeContext":    true,
 		"supportsEstimateTokenCounter": true,
 		"supportsImages":               capabilities.SupportsImages,
-		"supportsVideo":                capabilities.SupportsVideo,
+		"supportsAudio":                false,
+		"supportsVideo":                false,
 		"supportsFiles":                capabilities.SupportsFiles,
 		"supportsToolCalls":            capabilities.SupportsToolCalls,
 		"supportsThinking":             capabilities.SupportsThinking,
@@ -170,7 +184,7 @@ func buildFakeModelEntry(m storage.CustomModel, placeholder string) map[string]a
 }
 
 // handleFetchAvailableModels proxies fetchAvailableModels and injects custom models.
-func handleFetchAvailableModels(w http.ResponseWriter, r *http.Request) {
+func handleFetchAvailableModelsLegacy(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -338,7 +352,8 @@ func findModel(modelID string) *storage.CustomModel {
 		slug := getModelSlug(m)
 		placeholder := getModelPlaceholder(m)
 		if modelID == m.Name || modelID == m.ExternalModelName ||
-			modelID == slug || modelID == placeholder ||
+			modelID == slug || modelID == "models/"+slug || modelID == placeholder ||
+			modelID == "models/"+placeholder ||
 			modelID == strings.TrimPrefix(m.Name, "models/") {
 			mc := m
 			return &mc
@@ -370,6 +385,7 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	}
 
 	requestID, _ := req["requestId"].(string)
+	generationRequestID := requestID
 	if requestID == "" {
 		requestID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
@@ -391,6 +407,24 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	if geminiReq == nil {
 		geminiReq = req
 	}
+	// The IDE can address the same saved custom model through its display name,
+	// slug or placeholder. Guard the canonical saved name so an overlapping
+	// retry using another alias cannot create a second upstream generation.
+	guardModelID := modelID
+	if customModel.Name != "" {
+		guardModelID = customModel.Name
+	} else if customModel.ExternalModelName != "" {
+		guardModelID = customModel.ExternalModelName
+	}
+	releaseGeneration, accepted := reserveGeneration(guardModelID, generationRequestID, geminiReq)
+	if !accepted {
+		trace("generation-duplicate-suppressed", map[string]any{
+			"requestId": requestID, "model": modelID,
+		})
+		http.Error(w, "相同请求仍在处理中，已阻止重复上游调用", http.StatusConflict)
+		return
+	}
+	defer releaseGeneration()
 
 	if customModel.Provider == "anthropic" {
 		forwardAnthropic(w, r, customModel, geminiReq, requestID)
@@ -399,21 +433,182 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	}
 }
 
-// forwardOpenAI chooses the richest configured API surface. Chat Completions
-// remains the compatibility default; automatic mode promotes requests with a
-// file, web-search or image-generation capability to Responses and falls back
-// only when that endpoint itself is unavailable.
+// forwardOpenAI chooses the configured API surface. In automatic mode Chat
+// Completions is deliberately the default: advertising a feature in the model
+// picker must not silently attach hosted web/image tools to every ordinary
+// chat turn. Responses is selected only for an actual attachment or an
+// explicit native/locally requested Responses feature.
 func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
 	config := upstream.ConfigFromModel(*m)
 	style := upstream.EffectiveAPIStyle(config)
-	capabilities := storage.EffectiveCapabilities(*m)
-	needsResponses := hasGeminiAttachment(geminiReq) || capabilities.SupportsWebSearch || capabilities.SupportsImageGeneration
+	needsResponses := requiresOpenAIResponses(geminiReq)
 	if style == "responses" || (style == "auto" && needsResponses) {
 		if fallback := forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, style == "auto"); !fallback {
 			return
 		}
 	}
 	forwardOpenAIChat(w, incoming, m, geminiReq, requestID)
+}
+
+func requiresOpenAIResponses(gemini map[string]any) bool {
+	if hasGeminiAttachment(gemini) {
+		return true
+	}
+	if len(requestedResponsesBuiltinTools(gemini)) > 0 {
+		return true
+	}
+	if explicitResponsesFeatureMap(gemini) {
+		return true
+	}
+	for _, key := range []string{"generationConfig", "toolConfig", "responseConfig", "wfConfig"} {
+		if config, ok := gemini[key].(map[string]any); ok && explicitResponsesFeatureMap(config) {
+			return true
+		}
+	}
+	return nativeResponsesToolRequested(gemini["tools"])
+}
+
+// requestedResponsesBuiltinTools identifies a concrete request to invoke a
+// hosted Responses tool. It intentionally does not infer intent from a model
+// capability or user prompt text: capabilities are only advertised to the
+// IDE, while every outbound hosted tool must be requested by this turn.
+func requestedResponsesBuiltinTools(gemini map[string]any) map[string]struct{} {
+	requested := make(map[string]struct{}, 2)
+	collectRequestedResponsesBuiltinTools(gemini, requested)
+	for _, key := range []string{"generationConfig", "toolConfig", "responseConfig", "wfConfig"} {
+		if config, ok := gemini[key].(map[string]any); ok {
+			collectRequestedResponsesBuiltinTools(config, requested)
+		}
+	}
+	collectRequestedNativeResponsesTools(gemini["tools"], requested)
+	return requested
+}
+
+func collectRequestedResponsesBuiltinTools(config map[string]any, requested map[string]struct{}) {
+	for key, value := range config {
+		switch normalisedResponsesFeatureKey(key) {
+		case "websearch", "websearchretrieval", "googlesearch", "googlesearchretrieval", "urlcontext":
+			if responseFeatureEnabled(value) {
+				requested[responseWebSearchTool] = struct{}{}
+			}
+		case "imagegeneration", "imagegenerationconfig", "imagegen":
+			if responseFeatureEnabled(value) {
+				requested[responseImageGenerationTool] = struct{}{}
+			}
+		case "responsemodalities", "modalities":
+			if responseOutputMediaRequested(value) {
+				requested[responseImageGenerationTool] = struct{}{}
+			}
+		}
+	}
+}
+
+func collectRequestedNativeResponsesTools(raw any, requested map[string]struct{}) {
+	tools, _ := raw.([]any)
+	for _, rawTool := range tools {
+		tool, _ := rawTool.(map[string]any)
+		if tool == nil {
+			continue
+		}
+		collectRequestedResponsesBuiltinTools(tool, requested)
+		switch normalisedResponsesFeatureKey(getString(tool, "type")) {
+		case "websearch", "websearchpreview", "websearchretrieval", "googlesearch", "googlesearchretrieval", "urlcontext":
+			requested[responseWebSearchTool] = struct{}{}
+		case "imagegeneration", "imagegen":
+			requested[responseImageGenerationTool] = struct{}{}
+		}
+	}
+}
+
+// explicitResponsesFeatureMap accepts the small set of explicit feature
+// fields emitted by native clients and our own local integration. It does not
+// inspect free text or function declaration names, so a normal IDE terminal
+// tool schema still uses the lower-cost Chat Completions path.
+func explicitResponsesFeatureMap(config map[string]any) bool {
+	for key, value := range config {
+		switch normalisedResponsesFeatureKey(key) {
+		case "wfuseresponses", "useresponses", "responsesapi", "responseapi":
+			if responseFeatureEnabled(value) {
+				return true
+			}
+		case "websearch", "websearchretrieval", "googlesearch", "googlesearchretrieval", "urlcontext",
+			"imagegeneration", "imagegenerationconfig", "imagegen":
+			if responseFeatureEnabled(value) {
+				return true
+			}
+		case "responsemodalities", "modalities":
+			if responseOutputMediaRequested(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nativeResponsesToolRequested(raw any) bool {
+	requested := make(map[string]struct{}, 2)
+	collectRequestedNativeResponsesTools(raw, requested)
+	return len(requested) > 0
+}
+
+func normalisedResponsesFeatureKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.NewReplacer("_", "", "-", "", " ", "").Replace(key)
+	return key
+}
+
+func isNativeResponsesToolType(kind string) bool {
+	switch normalisedResponsesFeatureKey(kind) {
+	case "websearch", "websearchpreview", "websearchretrieval", "googlesearch", "googlesearchretrieval",
+		"urlcontext", "imagegeneration", "imagegen":
+		return true
+	default:
+		return false
+	}
+}
+
+func responseFeatureEnabled(value any) bool {
+	switch value := value.(type) {
+	case nil:
+		return false
+	case bool:
+		return value
+	case string:
+		value = strings.ToLower(strings.TrimSpace(value))
+		return value != "" && value != "false" && value != "none" && value != "disabled" && value != "off"
+	case []any:
+		return len(value) > 0
+	case map[string]any:
+		// Native Gemini tool declarations commonly use an empty object, for
+		// example {"googleSearch": {}}. The field's presence is the request.
+		return true
+	default:
+		return true
+	}
+}
+
+func responseOutputMediaRequested(value any) bool {
+	var visit func(any) bool
+	visit = func(current any) bool {
+		switch current := current.(type) {
+		case string:
+			return strings.Contains(strings.ToLower(current), "image")
+		case []any:
+			for _, item := range current {
+				if visit(item) {
+					return true
+				}
+			}
+		case map[string]any:
+			for _, item := range current {
+				if visit(item) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return visit(value)
 }
 
 func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
@@ -436,8 +631,6 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 	writer := newDownstreamSSEWriter(w)
 	client := &http.Client{Timeout: upstreamStreamTimeout}
 	requestBody := baseRequest
-	emittedText := ""
-	outputDelivered := false
 	lastModelVersion, lastResponseID := "", ""
 	reconnects := 0
 	cacheFallbackUsed := false
@@ -491,19 +684,10 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 			releaseAttemptFailure(lease, 0, "", err.Error())
 			excludeFailedAttempt(excludedAccounts, lease)
 			trace("openai-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
-			reconnects++
-			if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, "network", "", reconnects) {
-				requestBody = baseRequest
-				continue
-			}
 			if incoming.Context().Err() != nil {
 				return
 			}
-			if writer.committed {
-				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
-				return
-			}
-			http.Error(w, "无法连接上游："+err.Error(), http.StatusBadGateway)
+			writeUncertainUpstreamFailure(writer, "openai", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
 			return
 		}
 
@@ -516,7 +700,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 				"statusCode": resp.StatusCode,
 				"body":       string(errBody[:min(len(errBody), 500)]),
 			})
-			if cacheEnabled && !cacheFallbackUsed && canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+			if cacheEnabled && !cacheFallbackUsed && !writer.committed && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
 				releaseAttemptSuccess(lease)
 				rememberUnsupportedPromptCache("openai", m)
 				stripOpenAIPromptCaching(baseRequest)
@@ -532,10 +716,12 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 				releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
 				excludeFailedAttempt(excludedAccounts, lease)
 				reconnects++
-				if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
+				if canRetryRejectedRequest(writer, policy, reconnects) && waitForRejectedRequestRetry(incoming.Context(), policy, "openai", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
 					requestBody = baseRequest
 					continue
 				}
+				returnRejectedUpstreamError(w, resp.StatusCode, errBody)
+				return
 			}
 			releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
 			if incoming.Context().Err() != nil {
@@ -559,37 +745,20 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 		if outcome.modelVersion != "" {
 			lastModelVersion = outcome.modelVersion
 		}
-		if outcome.emittedText != "" {
-			emittedText += outcome.emittedText
-		}
-		if outcome.wroteEvent {
-			outputDelivered = true
-		}
 		if outcome.finished {
 			releaseAttemptSuccess(lease)
 			return
 		}
-		if outcome.unsafeOutput {
-			releaseAttemptSuccess(lease)
-			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
-			return
-		}
-
-		reconnects++
 		reason := "incomplete-stream"
 		if outcome.err != nil {
 			reason = outcome.err.Error()
 		}
 		releaseAttemptFailure(lease, 0, "", reason)
 		excludeFailedAttempt(excludedAccounts, lease)
-		if canRetryStreamWithoutContinuation(emittedText, outputDelivered, outcome.unsafeOutput) && waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, reason, "", reconnects) {
-			requestBody = baseRequest
-			continue
-		}
 		if incoming.Context().Err() != nil {
 			return
 		}
-		writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+		writeUncertainUpstreamFailure(writer, "openai", requestID, lastModelVersion, lastResponseID, reconnects, outcome.unsafeOutput, "上游流未正常完成："+reason)
 		return
 	}
 }
@@ -612,9 +781,6 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 	policy := currentStreamRecoveryPolicy()
 	writer := newDownstreamSSEWriter(w)
 	client := &http.Client{Timeout: upstreamStreamTimeout}
-	requestBody := baseRequest
-	emittedText := ""
-	outputDelivered := false
 	lastModelVersion, lastResponseID := "", ""
 	reconnects := 0
 	excludedAccounts := map[string]struct{}{}
@@ -636,6 +802,15 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 			releaseAttemptSuccess(lease)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return false
+		}
+		// Compatibility is scoped to the selected account/endpoint. A pooled
+		// account which rejects hosted tools must not disable them for another
+		// account that may support them.
+		requestBody, suppressedBuiltinTools := responseRequestForModel(baseRequest, attemptModel)
+		if len(suppressedBuiltinTools) > 0 {
+			trace("responses-builtin-tools-suppressed", map[string]any{
+				"requestId": requestID, "tools": suppressedBuiltinTools,
+			})
 		}
 		body, _ := json.Marshal(requestBody)
 		trace("responses-upstream-request", map[string]any{"requestId": requestID, "attempt": attempt, "accountId": func() string {
@@ -661,19 +836,10 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 			releaseAttemptFailure(lease, 0, "", err.Error())
 			excludeFailedAttempt(excludedAccounts, lease)
 			trace("responses-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
-			reconnects++
-			if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, "network", "", reconnects) {
-				requestBody = baseRequest
-				continue
-			}
 			if incoming.Context().Err() != nil {
 				return false
 			}
-			if writer.committed {
-				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
-				return false
-			}
-			http.Error(w, "无法连接上游："+err.Error(), http.StatusBadGateway)
+			writeUncertainUpstreamFailure(writer, "responses", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
 			return false
 		}
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
@@ -681,7 +847,18 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 			resp.Body.Close()
 			retryAfter := resp.Header.Get("Retry-After")
 			trace("responses-upstream-error-response", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode, "body": string(errBody[:min(len(errBody), 500)])})
-			if allowFallback && !writer.committed && emittedText == "" && upstream.CanFallbackToChat(resp.StatusCode) {
+			if rejectedTools := rejectedResponsesBuiltinTools(resp.StatusCode, string(errBody), requestBody); len(rejectedTools) > 0 && !writer.committed {
+				// A concrete 4xx validation response proves this request did not
+				// begin a generation. It is therefore safe to retry once with
+				// only the rejected optional hosted tools removed.
+				releaseAttemptSuccess(lease)
+				rememberUnsupportedResponsesBuiltinTools(attemptModel, rejectedTools)
+				trace("responses-builtin-tools-fallback", map[string]any{
+					"requestId": requestID, "statusCode": resp.StatusCode, "tools": responseBuiltinToolNames(rejectedTools),
+				})
+				continue
+			}
+			if allowFallback && !writer.committed && upstream.CanFallbackToChat(resp.StatusCode) {
 				releaseAttemptSuccess(lease)
 				trace("responses-chat-fallback", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode})
 				return true
@@ -690,10 +867,11 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 				releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
 				excludeFailedAttempt(excludedAccounts, lease)
 				reconnects++
-				if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
-					requestBody = baseRequest
+				if canRetryRejectedRequest(writer, policy, reconnects) && waitForRejectedRequestRetry(incoming.Context(), policy, "responses", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
 					continue
 				}
+				returnRejectedUpstreamError(w, resp.StatusCode, errBody)
+				return false
 			}
 			releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
 			if incoming.Context().Err() != nil {
@@ -717,37 +895,20 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 		if outcome.modelVersion != "" {
 			lastModelVersion = outcome.modelVersion
 		}
-		if outcome.emittedText != "" {
-			emittedText += outcome.emittedText
-		}
-		if outcome.wroteEvent {
-			outputDelivered = true
-		}
 		if outcome.finished {
 			releaseAttemptSuccess(lease)
 			return false
 		}
-		if outcome.unsafeOutput {
-			releaseAttemptSuccess(lease)
-			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
-			return false
-		}
-
-		reconnects++
 		reason := "incomplete-stream"
 		if outcome.err != nil {
 			reason = outcome.err.Error()
 		}
 		releaseAttemptFailure(lease, 0, "", reason)
 		excludeFailedAttempt(excludedAccounts, lease)
-		if canRetryStreamWithoutContinuation(emittedText, outputDelivered, outcome.unsafeOutput) && waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, reason, "", reconnects) {
-			requestBody = baseRequest
-			continue
-		}
 		if incoming.Context().Err() != nil {
 			return false
 		}
-		writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+		writeUncertainUpstreamFailure(writer, "responses", requestID, lastModelVersion, lastResponseID, reconnects, outcome.unsafeOutput, "上游流未正常完成："+reason)
 		return false
 	}
 }
@@ -910,8 +1071,6 @@ func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.
 	writer := newDownstreamSSEWriter(w)
 	client := &http.Client{Timeout: upstreamStreamTimeout}
 	requestBody := baseRequest
-	emittedText := ""
-	outputDelivered := false
 	lastModelVersion, lastResponseID := "", ""
 	reconnects := 0
 	cacheFallbackUsed := false
@@ -971,19 +1130,10 @@ attemptLoop:
 				releaseAttemptFailure(lease, 0, "", err.Error())
 				excludeFailedAttempt(excludedAccounts, lease)
 				trace("anthropic-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
-				reconnects++
-				if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, "network", "", reconnects) {
-					requestBody = baseRequest
-					continue attemptLoop
-				}
 				if incoming.Context().Err() != nil {
 					return
 				}
-				if writer.committed {
-					writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
-					return
-				}
-				http.Error(w, "无法连接上游："+err.Error(), http.StatusBadGateway)
+				writeUncertainUpstreamFailure(writer, "anthropic", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
 				return
 			}
 
@@ -999,7 +1149,7 @@ attemptLoop:
 					trace("anthropic-compatible-endpoint-fallback", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode})
 					continue
 				}
-				if cacheEnabled && !cacheFallbackUsed && canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+				if cacheEnabled && !cacheFallbackUsed && !writer.committed && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
 					releaseAttemptSuccess(lease)
 					rememberUnsupportedPromptCache("anthropic", m)
 					stripAnthropicPromptCaching(baseRequest)
@@ -1013,10 +1163,12 @@ attemptLoop:
 					releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
 					excludeFailedAttempt(excludedAccounts, lease)
 					reconnects++
-					if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
+					if canRetryRejectedRequest(writer, policy, reconnects) && waitForRejectedRequestRetry(incoming.Context(), policy, "anthropic", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
 						requestBody = baseRequest
 						continue attemptLoop
 					}
+					returnRejectedUpstreamError(w, resp.StatusCode, errBody)
+					return
 				}
 				releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
 				if incoming.Context().Err() != nil {
@@ -1040,37 +1192,20 @@ attemptLoop:
 			if outcome.modelVersion != "" {
 				lastModelVersion = outcome.modelVersion
 			}
-			if outcome.emittedText != "" {
-				emittedText += outcome.emittedText
-			}
-			if outcome.wroteEvent {
-				outputDelivered = true
-			}
 			if outcome.finished {
 				releaseAttemptSuccess(lease)
 				return
 			}
-			if outcome.unsafeOutput {
-				releaseAttemptSuccess(lease)
-				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
-				return
-			}
-
-			reconnects++
 			reason := "incomplete-stream"
 			if outcome.err != nil {
 				reason = outcome.err.Error()
 			}
 			releaseAttemptFailure(lease, 0, "", reason)
 			excludeFailedAttempt(excludedAccounts, lease)
-			if canRetryStreamWithoutContinuation(emittedText, outputDelivered, outcome.unsafeOutput) && waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, reason, "", reconnects) {
-				requestBody = baseRequest
-				continue attemptLoop
-			}
 			if incoming.Context().Err() != nil {
 				return
 			}
-			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+			writeUncertainUpstreamFailure(writer, "anthropic", requestID, lastModelVersion, lastResponseID, reconnects, outcome.unsafeOutput, "上游流未正常完成："+reason)
 			return
 		}
 	}
@@ -1448,6 +1583,7 @@ func streamOpenAIAttempt(writer *downstreamSSEWriter, resp *http.Response, reque
 	outcome.finished = state.finished || state.done
 	outcome.emittedText = state.emittedText.String()
 	outcome.unsafeOutput = state.unsafeOutput
+	outcome.upstreamStarted = state.upstreamStarted
 	outcome.responseID = state.responseID
 	outcome.modelVersion = state.modelVersion
 	if state.usage != nil {
@@ -1482,9 +1618,17 @@ func streamOpenAIResponsesAttempt(writer *downstreamSSEWriter, resp *http.Respon
 		outcome.err = err
 		trace("responses-stream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error(), "downstreamCommitted": writer.committed})
 	}
-	outcome.finished = state.finished
+	if state.done && !state.finished {
+		// A number of OpenAI-compatible Responses gateways terminate with the
+		// generic [DONE] marker instead of response.completed. Convert it into
+		// Antigravity's terminal event so the client never waits forever.
+		writer.write(responsesFinishEvent("STOP", &state))
+		outcome.wroteEvent = true
+	}
+	outcome.finished = state.finished || state.done
 	outcome.emittedText = state.emittedText.String()
 	outcome.unsafeOutput = state.unsafeOutput
+	outcome.upstreamStarted = state.upstreamStarted
 	outcome.responseID = state.responseID
 	outcome.modelVersion = state.modelVersion
 	if state.usage != nil {
@@ -1525,6 +1669,7 @@ func streamAnthropicAttempt(writer *downstreamSSEWriter, resp *http.Response, re
 	outcome.finished = state.finished
 	outcome.emittedText = state.emittedText.String()
 	outcome.unsafeOutput = state.unsafeOutput
+	outcome.upstreamStarted = state.upstreamStarted
 	outcome.responseID = state.responseID
 	outcome.modelVersion = state.modelVersion
 	if totals.seen {

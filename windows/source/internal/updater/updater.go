@@ -23,7 +23,7 @@ import (
 
 const (
 	Repository     = "xyf0104/Antigravity-WF-Assistant"
-	CurrentVersion = "1.4.0"
+	CurrentVersion = "1.4.1"
 	maxAssetBytes  = int64(2 << 30) // installers are normally tens of MB
 )
 

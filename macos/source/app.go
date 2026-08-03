@@ -118,17 +118,29 @@ type Result struct {
 }
 
 type PatchStatus struct {
-	AgentPatched   bool                `json:"agentPatched"`
-	IDEPatched     bool                `json:"idePatched"`
-	ProxyListening bool                `json:"proxyListening"`
-	ProxyManaged   bool                `json:"proxyManaged"`
-	ProxyOwned     bool                `json:"proxyOwned"`
-	AsarPath       string              `json:"asarPath"`
-	LSPath         string              `json:"lsPath"`
-	IDEExtension   string              `json:"ideExtension"`
-	IDELS          string              `json:"ideLS"`
-	Log            string              `json:"log"`
-	Targets        []PatchTargetStatus `json:"targets"`
+	AgentPatched           bool                `json:"agentPatched"`
+	IDEPatched             bool                `json:"idePatched"`
+	ProxyListening         bool                `json:"proxyListening"`
+	ProxyManaged           bool                `json:"proxyManaged"`
+	ProxyOwned             bool                `json:"proxyOwned"`
+	LastRequestAt          string              `json:"lastRequestAt"`
+	LastRequestPath        string              `json:"lastRequestPath"`
+	LastModelFetchAt       string              `json:"lastModelFetchAt"`
+	LastModelInjectionAt   string              `json:"lastModelInjectionAt"`
+	LastInjectedModelCount int                 `json:"lastInjectedModelCount"`
+	LastInjectedModelNames []string            `json:"lastInjectedModelNames"`
+	LastInjectedModelSlugs []string            `json:"lastInjectedModelSlugs"`
+	LastModelShape         string              `json:"lastModelShape"`
+	LastModelIndexes       string              `json:"lastModelIndexes"`
+	LastModelStatusCode    int                 `json:"lastModelStatusCode"`
+	LastModelEncoding      string              `json:"lastModelEncoding"`
+	LastError              string              `json:"lastError"`
+	AsarPath               string              `json:"asarPath"`
+	LSPath                 string              `json:"lsPath"`
+	IDEExtension           string              `json:"ideExtension"`
+	IDELS                  string              `json:"ideLS"`
+	Log                    string              `json:"log"`
+	Targets                []PatchTargetStatus `json:"targets"`
 }
 
 type PatchTargetStatus struct {
@@ -595,6 +607,7 @@ func (a *App) DeleteModel(name string) Result {
 
 func (a *App) GetPatchStatus() PatchStatus {
 	s := patcher.GetStatus()
+	diagnostics := proxy.GetDiagnostics()
 	agentPatched := s.AgentPatched != nil && *s.AgentPatched
 	idePatched := s.IDEPatched != nil && *s.IDEPatched
 	targets := make([]PatchTargetStatus, 0, len(s.Targets))
@@ -611,16 +624,28 @@ func (a *App) GetPatchStatus() PatchStatus {
 		})
 	}
 	return PatchStatus{
-		AgentPatched:   agentPatched,
-		IDEPatched:     idePatched,
-		ProxyListening: proxy.IsListening(),
-		ProxyManaged:   proxy.IsManagedListener(),
-		ProxyOwned:     proxy.OwnsListener(),
-		AsarPath:       s.AsarPath,
-		LSPath:         s.LSPath,
-		IDEExtension:   s.IDEExtensionPath,
-		IDELS:          s.IDELSPath,
-		Targets:        targets,
+		AgentPatched:           agentPatched,
+		IDEPatched:             idePatched,
+		ProxyListening:         proxy.IsListening(),
+		ProxyManaged:           proxy.IsManagedListener(),
+		ProxyOwned:             proxy.OwnsListener(),
+		LastRequestAt:          diagnostics.LastRequestAt,
+		LastRequestPath:        diagnostics.LastRequestPath,
+		LastModelFetchAt:       diagnostics.LastModelFetchAt,
+		LastModelInjectionAt:   diagnostics.LastModelInjectionAt,
+		LastInjectedModelCount: diagnostics.LastInjectedModelCount,
+		LastInjectedModelNames: diagnostics.LastInjectedModelNames,
+		LastInjectedModelSlugs: diagnostics.LastInjectedModelSlugs,
+		LastModelShape:         diagnostics.LastModelShape,
+		LastModelIndexes:       diagnostics.LastModelIndexes,
+		LastModelStatusCode:    diagnostics.LastModelStatusCode,
+		LastModelEncoding:      diagnostics.LastModelContentEncoding,
+		LastError:              diagnostics.LastError,
+		AsarPath:               s.AsarPath,
+		LSPath:                 s.LSPath,
+		IDEExtension:           s.IDEExtensionPath,
+		IDELS:                  s.IDELSPath,
+		Targets:                targets,
 	}
 }
 
@@ -682,6 +707,9 @@ func (a *App) ApplyPatch() Result {
 	if err != nil {
 		return Result{OK: false, Message: fmt.Sprintf("%s\n%s", err.Error(), out)}
 	}
+	if err := proxy.Start(a.storageDir); err != nil {
+		return Result{OK: false, Message: fmt.Sprintf("补丁已写入，但代理启动失败：%s\n%s", err.Error(), out)}
+	}
 	return Result{OK: true, Message: out}
 }
 
@@ -689,6 +717,9 @@ func (a *App) ApplyIDEPatch() Result {
 	out, err := patcher.Run("apply-ide")
 	if err != nil {
 		return Result{OK: false, Message: fmt.Sprintf("%s\n%s", err.Error(), out)}
+	}
+	if err := proxy.Start(a.storageDir); err != nil {
+		return Result{OK: false, Message: fmt.Sprintf("IDE 补丁已写入，但代理启动失败：%s\n%s", err.Error(), out)}
 	}
 	return Result{OK: true, Message: out}
 }

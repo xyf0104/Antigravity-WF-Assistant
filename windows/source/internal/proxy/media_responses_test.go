@@ -55,6 +55,8 @@ func TestResponsesKeepsGeneralFileAndTools(t *testing.T) {
 		"tools": []any{map[string]any{"functionDeclarations": []any{map[string]any{
 			"name": "read_file", "parameters": map[string]any{"type": "OBJECT", "properties": map[string]any{}},
 		}}}},
+		"webSearch":       true,
+		"imageGeneration": true,
 	}
 	model := &storage.CustomModel{Capabilities: storage.ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true}}
 	request, err := toOpenAIResponsesRequest(gemini, "gpt-test", model)
@@ -71,6 +73,48 @@ func TestResponsesKeepsGeneralFileAndTools(t *testing.T) {
 	if len(tools) != 3 || tools[1]["type"] != "web_search" || tools[2]["type"] != "image_generation" {
 		t.Fatalf("expected function, web search and image tools: %#v", tools)
 	}
+}
+
+func TestResponsesAttachmentDoesNotImplicitlyAttachHostedTools(t *testing.T) {
+	gemini := map[string]any{"contents": []any{map[string]any{
+		"role": "user", "parts": []any{inlinePart("application/pdf", "cGRm")},
+	}}}
+	model := &storage.CustomModel{Capabilities: storage.ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true}}
+	request, err := toOpenAIResponsesRequest(gemini, "gpt-test", model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := request["tools"]; sent {
+		t.Fatalf("attachment-only request unexpectedly sent hosted tools: %#v", request["tools"])
+	}
+}
+
+func TestResponsesAddsOnlyTheHostedToolRequestedByThisTurn(t *testing.T) {
+	model := &storage.CustomModel{Capabilities: storage.ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true}}
+	web, err := toOpenAIResponsesRequest(map[string]any{"webSearch": true}, "gpt-test", model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !responsesRequestHasTool(web, responseWebSearchTool) || responsesRequestHasTool(web, responseImageGenerationTool) {
+		t.Fatalf("web-search turn sent the wrong hosted tools: %#v", web["tools"])
+	}
+	image, err := toOpenAIResponsesRequest(map[string]any{"imageGeneration": true}, "gpt-test", model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if responsesRequestHasTool(image, responseWebSearchTool) || !responsesRequestHasTool(image, responseImageGenerationTool) {
+		t.Fatalf("image-generation turn sent the wrong hosted tools: %#v", image["tools"])
+	}
+}
+
+func responsesRequestHasTool(request map[string]any, wanted string) bool {
+	tools, _ := request["tools"].([]map[string]any)
+	for _, tool := range tools {
+		if kind, _ := tool["type"].(string); kind == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func TestResponsesStreamTextAndImage(t *testing.T) {
@@ -93,5 +137,20 @@ func TestResponsesStreamTextAndImage(t *testing.T) {
 	finish := envelope["response"].(map[string]any)["candidates"].([]any)[0].(map[string]any)["finishReason"]
 	if finish != "STOP" {
 		t.Fatalf("expected STOP, got %#v", finish)
+	}
+}
+
+func TestResponsesCompletedOnlyTextIsForwardedOnce(t *testing.T) {
+	state := &openAIResponsesStreamState{traceID: "completed-only"}
+	completed := convertOpenAIResponsesLineToGemini(`data: {"type":"response.completed","response":{"id":"resp_2","model":"gpt-test","output":[{"type":"message","content":[{"type":"output_text","text":"完整回复"}]}]}}`, state)
+	if !strings.Contains(completed, "完整回复") || !strings.Contains(completed, `"finishReason":"STOP"`) {
+		t.Fatalf("completed-only response was not converted: %s", completed)
+	}
+
+	state = &openAIResponsesStreamState{traceID: "dedupe-final"}
+	first := convertOpenAIResponsesLineToGemini(`data: {"type":"response.output_text.delta","delta":"已经"}`, state)
+	last := convertOpenAIResponsesLineToGemini(`data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"已经回复"}]}]}}`, state)
+	if !strings.Contains(first, "已经") || !strings.Contains(last, "回复") || strings.Contains(last, "已经回复") {
+		t.Fatalf("final response duplicated streamed text: first=%s last=%s", first, last)
 	}
 }

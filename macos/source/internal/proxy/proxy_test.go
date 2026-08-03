@@ -297,7 +297,7 @@ func TestConvertOpenAIToolCallAccumulation(t *testing.T) {
 	state := &openAIStreamState{}
 
 	// Tool call arrives in fragments
-	convertOpenAILineToGemini(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":"{\"pa"}}]},"finish_reason":null}]}`, state)
+	convertOpenAILineToGemini(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read_1","function":{"name":"read_file","arguments":"{\"pa"}}]},"finish_reason":null}]}`, state)
 	convertOpenAILineToGemini(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"a.txt\"}"}}]},"finish_reason":null}]}`, state)
 	out := convertOpenAILineToGemini(`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`, state)
 
@@ -309,6 +309,9 @@ func TestConvertOpenAIToolCallAccumulation(t *testing.T) {
 	fc := parts[0].(map[string]any)["functionCall"].(map[string]any)
 	if fc["name"] != "read_file" {
 		t.Errorf("function name = %v", fc["name"])
+	}
+	if fc["id"] != "call_read_1" {
+		t.Errorf("function call id = %v", fc["id"])
 	}
 	args := fc["args"].(map[string]any)
 	if args["path"] != "a.txt" {
@@ -517,9 +520,31 @@ func TestConvertAnthropicToolUse(t *testing.T) {
 	if fc["name"] != "view_file" {
 		t.Errorf("name = %v", fc["name"])
 	}
+	if fc["id"] != "toolu_1" {
+		t.Errorf("tool id = %v", fc["id"])
+	}
 	args := fc["args"].(map[string]any)
 	if args["path"] != "x.go" {
 		t.Errorf("args = %v", args)
+	}
+}
+
+func TestConvertAnthropicParallelToolUsePreservesEachID(t *testing.T) {
+	state := &anthropicStreamState{}
+	convertAnthropicLineToGemini(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_first","name":"first"}}`, state)
+	convertAnthropicLineToGemini(`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_second","name":"second"}}`, state)
+	convertAnthropicLineToGemini(`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"value\":2}"}}`, state)
+	convertAnthropicLineToGemini(`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"value\":1}"}}`, state)
+
+	second := decodeAntigravityStreamResponse(t, convertAnthropicLineToGemini(`data: {"type":"content_block_stop","index":1}`, state))
+	secondCall := second["candidates"].([]any)[0].(map[string]any)["content"].(map[string]any)["parts"].([]any)[0].(map[string]any)["functionCall"].(map[string]any)
+	if secondCall["id"] != "toolu_second" || secondCall["name"] != "second" || secondCall["args"].(map[string]any)["value"] != float64(2) {
+		t.Fatalf("second parallel tool call was corrupted: %#v", secondCall)
+	}
+	first := decodeAntigravityStreamResponse(t, convertAnthropicLineToGemini(`data: {"type":"content_block_stop","index":0}`, state))
+	firstCall := first["candidates"].([]any)[0].(map[string]any)["content"].(map[string]any)["parts"].([]any)[0].(map[string]any)["functionCall"].(map[string]any)
+	if firstCall["id"] != "toolu_first" || firstCall["name"] != "first" || firstCall["args"].(map[string]any)["value"] != float64(1) {
+		t.Fatalf("first parallel tool call was corrupted: %#v", firstCall)
 	}
 }
 
@@ -683,18 +708,52 @@ func TestForwardOpenAIChatDoesNotReplayAfterPartialStreamDisconnect(t *testing.T
 	}
 }
 
-func TestStreamRecoveryOnlyRetriesBeforeAnyDownstreamOutput(t *testing.T) {
-	if !canRetryStreamWithoutContinuation("", false, false) {
-		t.Fatal("an unstarted request should remain eligible for a safe retry")
+func TestStreamRecoveryOnlyRetriesExplicitRejectionBeforeCommit(t *testing.T) {
+	policy := streamRecoveryPolicy{enabled: true, maxAttempts: 2, maxDelaySeconds: 1}
+	writer := newDownstreamSSEWriter(httptest.NewRecorder())
+	if !canRetryRejectedRequest(writer, policy, 1) {
+		t.Fatal("an explicit rejection before downstream output should be eligible for one safe retry")
 	}
-	if canRetryStreamWithoutContinuation("", true, false) {
-		t.Fatal("a request with any downstream event must never be replayed")
+	writer.committed = true
+	if canRetryRejectedRequest(writer, policy, 1) {
+		t.Fatal("a committed stream must never be replayed")
 	}
-	if canRetryStreamWithoutContinuation("partial text", false, false) {
-		t.Fatal("a request with partial text must never be replayed")
+	writer.committed = false
+	if canRetryRejectedRequest(writer, policy, 3) {
+		t.Fatal("retry budget must be enforced")
 	}
-	if canRetryStreamWithoutContinuation("", false, true) {
-		t.Fatal("a request with a tool or attachment must never be replayed")
+	policy.enabled = false
+	if canRetryRejectedRequest(writer, policy, 1) {
+		t.Fatal("disabled recovery must not retry an upstream rejection")
+	}
+}
+
+func TestForwardOpenAIChatDoesNotReplayAfterRoleOnlyStream(t *testing.T) {
+	previous := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: previous.enabled, MaxAttempts: previous.maxAttempts, MaxDelaySeconds: previous.maxDelaySeconds})
+
+	requests := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"first\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n")
+		// A role/reasoning event proves that the upstream accepted the request,
+		// but it has no user-visible text to convert.
+	}))
+	defer upstream.Close()
+
+	model := &storage.CustomModel{Provider: "openai", APIURL: upstream.URL + "/v1", APIKey: "test-key", ExternalModelName: "gpt-test"}
+	recorder := httptest.NewRecorder()
+	forwardOpenAIChat(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil), model, map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "请回答"}}}},
+	}, "role-only")
+
+	if requests != 1 {
+		t.Fatalf("upstream requests = %d, want 1: an accepted stream must never be replayed", requests)
+	}
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 for an incomplete uncommitted stream: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

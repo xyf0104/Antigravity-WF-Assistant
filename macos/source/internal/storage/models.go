@@ -41,27 +41,21 @@ var CommonMediaMimeTypes = []string{
 var audioMimeTypes = []string{"audio/mpeg", "audio/mp4", "audio/wav", "audio/webm", "audio/ogg"}
 var videoMimeTypes = []string{"video/mp4", "video/webm", "video/quicktime"}
 
-// DefaultCapabilities is intentionally conservative for generation and web
-// search: these require an upstream API surface that not every compatible
-// endpoint implements. Image/file input, tools and thinking are enabled for
-// mainstream chat models and remain editable in the assistant UI.
+// DefaultCapabilities advertises the complete cross-provider chat surface that
+// this proxy can translate safely. The proxy may downgrade optional Responses
+// tools after a concrete upstream rejection; audio/video stay conservative
+// because OpenAI Chat, Responses and Anthropic Messages do not share a single
+// compatible wire format for those attachments.
 func DefaultCapabilities(provider, modelName string) ModelCapabilities {
 	name := strings.ToLower(strings.TrimSpace(modelName))
 	nonChat := strings.Contains(name, "embedding") || strings.Contains(name, "tts") || strings.Contains(name, "whisper")
 	capabilities := ModelCapabilities{
-		SupportsImages:    !nonChat,
-		SupportsFiles:     !nonChat,
-		SupportsToolCalls: !nonChat,
-		SupportsThinking:  !nonChat,
-	}
-	if strings.Contains(name, "gpt-image") || strings.Contains(name, "image-1") {
-		capabilities.SupportsImageGeneration = true
-	}
-	if strings.EqualFold(provider, "anthropic") {
-		// Anthropic Messages supports images/documents and tool use. Web search is
-		// intentionally opt-in because it depends on the account/model beta.
-		capabilities.SupportsImages = !nonChat
-		capabilities.SupportsFiles = !nonChat
+		SupportsImages:          !nonChat,
+		SupportsFiles:           !nonChat,
+		SupportsToolCalls:       !nonChat,
+		SupportsThinking:        !nonChat,
+		SupportsWebSearch:       !nonChat,
+		SupportsImageGeneration: !nonChat,
 	}
 	capabilities.SupportedMimeTypes = capabilityMimeTypes(capabilities)
 	return capabilities

@@ -1,2 +1,3 @@
-9e68ba46cad56f234c76b5b5b8e5605606aff06333805a5064f7837afaab98d9  Antigravity-WF-Assistant-macOS-universal-v1.4.0-Installer.pkg
-ffc98c7833538f303b63060c4421386fb2132bb5ab534d1f311033cefcdfbe65  Antigravity-WF-Assistant-Windows-x64-v1.4.0-Setup.exe
+# v1.4.1 release manifest. The Windows line is added from the Windows CI
+# artifact before publishing the GitHub Release.
+45c65dda8947dcc1f151d85e7c807b2022ee301e6aba49e8f012eefc227d8999  Antigravity-WF-Assistant-macOS-universal-v1.4.1-Installer.pkg

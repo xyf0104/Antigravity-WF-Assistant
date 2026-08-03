@@ -3,21 +3,23 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
 // ─── OpenAI translator ───────────────────────────────────────────────────────
 
 type openAIStreamState struct {
-	toolCalls    map[int]map[string]any
-	usage        map[string]any
-	traceID      string
-	responseID   string
-	modelVersion string
-	finished     bool
-	done         bool
-	emittedText  strings.Builder
-	unsafeOutput bool
+	toolCalls       map[int]map[string]any
+	usage           map[string]any
+	traceID         string
+	responseID      string
+	modelVersion    string
+	finished        bool
+	done            bool
+	upstreamStarted bool
+	emittedText     strings.Builder
+	unsafeOutput    bool
 }
 
 // toOpenAIRequest is kept for existing unit tests and callers that only need
@@ -271,6 +273,7 @@ func convertOpenAILineToGemini(line string, state *openAIStreamState) string {
 	payload = strings.TrimSpace(payload)
 	if payload == "[DONE]" {
 		state.done = true
+		state.upstreamStarted = true
 		return ""
 	}
 	if payload == "" {
@@ -281,6 +284,10 @@ func convertOpenAILineToGemini(line string, state *openAIStreamState) string {
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 		return ""
 	}
+	// A valid upstream event means the request may already have started model
+	// work, even if it only carries a role, reasoning, or usage update. Never
+	// replay such a request after the stream ends unexpectedly.
+	state.upstreamStarted = true
 	if _, failed := chunk["error"]; failed {
 		return ""
 	}
@@ -325,8 +332,11 @@ func convertOpenAILineToGemini(line string, state *openAIStreamState) string {
 		}
 		existing := state.toolCalls[idx]
 		if existing == nil {
-			existing = map[string]any{"name": "", "arguments": ""}
+			existing = map[string]any{"id": "", "name": "", "arguments": ""}
 			state.toolCalls[idx] = existing
+		}
+		if callID, ok := tc["id"].(string); ok && callID != "" {
+			existing["id"] = callID
 		}
 		if fn, ok := tc["function"].(map[string]any); ok {
 			if name, ok := fn["name"].(string); ok && name != "" {
@@ -343,17 +353,29 @@ func convertOpenAILineToGemini(line string, state *openAIStreamState) string {
 		state.finished = true
 	}
 	if finishReason == "tool_calls" || finishReason == "stop" {
-		for _, tc := range state.toolCalls {
+		indexes := make([]int, 0, len(state.toolCalls))
+		for index := range state.toolCalls {
+			indexes = append(indexes, index)
+		}
+		sort.Ints(indexes)
+		for _, index := range indexes {
+			tc := state.toolCalls[index]
+			name, _ := tc["name"].(string)
+			if name == "" {
+				continue
+			}
+			arguments, _ := tc["arguments"].(string)
 			var argsMap map[string]any
-			json.Unmarshal([]byte(tc["arguments"].(string)), &argsMap)
+			json.Unmarshal([]byte(arguments), &argsMap)
 			if argsMap == nil {
 				argsMap = map[string]any{}
 			}
+			functionCall := map[string]any{"name": name, "args": argsMap}
+			if callID, _ := tc["id"].(string); callID != "" {
+				functionCall["id"] = callID
+			}
 			parts = append(parts, map[string]any{
-				"functionCall": map[string]any{
-					"name": tc["name"],
-					"args": argsMap,
-				},
+				"functionCall": functionCall,
 			})
 			state.unsafeOutput = true
 		}

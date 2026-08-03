@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -109,10 +110,19 @@ func recoveryDelay(policy streamRecoveryPolicy, attempt int, retryAfter string) 
 	return delay
 }
 
-// waitForStreamRecovery keeps the downstream SSE connection alive while
-// waiting for a retry. It returns false if the caller disconnected or the
-// configured retry budget has been exhausted.
-func waitForStreamRecovery(ctx context.Context, writer *downstreamSSEWriter, policy streamRecoveryPolicy, provider, requestID, reason, retryAfter string, reconnect int) bool {
+// canRetryRejectedRequest deliberately permits retries only before the proxy
+// has committed an SSE response. It must be used exclusively for a concrete
+// non-2xx upstream response: a transport error does not prove that the
+// upstream did not receive the request.
+func canRetryRejectedRequest(writer *downstreamSSEWriter, policy streamRecoveryPolicy, reconnect int) bool {
+	return writer != nil && !writer.committed && policy.enabled && reconnect > 0 && reconnect <= policy.maxAttempts
+}
+
+// waitForRejectedRequestRetry waits before retrying a request that the
+// upstream explicitly rejected. It intentionally does not send an SSE
+// keepalive: doing so would commit a successful downstream response before
+// there is a successful upstream stream.
+func waitForRejectedRequestRetry(ctx context.Context, policy streamRecoveryPolicy, provider, requestID, reason, retryAfter string, reconnect int) bool {
 	if !policy.enabled || reconnect <= 0 || reconnect > policy.maxAttempts || ctx.Err() != nil {
 		return false
 	}
@@ -121,7 +131,6 @@ func waitForStreamRecovery(ctx context.Context, writer *downstreamSSEWriter, pol
 		"requestId": requestID, "reconnect": reconnect, "maxReconnects": policy.maxAttempts,
 		"delayMs": delay.Milliseconds(), "reason": reason,
 	})
-	writer.writeComment(fmt.Sprintf("wf-reconnecting %d/%d", reconnect, policy.maxAttempts))
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
@@ -145,22 +154,51 @@ func writeRecoveredStreamStop(writer *downstreamSSEWriter, requestID, modelVersi
 	writer.write(encodeAntigravityStreamEvent(finalStopResponse(modelVersion, responseID), requestID))
 }
 
-// canRetryStreamWithoutContinuation is intentionally stricter than a normal
-// network retry. Once an upstream event has reached Antigravity, retrying the
-// generation can execute the same request twice even when there is no visible
-// network outage. We therefore retry only while the request has produced no
-// downstream event at all. This keeps an accepted generation single-shot and
-// prevents duplicated chat turns, tool calls, and token charges.
-func canRetryStreamWithoutContinuation(emittedText string, outputDelivered, unsafeOutput bool) bool {
-	return !outputDelivered && !unsafeOutput && strings.TrimSpace(emittedText) == ""
+// writeUncertainUpstreamFailure never replays a request whose outcome is
+// uncertain. If no assistant event has reached Antigravity, return a normal
+// HTTP error; otherwise finish the already-visible partial stream without
+// adding any assistant text to the conversation.
+func writeUncertainUpstreamFailure(writer *downstreamSSEWriter, provider, requestID, modelVersion, responseID string, reconnects int, unsafe bool, message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "上游流式响应在完成前中断；为避免重复执行，本次请求未自动重放"
+	}
+	trace(provider+"-stream-not-replayed", map[string]any{
+		"requestId": requestID, "message": message, "downstreamCommitted": writer != nil && writer.committed,
+	})
+	if writer != nil && writer.committed {
+		writeRecoveredStreamStop(writer, requestID, modelVersion, responseID, reconnects, unsafe)
+		return
+	}
+	if writer == nil {
+		return
+	}
+	writer.w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.w.WriteHeader(http.StatusBadGateway)
+	_ = json.NewEncoder(writer.w).Encode(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "uncertain_upstream_result",
+		},
+	})
+}
+
+// returnRejectedUpstreamError forwards an explicit upstream rejection only
+// before the downstream response is committed. Keeping this in one place
+// avoids accidentally turning a failed retry path into a synthetic success.
+func returnRejectedUpstreamError(w http.ResponseWriter, statusCode int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_, _ = w.Write(body)
 }
 
 type streamAttemptOutcome struct {
-	wroteEvent   bool
-	finished     bool
-	emittedText  string
-	unsafeOutput bool
-	responseID   string
-	modelVersion string
-	err          error
+	wroteEvent      bool
+	finished        bool
+	emittedText     string
+	unsafeOutput    bool
+	upstreamStarted bool
+	responseID      string
+	modelVersion    string
+	err             error
 }

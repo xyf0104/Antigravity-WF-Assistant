@@ -9,15 +9,20 @@ import (
 // ─── Anthropic translator ────────────────────────────────────────────────────
 
 type anthropicStreamState struct {
-	toolName     string
-	toolID       string
-	toolInput    strings.Builder
-	traceID      string
-	responseID   string
-	modelVersion string
-	finished     bool
-	emittedText  strings.Builder
-	unsafeOutput bool
+	toolCalls       map[int]*anthropicToolCall
+	traceID         string
+	responseID      string
+	modelVersion    string
+	finished        bool
+	upstreamStarted bool
+	emittedText     strings.Builder
+	unsafeOutput    bool
+}
+
+type anthropicToolCall struct {
+	name  string
+	id    string
+	input strings.Builder
 }
 
 type anthropicUsageTotals struct {
@@ -271,7 +276,11 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 		return ""
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
-	if payload == "" || payload == "[DONE]" {
+	if payload == "" {
+		return ""
+	}
+	if payload == "[DONE]" {
+		state.upstreamStarted = true
 		return ""
 	}
 
@@ -279,6 +288,9 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
 		return ""
 	}
+	// Message-start, thinking, tool and usage events are all proof that the
+	// upstream accepted this generation, even when they carry no visible text.
+	state.upstreamStarted = true
 
 	eventType, _ := event["type"].(string)
 	var parts []map[string]any
@@ -295,9 +307,16 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 	case "content_block_start":
 		if block, ok := event["content_block"].(map[string]any); ok {
 			if block["type"] == "tool_use" {
-				state.toolName, _ = block["name"].(string)
-				state.toolID, _ = block["id"].(string)
-				state.toolInput.Reset()
+				if state.toolCalls == nil {
+					state.toolCalls = map[int]*anthropicToolCall{}
+				}
+				index := anthropicContentBlockIndex(event)
+				name, _ := block["name"].(string)
+				callID, _ := block["id"].(string)
+				if callID == "" {
+					callID = fmt.Sprintf("toolu_%d_%s", index, name)
+				}
+				state.toolCalls[index] = &anthropicToolCall{name: name, id: callID}
 			}
 		}
 
@@ -311,28 +330,30 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 				}
 			} else if deltaType == "input_json_delta" {
 				if partial, ok := delta["partial_json"].(string); ok {
-					state.toolInput.WriteString(partial)
+					if call := state.toolCalls[anthropicContentBlockIndex(event)]; call != nil {
+						call.input.WriteString(partial)
+					}
 				}
 			}
 		}
 
 	case "content_block_stop":
-		if state.toolName != "" {
+		index := anthropicContentBlockIndex(event)
+		if call := state.toolCalls[index]; call != nil && call.name != "" {
 			var args map[string]any
-			json.Unmarshal([]byte(state.toolInput.String()), &args)
+			json.Unmarshal([]byte(call.input.String()), &args)
 			if args == nil {
 				args = map[string]any{}
 			}
 			parts = append(parts, map[string]any{
 				"functionCall": map[string]any{
-					"name": state.toolName,
+					"id":   call.id,
+					"name": call.name,
 					"args": args,
 				},
 			})
 			state.unsafeOutput = true
-			state.toolName = ""
-			state.toolID = ""
-			state.toolInput.Reset()
+			delete(state.toolCalls, index)
 		}
 
 	case "message_stop":
@@ -375,4 +396,11 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 		response["modelVersion"] = state.modelVersion
 	}
 	return encodeAntigravityStreamEvent(response, state.traceID)
+}
+
+func anthropicContentBlockIndex(event map[string]any) int {
+	if index, ok := numberAsInt(event["index"]); ok && index >= 0 {
+		return index
+	}
+	return 0
 }

@@ -19,6 +19,7 @@ const DEFAULT_XIASS_URL = "https://api.xiass.com";
 const editorOpen = ref(false);
 const editorError = ref("");
 const editorNotice = ref("");
+const testSuccess = ref("");
 const saving = ref(false);
 const discovering = ref(false);
 const testing = ref(false);
@@ -37,9 +38,21 @@ function defaultCapabilities(provider = "openai", modelName = "") {
     supportsAudio: false,
     supportsVideo: false,
     supportsToolCalls: !nonChat,
-    supportsWebSearch: false,
-    supportsImageGeneration: /gpt-image|image-1/.test(name),
+    supportsWebSearch: !nonChat,
+    supportsImageGeneration: !nonChat,
     supportsThinking: !nonChat,
+  };
+}
+
+// Models are exposed to Antigravity as full chat-capable by default.  The proxy
+// downgrades an individual request when an upstream endpoint does not implement
+// an optional feature, so users never need to guess capability checkboxes.
+function automaticCapabilities(provider = "openai", modelName = "", previous = {}) {
+  const saved = previous && typeof previous === "object" ? previous : {};
+  return {
+    ...saved,
+    ...defaultCapabilities(provider, modelName),
+    configured: true,
   };
 }
 
@@ -109,6 +122,21 @@ const reasoningOptions = computed(() =>
   form.value.provider === "anthropic" ? anthropicReasoningOptions : openAIReasoningOptions
 );
 const testTarget = computed(() => selectedModelIds.value[0] || form.value.externalModelName?.trim());
+const automaticCapabilityItems = computed(() => {
+  const capabilities = automaticCapabilities(
+    form.value.provider,
+    form.value.externalModelName,
+    form.value.capabilities
+  );
+  return [
+    { label: "图片/截图", enabled: capabilities.supportsImages },
+    { label: "文件/PDF", enabled: capabilities.supportsFiles },
+    { label: "原生工具调用", enabled: capabilities.supportsToolCalls },
+    { label: "推理强度", enabled: capabilities.supportsThinking },
+    { label: "上游联网搜索", enabled: capabilities.supportsWebSearch },
+    { label: "上游图片生成", enabled: capabilities.supportsImageGeneration },
+  ];
+});
 const allDiscoveredSelected = computed(() =>
   discoveredModels.value.length > 0 && selectedModelIds.value.length === discoveredModels.value.length
 );
@@ -159,7 +187,7 @@ function hostOf(url) {
 }
 
 function capabilityLabels(model) {
-  const caps = model.capabilities || defaultCapabilities(model.provider, model.externalModelName);
+  const caps = automaticCapabilities(model.provider, model.externalModelName, model.capabilities);
   const labels = [];
   if (caps.supportsImages) labels.push("识图");
   if (caps.supportsFiles) labels.push("文件");
@@ -170,7 +198,7 @@ function capabilityLabels(model) {
 }
 
 function modelToForm(model) {
-  const capabilities = { ...defaultCapabilities(model.provider, model.externalModelName), ...(model.capabilities || {}), configured: true };
+  const capabilities = automaticCapabilities(model.provider, model.externalModelName, model.capabilities);
   return {
     ...emptyForm(),
     ...model,
@@ -191,6 +219,7 @@ function openNew() {
   isNew.value = true;
   editorError.value = "";
   editorNotice.value = "默认只需填写 XIASS 域名；如上游要求完整接口地址，可随时切换到“完整路径（手动）”。";
+  testSuccess.value = "";
   discoveredModels.value = [];
   selectedModelIds.value = [];
   editorOpen.value = true;
@@ -201,6 +230,7 @@ function openEdit(model) {
   isNew.value = false;
   editorError.value = "";
   editorNotice.value = "";
+  testSuccess.value = "";
   discoveredModels.value = [];
   selectedModelIds.value = [];
   editorOpen.value = true;
@@ -218,7 +248,7 @@ function onProviderChange(provider) {
     form.value.authMode = "bearer";
     if (form.value.apiStyle === "messages") form.value.apiStyle = "auto";
   }
-  form.value.capabilities = { ...defaultCapabilities(provider, form.value.externalModelName), ...form.value.capabilities, configured: true };
+  form.value.capabilities = automaticCapabilities(provider, form.value.externalModelName, form.value.capabilities);
 }
 
 function onEndpointModeChange(mode) {
@@ -275,6 +305,7 @@ function validateConnection() {
 async function fetchModels() {
   editorError.value = "";
   editorNotice.value = "";
+  testSuccess.value = "";
   let config;
   try {
     config = validateConnection();
@@ -313,7 +344,7 @@ function toggleAllModels() {
 
 async function testSelectedModel() {
   editorError.value = "";
-  editorNotice.value = "";
+  testSuccess.value = "";
   let config;
   try {
     config = validateConnection();
@@ -328,7 +359,7 @@ async function testSelectedModel() {
   testing.value = true;
   try {
     const result = await testUpstreamModel(config, testTarget.value);
-    if (result?.ok) editorNotice.value = `${result.message} · ${result.apiStyle}`;
+    if (result?.ok) testSuccess.value = `模型可用（HTTP 200）${result?.apiStyle ? ` · ${result.apiStyle}` : ""}`;
     else editorError.value = result?.message || "模型测试失败";
   } catch (error) {
     editorError.value = String(error?.message || error);
@@ -356,7 +387,7 @@ async function saveManualModel() {
     externalModelName,
     displayName: form.value.displayName?.trim() || externalModelName,
     name: form.value.name?.trim() || `models/${form.value.provider}-${externalModelName.replace(/[^a-zA-Z0-9.-]+/g, "-")}`,
-    capabilities: { ...form.value.capabilities, configured: true },
+    capabilities: automaticCapabilities(form.value.provider, externalModelName, form.value.capabilities),
   };
   delete model.headersText;
   if (model.accountIds?.length) model.apiKey = "";
@@ -499,7 +530,8 @@ async function handleDelete() {
               <code>{{ model.id }}</code>
             </label>
           </div>
-          <div class="row" style="justify-content: flex-end; gap: 7px">
+          <div class="test-action-row">
+            <span v-if="testSuccess" class="test-success" role="status">{{ testSuccess }}</span>
             <Button variant="plain" size="sm" :disabled="!testTarget" :loading="testing" @click="testSelectedModel">测试 {{ testTarget || '模型' }}</Button>
           </div>
         </section>
@@ -526,16 +558,15 @@ async function handleDelete() {
         </section>
 
         <section class="section">
-          <div class="t-headline">能力声明</div>
-          <div class="t-caption">只勾选你确认上游支持的能力；它会控制 Antigravity 是否允许拖入对应内容。</div>
+          <div class="t-headline">全能力自动适配</div>
+          <div class="t-caption">聊天模型默认开放全部原生能力；如果上游暂不支持某项功能，WF 会自动降级，不需要手动勾选。</div>
           <div class="capability-grid">
-            <label><input type="checkbox" v-model="form.capabilities.supportsImages" /> 图片/截图</label>
-            <label><input type="checkbox" v-model="form.capabilities.supportsFiles" /> 文件/PDF</label>
-            <label><input type="checkbox" v-model="form.capabilities.supportsToolCalls" /> 原生工具调用</label>
-            <label><input type="checkbox" v-model="form.capabilities.supportsThinking" /> 推理强度</label>
-            <label><input type="checkbox" v-model="form.capabilities.supportsWebSearch" /> 上游联网搜索</label>
-            <label><input type="checkbox" v-model="form.capabilities.supportsImageGeneration" /> 上游图片生成</label>
+            <span v-for="capability in automaticCapabilityItems" :key="capability.label" class="capability-item" :class="{ disabled: !capability.enabled }">
+              <span class="capability-mark">{{ capability.enabled ? '✓' : '—' }}</span>
+              {{ capability.label }}
+            </span>
           </div>
+          <div v-if="automaticCapabilityItems.some((capability) => !capability.enabled)" class="t-caption">嵌入、语音等非聊天模型会保守关闭不适用的能力。</div>
         </section>
 
         <section class="section">
@@ -603,8 +634,13 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .select-all { grid-template-columns: 16px 1fr; color: var(--text-secondary); background: var(--bg-fill); position: sticky; top: 0; }
 .select-row:last-child { border-bottom: 0; }
 .select-row code { color: var(--text-tertiary); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.test-action-row { display: flex; align-items: center; justify-content: flex-end; gap: 9px; min-height: 30px; }
+.test-success { color: var(--green); font-size: 12px; font-weight: 600; line-height: 1.35; }
 .capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-.capability-grid label { display: flex; gap: 7px; align-items: center; min-height: 30px; padding: 0 8px; font-size: 12px; color: var(--text-secondary); border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
+.capability-item { display: flex; gap: 7px; align-items: center; min-height: 30px; padding: 0 8px; font-size: 12px; color: var(--text-secondary); border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
+.capability-item.disabled { color: var(--text-tertiary); opacity: .7; }
+.capability-mark { color: var(--green); font-weight: 800; }
+.capability-item.disabled .capability-mark { color: var(--text-tertiary); }
 .reasoning-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
 .reasoning-grid button { height: 30px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); color: var(--text-secondary); font-size: 11px; }
 .reasoning-grid button.active { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); }

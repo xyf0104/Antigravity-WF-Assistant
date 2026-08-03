@@ -52,3 +52,21 @@ func TestEmptyDisplayNameUsesUpstreamModelName(t *testing.T) {
 		t.Fatalf("displayName = %q, want upstream model name", loaded[0].DisplayName)
 	}
 }
+
+func TestDefaultCapabilitiesExposeCompleteChatSurface(t *testing.T) {
+	capabilities := DefaultCapabilities("openai", "gpt-5")
+	if !capabilities.SupportsImages || !capabilities.SupportsFiles || capabilities.SupportsAudio || capabilities.SupportsVideo ||
+		!capabilities.SupportsToolCalls || !capabilities.SupportsThinking || !capabilities.SupportsWebSearch || !capabilities.SupportsImageGeneration {
+		t.Fatalf("normal chat model must receive the full default surface: %+v", capabilities)
+	}
+	if len(capabilities.SupportedMimeTypes) == 0 {
+		t.Fatal("full capability profile must advertise attachment MIME types")
+	}
+}
+
+func TestDefaultCapabilitiesKeepNonChatModelsConservative(t *testing.T) {
+	capabilities := DefaultCapabilities("openai", "text-embedding-3-large")
+	if capabilities.SupportsImages || capabilities.SupportsFiles || capabilities.SupportsToolCalls || capabilities.SupportsWebSearch || capabilities.SupportsImageGeneration {
+		t.Fatalf("non-chat model must not advertise chat capabilities: %+v", capabilities)
+	}
+}

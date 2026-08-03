@@ -6,19 +6,19 @@ SetCompressor /SOLID lzma
 
 !define APP_NAME "Antigravity WF助手"
 !define APP_EXE "Antigravity WF助手.exe"
-!define APP_VERSION "1.4.0"
+!define APP_VERSION "1.4.1"
 !define APP_PUBLISHER "WF"
 !define APP_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityWFAssistant"
 
 Name "${APP_NAME}"
-OutFile "..\bin\Antigravity-WF-Assistant-Windows-x64-v1.4.0-Setup.exe"
+OutFile "..\bin\Antigravity-WF-Assistant-Windows-x64-v1.4.1-Setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
 InstallDirRegKey HKCU "${APP_UNINSTALL_KEY}" "InstallLocation"
 RequestExecutionLevel user
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "1.4.0.0"
+VIProductVersion "1.4.1.0"
 VIAddVersionKey /LANG=2052 "ProductName" "${APP_NAME}"
 VIAddVersionKey /LANG=2052 "FileDescription" "${APP_NAME} 安装程序"
 VIAddVersionKey /LANG=2052 "CompanyName" "${APP_PUBLISHER}"

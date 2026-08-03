@@ -3,10 +3,31 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 
 	"antigravity-byok/internal/storage"
 )
+
+const (
+	responseWebSearchTool       = "web_search"
+	responseImageGenerationTool = "image_generation"
+)
+
+// A Responses endpoint can be perfectly usable for text/files while not
+// offering OpenAI's hosted web-search or image-generation tools. Remember a
+// concrete capability rejection per upstream credential scope so subsequent
+// turns do not first pay the latency of an avoidable validation error.
+//
+// This is deliberately process-local. An endpoint can gain a capability after
+// an account or gateway is reconfigured, and a restart is a cheap reprobe.
+var responsesBuiltinToolCompatibility = struct {
+	sync.RWMutex
+	unsupported map[string]map[string]struct{}
+}{
+	unsupported: map[string]map[string]struct{}{},
+}
 
 // OpenAI Responses is the upstream surface that can represent general file
 // inputs, hosted web search and image generation. It is selected explicitly,
@@ -109,16 +130,194 @@ func toOpenAIResponsesRequest(gemini map[string]any, modelName string, model *st
 
 	tools := geminiToolsToOpenAIResponses(gemini)
 	capabilities := storage.EffectiveCapabilities(*model)
+	requestedBuiltinTools := requestedResponsesBuiltinTools(gemini)
 	if capabilities.SupportsWebSearch {
-		tools = append(tools, map[string]any{"type": "web_search"})
+		_, requested := requestedBuiltinTools[responseWebSearchTool]
+		if requested {
+			tools = append(tools, map[string]any{"type": responseWebSearchTool})
+		}
 	}
 	if capabilities.SupportsImageGeneration {
-		tools = append(tools, map[string]any{"type": "image_generation"})
+		_, requested := requestedBuiltinTools[responseImageGenerationTool]
+		if requested {
+			tools = append(tools, map[string]any{"type": responseImageGenerationTool})
+		}
 	}
 	if len(tools) > 0 {
 		out["tools"] = tools
 	}
 	return out, nil
+}
+
+func responsesBuiltinToolCompatibilityKey(model *storage.CustomModel) string {
+	return promptCacheCompatibilityKey("responses-builtin-tools", model)
+}
+
+func knownUnsupportedResponsesBuiltinTools(model *storage.CustomModel) map[string]struct{} {
+	key := responsesBuiltinToolCompatibilityKey(model)
+	if key == "" {
+		return nil
+	}
+	responsesBuiltinToolCompatibility.RLock()
+	known := responsesBuiltinToolCompatibility.unsupported[key]
+	result := make(map[string]struct{}, len(known))
+	for tool := range known {
+		result[tool] = struct{}{}
+	}
+	responsesBuiltinToolCompatibility.RUnlock()
+	return result
+}
+
+func rememberUnsupportedResponsesBuiltinTools(model *storage.CustomModel, tools map[string]struct{}) {
+	if len(tools) == 0 {
+		return
+	}
+	key := responsesBuiltinToolCompatibilityKey(model)
+	if key == "" {
+		return
+	}
+	responsesBuiltinToolCompatibility.Lock()
+	if responsesBuiltinToolCompatibility.unsupported[key] == nil {
+		responsesBuiltinToolCompatibility.unsupported[key] = map[string]struct{}{}
+	}
+	for tool := range tools {
+		responsesBuiltinToolCompatibility.unsupported[key][tool] = struct{}{}
+	}
+	responsesBuiltinToolCompatibility.Unlock()
+}
+
+func clearResponsesBuiltinToolCompatibility(model *storage.CustomModel) {
+	key := responsesBuiltinToolCompatibilityKey(model)
+	if key == "" {
+		return
+	}
+	responsesBuiltinToolCompatibility.Lock()
+	delete(responsesBuiltinToolCompatibility.unsupported, key)
+	responsesBuiltinToolCompatibility.Unlock()
+}
+
+// responseRequestForModel returns a shallow request copy with only the
+// built-in Responses tools known to be unavailable for this selected account
+// removed. User-provided function tools are never silently stripped.
+func responseRequestForModel(base map[string]any, model *storage.CustomModel) (map[string]any, []string) {
+	return responseRequestWithoutBuiltinTools(base, knownUnsupportedResponsesBuiltinTools(model))
+}
+
+func responseRequestWithoutBuiltinTools(base map[string]any, unavailable map[string]struct{}) (map[string]any, []string) {
+	if len(unavailable) == 0 {
+		return base, nil
+	}
+	rawTools, ok := base["tools"].([]map[string]any)
+	if !ok || len(rawTools) == 0 {
+		return base, nil
+	}
+	filtered := make([]map[string]any, 0, len(rawTools))
+	removed := make([]string, 0, len(unavailable))
+	for _, tool := range rawTools {
+		kind, _ := tool["type"].(string)
+		if _, omit := unavailable[kind]; omit && isResponsesBuiltinTool(kind) {
+			removed = append(removed, kind)
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	if len(removed) == 0 {
+		return base, nil
+	}
+	request := make(map[string]any, len(base))
+	for key, value := range base {
+		request[key] = value
+	}
+	if len(filtered) == 0 {
+		delete(request, "tools")
+	} else {
+		request["tools"] = filtered
+	}
+	return request, removed
+}
+
+func responseBuiltinToolsInRequest(request map[string]any) map[string]struct{} {
+	rawTools, _ := request["tools"].([]map[string]any)
+	tools := make(map[string]struct{}, 2)
+	for _, tool := range rawTools {
+		kind, _ := tool["type"].(string)
+		if isResponsesBuiltinTool(kind) {
+			tools[kind] = struct{}{}
+		}
+	}
+	return tools
+}
+
+func isResponsesBuiltinTool(kind string) bool {
+	return kind == responseWebSearchTool || kind == responseImageGenerationTool
+}
+
+func responseBuiltinToolNames(tools map[string]struct{}) []string {
+	names := make([]string, 0, len(tools))
+	for tool := range tools {
+		names = append(names, tool)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// rejectedResponsesBuiltinTools recognises an explicit validation rejection
+// for one of our optional hosted tools. It intentionally ignores generic
+// function-schema errors: stripping web/image tools cannot repair those and
+// retrying would obscure the real error.
+func rejectedResponsesBuiltinTools(statusCode int, body string, request map[string]any) map[string]struct{} {
+	if statusCode != 400 && statusCode != 422 {
+		return nil
+	}
+	available := responseBuiltinToolsInRequest(request)
+	if len(available) == 0 {
+		return nil
+	}
+	message := strings.ToLower(body)
+	if !responsesFeatureRejected(message) {
+		return nil
+	}
+	rejected := make(map[string]struct{}, len(available))
+	for tool := range available {
+		if responsesBuiltinToolMentioned(message, tool) {
+			rejected[tool] = struct{}{}
+		}
+	}
+	if len(rejected) > 0 {
+		return rejected
+	}
+	// Some OpenAI-compatible gateways reject the hosted-tool class without
+	// including a specific type. That is still safe to downgrade because the
+	// HTTP validation response proves no generation started.
+	if strings.Contains(message, "built-in tool") || strings.Contains(message, "builtin tool") ||
+		strings.Contains(message, "tools are not supported") || strings.Contains(message, "tool use is not supported") ||
+		strings.Contains(message, "does not support tools") || strings.Contains(message, "tool calling is not supported") {
+		return available
+	}
+	return nil
+}
+
+func responsesBuiltinToolMentioned(message, tool string) bool {
+	switch tool {
+	case responseWebSearchTool:
+		return strings.Contains(message, "web_search") || strings.Contains(message, "web-search") || strings.Contains(message, "web search")
+	case responseImageGenerationTool:
+		return strings.Contains(message, "image_generation") || strings.Contains(message, "image-generation") || strings.Contains(message, "image generation")
+	default:
+		return false
+	}
+}
+
+func responsesFeatureRejected(message string) bool {
+	for _, phrase := range []string{
+		"unsupported", "not supported", "does not support", "unrecognized", "unknown tool", "unknown type",
+		"not available", "unavailable", "not enabled", "disabled", "invalid tool type", "invalid type",
+	} {
+		if strings.Contains(message, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func geminiSystemText(gemini map[string]any) string {
@@ -183,14 +382,17 @@ func geminiToolsToOpenAIResponses(gemini map[string]any) []map[string]any {
 }
 
 type openAIResponsesStreamState struct {
-	toolCalls    map[string]*openAIResponsesToolCall
-	usage        map[string]any
-	traceID      string
-	responseID   string
-	modelVersion string
-	finished     bool
-	emittedText  strings.Builder
-	unsafeOutput bool
+	toolCalls       map[string]*openAIResponsesToolCall
+	usage           map[string]any
+	traceID         string
+	responseID      string
+	modelVersion    string
+	finished        bool
+	done            bool
+	upstreamStarted bool
+	failureMessage  string
+	emittedText     strings.Builder
+	unsafeOutput    bool
 }
 
 type openAIResponsesToolCall struct {
@@ -204,13 +406,22 @@ func convertOpenAIResponsesLineToGemini(line string, state *openAIResponsesStrea
 		return ""
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
-	if payload == "" || payload == "[DONE]" {
+	if payload == "" {
+		return ""
+	}
+	if payload == "[DONE]" {
+		state.done = true
+		state.upstreamStarted = true
 		return ""
 	}
 	var event map[string]any
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
 		return ""
 	}
+	// Do not confuse an event that has no visible text with an unstarted
+	// request. Responses can first emit reasoning, tool, image or metadata
+	// events; replaying after any of them can duplicate billable work.
+	state.upstreamStarted = true
 	if state.toolCalls == nil {
 		state.toolCalls = map[string]*openAIResponsesToolCall{}
 	}
@@ -229,6 +440,8 @@ func convertOpenAIResponsesLineToGemini(line string, state *openAIResponsesStrea
 			state.emittedText.WriteString(delta)
 			parts = append(parts, map[string]any{"text": delta})
 		}
+	case "response.output_text.done", "response.content_part.done":
+		parts = append(parts, responseFinalTextParts(getString(event, "text", "delta"), state)...)
 	case "response.output_item.added":
 		captureResponsesOutputItem(event["item"], state)
 	case "response.function_call_arguments.delta":
@@ -256,14 +469,19 @@ func convertOpenAIResponsesLineToGemini(line string, state *openAIResponsesStrea
 	case "response.output_item.done":
 		parts = append(parts, responseCompletedOutputItem(event["item"], state)...)
 	case "response.completed":
+		if response, ok := event["response"].(map[string]any); ok {
+			parts = append(parts, responseCompletedOutputItems(response["output"], state)...)
+		}
 		state.finished = true
-		return responsesFinishEvent("STOP", state)
+		return responsesEvent(parts, "STOP", state)
 	case "response.incomplete":
+		if response, ok := event["response"].(map[string]any); ok {
+			parts = append(parts, responseCompletedOutputItems(response["output"], state)...)
+		}
 		state.finished = true
-		return responsesFinishEvent("MAX_TOKENS", state)
+		return responsesEvent(parts, "MAX_TOKENS", state)
 	case "response.failed":
-		// Leave the stream unfinished so the proxy can reconnect or let an
-		// upstream account pool fail over instead of surfacing a client retry.
+		state.failureMessage = responsesFailureMessage(event)
 		return ""
 	}
 	if len(parts) == 0 {
@@ -310,6 +528,10 @@ func responseCompletedOutputItem(raw any, state *openAIResponsesStreamState) []a
 		return nil
 	}
 	switch item["type"] {
+	case "message":
+		return responseCompletedMessageText(item["content"], state)
+	case "output_text", "text":
+		return responseFinalTextParts(getString(item, "text", "content"), state)
 	case "function_call":
 		captureResponsesOutputItem(item, state)
 		callID := getString(item, "call_id", "id")
@@ -326,6 +548,87 @@ func responseCompletedOutputItem(raw any, state *openAIResponsesStreamState) []a
 		}
 	}
 	return nil
+}
+
+func responseCompletedOutputItems(raw any, state *openAIResponsesStreamState) []any {
+	items, _ := raw.([]any)
+	parts := make([]any, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, responseCompletedOutputItem(item, state)...)
+	}
+	return parts
+}
+
+func responseCompletedMessageText(raw any, state *openAIResponsesStreamState) []any {
+	blocks, _ := raw.([]any)
+	parts := make([]any, 0, len(blocks))
+	for _, rawBlock := range blocks {
+		block, _ := rawBlock.(map[string]any)
+		if block == nil {
+			continue
+		}
+		switch getString(block, "type") {
+		case "output_text", "text":
+			parts = append(parts, responseFinalTextParts(getString(block, "text", "content"), state)...)
+		}
+	}
+	return parts
+}
+
+// responseFinalTextParts appends only text that has not already been sent as
+// a delta. Many compatible Responses endpoints send both delta events and a
+// full final message, so blindly forwarding the latter duplicates replies.
+func responseFinalTextParts(fullText string, state *openAIResponsesStreamState) []any {
+	if fullText == "" {
+		return nil
+	}
+	missing := unstreamedResponseText(state.emittedText.String(), fullText)
+	if missing == "" {
+		return nil
+	}
+	state.emittedText.WriteString(missing)
+	return []any{map[string]any{"text": missing}}
+}
+
+func unstreamedResponseText(emitted, complete string) string {
+	if complete == "" {
+		return ""
+	}
+	if emitted == "" {
+		return complete
+	}
+	if strings.HasPrefix(complete, emitted) {
+		return complete[len(emitted):]
+	}
+	if strings.HasSuffix(emitted, complete) {
+		return ""
+	}
+	limit := len(emitted)
+	if len(complete) < limit {
+		limit = len(complete)
+	}
+	for overlap := limit; overlap > 0; overlap-- {
+		if strings.HasSuffix(emitted, complete[:overlap]) {
+			return complete[overlap:]
+		}
+	}
+	// Ambiguous final text is intentionally ignored rather than duplicated.
+	return ""
+}
+
+func responsesFailureMessage(event map[string]any) string {
+	for _, raw := range []any{event["error"], event["response"]} {
+		value, _ := raw.(map[string]any)
+		if message := getString(value, "message", "error"); message != "" {
+			return message
+		}
+		if nested, ok := value["error"].(map[string]any); ok {
+			if message := getString(nested, "message"); message != "" {
+				return message
+			}
+		}
+	}
+	return "Responses 上游流返回 failed 事件"
 }
 
 func responseToolCallPart(callID string, call *openAIResponsesToolCall, state *openAIResponsesStreamState) any {
