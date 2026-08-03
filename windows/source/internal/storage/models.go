@@ -41,41 +41,79 @@ var CommonMediaMimeTypes = []string{
 var audioMimeTypes = []string{"audio/mpeg", "audio/mp4", "audio/wav", "audio/webm", "audio/ogg"}
 var videoMimeTypes = []string{"video/mp4", "video/webm", "video/quicktime"}
 
-// DefaultCapabilities advertises the complete cross-provider chat surface that
-// this proxy can translate safely. The proxy may downgrade optional Responses
-// tools after a concrete upstream rejection; audio/video stay conservative
-// because OpenAI Chat, Responses and Anthropic Messages do not share a single
-// compatible wire format for those attachments.
+// DefaultCapabilities advertises only the features with a concrete conversion
+// path. Audio and video are deliberately unavailable because OpenAI Chat,
+// Responses and Anthropic Messages do not share a safe common attachment
+// format. Hosted web search and image generation are OpenAI Responses tools,
+// so they are not claimed for Claude or generic compatibility gateways.
 func DefaultCapabilities(provider, modelName string) ModelCapabilities {
+	return defaultCapabilities(provider, modelName, "auto")
+}
+
+// DefaultCapabilitiesForAPIStyle is used when a discovered model already has
+// an explicit upstream API style. A Chat-only endpoint must not be advertised
+// as supporting Responses-only hosted tools.
+func DefaultCapabilitiesForAPIStyle(provider, modelName, apiStyle string) ModelCapabilities {
+	return defaultCapabilities(provider, modelName, apiStyle)
+}
+
+func defaultCapabilities(provider, modelName, apiStyle string) ModelCapabilities {
 	name := strings.ToLower(strings.TrimSpace(modelName))
 	nonChat := strings.Contains(name, "embedding") || strings.Contains(name, "tts") || strings.Contains(name, "whisper")
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		provider = "openai"
+	}
+	apiStyle = strings.ToLower(strings.TrimSpace(apiStyle))
+	supportsResponsesTools := !nonChat && provider == "openai" && apiStyle != "chat_completions" && apiStyle != "messages"
 	capabilities := ModelCapabilities{
 		SupportsImages:          !nonChat,
 		SupportsFiles:           !nonChat,
 		SupportsToolCalls:       !nonChat,
 		SupportsThinking:        !nonChat,
-		SupportsWebSearch:       !nonChat,
-		SupportsImageGeneration: !nonChat,
+		SupportsWebSearch:       supportsResponsesTools,
+		SupportsImageGeneration: supportsResponsesTools,
 	}
 	capabilities.SupportedMimeTypes = capabilityMimeTypes(capabilities)
 	return capabilities
 }
 
 func capabilityMimeTypes(capabilities ModelCapabilities) []string {
+	var values []string
 	if len(capabilities.SupportedMimeTypes) > 0 {
-		return normalizeMimeTypes(capabilities.SupportedMimeTypes)
+		values = capabilities.SupportedMimeTypes
+	} else {
+		if capabilities.SupportsImages || capabilities.SupportsFiles {
+			values = append(values, CommonMediaMimeTypes...)
+		}
+		if capabilities.SupportsAudio {
+			values = append(values, audioMimeTypes...)
+		}
+		if capabilities.SupportsVideo {
+			values = append(values, videoMimeTypes...)
+		}
 	}
-	var result []string
-	if capabilities.SupportsImages || capabilities.SupportsFiles {
-		result = append(result, CommonMediaMimeTypes...)
-	}
-	if capabilities.SupportsAudio {
-		result = append(result, audioMimeTypes...)
-	}
-	if capabilities.SupportsVideo {
-		result = append(result, videoMimeTypes...)
+	normalized := normalizeMimeTypes(values)
+	result := make([]string, 0, len(normalized))
+	for _, mimeType := range normalized {
+		if capabilityAllowsMimeType(capabilities, mimeType) {
+			result = append(result, mimeType)
+		}
 	}
 	return normalizeMimeTypes(result)
+}
+
+func capabilityAllowsMimeType(capabilities ModelCapabilities, mimeType string) bool {
+	switch {
+	case strings.HasPrefix(mimeType, "audio/"):
+		return capabilities.SupportsAudio
+	case strings.HasPrefix(mimeType, "video/"):
+		return capabilities.SupportsVideo
+	case strings.HasPrefix(mimeType, "image/"):
+		return capabilities.SupportsImages
+	default:
+		return capabilities.SupportsFiles
+	}
 }
 
 func normalizeMimeTypes(values []string) []string {
@@ -99,10 +137,28 @@ func normalizeMimeTypes(values []string) []string {
 func EffectiveCapabilities(model CustomModel) ModelCapabilities {
 	capabilities := model.Capabilities
 	if !capabilities.Configured {
-		return DefaultCapabilities(model.Provider, model.ExternalModelName)
+		capabilities = DefaultCapabilitiesForAPIStyle(model.Provider, model.ExternalModelName, model.APIStyle)
+	}
+	// Legacy configs could opt into audio/video even though this proxy has no
+	// lossless conversion for either. Never inject an attachment MIME type that
+	// the runtime cannot reliably forward.
+	capabilities.SupportsAudio = false
+	capabilities.SupportsVideo = false
+	if !capabilitySupportsResponsesTools(model) {
+		capabilities.SupportsWebSearch = false
+		capabilities.SupportsImageGeneration = false
 	}
 	capabilities.SupportedMimeTypes = capabilityMimeTypes(capabilities)
 	return capabilities
+}
+
+func capabilitySupportsResponsesTools(model CustomModel) bool {
+	provider := strings.ToLower(strings.TrimSpace(model.Provider))
+	if provider == "" {
+		provider = "openai"
+	}
+	style := strings.ToLower(strings.TrimSpace(model.APIStyle))
+	return provider == "openai" && style != "chat_completions" && style != "messages"
 }
 
 // CustomModel represents a third-party model configuration.

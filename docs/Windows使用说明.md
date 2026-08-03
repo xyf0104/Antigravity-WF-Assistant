@@ -1,8 +1,8 @@
-# Antigravity WF助手 Windows x64 v1.4.1
+# Antigravity WF助手 Windows x64 v1.4.2
 
 ## 安装
 
-1. 双击 `Antigravity-WF-Assistant-Windows-x64-v1.4.1-Setup.exe`。
+1. 双击 `Antigravity-WF-Assistant-Windows-x64-v1.4.2-Setup.exe`。
 2. 在“选择组件”页按需要勾选“在桌面创建快捷方式”，然后完成安装并从开始菜单或桌面打开“Antigravity WF助手”。
 3. 安装器默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Antigravity WF助手`，安装助手本身不需要管理员权限。
 
@@ -15,6 +15,13 @@
 3. 回到“总览”，确认已自动识别 Antigravity IDE 或 Antigravity 2.x。
 4. 点击“应用全部补丁”。如果 Antigravity 安装在 `Program Files` 等受保护目录，请右键 WF助手，选择“以管理员身份运行”后再补丁。
 5. 使用“Antigravity 快捷启动”按钮启动或重启对应安装。
+
+## 账户池与登录
+
+1. 在“账户池”中可添加 API Key、Bearer / Access Token、x-api-key、Setup Token、Codex PAT 或自定义认证头；默认只需填写基础域名，选择“完整路径（手动）”后可完全自行指定请求地址。
+2. OAuth 登录请选择“OAuth 授权登录”，填写服务商已注册的授权地址、令牌地址、公开 Client ID 与回调地址，点击“生成登录链接”，完成浏览器授权后粘贴回调 URL 或授权码。助手使用 PKCE，不内置第三方 Client Secret。
+3. 已有 `auth.json`、OAuth JSON 或 XIASS 风格账户导出时，使用“导入账户 JSON”；Refresh Token / Mobile RT 使用专门的兑换入口，不能当作 API Key 直接保存。
+4. 一个模型可绑定多个同协议账户。正常请求会按优先级、并发与健康状态调度；可在账户卡片查看本机转发用量、上游限流快照及可显示的账号身份/套餐资料。
 
 ## 自动检测
 

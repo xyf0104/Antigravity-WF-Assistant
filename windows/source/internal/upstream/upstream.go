@@ -26,9 +26,13 @@ import (
 const DefaultXIASSBaseURL = "https://api.xiass.com"
 
 type Config struct {
-	AccountID string `json:"accountId,omitempty"`
-	Provider  string `json:"provider"`
-	APIURL    string `json:"apiUrl"`
+	// AccountID is the primary account used for an immediate discovery or test.
+	// AccountIDs preserves every selected account when the UI batch-imports a
+	// model so the runtime pool can schedule and fail over across all of them.
+	AccountID  string   `json:"accountId,omitempty"`
+	AccountIDs []string `json:"accountIds,omitempty"`
+	Provider   string   `json:"provider"`
+	APIURL     string   `json:"apiUrl"`
 	// EndpointMode is "auto" for a base domain/path that WF expands to the
 	// provider endpoint, or "manual" for an exact endpoint entered by the user.
 	// It intentionally remains a separate setting from APIStyle: a user may send
@@ -82,7 +86,7 @@ func ConfigFromModel(model storage.CustomModel) Config {
 
 func ConfigFromAccount(account storage.UpstreamAccount) Config {
 	return Config{
-		AccountID: account.ID, Provider: account.Provider, APIURL: account.APIURL,
+		AccountID: account.ID, AccountIDs: []string{account.ID}, Provider: account.Provider, APIURL: account.APIURL,
 		EndpointMode: account.EndpointMode, APIKey: account.EffectiveAPIKey(), APIStyle: account.APIStyle,
 		MessagePathMode: account.MessagePathMode, AuthMode: account.AuthMode,
 		AuthHeader: account.AuthHeader, Headers: account.Headers,

@@ -33,6 +33,8 @@ type App struct {
 	historyStatus HistorySyncStatus
 	launchMu      sync.Mutex
 	updateMu      sync.Mutex
+	oauthMu       sync.Mutex
+	oauthSessions map[string]*pendingOAuthSession
 	exitRequested atomic.Bool
 }
 
@@ -44,6 +46,7 @@ func newApp() *App {
 	storage.Init(dir)
 	return &App{
 		storageDir: dir, permissions: permissions.New(home, dir),
+		oauthSessions: make(map[string]*pendingOAuthSession),
 		historyStatus: HistorySyncStatus{State: "pending", Message: "等待启动时同步历史会话"},
 	}
 }
@@ -420,7 +423,10 @@ func (a *App) TestUpstreamModel(config upstream.Config, model string) upstream.T
 // model list. The default UI selects all discovered models; callers may pass a
 // narrowed list to respect manual selection.
 func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) BatchModelResult {
-	boundAccountID := strings.TrimSpace(config.AccountID)
+	boundAccountIDs := configuredAccountIDs(config)
+	if config.AccountID == "" && len(boundAccountIDs) > 0 {
+		config.AccountID = boundAccountIDs[0]
+	}
 	resolved, err := a.resolveUpstreamConfig(config)
 	if err != nil {
 		return BatchModelResult{Message: err.Error()}
@@ -447,13 +453,13 @@ func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) Bat
 		model.AuthMode = strings.ToLower(strings.TrimSpace(resolved.AuthMode))
 		model.AuthHeader = strings.TrimSpace(resolved.AuthHeader)
 		model.Headers = cloneHeaders(resolved.Headers)
-		if boundAccountID != "" {
-			model.AccountIDs = []string{boundAccountID}
+		if len(boundAccountIDs) > 0 {
+			model.AccountIDs = boundAccountIDs
 			// The credential belongs to the account pool. Do not duplicate it in
 			// every discovered model on disk.
 			model.APIKey = ""
 		}
-		model.Capabilities = storage.DefaultCapabilities(provider, modelID)
+		model.Capabilities = storage.DefaultCapabilitiesForAPIStyle(provider, modelID, model.APIStyle)
 		model.Capabilities.Configured = true
 		if err := storage.AddOrUpdateModel(model); err != nil {
 			return BatchModelResult{Message: fmt.Sprintf("保存 %s 失败：%s", modelID, err.Error()), Added: added}
@@ -468,16 +474,22 @@ func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) Bat
 
 // ─── Upstream account pool ───────────────────────────────────────────────────
 
-func (a *App) GetUpstreamAccounts() []storage.UpstreamAccount {
+func (a *App) GetUpstreamAccounts() []UpstreamAccountView {
 	accounts, _ := storage.LoadUpstreamAccounts()
+	localUsage := stats.ComputeAccountUsage(a.storageDir)
 	// The renderer only needs account metadata and health. Keep reusable
 	// credentials inside the private Go storage layer; an edit with an empty
 	// credential field is merged with the existing secret below.
-	for i := range accounts {
-		accounts[i].APIKey = ""
-		accounts[i].Credentials = nil
+	views := make([]UpstreamAccountView, 0, len(accounts))
+	for _, account := range accounts {
+		account.APIKey = ""
+		account.Credentials = nil
+		views = append(views, UpstreamAccountView{
+			UpstreamAccount: account,
+			LocalUsage:      localUsage[account.ID],
+		})
 	}
-	return accounts
+	return views
 }
 
 func (a *App) DefaultUpstreamAccount() storage.UpstreamAccount {
@@ -485,10 +497,14 @@ func (a *App) DefaultUpstreamAccount() storage.UpstreamAccount {
 		Name: "", Provider: "openai", Type: "api_key", APIURL: upstream.DefaultXIASSBaseURL,
 		EndpointMode: "auto", APIStyle: "auto", MessagePathMode: "auto", AuthMode: "bearer", Enabled: true,
 		Priority: 50, MaxConcurrency: 2,
+		OAuth: storage.OAuthConfiguration{RedirectURI: "http://localhost:1455/auth/callback", Scopes: "openid profile email offline_access"},
 	}
 }
 
 func (a *App) SaveUpstreamAccount(account storage.UpstreamAccount) Result {
+	if strings.EqualFold(strings.TrimSpace(account.Type), "refresh_token") {
+		return Result{OK: false, Message: "Refresh Token / Mobile RT 必须通过“兑换并保存 OAuth 账户”导入，不能作为 API Key 直接保存。"}
+	}
 	if strings.TrimSpace(account.ID) != "" && strings.TrimSpace(account.EffectiveAPIKey()) == "" {
 		existing, err := storage.GetUpstreamAccount(account.ID)
 		if err != nil {
@@ -546,25 +562,85 @@ func (a *App) TestUpstreamAccount(accountID, model string) upstream.TestResult {
 }
 
 func (a *App) resolveUpstreamConfig(config upstream.Config) (upstream.Config, error) {
-	if strings.TrimSpace(config.AccountID) == "" {
+	accountIDs := configuredAccountIDs(config)
+	if len(accountIDs) == 0 {
 		return config, nil
 	}
-	account, err := storage.GetUpstreamAccount(config.AccountID)
-	if err != nil {
-		return upstream.Config{}, err
+	configuredProvider := strings.TrimSpace(config.Provider)
+	var primary storage.UpstreamAccount
+	for index, accountID := range accountIDs {
+		account, err := storage.GetUpstreamAccount(accountID)
+		if err != nil {
+			return upstream.Config{}, err
+		}
+		if !account.Enabled {
+			return upstream.Config{}, fmt.Errorf("所选账户已暂停：%s", account.Name)
+		}
+		if strings.TrimSpace(account.EffectiveAPIKey()) == "" {
+			return upstream.Config{}, fmt.Errorf("所选账户没有可用凭据：%s", account.Name)
+		}
+		if configuredProvider != "" && upstream.NormalizedProvider(account.Provider) != upstream.NormalizedProvider(configuredProvider) {
+			return upstream.Config{}, fmt.Errorf("所选账户必须与模型使用同一种上游协议")
+		}
+		if index == 0 {
+			primary = account
+			continue
+		}
+		if upstream.NormalizedProvider(account.Provider) != upstream.NormalizedProvider(primary.Provider) {
+			return upstream.Config{}, fmt.Errorf("所选账户必须使用同一种上游协议")
+		}
 	}
-	return upstream.ConfigFromAccount(account), nil
+	return upstream.ConfigFromAccount(primary), nil
 }
 
 func (a *App) modelValidationConfig(model storage.CustomModel) (upstream.Config, error) {
-	if len(model.AccountIDs) == 0 {
+	accountIDs := normalizedAccountIDs(model.AccountIDs)
+	if len(accountIDs) == 0 {
 		return upstream.ConfigFromModel(model), nil
 	}
-	account, err := storage.GetUpstreamAccount(model.AccountIDs[0])
-	if err != nil {
-		return upstream.Config{}, fmt.Errorf("模型绑定的账户不可用：%w", err)
+	var primary storage.UpstreamAccount
+	for index, accountID := range accountIDs {
+		account, err := storage.GetUpstreamAccount(accountID)
+		if err != nil {
+			return upstream.Config{}, fmt.Errorf("模型绑定的账户不可用：%w", err)
+		}
+		if index == 0 {
+			primary = account
+			continue
+		}
+		if upstream.NormalizedProvider(account.Provider) != upstream.NormalizedProvider(primary.Provider) {
+			return upstream.Config{}, fmt.Errorf("模型绑定的账户必须使用同一种上游协议")
+		}
 	}
-	return upstream.ConfigFromAccount(account), nil
+	if strings.TrimSpace(model.Provider) != "" && upstream.NormalizedProvider(model.Provider) != upstream.NormalizedProvider(primary.Provider) {
+		return upstream.Config{}, fmt.Errorf("模型与绑定账户必须使用同一种上游协议")
+	}
+	return upstream.ConfigFromAccount(primary), nil
+}
+
+func configuredAccountIDs(config upstream.Config) []string {
+	values := append([]string{}, config.AccountIDs...)
+	if accountID := strings.TrimSpace(config.AccountID); accountID != "" {
+		values = append(values, accountID)
+	}
+	return normalizedAccountIDs(values)
+}
+
+func normalizedAccountIDs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (a *App) upstreamContext(timeout time.Duration) (context.Context, context.CancelFunc) {

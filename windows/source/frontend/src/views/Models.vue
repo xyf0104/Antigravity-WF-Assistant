@@ -28,9 +28,15 @@ const confirmDelete = ref(null);
 const discoveredModels = ref([]);
 const selectedModelIds = ref([]);
 
-function defaultCapabilities(provider = "openai", modelName = "") {
+function defaultCapabilities(provider = "openai", modelName = "", apiStyle = "auto") {
   const name = String(modelName).toLowerCase();
   const nonChat = /embedding|whisper|tts/.test(name);
+  const normalizedProvider = String(provider || "openai").toLowerCase();
+  const normalizedStyle = String(apiStyle || "auto").toLowerCase();
+  // Hosted web search and image generation are OpenAI Responses features. Do
+  // not advertise them for Claude, Chat Completions, or generic compatibility
+  // gateways unless WF has a real translation path for them.
+  const supportsResponsesTools = !nonChat && normalizedProvider === "openai" && normalizedStyle !== "chat_completions" && normalizedStyle !== "messages";
   return {
     configured: true,
     supportsImages: !nonChat,
@@ -38,8 +44,8 @@ function defaultCapabilities(provider = "openai", modelName = "") {
     supportsAudio: false,
     supportsVideo: false,
     supportsToolCalls: !nonChat,
-    supportsWebSearch: !nonChat,
-    supportsImageGeneration: !nonChat,
+    supportsWebSearch: supportsResponsesTools,
+    supportsImageGeneration: supportsResponsesTools,
     supportsThinking: !nonChat,
   };
 }
@@ -47,11 +53,11 @@ function defaultCapabilities(provider = "openai", modelName = "") {
 // Models are exposed to Antigravity as full chat-capable by default.  The proxy
 // downgrades an individual request when an upstream endpoint does not implement
 // an optional feature, so users never need to guess capability checkboxes.
-function automaticCapabilities(provider = "openai", modelName = "", previous = {}) {
+function automaticCapabilities(provider = "openai", modelName = "", previous = {}, apiStyle = "auto") {
   const saved = previous && typeof previous === "object" ? previous : {};
   return {
     ...saved,
-    ...defaultCapabilities(provider, modelName),
+    ...defaultCapabilities(provider, modelName, apiStyle),
     configured: true,
   };
 }
@@ -122,11 +128,27 @@ const reasoningOptions = computed(() =>
   form.value.provider === "anthropic" ? anthropicReasoningOptions : openAIReasoningOptions
 );
 const testTarget = computed(() => selectedModelIds.value[0] || form.value.externalModelName?.trim());
+const selectedAccounts = computed(() => {
+  const selected = new Set(form.value.accountIds || []);
+  return state.accounts.filter((account) => selected.has(account.id));
+});
+const accountBindingError = computed(() => {
+  const selectedIDs = form.value.accountIds || [];
+  if (!selectedIDs.length) return "";
+  if (selectedAccounts.value.length !== selectedIDs.length) return "所选账户已不存在，请重新选择。";
+  if (selectedAccounts.value.some((account) => !account.enabled)) return "账户池中包含已暂停账户，请启用或取消选择。";
+  const providers = new Set(selectedAccounts.value.map((account) => String(account.provider || "openai").toLowerCase()));
+  if (providers.size > 1) return "同一个模型只能绑定同一种上游协议的账户。";
+  const accountProvider = [...providers][0];
+  if (accountProvider && accountProvider !== form.value.provider) return `所选账户使用 ${providerLabel(accountProvider)} 协议，请先切换供应商或重新选择账户。`;
+  return "";
+});
 const automaticCapabilityItems = computed(() => {
   const capabilities = automaticCapabilities(
     form.value.provider,
     form.value.externalModelName,
-    form.value.capabilities
+    form.value.capabilities,
+    form.value.apiStyle
   );
   return [
     { label: "图片/截图", enabled: capabilities.supportsImages },
@@ -187,7 +209,7 @@ function hostOf(url) {
 }
 
 function capabilityLabels(model) {
-  const caps = automaticCapabilities(model.provider, model.externalModelName, model.capabilities);
+  const caps = automaticCapabilities(model.provider, model.externalModelName, model.capabilities, model.apiStyle);
   const labels = [];
   if (caps.supportsImages) labels.push("识图");
   if (caps.supportsFiles) labels.push("文件");
@@ -198,7 +220,7 @@ function capabilityLabels(model) {
 }
 
 function modelToForm(model) {
-  const capabilities = automaticCapabilities(model.provider, model.externalModelName, model.capabilities);
+  const capabilities = automaticCapabilities(model.provider, model.externalModelName, model.capabilities, model.apiStyle);
   return {
     ...emptyForm(),
     ...model,
@@ -248,7 +270,7 @@ function onProviderChange(provider) {
     form.value.authMode = "bearer";
     if (form.value.apiStyle === "messages") form.value.apiStyle = "auto";
   }
-  form.value.capabilities = automaticCapabilities(provider, form.value.externalModelName, form.value.capabilities);
+  form.value.capabilities = automaticCapabilities(provider, form.value.externalModelName, form.value.capabilities, form.value.apiStyle);
 }
 
 function onEndpointModeChange(mode) {
@@ -283,6 +305,7 @@ function parseHeaders() {
 }
 
 function upstreamConfig() {
+  const accountIds = selectedAccounts.value.map((account) => account.id);
   return {
     provider: form.value.provider,
     apiUrl: form.value.apiUrl?.trim(),
@@ -293,13 +316,18 @@ function upstreamConfig() {
     authMode: form.value.authMode,
     authHeader: form.value.authHeader?.trim(),
     headers: parseHeaders(),
+    accountIds,
+    accountId: accountIds[0] || "",
   };
 }
 
 function validateConnection() {
+  if (accountBindingError.value) throw new Error(accountBindingError.value);
+  const config = upstreamConfig();
+  if (config.accountIds.length) return config;
   if (!form.value.apiUrl?.trim()) throw new Error("请填写 API 地址");
   if (!form.value.apiKey?.trim()) throw new Error("请填写 API Key 或访问令牌");
-  return upstreamConfig();
+  return config;
 }
 
 async function fetchModels() {
@@ -387,7 +415,7 @@ async function saveManualModel() {
     externalModelName,
     displayName: form.value.displayName?.trim() || externalModelName,
     name: form.value.name?.trim() || `models/${form.value.provider}-${externalModelName.replace(/[^a-zA-Z0-9.-]+/g, "-")}`,
-    capabilities: automaticCapabilities(form.value.provider, externalModelName, form.value.capabilities),
+    capabilities: automaticCapabilities(form.value.provider, externalModelName, form.value.capabilities, form.value.apiStyle),
   };
   delete model.headersText;
   if (model.accountIds?.length) model.apiKey = "";
@@ -511,7 +539,7 @@ async function handleDelete() {
           </label>
           <div class="compact-label">上游 API 模式</div>
           <SegmentedControl :options="apiStyleOptions" :model-value="form.apiStyle" @update:model-value="form.apiStyle = $event" />
-          <div class="t-caption">自动模式：图片/文本附件可兼容 Chat；PDF、通用文件、联网与生图会优先走 Responses，并仅在该端点不存在时降级。</div>
+          <div class="t-caption">自动模式：图片/文本附件可兼容 Chat；PDF、通用文件、联网与生图会优先走 Responses。手动选 Chat 或 Claude Messages 时，不会声明 OpenAI 专属联网/生图能力。</div>
         </section>
 
         <section class="section discover-box">
@@ -545,11 +573,11 @@ async function handleDelete() {
 
         <section class="section account-binding">
           <div class="t-headline">账户池绑定（可选）</div>
-          <div class="t-caption">绑定后请求会从账户池按优先级、并发和健康状态调度；额度不足或连接中断时自动切换下一个账户。</div>
+          <div class="t-caption">绑定后，发现与测试使用首个账户；保存后的模型会从整组账户按优先级、并发和健康状态调度，额度不足或连接中断时自动切换。</div>
           <div v-if="!state.accounts.length" class="t-caption">尚未添加账户。可先在“账户池”中添加 API Key、Token 或导入账户 JSON；未绑定时继续使用本页直接填写的 API Key。</div>
           <div v-else class="account-binding-list">
             <label v-for="account in state.accounts" :key="account.id" class="account-binding-row" :class="{ paused: !account.enabled }">
-              <input v-model="form.accountIds" type="checkbox" :value="account.id" />
+              <input v-model="form.accountIds" type="checkbox" :value="account.id" :disabled="!account.enabled" />
               <span class="grow truncate">{{ account.name || account.provider || '上游账户' }}</span>
               <code>{{ account.provider }}</code>
               <span v-if="!account.enabled" class="paused-label">已暂停</span>
@@ -559,7 +587,7 @@ async function handleDelete() {
 
         <section class="section">
           <div class="t-headline">全能力自动适配</div>
-          <div class="t-caption">聊天模型默认开放全部原生能力；如果上游暂不支持某项功能，WF 会自动降级，不需要手动勾选。</div>
+          <div class="t-caption">能力按协议和 API 模式自动声明，不需要手动勾选。图片、文件、工具和推理走已实现的转换；联网与生图仅在 OpenAI Responses 路径可用时显示。</div>
           <div class="capability-grid">
             <span v-for="capability in automaticCapabilityItems" :key="capability.label" class="capability-item" :class="{ disabled: !capability.enabled }">
               <span class="capability-mark">{{ capability.enabled ? '✓' : '—' }}</span>
@@ -578,6 +606,7 @@ async function handleDelete() {
 
         <div v-if="editorNotice" class="notice-box">{{ editorNotice }}</div>
         <div v-if="editorError" class="err-box">{{ editorError }}</div>
+        <div v-if="accountBindingError" class="err-box">{{ accountBindingError }}</div>
       </div>
       <template #footer>
         <Button variant="plain" @click="editorOpen = false">取消</Button>

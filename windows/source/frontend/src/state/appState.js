@@ -242,6 +242,34 @@ export async function testUpstreamAccount(accountID, model) {
   return call("TestUpstreamAccount", accountID, model);
 }
 
+export async function startOAuthAuthorization(account) {
+  return call("StartOAuthAuthorization", account);
+}
+
+export async function completeOAuthAuthorization(sessionID, callback) {
+  const res = await call("CompleteOAuthAuthorization", sessionID, callback);
+  if (res?.ok) await loadAccounts();
+  return res;
+}
+
+export async function importOAuthRefreshToken(account, refreshToken) {
+  const res = await call("ImportOAuthRefreshToken", account, refreshToken);
+  if (res?.ok) await loadAccounts();
+  return res;
+}
+
+export async function refreshUpstreamOAuthAccount(accountID) {
+  const res = await call("RefreshUpstreamOAuthAccount", accountID);
+  if (res?.ok) await loadAccounts();
+  return res;
+}
+
+export async function refreshUpstreamAccountQuota(accountID) {
+  const res = await call("RefreshUpstreamAccountQuota", accountID);
+  if (res?.ok) await loadAccounts();
+  return res;
+}
+
 export async function loadStats() {
   state.statsLoading = true;
   try {

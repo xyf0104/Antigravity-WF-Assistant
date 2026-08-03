@@ -30,8 +30,9 @@ var darwinTrayState struct {
 }
 
 // startTray adds a native macOS menu-bar item without changing Wails' own
-// NSApplication delegate. It stays available while the app is hidden from the
-// Dock after the main window is closed.
+// NSApplication delegate. It remains available after the main window closes;
+// the application intentionally stays in the Dock so users can reopen or quit
+// it through the normal macOS controls as well.
 func (a *App) startTray() {
 	darwinTrayState.Lock()
 	darwinTrayState.app = a
@@ -87,7 +88,6 @@ func (a *App) hideMainWindow() {
 		return
 	}
 	runtime.WindowHide(a.ctx)
-	C.wfTraySetDockVisible(0)
 }
 
 // quitNativeApplication runs on Cocoa's main queue. Calling Wails' generic

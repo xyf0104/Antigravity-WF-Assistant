@@ -690,6 +690,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 			writeUncertainUpstreamFailure(writer, "openai", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
 			return
 		}
+		observeAttemptQuota(lease, "openai", resp)
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			errBody, _ := io.ReadAll(resp.Body)
@@ -737,7 +738,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 			return
 		}
 
-		outcome := streamOpenAIAttempt(writer, resp, requestID, attempt)
+		outcome := streamOpenAIAttempt(writer, resp, requestID, attempt, accountUsageTraceForAttempt(lease, attemptModel, "openai", attempt))
 		resp.Body.Close()
 		if outcome.responseID != "" {
 			lastResponseID = outcome.responseID
@@ -842,6 +843,7 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 			writeUncertainUpstreamFailure(writer, "responses", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
 			return false
 		}
+		observeAttemptQuota(lease, "responses", resp)
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			errBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
@@ -887,7 +889,7 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 			return false
 		}
 
-		outcome := streamOpenAIResponsesAttempt(writer, resp, requestID, attempt)
+		outcome := streamOpenAIResponsesAttempt(writer, resp, requestID, attempt, accountUsageTraceForAttempt(lease, attemptModel, "responses", attempt))
 		resp.Body.Close()
 		if outcome.responseID != "" {
 			lastResponseID = outcome.responseID
@@ -1136,6 +1138,7 @@ attemptLoop:
 				writeUncertainUpstreamFailure(writer, "anthropic", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
 				return
 			}
+			observeAttemptQuota(lease, "anthropic", resp)
 
 			if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 				errBody, _ := io.ReadAll(resp.Body)
@@ -1184,7 +1187,7 @@ attemptLoop:
 				return
 			}
 
-			outcome := streamAnthropicAttempt(writer, resp, requestID, attempt)
+			outcome := streamAnthropicAttempt(writer, resp, requestID, attempt, accountUsageTraceForAttempt(lease, attemptModel, "anthropic", attempt))
 			resp.Body.Close()
 			if outcome.responseID != "" {
 				lastResponseID = outcome.responseID
@@ -1554,7 +1557,7 @@ func min(a, b int) int {
 // streamOpenAIAttempt converts one upstream stream but deliberately does not
 // synthesize a stop event when the upstream connection vanishes. The caller
 // can then keep the same downstream SSE response alive and retry safely.
-func streamOpenAIAttempt(writer *downstreamSSEWriter, resp *http.Response, requestID string, attempt int) streamAttemptOutcome {
+func streamOpenAIAttempt(writer *downstreamSSEWriter, resp *http.Response, requestID string, attempt int, usageTrace *accountUsageTraceContext) streamAttemptOutcome {
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	state := openAIStreamState{traceID: requestID}
@@ -1588,7 +1591,7 @@ func streamOpenAIAttempt(writer *downstreamSSEWriter, resp *http.Response, reque
 	outcome.modelVersion = state.modelVersion
 	if state.usage != nil {
 		promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens := openAIUsage(state.usage)
-		trace("usage", map[string]any{
+		traceAccountUsage(usageTrace, map[string]any{
 			"requestId": requestID, "promptTokens": promptTokens, "completionTokens": completionTokens,
 			"cacheReadTokens": cacheReadTokens, "cacheWriteTokens": cacheWriteTokens,
 			"firstByteMs": firstByteAt.Sub(startedAt).Milliseconds(), "totalMs": time.Since(startedAt).Milliseconds(),
@@ -1597,7 +1600,7 @@ func streamOpenAIAttempt(writer *downstreamSSEWriter, resp *http.Response, reque
 	return outcome
 }
 
-func streamOpenAIResponsesAttempt(writer *downstreamSSEWriter, resp *http.Response, requestID string, attempt int) streamAttemptOutcome {
+func streamOpenAIResponsesAttempt(writer *downstreamSSEWriter, resp *http.Response, requestID string, attempt int, usageTrace *accountUsageTraceContext) streamAttemptOutcome {
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	state := openAIResponsesStreamState{traceID: requestID}
@@ -1634,7 +1637,7 @@ func streamOpenAIResponsesAttempt(writer *downstreamSSEWriter, resp *http.Respon
 	if state.usage != nil {
 		prompt, _ := numberAsInt(state.usage["input_tokens"])
 		completion, _ := numberAsInt(state.usage["output_tokens"])
-		trace("usage", map[string]any{
+		traceAccountUsage(usageTrace, map[string]any{
 			"requestId": requestID, "promptTokens": prompt, "completionTokens": completion,
 			"firstByteMs": firstByteAt.Sub(startedAt).Milliseconds(), "totalMs": time.Since(startedAt).Milliseconds(),
 		})
@@ -1642,7 +1645,7 @@ func streamOpenAIResponsesAttempt(writer *downstreamSSEWriter, resp *http.Respon
 	return outcome
 }
 
-func streamAnthropicAttempt(writer *downstreamSSEWriter, resp *http.Response, requestID string, attempt int) streamAttemptOutcome {
+func streamAnthropicAttempt(writer *downstreamSSEWriter, resp *http.Response, requestID string, attempt int, usageTrace *accountUsageTraceContext) streamAttemptOutcome {
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	startedAt := time.Now()
@@ -1673,7 +1676,7 @@ func streamAnthropicAttempt(writer *downstreamSSEWriter, resp *http.Response, re
 	outcome.responseID = state.responseID
 	outcome.modelVersion = state.modelVersion
 	if totals.seen {
-		trace("usage", map[string]any{
+		traceAccountUsage(usageTrace, map[string]any{
 			"requestId": requestID, "promptTokens": totals.input + totals.cacheRead + totals.cacheWrite,
 			"completionTokens": totals.output, "cacheReadTokens": totals.cacheRead, "cacheWriteTokens": totals.cacheWrite,
 			"firstByteMs": firstByteAt.Sub(startedAt).Milliseconds(), "totalMs": time.Since(startedAt).Milliseconds(),

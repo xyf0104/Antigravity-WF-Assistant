@@ -7,13 +7,18 @@ import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import {
   addDiscoveredModels,
+  completeOAuthAuthorization,
   defaultUpstreamAccount,
   deleteUpstreamAccount,
   discoverAccountModels,
+  importOAuthRefreshToken,
   importUpstreamAccounts,
   loadAccounts,
+  refreshUpstreamAccountQuota,
+  refreshUpstreamOAuthAccount,
   saveUpstreamAccount,
   setUpstreamAccountEnabled,
+  startOAuthAuthorization,
   state,
   testUpstreamAccount,
 } from "@/state/appState";
@@ -26,6 +31,9 @@ const saving = ref(false);
 const testing = ref(false);
 const discovering = ref(false);
 const importing = ref(false);
+const oauthBusy = ref(false);
+const tokenRefreshBusy = ref("");
+const quotaRefreshBusy = ref("");
 const editorError = ref("");
 const editorNotice = ref("");
 const importError = ref("");
@@ -33,6 +41,8 @@ const importNotice = ref("");
 const importText = ref("");
 const discoveredModels = ref([]);
 const selectedModelIds = ref([]);
+const oauthSession = ref(null);
+const oauthCallback = ref("");
 
 const providerOptions = [
   { label: "OpenAI", value: "openai" },
@@ -56,11 +66,47 @@ const authOptions = [
 ];
 const accountTypeOptions = [
   { label: "API Key", value: "api_key" },
-  { label: "OAuth / Bearer Token", value: "oauth" },
+  { label: "OAuth 授权登录", value: "oauth" },
+  { label: "Bearer / Access Token", value: "bearer_token" },
   { label: "x-api-key", value: "x_api_key" },
   { label: "Setup Token", value: "setup_token" },
+  { label: "auth.json / OAuth JSON", value: "auth_json" },
+  { label: "Refresh Token / Mobile RT", value: "refresh_token" },
+  { label: "Codex PAT", value: "codex_pat" },
   { label: "自定义认证头", value: "custom_header" },
 ];
+const JSON_IMPORT_TYPE_KEYS = new Set([
+  "auth_json",
+  "oauth_json",
+  "credential_json",
+  "credentials_json",
+  "json_import",
+  "import_json",
+  "account_json",
+]);
+const REFRESH_TOKEN_TYPE_KEYS = new Set([
+  "refresh_token",
+  "mobile_rt",
+  "mobile_refresh_token",
+]);
+
+function credentialTypeKey(type) {
+  return String(type || "").trim().toLowerCase().replace(/[.\s-]+/g, "_");
+}
+
+function isJSONImportType(type) {
+  return JSON_IMPORT_TYPE_KEYS.has(credentialTypeKey(type));
+}
+
+function isRefreshTokenType(type) {
+  return REFRESH_TOKEN_TYPE_KEYS.has(credentialTypeKey(type));
+}
+
+function editorCredentialType(type) {
+  if (isJSONImportType(type)) return "auth_json";
+  if (isRefreshTokenType(type)) return "refresh_token";
+  return type || "api_key";
+}
 
 function emptyForm() {
   return {
@@ -76,7 +122,16 @@ function emptyForm() {
     authMode: "bearer",
     authHeader: "",
     headersText: "{}",
+    quotaUrl: "",
     apiKey: "",
+    refreshToken: "",
+    oauth: {
+      authorizationUrl: "",
+      tokenUrl: "",
+      clientId: "",
+      redirectUri: "http://localhost:1455/auth/callback",
+      scopes: "openid profile email offline_access",
+    },
     enabled: true,
     priority: 50,
     maxConcurrency: 2,
@@ -85,6 +140,8 @@ function emptyForm() {
 
 const form = ref(emptyForm());
 const isExisting = computed(() => Boolean(form.value.id));
+const isJSONImportTypeSelected = computed(() => isJSONImportType(form.value.type));
+const isRefreshTokenTypeSelected = computed(() => isRefreshTokenType(form.value.type));
 const selectedCount = computed(() => selectedModelIds.value.length);
 const allSelected = computed(() => discoveredModels.value.length > 0 && selectedModelIds.value.length === discoveredModels.value.length);
 const apiURLLabel = computed(() => form.value.endpointMode === "manual" ? "完整 API 地址" : "基础域名 / 基础路径");
@@ -123,13 +180,17 @@ function formatTime(value) {
 }
 
 function accountToForm(account) {
+  const defaults = emptyForm();
   return {
-    ...emptyForm(),
+    ...defaults,
     ...account,
+    type: editorCredentialType(account.type),
     endpointMode: account.endpointMode || (account.messagePathMode === "manual" ? "manual" : "auto"),
     messagePathMode: account.messagePathMode === "manual" ? "auto" : (account.messagePathMode || "auto"),
     headersText: JSON.stringify(account.headers || {}, null, 2),
+    oauth: { ...defaults.oauth, ...(account.oauth || {}) },
     apiKey: "",
+    refreshToken: "",
   };
 }
 
@@ -140,11 +201,19 @@ async function openNew() {
   } catch {
     // The static defaults keep the editor useful while Wails is starting.
   }
-  form.value = { ...emptyForm(), ...defaults, headersText: JSON.stringify(defaults?.headers || {}, null, 2), apiKey: "" };
+  form.value = {
+    ...emptyForm(),
+    ...defaults,
+    headersText: JSON.stringify(defaults?.headers || {}, null, 2),
+    oauth: { ...emptyForm().oauth, ...(defaults?.oauth || {}) },
+    apiKey: "",
+  };
   editorError.value = "";
   editorNotice.value = "地址默认只需填写域名。保存后可获取模型并默认全选导入；完整接口地址可随时切换为手动模式。";
   discoveredModels.value = [];
   selectedModelIds.value = [];
+  oauthSession.value = null;
+  oauthCallback.value = "";
   editorOpen.value = true;
 }
 
@@ -154,6 +223,8 @@ function openEdit(account) {
   editorNotice.value = "为保护已保存的凭据，令牌栏不会回显；留空保存将保留原有凭据。";
   discoveredModels.value = [];
   selectedModelIds.value = [];
+  oauthSession.value = null;
+  oauthCallback.value = "";
   editorOpen.value = true;
 }
 
@@ -169,10 +240,28 @@ function onProviderChange(provider) {
 }
 
 function onTypeChange(type) {
-  form.value.type = type;
-  if (type === "x_api_key") form.value.authMode = "x_api_key";
-  else if (type === "custom_header") form.value.authMode = "custom_header";
-  else if (type === "api_key") form.value.authMode = form.value.provider === "anthropic" ? "x_api_key" : "bearer";
+  if (isJSONImportType(type)) {
+    form.value.type = "auth_json";
+    form.value.apiKey = "";
+    form.value.refreshToken = "";
+    oauthSession.value = null;
+    oauthCallback.value = "";
+    editorError.value = "";
+    editorNotice.value = "auth.json / OAuth JSON 需要通过 JSON 导入解析，不能作为 API Key 保存。";
+    editorOpen.value = false;
+    openJSONImport("请粘贴完整的账户 JSON；它将按凭据字段安全导入，而不会被当作普通 API Key。");
+    return;
+  }
+
+  form.value.type = isRefreshTokenType(type) ? "refresh_token" : type;
+  if (isRefreshTokenType(form.value.type)) {
+    form.value.apiKey = "";
+    oauthSession.value = null;
+    oauthCallback.value = "";
+  }
+  if (form.value.type === "x_api_key") form.value.authMode = "x_api_key";
+  else if (form.value.type === "custom_header") form.value.authMode = "custom_header";
+  else if (form.value.type === "api_key") form.value.authMode = form.value.provider === "anthropic" ? "x_api_key" : "bearer";
   else form.value.authMode = "bearer";
 }
 
@@ -207,11 +296,20 @@ function accountPayload() {
     apiUrl: form.value.apiUrl?.trim(),
     apiKey: form.value.apiKey?.trim(),
     authHeader: form.value.authHeader?.trim(),
+    quotaUrl: form.value.quotaUrl?.trim(),
+    oauth: {
+      authorizationUrl: form.value.oauth?.authorizationUrl?.trim(),
+      tokenUrl: form.value.oauth?.tokenUrl?.trim(),
+      clientId: form.value.oauth?.clientId?.trim(),
+      redirectUri: form.value.oauth?.redirectUri?.trim(),
+      scopes: form.value.oauth?.scopes?.trim(),
+    },
     headers: parseHeaders(),
     priority: Number(form.value.priority),
     maxConcurrency: Number(form.value.maxConcurrency),
   };
   delete payload.headersText;
+  delete payload.refreshToken;
   return payload;
 }
 
@@ -221,7 +319,11 @@ async function saveAccount() {
   try {
     account = accountPayload();
     if (!account.apiUrl) throw new Error("请填写 API 地址");
-    if (!account.apiKey && !account.id) throw new Error("请填写 API Key、访问令牌，或使用 JSON 导入账户");
+    if (isJSONImportType(account.type)) throw new Error("auth.json / OAuth JSON 请通过“导入 JSON”导入，不能作为 API Key 直接保存。");
+    if (isRefreshTokenType(account.type)) throw new Error("Refresh Token / Mobile RT 必须先兑换为 OAuth 访问令牌，不能作为 API Key 直接保存。");
+    if (!account.apiKey && !account.id && account.type !== "oauth") {
+      throw new Error("请填写 API Key、访问令牌，或使用 OAuth 授权/JSON 导入账户");
+    }
   } catch (error) {
     editorError.value = error.message;
     return;
@@ -239,6 +341,158 @@ async function saveAccount() {
   } finally {
     saving.value = false;
   }
+}
+
+async function importRefreshToken() {
+  editorError.value = "";
+  editorNotice.value = "";
+  let account;
+  const refreshToken = String(form.value.refreshToken || "").trim();
+  try {
+    account = accountPayload();
+    if (!account.apiUrl) throw new Error("请填写 API 地址");
+    if (!refreshToken) throw new Error("请填写 Refresh Token 或 Mobile RT。");
+  } catch (error) {
+    editorError.value = error.message;
+    return;
+  }
+  oauthBusy.value = true;
+  try {
+    const result = await importOAuthRefreshToken(account, refreshToken);
+    if (!result?.ok) {
+      editorError.value = result?.message || "刷新令牌兑换失败";
+      return;
+    }
+    form.value.refreshToken = "";
+    editorNotice.value = result.message || "刷新令牌已兑换为 OAuth 账户。";
+    editorOpen.value = false;
+  } catch (error) {
+    editorError.value = String(error?.message || error);
+  } finally {
+    oauthBusy.value = false;
+  }
+}
+
+async function startOAuth() {
+  editorError.value = "";
+  editorNotice.value = "";
+  let account;
+  try {
+    account = accountPayload();
+    if (!account.apiUrl) throw new Error("请填写 API 地址");
+  } catch (error) {
+    editorError.value = error.message;
+    return;
+  }
+  oauthBusy.value = true;
+  try {
+    const result = await startOAuthAuthorization(account);
+    if (!result?.ok) {
+      editorError.value = result?.message || "无法生成 OAuth 授权链接";
+      return;
+    }
+    oauthSession.value = result;
+    oauthCallback.value = "";
+    editorNotice.value = result.message || "授权链接已生成。";
+  } catch (error) {
+    editorError.value = String(error?.message || error);
+  } finally {
+    oauthBusy.value = false;
+  }
+}
+
+async function completeOAuth() {
+  if (!oauthSession.value?.sessionId) return;
+  if (!oauthCallback.value.trim()) {
+    editorError.value = "请粘贴完整回调 URL 或授权码。";
+    return;
+  }
+  editorError.value = "";
+  oauthBusy.value = true;
+  try {
+    const result = await completeOAuthAuthorization(oauthSession.value.sessionId, oauthCallback.value.trim());
+    if (!result?.ok) {
+      editorError.value = result?.message || "OAuth 授权兑换失败";
+      return;
+    }
+    editorNotice.value = result.message || "OAuth 授权完成。";
+    editorOpen.value = false;
+  } catch (error) {
+    editorError.value = String(error?.message || error);
+  } finally {
+    oauthBusy.value = false;
+  }
+}
+
+async function copyText(value) {
+  const text = String(value || "").trim();
+  if (!text) return;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(text);
+    editorNotice.value = "已复制到剪贴板。";
+  } catch {
+    editorError.value = "无法写入剪贴板，请手动复制。";
+  }
+}
+
+async function refreshOAuthToken(account) {
+  if (!account?.id) return;
+  tokenRefreshBusy.value = account.id;
+  editorError.value = "";
+  try {
+    const result = await refreshUpstreamOAuthAccount(account.id);
+    if (result?.ok) editorNotice.value = result.message || "访问令牌已刷新。";
+    else editorError.value = result?.message || "访问令牌刷新失败";
+  } catch (error) {
+    editorError.value = String(error?.message || error);
+  } finally {
+    tokenRefreshBusy.value = "";
+  }
+}
+
+async function refreshQuota(account) {
+  if (!account?.id) return;
+  quotaRefreshBusy.value = account.id;
+  editorError.value = "";
+  try {
+    const result = await refreshUpstreamAccountQuota(account.id);
+    if (result?.ok) editorNotice.value = result.message || "上游额度快照已更新。";
+    else editorError.value = result?.message || "上游额度查询失败";
+  } catch (error) {
+    editorError.value = String(error?.message || error);
+  } finally {
+    quotaRefreshBusy.value = "";
+  }
+}
+
+function formatTokens(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "0";
+  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
+  if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
+  return String(Math.round(number));
+}
+
+function accountIdentity(account) {
+  const identity = account?.identity || {};
+  if (identity.email) return identity.email;
+  if (identity.subject) return identity.subject;
+  return "未提供身份资料";
+}
+
+function quotaSummary(account) {
+  const quota = account?.quota || {};
+  if (!quota.available) return "上游未返回额度";
+  const values = [];
+  if (quota.requestsRemaining !== undefined && quota.requestsRemaining !== null) {
+    values.push(`请求余量 ${quota.requestsRemaining}`);
+  }
+  if (quota.tokensRemaining !== undefined && quota.tokensRemaining !== null) {
+    values.push(`Token 余量 ${quota.tokensRemaining}`);
+  }
+  if (quota.retryAfter) values.push(`重试 ${quota.retryAfter}`);
+  return values.join(" · ") || "上游已返回额度快照";
 }
 
 async function discoverModels() {
@@ -348,6 +602,12 @@ async function importAccounts() {
   }
 }
 
+function openJSONImport(notice = "") {
+  importError.value = "";
+  importNotice.value = notice;
+  importOpen.value = true;
+}
+
 onMounted(() => loadAccounts());
 </script>
 
@@ -359,7 +619,7 @@ onMounted(() => loadAccounts());
         <div class="t-caption">API Key、OAuth/Bearer Token、x-api-key、Setup Token 与账户 JSON 导入；凭据仅保存在本机。</div>
       </div>
       <div class="row" style="gap: 7px">
-        <Button variant="plain" @click="importOpen = true">导入 JSON</Button>
+        <Button variant="plain" @click="openJSONImport()">导入 JSON</Button>
         <Button variant="filled" @click="openNew">添加账户</Button>
       </div>
     </div>
@@ -369,7 +629,7 @@ onMounted(() => loadAccounts());
       <div class="t-headline">还没有上游账户</div>
       <div class="t-caption" style="margin-top: 5px">添加一次凭据后，可把多个模型绑定到同一账户或账户池。</div>
       <div class="row" style="gap: 8px; margin-top: 14px">
-        <Button variant="tinted" @click="importOpen = true">导入账户 JSON</Button>
+        <Button variant="tinted" @click="openJSONImport()">导入账户 JSON</Button>
         <Button variant="filled" @click="openNew">添加账户</Button>
       </div>
     </div>
@@ -390,10 +650,30 @@ onMounted(() => loadAccounts());
         </div>
         <div class="inset-group" style="margin-top: 11px">
           <div class="inset-row"><span>类型</span><code>{{ account.type || 'api_key' }}</code></div>
+          <div class="inset-row"><span>身份</span><code class="truncate">{{ accountIdentity(account) }}</code></div>
+          <div v-if="account.identity?.plan" class="inset-row"><span>套餐</span><code>{{ account.identity.plan }}</code></div>
+          <div v-if="account.authExpiresAt" class="inset-row"><span>令牌到期</span><code>{{ formatTime(account.authExpiresAt) }}</code></div>
           <div class="inset-row"><span>上次成功</span><code>{{ formatTime(account.lastSuccessAt) }}</code></div>
           <div v-if="account.lastError" class="inset-row error-row"><span>状态</span><code class="truncate">{{ account.lastError }}</code></div>
         </div>
+        <div class="usage-band">
+          <div class="usage-label">本机转发用量</div>
+          <div class="usage-values">
+            <span><b>{{ account.localUsage?.requestCount || 0 }}</b> 请求</span>
+            <span><b>{{ formatTokens(account.localUsage?.totalTokens) }}</b> Token</span>
+            <span>缓存 {{ formatTokens(account.localUsage?.cacheReadTokens) }}</span>
+          </div>
+        </div>
+        <div class="quota-band" :class="{ available: account.quota?.available }">
+          <div class="quota-copy">
+            <span class="usage-label">上游额度</span>
+            <span class="quota-text">{{ quotaSummary(account) }}</span>
+            <span v-if="account.quota?.updatedAt" class="quota-meta">{{ account.quota.source }} · {{ formatTime(account.quota.updatedAt) }}</span>
+          </div>
+          <Button variant="plain" size="sm" :loading="quotaRefreshBusy === account.id" :disabled="!account.quotaUrl" @click="refreshQuota(account)">刷新额度</Button>
+        </div>
         <div class="row" style="gap: 6px; margin-top: 12px; justify-content: flex-end">
+          <Button v-if="account.type === 'oauth'" variant="plain" size="sm" :loading="tokenRefreshBusy === account.id" @click="refreshOAuthToken(account)">刷新令牌</Button>
           <Button variant="plain" size="sm" @click="toggleAccount(account)">{{ account.enabled ? '暂停' : '恢复' }}</Button>
           <Button variant="plain" size="sm" @click="openEdit(account)">编辑</Button>
           <Button variant="danger" size="sm" @click="confirmDelete = account">删除</Button>
@@ -418,6 +698,7 @@ onMounted(() => loadAccounts());
             <Field :label="apiURLLabel" :hint="apiURLHint" v-model="form.apiUrl" :placeholder="apiURLPlaceholder" mono />
             <Field label="账户名称" hint="可选；用于模型绑定时识别" v-model="form.name" placeholder="例如 XIASS 主账户" />
           </div>
+          <Field label="上游额度接口（可选）" hint="仅在点击“刷新额度”时请求；填写上游文档提供的完整 URL。" v-model="form.quotaUrl" placeholder="https://provider.example.com/v1/usage" mono />
           <div v-if="form.provider === 'anthropic' && form.endpointMode !== 'manual'" class="claude-path-control">
             <div class="compact-label">Claude 路径</div>
             <SegmentedControl :options="anthropicPathOptions" :model-value="form.messagePathMode" @update:model-value="form.messagePathMode = $event" />
@@ -426,9 +707,18 @@ onMounted(() => loadAccounts());
           <div v-else-if="form.provider === 'anthropic'" class="t-caption">手动模式下会严格使用完整地址，例如 <code>/v1/messages</code> 或 <code>/v1/chat/messages</code>。</div>
         </section>
 
-        <section class="section">
+        <section v-if="isJSONImportTypeSelected" class="section json-import-box">
+          <div class="t-headline">请通过 JSON 导入凭据</div>
+          <div class="t-caption">auth.json、OAuth JSON 与账户凭据 JSON 会由导入器识别并安全保存，不能作为普通 API Key 直接提交。</div>
+          <div class="row" style="justify-content: flex-end; gap: 7px">
+            <Button variant="tinted" @click="openJSONImport('请粘贴完整的账户 JSON；它将按凭据字段安全导入，而不会被当作普通 API Key。')">打开 JSON 导入</Button>
+          </div>
+        </section>
+
+        <section v-else class="section">
           <div class="t-headline">认证与调度</div>
           <Field
+            v-if="!isRefreshTokenTypeSelected"
             :label="isExisting ? '新 API Key / Token（留空保留原凭据）' : 'API Key / Token'"
             type="password"
             v-model="form.apiKey"
@@ -447,6 +737,44 @@ onMounted(() => loadAccounts());
             <Field label="最大并发" hint="每个账户 1–32" type="number" v-model="form.maxConcurrency" />
           </div>
           <label class="enabled-check"><input v-model="form.enabled" type="checkbox" /> 保存后立即参与调度</label>
+        </section>
+
+        <section v-if="form.type === 'oauth' || isRefreshTokenTypeSelected" class="section oauth-box">
+          <div class="row between" style="gap: 8px">
+            <div>
+              <div class="t-headline">{{ isRefreshTokenTypeSelected ? '刷新令牌 / Mobile RT 导入' : 'OAuth 授权登录' }}</div>
+              <div class="t-caption">使用已注册的公开客户端与回调地址。WF 不内置第三方客户端 ID 或密钥。</div>
+            </div>
+            <Button v-if="form.type === 'oauth'" variant="tinted" :loading="oauthBusy" @click="startOAuth">生成登录链接</Button>
+          </div>
+          <div class="two-col">
+            <Field label="授权地址" v-model="form.oauth.authorizationUrl" placeholder="https://provider.example.com/oauth/authorize" mono />
+            <Field label="令牌地址" v-model="form.oauth.tokenUrl" placeholder="https://provider.example.com/oauth/token" mono />
+            <Field label="公开客户端 ID" v-model="form.oauth.clientId" placeholder="OAuth public client ID" mono />
+            <Field label="已注册回调地址" v-model="form.oauth.redirectUri" placeholder="http://localhost:1455/auth/callback" mono />
+          </div>
+          <Field label="Scopes（可选）" v-model="form.oauth.scopes" placeholder="openid profile email offline_access" mono />
+          <div v-if="isRefreshTokenTypeSelected" class="oauth-result">
+            <Field label="Refresh Token / Mobile RT" hint="仅发送至上方 OAuth 令牌地址；不会作为 API Key 保存或发往模型接口。" type="password" v-model="form.refreshToken" placeholder="粘贴刷新令牌" mono />
+            <div class="t-caption">该值不会作为 API Key 保存或发往模型接口；兑换成功后仅保留 OAuth 访问令牌和刷新凭据。</div>
+            <div class="row" style="justify-content: flex-end; gap: 7px">
+              <Button variant="filled" size="sm" :loading="oauthBusy" @click="importRefreshToken">兑换并保存 OAuth 账户</Button>
+            </div>
+          </div>
+          <div v-else-if="oauthSession" class="oauth-result">
+            <div class="t-footnote">授权链接</div>
+            <code class="oauth-link">{{ oauthSession.authorizationUrl }}</code>
+            <div class="row" style="justify-content: flex-end; gap: 7px">
+              <Button variant="plain" size="sm" @click="copyText(oauthSession.authorizationUrl)">复制链接</Button>
+            </div>
+            <label class="text-field">
+              <span class="t-footnote">回调 URL 或授权码</span>
+              <textarea v-model="oauthCallback" spellcheck="false" placeholder="粘贴浏览器跳转后的完整地址，或仅粘贴 code"></textarea>
+            </label>
+            <div class="row" style="justify-content: flex-end; gap: 7px">
+              <Button variant="filled" size="sm" :loading="oauthBusy" @click="completeOAuth">兑换并保存账户</Button>
+            </div>
+          </div>
         </section>
 
         <section v-if="isExisting" class="section discover-box">
@@ -481,7 +809,7 @@ onMounted(() => loadAccounts());
       </div>
       <template #footer>
         <Button variant="plain" @click="editorOpen = false">取消</Button>
-        <Button variant="filled" :loading="saving" @click="saveAccount">{{ isExisting ? '保存账户' : '保存账户' }}</Button>
+        <Button v-if="!isRefreshTokenTypeSelected && !isJSONImportTypeSelected" variant="filled" :loading="saving" @click="saveAccount">保存账户</Button>
       </template>
     </Modal>
 
@@ -520,12 +848,25 @@ onMounted(() => loadAccounts());
 .inset-row > span { color: var(--text-tertiary); font-size: 10px; width: 48px; letter-spacing: .04em; }
 .inset-row code { min-width: 0; color: var(--text-secondary); font-size: 11px; }
 .error-row code { color: var(--orange); }
+.usage-band, .quota-band { margin-top: 10px; padding: 9px 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-inset); }
+.usage-band { display: flex; flex-direction: column; gap: 5px; }
+.usage-label { color: var(--text-tertiary); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
+.usage-values { display: flex; flex-wrap: wrap; gap: 8px 12px; color: var(--text-secondary); font-size: 11px; }
+.usage-values b { color: var(--text-primary); font-weight: 700; }
+.quota-band { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.quota-band.available { border-color: var(--accent-border); background: color-mix(in srgb, var(--accent-soft) 34%, var(--bg-inset)); }
+.quota-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.quota-text { color: var(--text-secondary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-meta { color: var(--text-tertiary); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { flex: 1; min-height: 270px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; text-align: center; border: 1px dashed var(--separator-strong); border-radius: var(--r-lg); }
 .empty-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; font-size: 28px; color: var(--accent-strong); background: var(--accent-soft); margin-bottom: 13px; }
 .editor { padding-bottom: 2px; }
 .section { display: flex; flex-direction: column; gap: 9px; padding: 12px; border: 1px solid var(--separator); border-radius: var(--r-md); background: color-mix(in srgb, var(--bg-inset) 58%, transparent); }
 .discover-box { background: color-mix(in srgb, var(--accent-soft) 28%, var(--bg-card)); }
 .hint-box { background: color-mix(in srgb, var(--blue-soft) 28%, var(--bg-card)); }
+.oauth-box { background: color-mix(in srgb, var(--blue-soft) 24%, var(--bg-card)); }
+.oauth-result { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--accent-border); border-radius: var(--r-sm); background: var(--bg-card); }
+.oauth-link { display: block; max-height: 74px; overflow: auto; padding: 8px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-secondary); font-size: 11px; line-height: 1.45; word-break: break-all; background: var(--bg-inset); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .compact-label { color: var(--text-tertiary); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
 .claude-path-control { display: flex; flex-direction: column; gap: 7px; padding: 9px; border: 1px dashed var(--separator-strong); border-radius: var(--r-sm); background: var(--bg-card); }

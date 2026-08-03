@@ -16,7 +16,7 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 适用于希望：
 
 - 添加、编辑和管理自定义模型；
-- 使用 OpenAI Chat Completions、OpenAI 兼容接口或 Anthropic Messages API；
+- 使用 OpenAI Chat Completions / Responses、OpenAI 兼容接口或 Anthropic Messages API；
 - 管理 GPT 的推理等级；
 - 自动检测并启动 Antigravity IDE / Antigravity 2.x；
 - 在更新 Antigravity 后重新应用本地配置；
@@ -26,9 +26,13 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 
 - 自动检测 Antigravity、Antigravity IDE 和 Antigravity 2.x；若安装了多个版本，首页会分别提供启动或重启按钮。
 - 模型配置支持自定义显示名、上游模型名、API 地址、API Key、协议和推理等级；显示名留空时自动使用上游模型名。
+- 支持账户池绑定：同协议的多个账户可轮换与故障切换；发现、测试使用首个账户，运行时按优先级、并发和健康状态调度全部已绑定账户。
+- 账户池支持 API Key、Bearer / Access Token、x-api-key、Setup Token、Codex PAT、自定义认证头、账户 JSON、Refresh Token 兑换及通用 OAuth 2.0 + PKCE 授权；凭据不会回显到界面或日志。
+- 账户卡片可展示可解析的账号身份/套餐、本机转发用量，以及上游响应头或用户显式配置额度接口返回的限流快照。
+- OpenAI 自动 / Responses 模式可转发截图、文件、联网搜索与图片生成请求；当上游明确不支持某项 Responses 内置工具时，助手会在生成前安全降级并记住兼容性结果。Claude Messages 可转发文字、图片、PDF、工具调用和推理请求。
 - 支持浅色、深色和跟随系统主题。
 - 提供“应用全部补丁”“仅 IDE 补丁”“恢复原始文件”三项操作，并在修改前创建本地备份。
-- 启动时安全合并历史会话；关闭窗口后继续驻留：Windows 右下角托盘、macOS 顶部菜单栏均可打开主界面或退出；选择退出后释放本地端口。
+- 启动时安全合并历史会话；关闭窗口后继续驻留：Windows 右下角托盘、macOS 顶部菜单栏均可打开主界面或退出；macOS 点红色关闭按钮会最小化到 Dock，Dock 或菜单栏的“退出”都会释放本地端口。
 - 可设置终端命令的自动批准范围；请只在完全可信的工作区和指令来源中启用。
 
 ## 下载
@@ -37,8 +41,8 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 
 | 系统 | 推荐下载 | 说明 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.4.1-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
-| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.4.1-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.4.2-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
+| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.4.2-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
 
 发布页仅提供以上两个标准安装包及 `SHA256SUMS.txt`，用于校验文件完整性。
 
@@ -46,7 +50,7 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 
 1. 安装并打开 Antigravity WF助手。
 2. 确认首页已检测到 Antigravity 的安装路径；若未检测到，可按系统说明设置路径环境变量。
-3. 在“模型”中添加服务的上游模型名、API 地址、API Key 和协议。
+3. 在“模型”中添加服务的上游模型名、API 地址、API Key 和协议；也可先在“账户池”保存凭据后，为模型勾选一个或多个同协议账户，无需复制 API Key 到每个模型。
 4. 根据使用范围选择“应用全部补丁”或“仅 IDE 补丁”。
 5. 使用首页的启动按钮打开 Antigravity，并在使用自定义模型期间保持助手运行。
 

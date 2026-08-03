@@ -44,7 +44,7 @@ jobs:
         run: go test ./...
 
       - name: Build Windows x64
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手.exe"
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手-v1.4.2.exe"
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
@@ -58,5 +58,5 @@ jobs:
         with:
           name: Antigravity-WF-Assistant-Windows-x64
           path: |
-            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.4.1-Setup.exe
+            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.4.2-Setup.exe
           if-no-files-found: error

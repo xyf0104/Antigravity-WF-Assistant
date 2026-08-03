@@ -507,6 +507,16 @@ func containsModelReference(value any, wanted map[string]bool) bool {
 // handleFetchAvailableModels forwards Google's model response and injects the
 // configured models into current and legacy Antigravity response shapes.
 func handleFetchAvailableModels(w http.ResponseWriter, r *http.Request) {
+	handleFetchAvailableModelsWithClient(w, r, &http.Client{Timeout: 30 * time.Second})
+}
+
+// handleFetchAvailableModelsWithClient isolates the upstream transport so the
+// model-response conversion can be verified locally without contacting Google.
+// Production always calls the wrapper above with a bounded HTTP client.
+func handleFetchAvailableModelsWithClient(w http.ResponseWriter, r *http.Request, client *http.Client) {
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -525,7 +535,7 @@ func handleFetchAvailableModels(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Host", googleHost)
 	req.Header.Set("Accept-Encoding", "identity")
 
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		trace("model-response-error", map[string]any{"message": err.Error()})
 		http.Error(w, err.Error(), http.StatusBadGateway)

@@ -28,6 +28,17 @@ func excludeFailedAttempt(excluded map[string]struct{}, lease *storage.AccountLe
 	}
 }
 
+// observeAttemptQuota passively records rate-limit headers for the account
+// selected for this upstream attempt. It deliberately runs before any retry,
+// fallback, or response-body handling so both accepted and rejected upstream
+// responses remain visible in the account view.
+func observeAttemptQuota(lease *storage.AccountLease, provider string, response *http.Response) {
+	if lease == nil || lease.ID == "" || response == nil {
+		return
+	}
+	storage.ObserveUpstreamQuota(lease.ID, provider, response.StatusCode, response.Header)
+}
+
 func releaseAttemptSuccess(lease *storage.AccountLease) {
 	if lease != nil {
 		lease.Finish(http.StatusOK, "", "")

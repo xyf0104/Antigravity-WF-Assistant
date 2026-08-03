@@ -6,19 +6,23 @@ SetCompressor /SOLID lzma
 
 !define APP_NAME "Antigravity WF助手"
 !define APP_EXE "Antigravity WF助手.exe"
-!define APP_VERSION "1.4.1"
+; Keep the installed executable name stable while packaging a versioned build
+; artifact. This lets local and CI builds coexist without overwriting a
+; previous executable before NSIS has produced a verified installer.
+!define APP_SOURCE_EXE "Antigravity WF助手-v1.4.2.exe"
+!define APP_VERSION "1.4.2"
 !define APP_PUBLISHER "WF"
 !define APP_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityWFAssistant"
 
 Name "${APP_NAME}"
-OutFile "..\bin\Antigravity-WF-Assistant-Windows-x64-v1.4.1-Setup.exe"
+OutFile "..\bin\Antigravity-WF-Assistant-Windows-x64-v1.4.2-Setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
 InstallDirRegKey HKCU "${APP_UNINSTALL_KEY}" "InstallLocation"
 RequestExecutionLevel user
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "1.4.1.0"
+VIProductVersion "1.4.2.0"
 VIAddVersionKey /LANG=2052 "ProductName" "${APP_NAME}"
 VIAddVersionKey /LANG=2052 "FileDescription" "${APP_NAME} 安装程序"
 VIAddVersionKey /LANG=2052 "CompanyName" "${APP_PUBLISHER}"
@@ -47,7 +51,7 @@ Section "安装 ${APP_NAME}" MainSection
   SetShellVarContext current
   SetOutPath "$INSTDIR"
   SetOverwrite on
-  File "/oname=${APP_EXE}" "..\bin\${APP_EXE}"
+  File "/oname=${APP_EXE}" "..\bin\${APP_SOURCE_EXE}"
   WriteUninstaller "$INSTDIR\卸载 ${APP_NAME}.exe"
 
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"

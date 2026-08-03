@@ -1,8 +1,8 @@
-# Antigravity WF助手 macOS v1.4.1
+# Antigravity WF助手 macOS v1.4.2
 
 ## 安装
 
-1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.4.1-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
+1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.4.2-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
 2. 首次打开如果 macOS 显示开发者提示，请在 Finder 中右键 App，选择“打开”。
 
 App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时不需要 Python、Node.js 或外置补丁脚本。
@@ -14,6 +14,13 @@ App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时�
 3. 回到“总览”，确认已自动识别 Antigravity IDE 或 Antigravity 2.x。
 4. 点击“应用全部补丁”。如果 Antigravity 位于受保护的 `/Applications` 目录，macOS 可能要求管理员授权。
 5. 使用“Antigravity 快捷启动”按钮启动或重启对应安装。
+
+## 账户池与登录
+
+1. 在“账户池”中可添加 API Key、Bearer / Access Token、x-api-key、Setup Token、Codex PAT 或自定义认证头；默认只需填写基础域名，选择“完整路径（手动）”后可完全自行指定请求地址。
+2. OAuth 登录请选择“OAuth 授权登录”，填写服务商已注册的授权地址、令牌地址、公开 Client ID 与回调地址，点击“生成登录链接”，完成浏览器授权后粘贴回调 URL 或授权码。助手使用 PKCE，不内置第三方 Client Secret。
+3. 已有 `auth.json`、OAuth JSON 或 XIASS 风格账户导出时，使用“导入账户 JSON”；Refresh Token / Mobile RT 使用专门的兑换入口，不能当作 API Key 直接保存。
+4. 一个模型可绑定多个同协议账户。正常请求会按优先级、并发与健康状态调度；可在账户卡片查看本机转发用量、上游限流快照及可显示的账号身份/套餐资料。
 
 ## 启动与重启保护
 
@@ -27,7 +34,7 @@ App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时�
 - 右上角可选“浅色”、“深色”或“跟随系统”。
 - 模型、凭据、统计和备份继续保存在 `~/.antigravity-byok/`，这个旧目录名为兼容现有数据而保留。
 - 历史会话使用 `~/.gemini/antigravity/`；合并时只补充缺失文件，不覆盖现有会话。
-- 点击窗口左上角关闭按钮时，主窗口会隐藏，应用仅保留在顶部菜单栏，不会继续占用 Dock；代理与历史同步继续运行。顶部菜单栏的 WF 图标可“打开主界面”或“退出 Antigravity WF助手”；退出会先释放 `127.0.0.1:50999`。
+- 点击窗口左上角关闭按钮时，主窗口会最小化到 Dock；代理与历史同步继续运行，顶部菜单栏的 WF 图标也会保留。点击顶部图标可打开“打开主界面 / 退出 Antigravity WF助手”菜单；Dock 右键或顶部菜单栏选择“退出”都会先释放 `127.0.0.1:50999`。
 
 ## 提醒
 

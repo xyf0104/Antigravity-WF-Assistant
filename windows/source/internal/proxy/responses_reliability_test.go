@@ -168,7 +168,7 @@ func TestResponsesDoneMarkerWritesTerminalEvent(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	outcome := streamOpenAIResponsesAttempt(newDownstreamSSEWriter(recorder), &http.Response{
 		Body: io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
-	}, "responses-done", 1)
+	}, "responses-done", 1, nil)
 	if !outcome.finished {
 		t.Fatal("[DONE] did not finish the Responses stream")
 	}

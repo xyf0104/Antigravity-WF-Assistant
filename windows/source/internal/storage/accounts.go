@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -35,20 +37,76 @@ type UpstreamAccount struct {
 	AuthMode        string            `json:"authMode,omitempty"`
 	AuthHeader      string            `json:"authHeader,omitempty"`
 	Headers         map[string]string `json:"headers,omitempty"`
-	APIKey          string            `json:"apiKey,omitempty"`
-	Credentials     map[string]any    `json:"credentials,omitempty"`
-	Enabled         bool              `json:"enabled"`
-	Priority        int               `json:"priority"`
-	MaxConcurrency  int               `json:"maxConcurrency"`
-	ExpiresAt       string            `json:"expiresAt,omitempty"`
-	LastUsedAt      string            `json:"lastUsedAt,omitempty"`
-	LastSuccessAt   string            `json:"lastSuccessAt,omitempty"`
-	LastError       string            `json:"lastError,omitempty"`
-	FailureCount    int               `json:"failureCount,omitempty"`
-	CooldownUntil   string            `json:"cooldownUntil,omitempty"`
-	CreatedAt       string            `json:"createdAt,omitempty"`
-	UpdatedAt       string            `json:"updatedAt,omitempty"`
-	ActiveRequests  int               `json:"activeRequests,omitempty"`
+	// QuotaURL is an optional, provider-documented full endpoint queried only
+	// when the user explicitly requests an upstream quota refresh.
+	QuotaURL string `json:"quotaUrl,omitempty"`
+	// OAuth contains only public OAuth client configuration. Access and refresh
+	// tokens remain inside Credentials and are never returned to the renderer.
+	OAuth       OAuthConfiguration `json:"oauth,omitempty"`
+	APIKey      string             `json:"apiKey,omitempty"`
+	Credentials map[string]any     `json:"credentials,omitempty"`
+	// Identity is display-only account metadata. Its Source makes clear whether
+	// it came from an OAuth response, an imported JSON file, or has not yet
+	// been verified by an upstream provider.
+	Identity AccountIdentity `json:"identity,omitempty"`
+	// AuthExpiresAt describes the access-token lifetime. It is deliberately
+	// separate from ExpiresAt, which means the local scheduler must stop using
+	// an account at a user-configured time.
+	AuthExpiresAt  string        `json:"authExpiresAt,omitempty"`
+	Quota          QuotaSnapshot `json:"quota,omitempty"`
+	Enabled        bool          `json:"enabled"`
+	Priority       int           `json:"priority"`
+	MaxConcurrency int           `json:"maxConcurrency"`
+	ExpiresAt      string        `json:"expiresAt,omitempty"`
+	LastUsedAt     string        `json:"lastUsedAt,omitempty"`
+	LastSuccessAt  string        `json:"lastSuccessAt,omitempty"`
+	LastError      string        `json:"lastError,omitempty"`
+	FailureCount   int           `json:"failureCount,omitempty"`
+	CooldownUntil  string        `json:"cooldownUntil,omitempty"`
+	CreatedAt      string        `json:"createdAt,omitempty"`
+	UpdatedAt      string        `json:"updatedAt,omitempty"`
+	ActiveRequests int           `json:"activeRequests,omitempty"`
+}
+
+// OAuthConfiguration is a public-client Authorization Code + PKCE setup.
+// WF intentionally does not store a client secret: a desktop app is not a
+// confidential OAuth client. The provider must have registered the redirect
+// URI and client ID entered by the account owner.
+type OAuthConfiguration struct {
+	AuthorizationURL string `json:"authorizationUrl,omitempty"`
+	TokenURL         string `json:"tokenUrl,omitempty"`
+	ClientID         string `json:"clientId,omitempty"`
+	RedirectURI      string `json:"redirectUri,omitempty"`
+	Scopes           string `json:"scopes,omitempty"`
+}
+
+// AccountIdentity is metadata shown beside a credential. It is never used to
+// authorize requests or infer billing entitlement.
+type AccountIdentity struct {
+	Email                 string `json:"email,omitempty"`
+	Subject               string `json:"subject,omitempty"`
+	Plan                  string `json:"plan,omitempty"`
+	OrganizationID        string `json:"organizationId,omitempty"`
+	SubscriptionExpiresAt string `json:"subscriptionExpiresAt,omitempty"`
+	PrivacyMode           string `json:"privacyMode,omitempty"`
+	Source                string `json:"source,omitempty"`
+	UpdatedAt             string `json:"updatedAt,omitempty"`
+}
+
+// QuotaSnapshot only contains values directly observed in upstream response
+// headers or a user-requested quota endpoint. Empty fields mean the upstream
+// did not expose that value; callers must not turn absence into a zero quota.
+type QuotaSnapshot struct {
+	Available         bool   `json:"available,omitempty"`
+	Source            string `json:"source,omitempty"`
+	UpdatedAt         string `json:"updatedAt,omitempty"`
+	StatusCode        int    `json:"statusCode,omitempty"`
+	RequestsRemaining string `json:"requestsRemaining,omitempty"`
+	TokensRemaining   string `json:"tokensRemaining,omitempty"`
+	RequestsReset     string `json:"requestsReset,omitempty"`
+	TokensReset       string `json:"tokensReset,omitempty"`
+	RetryAfter        string `json:"retryAfter,omitempty"`
+	Message           string `json:"message,omitempty"`
 }
 
 type accountsStore struct {
@@ -76,6 +134,11 @@ var (
 		sync.Mutex
 		active map[string]int
 	}{active: make(map[string]int)}
+	quotaRun = struct {
+		sync.RWMutex
+		values        map[string]QuotaSnapshot
+		lastPersisted map[string]time.Time
+	}{values: make(map[string]QuotaSnapshot), lastPersisted: make(map[string]time.Time)}
 )
 
 func initAccountsFile(dir string) {
@@ -103,6 +166,11 @@ func normalizeAccount(account UpstreamAccount) UpstreamAccount {
 	account.MessagePathMode = normalizeMessagePathMode(account.MessagePathMode)
 	account.AuthMode = strings.ToLower(strings.TrimSpace(account.AuthMode))
 	account.AuthHeader = strings.TrimSpace(account.AuthHeader)
+	account.QuotaURL = strings.TrimSpace(account.QuotaURL)
+	account.OAuth = normalizeOAuthConfiguration(account.OAuth)
+	account.Identity = normalizeAccountIdentity(account.Identity)
+	account.AuthExpiresAt = strings.TrimSpace(account.AuthExpiresAt)
+	account.Quota = normalizeQuotaSnapshot(account.Quota)
 	if account.AuthMode == "" {
 		switch account.Type {
 		case "x_api_key":
@@ -141,8 +209,9 @@ func normalizeAccount(account UpstreamAccount) UpstreamAccount {
 		account.Headers = cloneStringMap(account.Headers)
 	}
 	if account.Credentials != nil {
-		account.Credentials = cloneAnyMap(account.Credentials)
+		account.Credentials = normalizeImportedCredentials(account.Credentials)
 	}
+	populateIdentityFromCredentials(&account, "导入的 OAuth 声明")
 	now := time.Now().UTC().Format(time.RFC3339)
 	if account.CreatedAt == "" {
 		account.CreatedAt = now
@@ -190,14 +259,57 @@ func normalizeAccountType(value string) string {
 		return "x_api_key"
 	case "oauth", "oauth_token", "access_token", "bearer", "bearer_token":
 		return "oauth"
+	case "auth_json", "auth.json", "auth-json", "oauth_json", "oauth-json", "credential_json", "credential-json", "credentials_json", "credentials-json":
+		return "auth_json"
+	case "refresh_token", "refresh-token", "refreshtoken", "mobile_rt", "mobile-rt", "mobilert":
+		return "refresh_token"
+	case "codex_pat", "pat", "personal_access_token", "personal-access-token":
+		return "codex_pat"
 	case "setup_token", "setup-token":
 		return "setup_token"
 	case "custom_header", "custom-header":
 		return "custom_header"
-	case "json", "json_import", "import":
+	case "json", "json_import", "json-import", "raw_json", "raw-json", "account_json", "account-json", "import":
 		return "json"
 	default:
 		return "api_key"
+	}
+}
+
+// compactAccountType deliberately treats punctuation and case variants as the
+// same account type. The UI is not the only caller of this package, so the
+// storage boundary must not rely on a renderer having normalized the value.
+func compactAccountType(value string) string {
+	var compact strings.Builder
+	for _, character := range strings.ToLower(strings.TrimSpace(value)) {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') {
+			compact.WriteRune(character)
+		}
+	}
+	return compact.String()
+}
+
+// isRawJSONAccountType identifies an instruction to import credentials, not a
+// usable authentication scheme. Raw JSON must be parsed by
+// ImportUpstreamAccounts so that only the intended credential fields are kept.
+func isRawJSONAccountType(value string) bool {
+	switch compactAccountType(value) {
+	case "authjson", "oauthjson", "credentialjson", "credentialsjson", "json", "jsonimport", "rawjson", "accountjson", "import":
+		return true
+	default:
+		return false
+	}
+}
+
+// isRefreshTokenAccountType prevents a refresh token (including Mobile RT)
+// from being stored as a bearer/API key. It has to be exchanged first, which
+// keeps the account's token lifetime and refresh metadata consistent.
+func isRefreshTokenAccountType(value string) bool {
+	switch compactAccountType(value) {
+	case "refreshtoken", "mobilert", "mobilerefreshtoken":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -258,14 +370,7 @@ func (account UpstreamAccount) EffectiveAPIKey() string {
 	if value := strings.TrimSpace(account.APIKey); value != "" {
 		return value
 	}
-	for _, key := range []string{"api_key", "apiKey", "access_token", "accessToken", "token", "setup_token", "setupToken", "secret"} {
-		if value, ok := account.Credentials[key]; ok {
-			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
-				return strings.TrimSpace(text)
-			}
-		}
-	}
-	return ""
+	return effectiveAPIKeyFromCredentials(account.Credentials)
 }
 
 func (account UpstreamAccount) ToModel(model CustomModel) CustomModel {
@@ -328,6 +433,13 @@ func normalizeLoadedAccount(account UpstreamAccount) UpstreamAccount {
 	}
 	account.MessagePathMode = normalizeMessagePathMode(account.MessagePathMode)
 	account.EndpointMode = normalizeEndpointMode(account.EndpointMode)
+	account.QuotaURL = strings.TrimSpace(account.QuotaURL)
+	account.OAuth = normalizeOAuthConfiguration(account.OAuth)
+	account.Identity = normalizeAccountIdentity(account.Identity)
+	account.AuthExpiresAt = strings.TrimSpace(account.AuthExpiresAt)
+	account.Quota = normalizeQuotaSnapshot(account.Quota)
+	account.Credentials = normalizeImportedCredentials(account.Credentials)
+	populateIdentityFromCredentials(&account, "导入的 OAuth 声明")
 	if account.MaxConcurrency <= 0 {
 		account.MaxConcurrency = 2
 	}
@@ -337,18 +449,235 @@ func normalizeLoadedAccount(account UpstreamAccount) UpstreamAccount {
 	return account
 }
 
+func normalizeOAuthConfiguration(config OAuthConfiguration) OAuthConfiguration {
+	config.AuthorizationURL = strings.TrimSpace(config.AuthorizationURL)
+	config.TokenURL = strings.TrimSpace(config.TokenURL)
+	config.ClientID = strings.TrimSpace(config.ClientID)
+	config.RedirectURI = strings.TrimSpace(config.RedirectURI)
+	config.Scopes = strings.Join(strings.Fields(config.Scopes), " ")
+	return config
+}
+
+func normalizeAccountIdentity(identity AccountIdentity) AccountIdentity {
+	identity.Email = strings.TrimSpace(identity.Email)
+	identity.Subject = strings.TrimSpace(identity.Subject)
+	identity.Plan = strings.TrimSpace(identity.Plan)
+	identity.OrganizationID = strings.TrimSpace(identity.OrganizationID)
+	identity.SubscriptionExpiresAt = strings.TrimSpace(identity.SubscriptionExpiresAt)
+	identity.PrivacyMode = strings.TrimSpace(identity.PrivacyMode)
+	identity.Source = strings.TrimSpace(identity.Source)
+	identity.UpdatedAt = strings.TrimSpace(identity.UpdatedAt)
+	return identity
+}
+
+func normalizeQuotaSnapshot(snapshot QuotaSnapshot) QuotaSnapshot {
+	snapshot.Source = strings.TrimSpace(snapshot.Source)
+	snapshot.UpdatedAt = strings.TrimSpace(snapshot.UpdatedAt)
+	snapshot.RequestsRemaining = strings.TrimSpace(snapshot.RequestsRemaining)
+	snapshot.TokensRemaining = strings.TrimSpace(snapshot.TokensRemaining)
+	snapshot.RequestsReset = strings.TrimSpace(snapshot.RequestsReset)
+	snapshot.TokensReset = strings.TrimSpace(snapshot.TokensReset)
+	snapshot.RetryAfter = strings.TrimSpace(snapshot.RetryAfter)
+	snapshot.Message = strings.TrimSpace(snapshot.Message)
+	return snapshot
+}
+
+// populateIdentityFromCredentials imports non-secret OAuth metadata when it
+// is available. JWT content is intentionally labelled as a claim because
+// desktop credential import cannot prove the original token signature.
+func populateIdentityFromCredentials(account *UpstreamAccount, fallbackSource string) {
+	if account == nil {
+		return
+	}
+	account.Credentials = normalizeImportedCredentials(account.Credentials)
+	if account.Credentials == nil {
+		return
+	}
+	credentialMaps := importedCredentialMaps(account.Credentials)
+	identity := account.Identity
+	if identity.Email == "" {
+		identity.Email = importedStringFromMaps(credentialMaps, "email", "user_email", "userEmail")
+	}
+	if identity.Subject == "" {
+		identity.Subject = importedStringFromMaps(credentialMaps, "sub", "subject", "user_id", "userId", "chatgpt_user_id")
+	}
+	if identity.Plan == "" {
+		identity.Plan = importedStringFromMaps(credentialMaps, "plan", "plan_type", "planType", "chatgpt_plan_type", "tier")
+	}
+	if identity.OrganizationID == "" {
+		identity.OrganizationID = importedStringFromMaps(credentialMaps, "organization_id", "organizationId", "org_id", "orgId", "account_id", "accountId", "chatgpt_account_id", "poid")
+	}
+	if identity.SubscriptionExpiresAt == "" {
+		identity.SubscriptionExpiresAt = importedStringFromMaps(credentialMaps, "subscription_expires_at", "subscriptionExpiresAt", "plan_expires_at", "planExpiresAt")
+	}
+	if identity.PrivacyMode == "" {
+		identity.PrivacyMode = importedStringFromMaps(credentialMaps, "privacy_mode", "privacyMode")
+	}
+	if idToken := importedStringFromMaps(credentialMaps, importedIDTokenKeys...); idToken != "" {
+		mergeIdentityClaims(&identity, decodeJWTClaims(idToken))
+	}
+	if accessToken := importedStringFromMaps(credentialMaps, importedAccessTokenKeys...); accessToken != "" {
+		mergeIdentityClaims(&identity, decodeJWTClaims(accessToken))
+	}
+	if account.AuthExpiresAt == "" {
+		account.AuthExpiresAt = importedAuthExpiresAt(account.Credentials)
+	}
+	if identity.Email != "" || identity.Subject != "" || identity.Plan != "" || identity.OrganizationID != "" {
+		if identity.Source == "" {
+			identity.Source = fallbackSource
+		}
+		if identity.UpdatedAt == "" {
+			identity.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+	}
+	account.Identity = normalizeAccountIdentity(identity)
+}
+
+func decodeJWTClaims(token string) map[string]any {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 || parts[1] == "" {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return nil
+		}
+	}
+	var claims map[string]any
+	if json.Unmarshal(payload, &claims) != nil {
+		return nil
+	}
+	return claims
+}
+
+func mergeIdentityClaims(identity *AccountIdentity, claims map[string]any) {
+	if identity == nil || claims == nil {
+		return
+	}
+	if identity.Email == "" {
+		identity.Email = stringValue(claims, "email")
+	}
+	if identity.Subject == "" {
+		identity.Subject = stringValue(claims, "sub", "user_id", "chatgpt_user_id")
+	}
+	if identity.Plan == "" {
+		identity.Plan = stringValue(claims, "plan", "plan_type", "chatgpt_plan_type")
+	}
+	if identity.OrganizationID == "" {
+		identity.OrganizationID = stringValue(claims, "organization_id", "org_id", "account_id", "chatgpt_account_id", "poid")
+	}
+	if authClaims := mapValue(claims, "https://api.openai.com/auth", "auth"); authClaims != nil {
+		if identity.Plan == "" {
+			identity.Plan = stringValue(authClaims, "chatgpt_plan_type", "plan_type", "plan")
+		}
+		if identity.OrganizationID == "" {
+			identity.OrganizationID = stringValue(authClaims, "chatgpt_account_id", "organization_id", "poid")
+		}
+	}
+}
+
 func withActiveRequestCounts(accounts []UpstreamAccount) []UpstreamAccount {
 	accountRun.Lock()
 	defer accountRun.Unlock()
+	quotaRun.RLock()
+	defer quotaRun.RUnlock()
 	result := make([]UpstreamAccount, len(accounts))
 	for i, account := range accounts {
 		result[i] = account
 		result[i].ActiveRequests = accountRun.active[account.ID]
+		if snapshot, ok := quotaRun.values[account.ID]; ok {
+			result[i].Quota = snapshot
+		}
 	}
 	return result
 }
 
+// ObserveUpstreamQuota records only recognised rate-limit response headers.
+// It is intentionally passive: opening the account list never creates an
+// extra upstream request. Persisting is throttled because many APIs return
+// rate headers on every streaming response.
+func ObserveUpstreamQuota(accountID, provider string, statusCode int, headers http.Header) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" || headers == nil {
+		return
+	}
+	snapshot := QuotaSnapshot{
+		Source:     strings.TrimSpace(provider) + " 上游响应头",
+		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
+		StatusCode: statusCode,
+	}
+	if strings.TrimSpace(provider) == "" {
+		snapshot.Source = "上游响应头"
+	}
+	snapshot.RequestsRemaining = firstHeader(headers,
+		"X-RateLimit-Remaining-Requests", "Anthropic-Ratelimit-Requests-Remaining")
+	snapshot.TokensRemaining = firstHeader(headers,
+		"X-RateLimit-Remaining-Tokens", "Anthropic-Ratelimit-Tokens-Remaining")
+	snapshot.RequestsReset = firstHeader(headers,
+		"X-RateLimit-Reset-Requests", "Anthropic-Ratelimit-Requests-Reset")
+	snapshot.TokensReset = firstHeader(headers,
+		"X-RateLimit-Reset-Tokens", "Anthropic-Ratelimit-Tokens-Reset")
+	snapshot.RetryAfter = firstHeader(headers, "Retry-After")
+	snapshot.Available = snapshot.RequestsRemaining != "" || snapshot.TokensRemaining != "" ||
+		snapshot.RequestsReset != "" || snapshot.TokensReset != "" || snapshot.RetryAfter != ""
+	if !snapshot.Available {
+		return
+	}
+
+	now := time.Now()
+	quotaRun.Lock()
+	quotaRun.values[accountID] = snapshot
+	lastPersisted := quotaRun.lastPersisted[accountID]
+	shouldPersist := lastPersisted.IsZero() || now.Sub(lastPersisted) >= time.Minute
+	if shouldPersist {
+		quotaRun.lastPersisted[accountID] = now
+	}
+	quotaRun.Unlock()
+	if shouldPersist {
+		_ = updateUpstreamAccount(accountID, func(account *UpstreamAccount) {
+			account.Quota = snapshot
+		})
+	}
+}
+
+// SaveQuotaSnapshot stores a result from an explicit user-requested quota
+// refresh. No proxy request path calls this helper automatically.
+func SaveQuotaSnapshot(accountID string, snapshot QuotaSnapshot) error {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return fmt.Errorf("未找到该账户")
+	}
+	snapshot = normalizeQuotaSnapshot(snapshot)
+	if snapshot.UpdatedAt == "" {
+		snapshot.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	quotaRun.Lock()
+	quotaRun.values[accountID] = snapshot
+	quotaRun.lastPersisted[accountID] = time.Now()
+	quotaRun.Unlock()
+	return updateUpstreamAccount(accountID, func(account *UpstreamAccount) {
+		account.Quota = snapshot
+	})
+}
+
+func firstHeader(headers http.Header, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(headers.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func SaveUpstreamAccount(account UpstreamAccount) error {
+	if isRawJSONAccountType(account.Type) {
+		return fmt.Errorf("原始 JSON 凭据只能通过“导入账户 JSON”功能导入，不能作为 API Key 直接保存")
+	}
+	if isRefreshTokenAccountType(account.Type) {
+		return fmt.Errorf("Refresh Token / Mobile RT 必须先兑换为 OAuth 访问令牌，不能作为 API Key 直接保存")
+	}
 	account = normalizeAccount(account)
 	if account.EffectiveAPIKey() == "" {
 		return fmt.Errorf("请填写 API Key、访问令牌或导入含凭据的 JSON")
@@ -491,6 +820,14 @@ func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (Cu
 	if len(ids) == 0 {
 		return model, nil, nil
 	}
+	// Refresh near-expiry OAuth credentials before evaluating the pool. Failure
+	// is recorded on that account and the remaining bound accounts stay eligible.
+	for _, accountID := range ids {
+		if _, skipped := excluded[accountID]; skipped {
+			continue
+		}
+		_ = EnsureAccountAccessToken(context.Background(), accountID)
+	}
 	accountsMu.RLock()
 	accounts, err := loadAccountsLocked()
 	accountsMu.RUnlock()
@@ -566,6 +903,9 @@ func accountUsable(account UpstreamAccount, now time.Time) bool {
 		return false
 	}
 	if until, ok := parseAccountTime(account.ExpiresAt); ok && !until.After(now) {
+		return false
+	}
+	if expiresAt, ok := parseAccountTime(account.AuthExpiresAt); ok && !expiresAt.After(now) {
 		return false
 	}
 	if until, ok := parseAccountTime(account.CooldownUntil); ok && until.After(now) {
@@ -719,20 +1059,17 @@ func accountImportObjects(value any) []map[string]any {
 }
 
 func accountFromImportObject(value map[string]any) (UpstreamAccount, bool) {
-	credentials := mapValue(value, "credentials", "credential", "auth", "tokens")
-	if credentials == nil {
-		credentials = cloneAnyMap(value)
-	}
-	provider := stringValue(value, "provider", "platform", "vendor")
-	if provider == "" {
-		provider = stringValue(credentials, "provider", "platform")
-	}
-	apiURL := stringValue(value, "apiUrl", "api_url", "baseUrl", "base_url", "endpoint", "url")
-	if apiURL == "" {
-		apiURL = stringValue(credentials, "apiUrl", "api_url", "baseUrl", "base_url", "endpoint", "url")
+	credentials := credentialsFromImportObject(value)
+	credentialMaps := importedCredentialMaps(value)
+	identity := importedAccountIdentity(value)
+	provider := importedStringFromMaps(credentialMaps, "provider", "platform", "vendor")
+	apiURL := importedStringFromMaps(credentialMaps, "apiUrl", "api_url", "baseUrl", "base_url", "endpoint", "url")
+	name := stringValue(value, "name", "displayName", "label", "email")
+	if name == "" {
+		name = identity.Email
 	}
 	account := UpstreamAccount{
-		Name:            stringValue(value, "name", "displayName", "label", "email"),
+		Name:            name,
 		Notes:           stringValue(value, "notes", "remark", "description"),
 		Provider:        provider,
 		Type:            stringValue(value, "type", "authType", "auth_type"),
@@ -742,22 +1079,31 @@ func accountFromImportObject(value map[string]any) (UpstreamAccount, bool) {
 		MessagePathMode: stringValue(value, "messagePathMode", "message_path_mode"),
 		AuthMode:        stringValue(value, "authMode", "auth_mode"),
 		AuthHeader:      stringValue(value, "authHeader", "auth_header"),
-		APIKey:          stringValue(value, "apiKey", "api_key", "accessToken", "access_token", "token", "setupToken", "setup_token"),
+		OAuth:           importedOAuthConfiguration(value),
+		APIKey:          importedStringFromMaps([]map[string]any{value}, importedAPIKeyKeys...),
 		Credentials:     credentials,
+		Identity:        identity,
+		AuthExpiresAt:   importedAuthExpiresAt(value),
 		Enabled:         true,
 		Priority:        intValue(value, "priority"),
 		MaxConcurrency:  intValue(value, "maxConcurrency", "max_concurrency", "concurrency"),
-		ExpiresAt:       stringValue(value, "expiresAt", "expires_at"),
+		ExpiresAt:       importedAccountExpiresAt(value),
 	}
 	if headers := mapValue(value, "headers", "extraHeaders", "extra_headers"); headers != nil {
 		account.Headers = stringMap(headers)
 	}
-	if account.Type == "" {
-		if _, exists := credentials["access_token"]; exists {
-			account.Type = "oauth"
-		} else {
-			account.Type = "api_key"
-		}
+	if importedOAuthCredentialsPresent(credentials) && (account.Type == "" || isRawJSONAccountType(account.Type) || isRefreshTokenAccountType(account.Type)) {
+		// A JSON export is a transport format, not an auth scheme. Once we have
+		// extracted OAuth credentials it must become an OAuth account so expiry
+		// handling and automatic refresh are enabled after import.
+		account.Type = "oauth"
+	} else if isRawJSONAccountType(account.Type) {
+		// A JSON envelope that contains a normal API key is still a valid import.
+		// Preserve the distinction at the direct-save boundary, but normalize it
+		// here because the importer has already extracted its credential safely.
+		account.Type = "api_key"
+	} else if account.Type == "" {
+		account.Type = "api_key"
 	}
 	account = normalizeAccount(account)
 	return account, account.EffectiveAPIKey() != ""

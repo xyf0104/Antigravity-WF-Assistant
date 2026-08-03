@@ -1095,6 +1095,8 @@ func TestBoundAccountPoolFailsOverAfterQuotaResponse(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer first-token" {
 			t.Errorf("first account authorization = %q", got)
 		}
+		w.Header().Set("X-RateLimit-Remaining-Requests", "0")
+		w.Header().Set("X-RateLimit-Reset-Requests", "30s")
 		w.Header().Set("Retry-After", "0")
 		http.Error(w, `{"error":{"message":"quota exhausted"}}`, http.StatusTooManyRequests)
 	}))
@@ -1104,6 +1106,8 @@ func TestBoundAccountPoolFailsOverAfterQuotaResponse(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer second-token" {
 			t.Errorf("second account authorization = %q", got)
 		}
+		w.Header().Set("X-RateLimit-Remaining-Requests", "9")
+		w.Header().Set("X-RateLimit-Remaining-Tokens", "1000")
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-2\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"))
 	}))
@@ -1149,8 +1153,14 @@ func TestBoundAccountPoolFailsOverAfterQuotaResponse(t *testing.T) {
 	if status["first"].CooldownUntil == "" || status["first"].FailureCount == 0 {
 		t.Fatalf("failed account health was not recorded: %#v", status["first"])
 	}
+	if quota := status["first"].Quota; !quota.Available || quota.StatusCode != http.StatusTooManyRequests || quota.RequestsRemaining != "0" || quota.RequestsReset != "30s" || quota.RetryAfter != "0" {
+		t.Fatalf("failed account quota was not observed from the upstream response: %#v", quota)
+	}
 	if status["second"].LastSuccessAt == "" || status["second"].ActiveRequests != 0 {
 		t.Fatalf("successful account lease was not released: %#v", status["second"])
+	}
+	if quota := status["second"].Quota; !quota.Available || quota.StatusCode != http.StatusOK || quota.RequestsRemaining != "9" || quota.TokensRemaining != "1000" {
+		t.Fatalf("successful account quota was not observed from the upstream response: %#v", quota)
 	}
 }
 

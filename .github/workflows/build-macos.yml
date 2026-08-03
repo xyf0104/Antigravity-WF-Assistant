@@ -54,5 +54,5 @@ jobs:
         with:
           name: Antigravity-WF-Assistant-macOS-universal
           path: |
-            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v1.4.1-Installer.pkg
+            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v1.4.2-Installer.pkg
           if-no-files-found: error
