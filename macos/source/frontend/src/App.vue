@@ -2,7 +2,9 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import Dashboard from "@/views/Dashboard.vue";
 import Models from "@/views/Models.vue";
+import Accounts from "@/views/Accounts.vue";
 import Permissions from "@/views/Permissions.vue";
+import Settings from "@/views/Settings.vue";
 import Button from "@/components/ui/Button.vue";
 import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
@@ -14,7 +16,9 @@ const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 const tabs = [
   { label: "总览", value: "dashboard", hint: "运行状态与快捷操作" },
   { label: "模型", value: "models", hint: "管理自定义上游模型" },
+  { label: "账户池", value: "accounts", hint: "凭据、健康状态与自动调度" },
   { label: "权限", value: "permissions", hint: "终端命令自动批准" },
+  { label: "设置", value: "settings", hint: "稳定性、缓存与软件更新" },
 ];
 const themeOptions = [
   { label: "浅色", value: "light" },
@@ -80,8 +84,14 @@ onUnmounted(() => {
           <svg v-else-if="item.value === 'models'" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 3 3.8 7.4 12 11.8l8.2-4.4L12 3Zm-8.2 8L12 15.4l8.2-4.4M3.8 14.6 12 19l8.2-4.4" />
           </svg>
-          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+          <svg v-else-if="item.value === 'accounts'" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 7.5A2.5 2.5 0 0 1 7.5 5h9A2.5 2.5 0 0 1 19 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 16.5v-9ZM5 10h14M8 15h3" />
+          </svg>
+          <svg v-else-if="item.value === 'permissions'" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 3 5 6v5c0 4.6 2.9 8.2 7 10 4.1-1.8 7-5.4 7-10V6l-7-3Zm-3 9 2 2 4-5" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm8.6 4a6.7 6.7 0 0 0-.08-1l2-1.56-2-3.46-2.4.97a7.3 7.3 0 0 0-1.72-1L6.04 3H2.05L1.68 5.95a7.3 7.3 0 0 0-1.72 1l-2.4-.97-2 3.46 2 1.56a6.7 6.7 0 0 0 0 2l-2 1.56 2 3.46 2.4-.97a7.3 7.3 0 0 0 1.72 1L2.05 21h3.99l.36-2.95a7.3 7.3 0 0 0 1.72-1l2.4.97 2-3.46-2-1.56c.05-.33.08-.66.08-1Z" transform="translate(5.7 0) scale(.63)" />
           </svg>
           <span>{{ item.label }}</span>
         </button>
@@ -100,7 +110,7 @@ onUnmounted(() => {
             <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
           </svg>
         </button>
-        <span class="version-pill">v1.3.5</span>
+        <span class="version-pill">v1.4.0</span>
       </div>
     </aside>
 
@@ -125,7 +135,9 @@ onUnmounted(() => {
         <Transition name="page" mode="out-in">
           <Dashboard v-if="tab === 'dashboard'" key="dashboard" />
           <Models v-else-if="tab === 'models'" key="models" />
-          <Permissions v-else key="permissions" />
+          <Accounts v-else-if="tab === 'accounts'" key="accounts" />
+          <Permissions v-else-if="tab === 'permissions'" key="permissions" />
+          <Settings v-else key="settings" />
         </Transition>
       </main>
     </section>

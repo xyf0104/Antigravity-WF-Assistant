@@ -17,7 +17,10 @@ import (
 	"antigravity-byok/internal/proxy"
 	"antigravity-byok/internal/stats"
 	"antigravity-byok/internal/storage"
+	"antigravity-byok/internal/updater"
 	"antigravity-byok/internal/upstream"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App holds all Wails-exposed methods.
@@ -29,6 +32,7 @@ type App struct {
 	historyRunMu  sync.Mutex
 	historyStatus HistorySyncStatus
 	launchMu      sync.Mutex
+	updateMu      sync.Mutex
 	exitRequested atomic.Bool
 }
 
@@ -179,6 +183,20 @@ type BatchModelResult struct {
 	Added   int    `json:"added"`
 }
 
+type UpdateCheckResult struct {
+	OK      bool         `json:"ok"`
+	Message string       `json:"message"`
+	Info    updater.Info `json:"info"`
+}
+
+type UpdateProgress struct {
+	Phase      string `json:"phase"`
+	Downloaded int64  `json:"downloaded"`
+	Total      int64  `json:"total"`
+	Percent    int    `json:"percent"`
+	Message    string `json:"message"`
+}
+
 // ─── Proxy ────────────────────────────────────────────────────────────────────
 
 func (a *App) StartProxy() Result {
@@ -197,6 +215,105 @@ func (a *App) StopProxy() Result {
 
 func (a *App) IsProxyListening() bool {
 	return proxy.IsListening()
+}
+
+// GetAppSettings exposes only local, non-secret assistant preferences.
+func (a *App) GetAppSettings() storage.AppSettings {
+	settings, err := storage.LoadAppSettings()
+	if err != nil {
+		return storage.DefaultAppSettings()
+	}
+	return settings
+}
+
+// SaveAppSettings updates stream recovery immediately so a user never needs to
+// restart the assistant just to change retry behaviour.
+func (a *App) SaveAppSettings(settings storage.AppSettings) Result {
+	settings = storage.NormalizeAppSettings(settings)
+	if err := storage.SaveAppSettings(settings); err != nil {
+		return Result{OK: false, Message: err.Error()}
+	}
+	proxy.ConfigureStreamRecovery(settings.StreamRecovery)
+	return Result{OK: true, Message: "设置已保存并立即生效"}
+}
+
+func (a *App) CheckForUpdates() UpdateCheckResult {
+	settings, err := storage.LoadAppSettings()
+	if err != nil {
+		settings = storage.DefaultAppSettings()
+	}
+	ctx, cancel := a.upstreamContext(50 * time.Second)
+	defer cancel()
+	info, err := updater.Check(ctx, settings.Updates.SkippedVersion)
+	if err != nil {
+		return UpdateCheckResult{Message: err.Error(), Info: info}
+	}
+	if !info.Available {
+		return UpdateCheckResult{OK: true, Message: "当前已是最新版本", Info: info}
+	}
+	if info.Skipped {
+		return UpdateCheckResult{OK: true, Message: fmt.Sprintf("已跳过 v%s；可随时在设置中重新安装", info.LatestVersion), Info: info}
+	}
+	return UpdateCheckResult{OK: true, Message: fmt.Sprintf("发现新版本 v%s", info.LatestVersion), Info: info}
+}
+
+func (a *App) SkipUpdateVersion(version string) Result {
+	settings, err := storage.LoadAppSettings()
+	if err != nil {
+		settings = storage.DefaultAppSettings()
+	}
+	settings.Updates.SkippedVersion = strings.TrimSpace(version)
+	if err := storage.SaveAppSettings(settings); err != nil {
+		return Result{OK: false, Message: err.Error()}
+	}
+	return Result{OK: true, Message: "该版本已跳过"}
+}
+
+// InstallLatestUpdate downloads only the release installer selected by the
+// updater package, validates its SHA256 manifest, then opens the native
+// installer. Elevated installation remains a visible OS-owned action.
+func (a *App) InstallLatestUpdate() Result {
+	if a.ctx == nil {
+		return Result{OK: false, Message: "助手尚未完成启动，请稍后再试。"}
+	}
+	a.updateMu.Lock()
+	defer a.updateMu.Unlock()
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Minute)
+	defer cancel()
+	a.emitUpdateProgress(UpdateProgress{Phase: "checking", Message: "正在验证更新信息"})
+	lastPercent := -1
+	path, info, err := updater.DownloadLatestInstaller(ctx, func(downloaded, total int64) {
+		percent := 0
+		if total > 0 {
+			percent = int(downloaded * 100 / total)
+		}
+		if percent == lastPercent && total > 0 {
+			return
+		}
+		lastPercent = percent
+		a.emitUpdateProgress(UpdateProgress{Phase: "downloading", Downloaded: downloaded, Total: total, Percent: percent, Message: "正在下载并校验安装包"})
+	})
+	if err != nil {
+		a.emitUpdateProgress(UpdateProgress{Phase: "error", Message: err.Error()})
+		return Result{OK: false, Message: err.Error()}
+	}
+	a.emitUpdateProgress(UpdateProgress{Phase: "verified", Downloaded: info.AssetSize, Total: info.AssetSize, Percent: 100, Message: "校验完成，正在启动安装程序"})
+	if err := updater.LaunchInstaller(path); err != nil {
+		a.emitUpdateProgress(UpdateProgress{Phase: "error", Message: err.Error()})
+		return Result{OK: false, Message: "无法启动更新安装程序：" + err.Error()}
+	}
+	a.emitUpdateProgress(UpdateProgress{Phase: "launching", Percent: 100, Message: "安装程序已启动，助手将退出并释放端口"})
+	go func() {
+		time.Sleep(800 * time.Millisecond)
+		a.requestQuit()
+	}()
+	return Result{OK: true, Message: "安装程序已启动；完成系统安装后请重新打开 Antigravity WF助手。"}
+}
+
+func (a *App) emitUpdateProgress(progress UpdateProgress) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "wf:update-progress", progress)
+	}
 }
 
 func (a *App) GetAutoApprovalStatus() permissions.Status {
@@ -254,7 +371,11 @@ func (a *App) GetModels() []storage.CustomModel {
 }
 
 func (a *App) SaveModel(m storage.CustomModel) Result {
-	if err := upstream.ValidateConfig(upstream.ConfigFromModel(m)); err != nil {
+	config, err := a.modelValidationConfig(m)
+	if err != nil {
+		return Result{OK: false, Message: err.Error()}
+	}
+	if err := upstream.ValidateConfig(config); err != nil {
 		return Result{OK: false, Message: err.Error()}
 	}
 	if err := storage.AddOrUpdateModel(m); err != nil {
@@ -267,34 +388,47 @@ func (a *App) SaveModel(m storage.CustomModel) Result {
 // embedding any credentials. The user still supplies their own API key.
 func (a *App) DefaultUpstreamConfig() upstream.Config {
 	return upstream.Config{
-		Provider: "openai", APIURL: upstream.DefaultXIASSBaseURL, APIStyle: "auto", AuthMode: "bearer",
+		Provider: "openai", APIURL: upstream.DefaultXIASSBaseURL, EndpointMode: "auto", APIStyle: "auto", MessagePathMode: "auto", AuthMode: "bearer",
 	}
 }
 
 // DiscoverUpstreamModels is a user-initiated, credential-safe GET /models.
 // It never writes configuration or logs an API key.
 func (a *App) DiscoverUpstreamModels(config upstream.Config) upstream.DiscoveryResult {
+	resolved, err := a.resolveUpstreamConfig(config)
+	if err != nil {
+		return upstream.DiscoveryResult{Message: err.Error()}
+	}
 	ctx, cancel := a.upstreamContext(30 * time.Second)
 	defer cancel()
-	return upstream.DiscoverModels(ctx, config)
+	return upstream.DiscoverModels(ctx, resolved)
 }
 
 // TestUpstreamModel runs only after the user presses the test control. It is
 // intentionally a tiny request and exposes no upstream response body.
 func (a *App) TestUpstreamModel(config upstream.Config, model string) upstream.TestResult {
+	resolved, err := a.resolveUpstreamConfig(config)
+	if err != nil {
+		return upstream.TestResult{Message: err.Error()}
+	}
 	ctx, cancel := a.upstreamContext(45 * time.Second)
 	defer cancel()
-	return upstream.TestModel(ctx, config, model)
+	return upstream.TestModel(ctx, resolved, model)
 }
 
 // AddDiscoveredModels saves a selected batch from a previously discovered
 // model list. The default UI selects all discovered models; callers may pass a
 // narrowed list to respect manual selection.
 func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) BatchModelResult {
-	if err := upstream.ValidateConfig(config); err != nil {
+	boundAccountID := strings.TrimSpace(config.AccountID)
+	resolved, err := a.resolveUpstreamConfig(config)
+	if err != nil {
 		return BatchModelResult{Message: err.Error()}
 	}
-	provider := upstream.NormalizedProvider(config.Provider)
+	if err := upstream.ValidateConfig(resolved); err != nil {
+		return BatchModelResult{Message: err.Error()}
+	}
+	provider := upstream.NormalizedProvider(resolved.Provider)
 	seen := make(map[string]struct{}, len(modelIDs))
 	added := 0
 	for _, rawID := range modelIDs {
@@ -306,11 +440,19 @@ func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) Bat
 			continue
 		}
 		seen[modelID] = struct{}{}
-		model := storage.NewDiscoveredModel(provider, config.APIURL, config.APIKey, modelID)
-		model.APIStyle = upstream.EffectiveAPIStyle(config)
-		model.AuthMode = strings.ToLower(strings.TrimSpace(config.AuthMode))
-		model.AuthHeader = strings.TrimSpace(config.AuthHeader)
-		model.Headers = cloneHeaders(config.Headers)
+		model := storage.NewDiscoveredModel(provider, resolved.APIURL, resolved.APIKey, modelID)
+		model.APIStyle = upstream.EffectiveAPIStyle(resolved)
+		model.EndpointMode = upstream.NormalizedEndpointMode(resolved.EndpointMode)
+		model.MessagePathMode = resolved.MessagePathMode
+		model.AuthMode = strings.ToLower(strings.TrimSpace(resolved.AuthMode))
+		model.AuthHeader = strings.TrimSpace(resolved.AuthHeader)
+		model.Headers = cloneHeaders(resolved.Headers)
+		if boundAccountID != "" {
+			model.AccountIDs = []string{boundAccountID}
+			// The credential belongs to the account pool. Do not duplicate it in
+			// every discovered model on disk.
+			model.APIKey = ""
+		}
 		model.Capabilities = storage.DefaultCapabilities(provider, modelID)
 		model.Capabilities.Configured = true
 		if err := storage.AddOrUpdateModel(model); err != nil {
@@ -322,6 +464,107 @@ func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) Bat
 		return BatchModelResult{Message: "请至少选择一个上游模型"}
 	}
 	return BatchModelResult{OK: true, Added: added, Message: fmt.Sprintf("已添加或更新 %d 个模型；重启 Antigravity 后生效。", added)}
+}
+
+// ─── Upstream account pool ───────────────────────────────────────────────────
+
+func (a *App) GetUpstreamAccounts() []storage.UpstreamAccount {
+	accounts, _ := storage.LoadUpstreamAccounts()
+	// The renderer only needs account metadata and health. Keep reusable
+	// credentials inside the private Go storage layer; an edit with an empty
+	// credential field is merged with the existing secret below.
+	for i := range accounts {
+		accounts[i].APIKey = ""
+		accounts[i].Credentials = nil
+	}
+	return accounts
+}
+
+func (a *App) DefaultUpstreamAccount() storage.UpstreamAccount {
+	return storage.UpstreamAccount{
+		Name: "", Provider: "openai", Type: "api_key", APIURL: upstream.DefaultXIASSBaseURL,
+		EndpointMode: "auto", APIStyle: "auto", MessagePathMode: "auto", AuthMode: "bearer", Enabled: true,
+		Priority: 50, MaxConcurrency: 2,
+	}
+}
+
+func (a *App) SaveUpstreamAccount(account storage.UpstreamAccount) Result {
+	if strings.TrimSpace(account.ID) != "" && strings.TrimSpace(account.EffectiveAPIKey()) == "" {
+		existing, err := storage.GetUpstreamAccount(account.ID)
+		if err != nil {
+			return Result{OK: false, Message: err.Error()}
+		}
+		// Leaving the secret blank in an edit means "keep existing". This lets
+		// the frontend avoid ever receiving stored API keys or OAuth JSON.
+		account.APIKey = existing.APIKey
+		account.Credentials = existing.Credentials
+	}
+	if err := upstream.ValidateConfig(upstream.ConfigFromAccount(account)); err != nil {
+		return Result{OK: false, Message: err.Error()}
+	}
+	if err := storage.SaveUpstreamAccount(account); err != nil {
+		return Result{OK: false, Message: err.Error()}
+	}
+	return Result{OK: true, Message: "账户已保存到本地账户池"}
+}
+
+func (a *App) DeleteUpstreamAccount(id string) Result {
+	if err := storage.DeleteUpstreamAccount(id); err != nil {
+		return Result{OK: false, Message: err.Error()}
+	}
+	return Result{OK: true, Message: "账户已删除"}
+}
+
+func (a *App) SetUpstreamAccountEnabled(id string, enabled bool) Result {
+	if err := storage.SetUpstreamAccountEnabled(id, enabled); err != nil {
+		return Result{OK: false, Message: err.Error()}
+	}
+	if enabled {
+		return Result{OK: true, Message: "账户已恢复调度"}
+	}
+	return Result{OK: true, Message: "账户已暂停，不会再被新请求选中"}
+}
+
+func (a *App) ImportUpstreamAccounts(raw string) storage.AccountImportResult {
+	return storage.ImportUpstreamAccounts(raw)
+}
+
+func (a *App) DiscoverAccountModels(accountID string) upstream.DiscoveryResult {
+	account, err := storage.GetUpstreamAccount(accountID)
+	if err != nil {
+		return upstream.DiscoveryResult{Message: err.Error()}
+	}
+	return a.DiscoverUpstreamModels(upstream.ConfigFromAccount(account))
+}
+
+func (a *App) TestUpstreamAccount(accountID, model string) upstream.TestResult {
+	account, err := storage.GetUpstreamAccount(accountID)
+	if err != nil {
+		return upstream.TestResult{Message: err.Error()}
+	}
+	return a.TestUpstreamModel(upstream.ConfigFromAccount(account), model)
+}
+
+func (a *App) resolveUpstreamConfig(config upstream.Config) (upstream.Config, error) {
+	if strings.TrimSpace(config.AccountID) == "" {
+		return config, nil
+	}
+	account, err := storage.GetUpstreamAccount(config.AccountID)
+	if err != nil {
+		return upstream.Config{}, err
+	}
+	return upstream.ConfigFromAccount(account), nil
+}
+
+func (a *App) modelValidationConfig(model storage.CustomModel) (upstream.Config, error) {
+	if len(model.AccountIDs) == 0 {
+		return upstream.ConfigFromModel(model), nil
+	}
+	account, err := storage.GetUpstreamAccount(model.AccountIDs[0])
+	if err != nil {
+		return upstream.Config{}, fmt.Errorf("模型绑定的账户不可用：%w", err)
+	}
+	return upstream.ConfigFromAccount(account), nil
 }
 
 func (a *App) upstreamContext(timeout time.Duration) (context.Context, context.CancelFunc) {

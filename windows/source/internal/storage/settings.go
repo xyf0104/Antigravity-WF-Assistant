@@ -7,10 +7,9 @@ import (
 	"sync"
 )
 
-// StreamRecoverySettings control how the local proxy handles a transient
-// upstream interruption after Antigravity has already started a response.
-// They intentionally live outside model credentials, so a user can adjust
-// reliability without rewriting any model configuration.
+// StreamRecoverySettings control safe retries before an upstream generation
+// has delivered any event to Antigravity. Once output begins, the proxy never
+// replays that request; the user's visible chat and token budget take priority.
 type StreamRecoverySettings struct {
 	Enabled         bool `json:"enabled"`
 	MaxAttempts     int  `json:"maxAttempts"`
@@ -20,7 +19,7 @@ type StreamRecoverySettings struct {
 // UpdateSettings contains only local update preferences. The updater itself
 // always verifies a release asset before it is allowed to start an installer.
 type UpdateSettings struct {
-	AutoCheck     bool   `json:"autoCheck"`
+	AutoCheck      bool   `json:"autoCheck"`
 	SkippedVersion string `json:"skippedVersion"`
 }
 
@@ -41,7 +40,7 @@ func DefaultAppSettings() AppSettings {
 	return AppSettings{
 		SchemaVersion: appSettingsSchemaVersion,
 		StreamRecovery: StreamRecoverySettings{
-			Enabled: true, MaxAttempts: 5, MaxDelaySeconds: 20,
+			Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 20,
 		},
 		Updates: UpdateSettings{AutoCheck: true},
 	}

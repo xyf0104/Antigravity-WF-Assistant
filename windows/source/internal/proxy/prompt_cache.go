@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"antigravity-byok/internal/storage"
 )
@@ -14,9 +15,21 @@ import (
 type promptCacheResult struct {
 	key      string
 	explicit bool
+	enabled  bool
 }
 
 var unsupportedCachePattern = regexp.MustCompile(`(?i)prompt[_ -]?cache|cache[_ -]?control|cache[_ -]?breakpoint|cached[_ -]?content|additional propert|unknown (field|parameter)|unrecognized (field|parameter)|unsupported (field|parameter)`)
+
+// promptCacheCompatibility remembers an upstream's cache capability for the
+// lifetime of the app. Compatibility failures are deterministic for a given
+// endpoint/model/credential scope, so probing on every user turn merely adds
+// failed requests and can needlessly consume quota on some API relays.
+var promptCacheCompatibility = struct {
+	sync.RWMutex
+	unsupported map[string]struct{}
+}{
+	unsupported: map[string]struct{}{},
+}
 
 func hashString(value string) string {
 	sum := sha256.Sum256([]byte(value))
@@ -61,6 +74,53 @@ func buildPromptCacheKey(model *storage.CustomModel, request map[string]any) str
 	return "antigravity:" + digest[:24]
 }
 
+func promptCacheCompatibilityKey(provider string, model *storage.CustomModel) string {
+	if model == nil {
+		return ""
+	}
+	credentialScope := hashString(model.APIKey)
+	if len(credentialScope) > 16 {
+		credentialScope = credentialScope[:16]
+	}
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(provider)),
+		strings.TrimSpace(model.APIURL),
+		strings.TrimSpace(model.ExternalModelName),
+		credentialScope,
+	}, "\x00")
+}
+
+func promptCacheSupported(provider string, model *storage.CustomModel) bool {
+	key := promptCacheCompatibilityKey(provider, model)
+	if key == "" {
+		return true
+	}
+	promptCacheCompatibility.RLock()
+	_, unsupported := promptCacheCompatibility.unsupported[key]
+	promptCacheCompatibility.RUnlock()
+	return !unsupported
+}
+
+func rememberUnsupportedPromptCache(provider string, model *storage.CustomModel) {
+	key := promptCacheCompatibilityKey(provider, model)
+	if key == "" {
+		return
+	}
+	promptCacheCompatibility.Lock()
+	promptCacheCompatibility.unsupported[key] = struct{}{}
+	promptCacheCompatibility.Unlock()
+}
+
+func clearPromptCacheCompatibility(provider string, model *storage.CustomModel) {
+	key := promptCacheCompatibilityKey(provider, model)
+	if key == "" {
+		return
+	}
+	promptCacheCompatibility.Lock()
+	delete(promptCacheCompatibility.unsupported, key)
+	promptCacheCompatibility.Unlock()
+}
+
 // supportsOpenAIExplicitCaching follows the Chat Completions contract where
 // prompt_cache_options is supported by GPT-5.6 and later GPT versions.
 func supportsOpenAIExplicitCaching(modelName string) bool {
@@ -79,10 +139,13 @@ func supportsOpenAIExplicitCaching(modelName string) bool {
 
 func applyOpenAIPromptCaching(request map[string]any, model *storage.CustomModel, source map[string]any) promptCacheResult {
 	key := buildPromptCacheKey(model, source)
+	if !promptCacheSupported("openai", model) {
+		return promptCacheResult{key: key}
+	}
 	request["prompt_cache_key"] = key
 	explicit := supportsOpenAIExplicitCaching(model.ExternalModelName)
 	if !explicit {
-		return promptCacheResult{key: key}
+		return promptCacheResult{key: key, enabled: true}
 	}
 	request["prompt_cache_options"] = map[string]any{"mode": "implicit", "ttl": "30m"}
 	messages, _ := request["messages"].([]map[string]any)
@@ -99,7 +162,7 @@ func applyOpenAIPromptCaching(request map[string]any, model *storage.CustomModel
 		}
 		break
 	}
-	return promptCacheResult{key: key, explicit: explicit}
+	return promptCacheResult{key: key, explicit: explicit, enabled: true}
 }
 
 func stripOpenAIPromptCaching(request map[string]any) {
@@ -147,6 +210,13 @@ func markLastCacheable(blocks []any) bool {
 }
 
 func applyAnthropicPromptCaching(request map[string]any) int {
+	return applyAnthropicPromptCachingForModel(request, nil)
+}
+
+func applyAnthropicPromptCachingForModel(request map[string]any, model *storage.CustomModel) int {
+	if !promptCacheSupported("anthropic", model) {
+		return 0
+	}
 	count := 0
 	if tools, ok := request["tools"].([]map[string]any); ok && len(tools) > 0 {
 		tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}

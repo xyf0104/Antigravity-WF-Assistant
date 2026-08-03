@@ -14,7 +14,7 @@ import {
   addDiscoveredModels,
 } from "@/state/appState";
 
-const DEFAULT_XIASS_URL = "https://api.xiass.com/v1";
+const DEFAULT_XIASS_URL = "https://api.xiass.com";
 
 const editorOpen = ref(false);
 const editorError = ref("");
@@ -51,9 +51,12 @@ function emptyForm() {
     provider: "openai",
     apiKey: "",
     apiUrl: DEFAULT_XIASS_URL,
+    endpointMode: "auto",
+    accountIds: [],
     externalModelName: "",
     reasoningEffort: "auto",
     apiStyle: "auto",
+    messagePathMode: "auto",
     authMode: "bearer",
     authHeader: "",
     headersText: "{}",
@@ -80,6 +83,15 @@ const apiStyleOptions = [
   { label: "Responses", value: "responses" },
   { label: "Messages", value: "messages" },
 ];
+const endpointModeOptions = [
+  { label: "智能补全", value: "auto" },
+  { label: "完整路径（手动）", value: "manual" },
+];
+const anthropicPathOptions = [
+  { label: "自动", value: "auto" },
+  { label: "标准 Messages", value: "standard" },
+  { label: "兼容 Chat Messages", value: "compat" },
+];
 const openAIReasoningOptions = [
   { label: "自动", value: "auto" },
   { label: "无", value: "none" },
@@ -101,6 +113,23 @@ const allDiscoveredSelected = computed(() =>
   discoveredModels.value.length > 0 && selectedModelIds.value.length === discoveredModels.value.length
 );
 const selectedCount = computed(() => selectedModelIds.value.length);
+const apiURLLabel = computed(() =>
+  form.value.endpointMode === "manual" ? "完整 API 地址" : "基础域名 / 基础路径"
+);
+const apiURLHint = computed(() => {
+  if (form.value.endpointMode === "manual") {
+    return "原样使用，不会自动改写；可填任意完整接口路径或带参数的地址。";
+  }
+  if (form.value.provider === "anthropic") {
+    return "只填域名即可；会自动使用 Claude Messages 路径。";
+  }
+  return "只填域名或基础路径即可；WF 会自动补全对应的 /v1 接口。";
+});
+const apiURLPlaceholder = computed(() =>
+  form.value.endpointMode === "manual"
+    ? (form.value.provider === "anthropic" ? "https://api.xiass.com/v1/messages" : "https://api.xiass.com/v1/chat/completions")
+    : "https://api.xiass.com"
+);
 
 function providerTone(provider) {
   return provider === "anthropic" ? "warn" : provider === "openai" ? "info" : "neutral";
@@ -145,8 +174,11 @@ function modelToForm(model) {
   return {
     ...emptyForm(),
     ...model,
+    endpointMode: model.endpointMode || (model.messagePathMode === "manual" ? "manual" : "auto"),
+    accountIds: Array.isArray(model.accountIds) ? [...model.accountIds] : [],
     reasoningEffort: model.reasoningEffort || "auto",
     apiStyle: model.apiStyle || (model.provider === "anthropic" ? "messages" : "auto"),
+    messagePathMode: model.messagePathMode === "manual" ? "auto" : (model.messagePathMode || "auto"),
     authMode: model.authMode || (model.provider === "anthropic" ? "x_api_key" : "bearer"),
     authHeader: model.authHeader || "",
     headersText: JSON.stringify(model.headers || {}, null, 2),
@@ -158,7 +190,7 @@ function openNew() {
   form.value = emptyForm();
   isNew.value = true;
   editorError.value = "";
-  editorNotice.value = "默认使用 XIASS API 地址；填写你的 API Key 后可先获取所有上游模型。";
+  editorNotice.value = "默认只需填写 XIASS 域名；如上游要求完整接口地址，可随时切换到“完整路径（手动）”。";
   discoveredModels.value = [];
   selectedModelIds.value = [];
   editorOpen.value = true;
@@ -189,6 +221,15 @@ function onProviderChange(provider) {
   form.value.capabilities = { ...defaultCapabilities(provider, form.value.externalModelName), ...form.value.capabilities, configured: true };
 }
 
+function onEndpointModeChange(mode) {
+  form.value.endpointMode = mode;
+  if (mode === "manual") {
+    editorNotice.value = "手动完整路径已启用：WF 会原样使用你填写的 API 地址，不再补全或替换路径。";
+  } else {
+    editorNotice.value = "智能补全已启用：只需填写域名或基础路径，WF 会按当前协议补全请求地址。";
+  }
+}
+
 function parseHeaders() {
   const raw = String(form.value.headersText || "{}").trim();
   if (!raw) return {};
@@ -215,8 +256,10 @@ function upstreamConfig() {
   return {
     provider: form.value.provider,
     apiUrl: form.value.apiUrl?.trim(),
+    endpointMode: form.value.endpointMode,
     apiKey: form.value.apiKey?.trim(),
     apiStyle: form.value.apiStyle,
+    messagePathMode: form.value.messagePathMode,
     authMode: form.value.authMode,
     authHeader: form.value.authHeader?.trim(),
     headers: parseHeaders(),
@@ -316,6 +359,7 @@ async function saveManualModel() {
     capabilities: { ...form.value.capabilities, configured: true },
   };
   delete model.headersText;
+  if (model.accountIds?.length) model.apiKey = "";
   saving.value = true;
   try {
     const result = await saveModel(model);
@@ -415,10 +459,18 @@ async function handleDelete() {
         <section class="section">
           <span class="t-footnote">供应商与协议</span>
           <SegmentedControl :options="providerOptions" :model-value="form.provider" @update:model-value="onProviderChange" />
+          <div class="compact-label">接口地址输入方式</div>
+          <SegmentedControl :options="endpointModeOptions" :model-value="form.endpointMode" @update:model-value="onEndpointModeChange" />
           <div class="two-col">
-            <Field label="API 地址" hint="默认 XIASS：https://api.xiass.com/v1" v-model="form.apiUrl" placeholder="https://api.xiass.com/v1" mono />
+            <Field :label="apiURLLabel" :hint="apiURLHint" v-model="form.apiUrl" :placeholder="apiURLPlaceholder" mono />
             <Field label="API Key / 访问令牌" type="password" v-model="form.apiKey" placeholder="sk-..." mono />
           </div>
+          <div v-if="form.provider === 'anthropic' && form.endpointMode !== 'manual'" class="claude-path-control">
+            <div class="compact-label">Claude 路径</div>
+            <SegmentedControl :options="anthropicPathOptions" :model-value="form.messagePathMode" @update:model-value="form.messagePathMode = $event" />
+            <div class="t-caption">自动：先尝试 <code>/v1/messages</code>，仅在接口不存在时改试 <code>/v1/chat/messages</code>；也可强制选择任一路径。</div>
+          </div>
+          <div v-else-if="form.provider === 'anthropic'" class="t-caption">手动模式下，Claude 请求会严格发送到上方完整地址；例如 <code>/v1/messages</code> 或 <code>/v1/chat/messages</code>。</div>
           <div class="compact-label">认证方式</div>
           <SegmentedControl :options="authOptions" :model-value="form.authMode" @update:model-value="form.authMode = $event" />
           <Field v-if="form.authMode === 'custom_header'" label="认证请求头名称" hint="例如 X-API-Token" v-model="form.authHeader" placeholder="X-API-Token" mono />
@@ -457,6 +509,20 @@ async function handleDelete() {
           <Field label="上游模型名" hint="例如 gpt-5.6 / claude-sonnet / grok-4" v-model="form.externalModelName" placeholder="gpt-5.6" mono />
           <Field label="显示名称" hint="留空时使用上游模型名" v-model="form.displayName" :placeholder="form.externalModelName || '自动使用上游模型名'" />
           <Field label="描述（可选）" v-model="form.description" placeholder="模型用途或上游说明" />
+        </section>
+
+        <section class="section account-binding">
+          <div class="t-headline">账户池绑定（可选）</div>
+          <div class="t-caption">绑定后请求会从账户池按优先级、并发和健康状态调度；额度不足或连接中断时自动切换下一个账户。</div>
+          <div v-if="!state.accounts.length" class="t-caption">尚未添加账户。可先在“账户池”中添加 API Key、Token 或导入账户 JSON；未绑定时继续使用本页直接填写的 API Key。</div>
+          <div v-else class="account-binding-list">
+            <label v-for="account in state.accounts" :key="account.id" class="account-binding-row" :class="{ paused: !account.enabled }">
+              <input v-model="form.accountIds" type="checkbox" :value="account.id" />
+              <span class="grow truncate">{{ account.name || account.provider || '上游账户' }}</span>
+              <code>{{ account.provider }}</code>
+              <span v-if="!account.enabled" class="paused-label">已暂停</span>
+            </label>
+          </div>
         </section>
 
         <section class="section">
@@ -520,6 +586,14 @@ async function handleDelete() {
 .section { display: flex; flex-direction: column; gap: 9px; padding: 12px; border: 1px solid var(--separator); border-radius: var(--r-md); background: color-mix(in srgb, var(--bg-inset) 58%, transparent); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .compact-label { color: var(--text-tertiary); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+.claude-path-control { display: flex; flex-direction: column; gap: 7px; padding: 9px; border: 1px dashed var(--separator-strong); border-radius: var(--r-sm); background: var(--bg-card); }
+.account-binding { background: color-mix(in srgb, var(--blue-soft) 30%, var(--bg-card)); }
+.account-binding-list { max-height: 144px; overflow-y: auto; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
+.account-binding-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border-bottom: 1px solid var(--separator); color: var(--text-secondary); font-size: 12px; }
+.account-binding-row:last-child { border-bottom: 0; }
+.account-binding-row code { font-size: 10px; color: var(--text-tertiary); }
+.account-binding-row.paused { opacity: .55; }
+.paused-label { color: var(--orange); font-size: 10px; }
 .text-field { display: flex; flex-direction: column; gap: 6px; }
 textarea { width: 100%; min-height: 64px; padding: 9px 10px; resize: vertical; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); background: var(--bg-inset); color: var(--text-primary); font: 11.5px var(--font-num); }
 textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }

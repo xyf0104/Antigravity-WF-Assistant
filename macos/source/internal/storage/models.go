@@ -113,19 +113,30 @@ func EffectiveCapabilities(model CustomModel) ModelCapabilities {
 
 // CustomModel represents a third-party model configuration.
 type CustomModel struct {
-	Name              string            `json:"name"`
-	DisplayName       string            `json:"displayName"`
-	Description       string            `json:"description"`
-	Provider          string            `json:"provider"` // "openai" | "anthropic" | "grok" | "custom"
-	APIKey            string            `json:"apiKey"`
-	APIURL            string            `json:"apiUrl"`
-	ExternalModelName string            `json:"externalModelName"`
-	ReasoningEffort   string            `json:"reasoningEffort,omitempty"` // "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-	APIStyle          string            `json:"apiStyle,omitempty"`        // "auto" | "chat_completions" | "responses" | "messages"
-	AuthMode          string            `json:"authMode,omitempty"`        // "bearer" | "x_api_key" | "custom_header"
-	AuthHeader        string            `json:"authHeader,omitempty"`
-	Headers           map[string]string `json:"headers,omitempty"`
-	Capabilities      ModelCapabilities `json:"capabilities,omitempty"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description"`
+	Provider    string `json:"provider"` // "openai" | "anthropic" | "grok" | "custom"
+	APIKey      string `json:"apiKey"`
+	APIURL      string `json:"apiUrl"`
+	// EndpointMode is "auto" for a base domain/path that WF expands, or
+	// "manual" to send requests to APIURL exactly as entered by the user.
+	EndpointMode      string `json:"endpointMode,omitempty"`
+	ExternalModelName string `json:"externalModelName"`
+	ReasoningEffort   string `json:"reasoningEffort,omitempty"` // "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+	APIStyle          string `json:"apiStyle,omitempty"`        // "auto" | "chat_completions" | "responses" | "messages"
+	// MessagePathMode controls Anthropic endpoint resolution. auto first uses
+	// the standard /v1/messages route; compat selects /v1/chat/messages for
+	// gateways that expose that legacy-compatible shape; manual preserves the
+	// path supplied in APIURL.
+	MessagePathMode string            `json:"messagePathMode,omitempty"`
+	AuthMode        string            `json:"authMode,omitempty"` // "bearer" | "x_api_key" | "custom_header"
+	AuthHeader      string            `json:"authHeader,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	// AccountIDs binds a model to one or more reusable upstream accounts. Empty
+	// preserves legacy per-model API credentials for existing installations.
+	AccountIDs   []string          `json:"accountIds,omitempty"`
+	Capabilities ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 type modelsStore struct {
@@ -141,6 +152,7 @@ var (
 func Init(dir string) {
 	storageDir = dir
 	modelsFile = filepath.Join(dir, "custom_models.json")
+	initAccountsFile(dir)
 	_ = os.MkdirAll(dir, 0o700)
 	_ = os.Chmod(dir, 0o700)
 	_ = os.Chmod(modelsFile, 0o600)
@@ -205,6 +217,8 @@ func normalizeModelDisplayName(model CustomModel) CustomModel {
 		model.Provider = "openai"
 	}
 	model.APIStyle = strings.ToLower(strings.TrimSpace(model.APIStyle))
+	model.EndpointMode = normalizeEndpointMode(model.EndpointMode)
+	model.MessagePathMode = normalizeMessagePathMode(model.MessagePathMode)
 	model.AuthMode = strings.ToLower(strings.TrimSpace(model.AuthMode))
 	model.AuthHeader = strings.TrimSpace(model.AuthHeader)
 	model.ExternalModelName = strings.TrimSpace(model.ExternalModelName)
@@ -213,6 +227,7 @@ func normalizeModelDisplayName(model CustomModel) CustomModel {
 		model.DisplayName = strings.TrimSpace(model.ExternalModelName)
 	}
 	model.DisplayName = strings.TrimSpace(model.DisplayName)
+	model.AccountIDs = normalizedAccountIDs(model.AccountIDs)
 	model.Capabilities.SupportedMimeTypes = capabilityMimeTypes(model.Capabilities)
 	return model
 }
@@ -243,6 +258,8 @@ func NewDiscoveredModel(provider, apiURL, apiKey, externalModelName string) Cust
 		APIURL:            apiURL,
 		ExternalModelName: externalModelName,
 		APIStyle:          "auto",
+		EndpointMode:      "auto",
+		MessagePathMode:   "auto",
 		AuthMode:          "bearer",
 		Capabilities:      DefaultCapabilities(provider, externalModelName),
 	})

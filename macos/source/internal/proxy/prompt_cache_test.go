@@ -38,12 +38,13 @@ func TestPromptCacheKeyStableAndCredentialScoped(t *testing.T) {
 
 func TestOpenAIPromptCachingAndStrip(t *testing.T) {
 	model, gemini := promptCacheFixture()
+	defer clearPromptCacheCompatibility("openai", model)
 	request := map[string]any{"messages": []map[string]any{
 		{"role": "system", "content": "stable system prompt"},
 		{"role": "user", "content": "question"},
 	}}
 	result := applyOpenAIPromptCaching(request, model, gemini)
-	if !result.explicit || !strings.HasPrefix(result.key, "antigravity:") {
+	if !result.enabled || !result.explicit || !strings.HasPrefix(result.key, "antigravity:") {
 		t.Fatalf("unexpected cache result: %+v", result)
 	}
 	if _, ok := request["prompt_cache_options"]; !ok {
@@ -126,6 +127,7 @@ func TestOpenAICacheValidationErrorRetriesWithoutCacheFields(t *testing.T) {
 
 	model, gemini := promptCacheFixture()
 	model.APIURL = upstream.URL + "/v1/chat/completions"
+	defer clearPromptCacheCompatibility("openai", model)
 	recorder := httptest.NewRecorder()
 	incoming := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/generate", nil)
 	forwardOpenAI(recorder, incoming, model, gemini, "cache-fallback-openai")
@@ -141,6 +143,21 @@ func TestOpenAICacheValidationErrorRetriesWithoutCacheFields(t *testing.T) {
 	}
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"text":"ok"`) {
 		t.Fatalf("unexpected downstream response: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	// A compatible fallback must be remembered for the rest of the app run.
+	// Otherwise every new user turn would first send a rejected cache payload.
+	secondRecorder := httptest.NewRecorder()
+	secondIncoming := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/generate", nil)
+	forwardOpenAI(secondRecorder, secondIncoming, model, gemini, "cache-compatibility-openai")
+	if len(bodies) != 3 {
+		t.Fatalf("upstream requests after remembered fallback = %d, want 3", len(bodies))
+	}
+	if _, ok := bodies[2]["prompt_cache_key"]; ok {
+		t.Fatal("known-incompatible upstream was probed for prompt caching again")
+	}
+	if secondRecorder.Code != http.StatusOK || !strings.Contains(secondRecorder.Body.String(), `"text":"ok"`) {
+		t.Fatalf("unexpected second downstream response: %d %s", secondRecorder.Code, secondRecorder.Body.String())
 	}
 }
 
@@ -170,6 +187,7 @@ func TestAnthropicCacheValidationErrorRetriesWithoutCacheFields(t *testing.T) {
 		Name: "models/claude", Provider: "anthropic", APIKey: "secret",
 		APIURL: upstream.URL + "/v1/messages", ExternalModelName: "claude-test",
 	}
+	defer clearPromptCacheCompatibility("anthropic", model)
 	recorder := httptest.NewRecorder()
 	incoming := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/generate", nil)
 	forwardAnthropic(recorder, incoming, model, gemini, "cache-fallback-anthropic")
@@ -185,5 +203,18 @@ func TestAnthropicCacheValidationErrorRetriesWithoutCacheFields(t *testing.T) {
 	}
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"text":"ok"`) {
 		t.Fatalf("unexpected downstream response: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	secondRecorder := httptest.NewRecorder()
+	secondIncoming := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/generate", nil)
+	forwardAnthropic(secondRecorder, secondIncoming, model, gemini, "cache-compatibility-anthropic")
+	if len(serializedBodies) != 3 {
+		t.Fatalf("upstream requests after remembered fallback = %d, want 3", len(serializedBodies))
+	}
+	if strings.Contains(string(serializedBodies[2]), "cache_control") {
+		t.Fatal("known-incompatible Anthropic upstream was probed for prompt caching again")
+	}
+	if secondRecorder.Code != http.StatusOK || !strings.Contains(secondRecorder.Body.String(), `"text":"ok"`) {
+		t.Fatalf("unexpected second downstream response: %d %s", secondRecorder.Code, secondRecorder.Body.String())
 	}
 }

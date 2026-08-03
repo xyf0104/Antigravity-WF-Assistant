@@ -15,6 +15,10 @@ export const state = reactive({
   models: [],
   modelsLoading: false,
 
+  // 上游账户池
+  accounts: [],
+  accountsLoading: false,
+
   // 统计
   stats: {
     totalRequests: 0,
@@ -80,6 +84,32 @@ export const state = reactive({
     lastRunAt: "",
   },
   historySyncBusy: false,
+
+  // 本地运行与更新设置
+  settings: {
+    schemaVersion: 1,
+    streamRecovery: { enabled: true, maxAttempts: 2, maxDelaySeconds: 20 },
+    updates: { autoCheck: true, skippedVersion: "" },
+  },
+  settingsLoading: false,
+  settingsBusy: false,
+  update: {
+    checking: false,
+    installing: false,
+    message: "",
+    info: {
+      currentVersion: "",
+      latestVersion: "",
+      available: false,
+      skipped: false,
+      releaseUrl: "",
+      assetName: "",
+      assetSize: 0,
+      publishedAt: "",
+      notes: "",
+    },
+    progress: { phase: "idle", downloaded: 0, total: 0, percent: 0, message: "" },
+  },
 });
 
 // ─── 派生状态 ─────────────────────────────────────────────────────────────────
@@ -163,6 +193,53 @@ export async function addDiscoveredModels(config, modelIds) {
   const res = await call("AddDiscoveredModels", config, modelIds);
   if (res?.ok) await loadModels();
   return res;
+}
+
+export async function loadAccounts() {
+  state.accountsLoading = true;
+  try {
+    state.accounts = (await call("GetUpstreamAccounts")) || [];
+  } catch (e) {
+    if (go()) console.error("loadAccounts", e);
+  } finally {
+    state.accountsLoading = false;
+  }
+}
+
+export async function defaultUpstreamAccount() {
+  return call("DefaultUpstreamAccount");
+}
+
+export async function saveUpstreamAccount(account) {
+  const res = await call("SaveUpstreamAccount", account);
+  if (res?.ok) await loadAccounts();
+  return res;
+}
+
+export async function deleteUpstreamAccount(id) {
+  const res = await call("DeleteUpstreamAccount", id);
+  if (res?.ok) await loadAccounts();
+  return res;
+}
+
+export async function setUpstreamAccountEnabled(id, enabled) {
+  const res = await call("SetUpstreamAccountEnabled", id, enabled);
+  if (res?.ok) await loadAccounts();
+  return res;
+}
+
+export async function importUpstreamAccounts(raw) {
+  const res = await call("ImportUpstreamAccounts", raw);
+  if (res?.ok) await loadAccounts();
+  return res;
+}
+
+export async function discoverAccountModels(accountID) {
+  return call("DiscoverAccountModels", accountID);
+}
+
+export async function testUpstreamAccount(accountID, model) {
+  return call("TestUpstreamAccount", accountID, model);
 }
 
 export async function loadStats() {
@@ -293,6 +370,87 @@ export async function syncHistoryNow() {
   }
 }
 
+export async function loadSettings() {
+  state.settingsLoading = true;
+  try {
+    const settings = await call("GetAppSettings");
+    if (settings) state.settings = settings;
+    return state.settings;
+  } catch (e) {
+    if (go()) console.error("loadSettings", e);
+    return state.settings;
+  } finally {
+    state.settingsLoading = false;
+  }
+}
+
+export async function saveSettings(settings) {
+  state.settingsBusy = true;
+  try {
+    const res = await call("SaveAppSettings", settings);
+    if (res?.ok) await loadSettings();
+    return res;
+  } finally {
+    state.settingsBusy = false;
+  }
+}
+
+export async function checkForUpdates() {
+  state.update.checking = true;
+  state.update.message = "正在检查更新…";
+  try {
+    const res = await call("CheckForUpdates");
+    if (res?.info) state.update.info = { ...state.update.info, ...res.info };
+    state.update.message = res?.message || (res?.ok ? "检查完成" : "检查更新失败");
+    return res;
+  } catch (e) {
+    state.update.message = e?.message || "检查更新失败";
+    return { ok: false, message: state.update.message };
+  } finally {
+    state.update.checking = false;
+  }
+}
+
+export async function skipUpdateVersion(version) {
+  const res = await call("SkipUpdateVersion", version);
+  if (res?.ok) {
+    state.update.info.skipped = true;
+    await loadSettings();
+  }
+  return res;
+}
+
+export async function installLatestUpdate() {
+  state.update.installing = true;
+  state.update.progress = { phase: "checking", downloaded: 0, total: 0, percent: 0, message: "正在验证更新信息" };
+  try {
+    const res = await call("InstallLatestUpdate");
+    if (res?.message) state.update.message = res.message;
+    return res;
+  } catch (e) {
+    state.update.message = e?.message || "启动更新失败";
+    return { ok: false, message: state.update.message };
+  } finally {
+    state.update.installing = false;
+  }
+}
+
+let updateEventsBound = false;
+function bindUpdateEvents() {
+  if (updateEventsBound) return;
+  const runtime = window.runtime;
+  if (typeof runtime?.EventsOn !== "function") return;
+  updateEventsBound = true;
+  runtime.EventsOn("wf:update-progress", (progress) => {
+    if (!progress) return;
+    state.update.progress = { ...state.update.progress, ...progress };
+    if (progress.message) state.update.message = progress.message;
+    if (progress.phase === "error" || progress.phase === "launching") {
+      state.update.installing = false;
+    }
+  });
+}
+
 // QuitApp is intentionally separate from the window close button: closing the
 // window only minimises the assistant, while this call stops the proxy and
 // releases its loopback port during application shutdown.
@@ -311,5 +469,9 @@ async function waitForStartupHistorySync() {
 
 // 初始加载
 export async function bootstrap() {
-	await Promise.all([loadPatchStatus(), loadStats(), loadModels(), loadAutoApproval(), waitForStartupHistorySync()]);
+	const [, , , , , , settings] = await Promise.all([
+		loadPatchStatus(), loadStats(), loadModels(), loadAccounts(), loadAutoApproval(), waitForStartupHistorySync(), loadSettings(),
+	]);
+	bindUpdateEvents();
+	if (settings?.updates?.autoCheck) void checkForUpdates();
 }

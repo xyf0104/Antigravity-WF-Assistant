@@ -20,16 +20,26 @@ import (
 	"antigravity-byok/internal/storage"
 )
 
-const DefaultXIASSBaseURL = "https://api.xiass.com/v1"
+// DefaultXIASSBaseURL intentionally contains only the domain. The resolver
+// adds the provider-specific /v1 endpoint so users do not need to remember
+// protocol suffixes when adding an account or model.
+const DefaultXIASSBaseURL = "https://api.xiass.com"
 
 type Config struct {
-	Provider   string            `json:"provider"`
-	APIURL     string            `json:"apiUrl"`
-	APIKey     string            `json:"apiKey"`
-	APIStyle   string            `json:"apiStyle"`
-	AuthMode   string            `json:"authMode"`
-	AuthHeader string            `json:"authHeader"`
-	Headers    map[string]string `json:"headers"`
+	AccountID string `json:"accountId,omitempty"`
+	Provider  string `json:"provider"`
+	APIURL    string `json:"apiUrl"`
+	// EndpointMode is "auto" for a base domain/path that WF expands to the
+	// provider endpoint, or "manual" for an exact endpoint entered by the user.
+	// It intentionally remains a separate setting from APIStyle: a user may send
+	// a Chat-formatted request to any gateway path they operate themselves.
+	EndpointMode    string            `json:"endpointMode,omitempty"`
+	APIKey          string            `json:"apiKey"`
+	APIStyle        string            `json:"apiStyle"`
+	MessagePathMode string            `json:"messagePathMode"`
+	AuthMode        string            `json:"authMode"`
+	AuthHeader      string            `json:"authHeader"`
+	Headers         map[string]string `json:"headers"`
 }
 
 type ModelInfo struct {
@@ -65,8 +75,17 @@ var blockedHeaderNames = map[string]struct{}{
 func ConfigFromModel(model storage.CustomModel) Config {
 	return Config{
 		Provider: model.Provider, APIURL: model.APIURL, APIKey: model.APIKey,
-		APIStyle: model.APIStyle, AuthMode: model.AuthMode, AuthHeader: model.AuthHeader,
+		EndpointMode: model.EndpointMode, APIStyle: model.APIStyle, MessagePathMode: model.MessagePathMode, AuthMode: model.AuthMode, AuthHeader: model.AuthHeader,
 		Headers: model.Headers,
+	}
+}
+
+func ConfigFromAccount(account storage.UpstreamAccount) Config {
+	return Config{
+		AccountID: account.ID, Provider: account.Provider, APIURL: account.APIURL,
+		EndpointMode: account.EndpointMode, APIKey: account.EffectiveAPIKey(), APIStyle: account.APIStyle,
+		MessagePathMode: account.MessagePathMode, AuthMode: account.AuthMode,
+		AuthHeader: account.AuthHeader, Headers: account.Headers,
 	}
 }
 
@@ -78,6 +97,26 @@ func NormalizedProvider(value string) string {
 	default:
 		return "openai"
 	}
+}
+
+// NormalizedEndpointMode accepts a small, deliberately stable vocabulary. An
+// unknown/legacy value stays safely in automatic mode rather than accidentally
+// treating a base domain as a complete request endpoint.
+func NormalizedEndpointMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "manual", "exact", "full", "full_url", "full-url":
+		return "manual"
+	default:
+		return "auto"
+	}
+}
+
+// UsesManualEndpoint reports whether the entered APIURL must be sent exactly
+// as written. MessagePathMode=manual is kept as a backwards-compatible alias
+// for configurations produced by earlier WF versions.
+func UsesManualEndpoint(config Config) bool {
+	return NormalizedEndpointMode(config.EndpointMode) == "manual" ||
+		strings.EqualFold(strings.TrimSpace(config.MessagePathMode), "manual")
 }
 
 // EffectiveAPIStyle preserves legacy configs (which were Chat Completions)
@@ -124,7 +163,7 @@ func endpointURL(rawURL, leaf string) (string, error) {
 		return "", err
 	}
 	path := strings.TrimRight(parsed.Path, "/")
-	for _, suffix := range []string{"/chat/completions", "/responses", "/messages", "/models"} {
+	for _, suffix := range []string{"/chat/completions", "/chat/messages", "/responses", "/messages", "/models"} {
 		if strings.HasSuffix(path, suffix) {
 			path = strings.TrimSuffix(path, suffix)
 			break
@@ -138,14 +177,92 @@ func endpointURL(rawURL, leaf string) (string, error) {
 	return parsed.String(), nil
 }
 
+// manualEndpointURL validates a user-provided full URL but does not add,
+// remove, or replace its path. Query parameters are kept as well, which is
+// important for gateways that route on a workspace or deployment query.
+func manualEndpointURL(rawURL string) (string, error) {
+	parsed, err := validateBaseURL(rawURL)
+	if err != nil {
+		return "", err
+	}
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+func endpointURLForConfig(config Config, leaf string) (string, error) {
+	if UsesManualEndpoint(config) {
+		return manualEndpointURL(config.APIURL)
+	}
+	return endpointURL(config.APIURL, leaf)
+}
+
 func ResolveChatCompletionsURL(rawURL string) (string, error) {
 	return endpointURL(rawURL, "chat/completions")
 }
+
+func ResolveChatCompletionsURLForConfig(config Config) (string, error) {
+	return endpointURLForConfig(config, "chat/completions")
+}
+
 func ResolveResponsesURL(rawURL string) (string, error) { return endpointURL(rawURL, "responses") }
+
+func ResolveResponsesURLForConfig(config Config) (string, error) {
+	return endpointURLForConfig(config, "responses")
+}
+
 func ResolveAnthropicMessagesURL(rawURL string) (string, error) {
 	return endpointURL(rawURL, "messages")
 }
+
+// ResolveAnthropicMessagesURLForConfig supports both the standard Anthropic
+// Messages API and gateways whose compatible endpoint is /v1/chat/messages.
+// "manual" preserves a full messages endpoint entered in APIURL; automatic
+// mode starts with the standard route and callers can use the candidate helper
+// to retry the compatibility route only when the endpoint is absent.
+func ResolveAnthropicMessagesURLForConfig(config Config) (string, error) {
+	if UsesManualEndpoint(config) {
+		return manualEndpointURL(config.APIURL)
+	}
+	if strings.EqualFold(strings.TrimSpace(config.MessagePathMode), "compat") {
+		return endpointURL(config.APIURL, "chat/messages")
+	}
+	return ResolveAnthropicMessagesURL(config.APIURL)
+}
+
+func ResolveAnthropicMessageCandidates(config Config) ([]string, error) {
+	primary, err := ResolveAnthropicMessagesURLForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	if !UsesManualEndpoint(config) && (strings.EqualFold(strings.TrimSpace(config.MessagePathMode), "auto") || strings.TrimSpace(config.MessagePathMode) == "") {
+		compat, err := endpointURL(config.APIURL, "chat/messages")
+		if err != nil {
+			return nil, err
+		}
+		if compat != primary {
+			return []string{primary, compat}, nil
+		}
+	}
+	return []string{primary}, nil
+}
 func ResolveModelsURL(rawURL string) (string, error) { return endpointURL(rawURL, "models") }
+
+// ResolveModelsURLForConfig still derives /models from a manually supplied
+// request endpoint, unless the user explicitly supplied a /models endpoint.
+// A full chat endpoint cannot also be a model-list endpoint, while this keeps
+// discovery convenient and leaves manually-added models entirely unrestricted.
+func ResolveModelsURLForConfig(config Config) (string, error) {
+	if UsesManualEndpoint(config) {
+		parsed, err := validateBaseURL(config.APIURL)
+		if err != nil {
+			return "", err
+		}
+		if strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/models") {
+			return manualEndpointURL(config.APIURL)
+		}
+	}
+	return ResolveModelsURL(config.APIURL)
+}
 
 func ValidateConfig(config Config) error {
 	if _, err := validateBaseURL(config.APIURL); err != nil {
@@ -220,7 +337,7 @@ func DiscoverModels(ctx context.Context, config Config) DiscoveryResult {
 	if err := ValidateConfig(config); err != nil {
 		return DiscoveryResult{Message: err.Error()}
 	}
-	endpoint, err := ResolveModelsURL(config.APIURL)
+	endpoint, err := ResolveModelsURLForConfig(config)
 	if err != nil {
 		return DiscoveryResult{Message: err.Error()}
 	}
@@ -354,7 +471,7 @@ func CanFallbackToChat(statusCode int) bool {
 }
 
 func testChatCompletions(ctx context.Context, config Config, model string) TestResult {
-	endpoint, err := ResolveChatCompletionsURL(config.APIURL)
+	endpoint, err := ResolveChatCompletionsURLForConfig(config)
 	if err != nil {
 		return TestResult{Message: err.Error(), APIStyle: "chat_completions"}
 	}
@@ -366,7 +483,7 @@ func testChatCompletions(ctx context.Context, config Config, model string) TestR
 }
 
 func testResponses(ctx context.Context, config Config, model string) TestResult {
-	endpoint, err := ResolveResponsesURL(config.APIURL)
+	endpoint, err := ResolveResponsesURLForConfig(config)
 	if err != nil {
 		return TestResult{Message: err.Error(), APIStyle: "responses"}
 	}
@@ -375,14 +492,18 @@ func testResponses(ctx context.Context, config Config, model string) TestResult 
 }
 
 func testAnthropic(ctx context.Context, config Config, model string) TestResult {
-	endpoint, err := ResolveAnthropicMessagesURL(config.APIURL)
-	if err != nil {
-		return TestResult{Message: err.Error(), APIStyle: "messages"}
-	}
 	body, _ := json.Marshal(map[string]any{
 		"model": model, "max_tokens": 8, "messages": []any{map[string]any{"role": "user", "content": "Reply with OK."}},
 	})
-	return doTestRequest(ctx, config, endpoint, "messages", body)
+	endpoints, err := ResolveAnthropicMessageCandidates(config)
+	if err != nil {
+		return TestResult{Message: err.Error(), APIStyle: "messages"}
+	}
+	result := doTestRequest(ctx, config, endpoints[0], "messages", body)
+	if len(endpoints) > 1 && !result.OK && CanFallbackToChat(result.StatusCode) {
+		return doTestRequest(ctx, config, endpoints[1], "messages", body)
+	}
+	return result
 }
 
 func doTestRequest(ctx context.Context, config Config, endpoint, style string, body []byte) TestResult {

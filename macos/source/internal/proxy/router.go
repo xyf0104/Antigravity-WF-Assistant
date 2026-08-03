@@ -430,49 +430,70 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 	baseRequest["stream"] = true
 	baseRequest["stream_options"] = map[string]any{"include_usage": true}
 	cache := applyOpenAIPromptCaching(baseRequest, m, geminiReq)
-	cacheEnabled := true
-
-	apiURL, err := upstream.ResolveChatCompletionsURL(m.APIURL)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	cacheEnabled := cache.enabled
 
 	policy := currentStreamRecoveryPolicy()
 	writer := newDownstreamSSEWriter(w)
 	client := &http.Client{Timeout: upstreamStreamTimeout}
 	requestBody := baseRequest
 	emittedText := ""
+	outputDelivered := false
 	lastModelVersion, lastResponseID := "", ""
 	reconnects := 0
 	cacheFallbackUsed := false
+	excludedAccounts := map[string]struct{}{}
 
 	for attempt := 1; ; attempt++ {
+		attemptModel, lease, err := acquireAttemptModel(m, excludedAccounts)
+		if err != nil {
+			trace("openai-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
+			if writer.committed {
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+			} else {
+				http.Error(w, accountPoolError("OpenAI", err), http.StatusServiceUnavailable)
+			}
+			return
+		}
+		attemptConfig := upstream.ConfigFromModel(*attemptModel)
+		apiURL, err := upstream.ResolveChatCompletionsURLForConfig(attemptConfig)
+		if err != nil {
+			releaseAttemptSuccess(lease)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		body, _ := json.Marshal(requestBody)
 		trace("openai-upstream-request", map[string]any{
 			"requestId": requestID, "attempt": attempt,
 			"promptCache": cacheEnabled, "promptCacheExplicit": cacheEnabled && cache.explicit,
 			"promptCacheKeyHash": strings.TrimPrefix(cache.key, "antigravity:"),
+			"accountId": func() string {
+				if lease == nil {
+					return ""
+				}
+				return lease.ID
+			}(),
 		})
 		req, err := http.NewRequestWithContext(incoming.Context(), "POST", apiURL, bytes.NewReader(body))
 		if err != nil {
+			releaseAttemptSuccess(lease)
 			http.Error(w, err.Error(), 502)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if err := upstream.ApplyCredentials(req, upstream.ConfigFromModel(*m)); err != nil {
+		if err := upstream.ApplyCredentials(req, attemptConfig); err != nil {
+			releaseAttemptSuccess(lease)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
 		resp, err := client.Do(req)
 		if err != nil {
+			releaseAttemptFailure(lease, 0, "", err.Error())
+			excludeFailedAttempt(excludedAccounts, lease)
 			trace("openai-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			reconnects++
-			if waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, "network", "", reconnects) {
-				if emittedText != "" {
-					requestBody = continueOpenAIChatRequest(baseRequest, emittedText)
-				}
+			if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, "network", "", reconnects) {
+				requestBody = baseRequest
 				continue
 			}
 			if incoming.Context().Err() != nil {
@@ -489,34 +510,34 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			errBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			retryAfter := resp.Header.Get("Retry-After")
 			trace("openai-upstream-error-response", map[string]any{
 				"requestId":  requestID,
 				"statusCode": resp.StatusCode,
 				"body":       string(errBody[:min(len(errBody), 500)]),
 			})
-			if cacheEnabled && !cacheFallbackUsed && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+			if cacheEnabled && !cacheFallbackUsed && canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+				releaseAttemptSuccess(lease)
+				rememberUnsupportedPromptCache("openai", m)
 				stripOpenAIPromptCaching(baseRequest)
 				cacheEnabled = false
 				cacheFallbackUsed = true
 				trace("prompt-cache-fallback", map[string]any{
 					"requestId": requestID, "provider": "openai", "statusCode": resp.StatusCode,
 				})
-				if emittedText != "" {
-					requestBody = continueOpenAIChatRequest(baseRequest, emittedText)
-				} else {
-					requestBody = baseRequest
-				}
+				requestBody = baseRequest
 				continue
 			}
-			if isRetryableStatus(resp.StatusCode) {
+			if shouldFailOverAccount(lease, resp.StatusCode) {
+				releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
+				excludeFailedAttempt(excludedAccounts, lease)
 				reconnects++
-				if waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, fmt.Sprintf("http-%d", resp.StatusCode), resp.Header.Get("Retry-After"), reconnects) {
-					if emittedText != "" {
-						requestBody = continueOpenAIChatRequest(baseRequest, emittedText)
-					}
+				if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
+					requestBody = baseRequest
 					continue
 				}
 			}
+			releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
 			if incoming.Context().Err() != nil {
 				return
 			}
@@ -541,10 +562,15 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 		if outcome.emittedText != "" {
 			emittedText += outcome.emittedText
 		}
+		if outcome.wroteEvent {
+			outputDelivered = true
+		}
 		if outcome.finished {
+			releaseAttemptSuccess(lease)
 			return
 		}
 		if outcome.unsafeOutput {
+			releaseAttemptSuccess(lease)
 			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
 			return
 		}
@@ -554,12 +580,10 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 		if outcome.err != nil {
 			reason = outcome.err.Error()
 		}
-		if waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, reason, "", reconnects) {
-			if emittedText != "" {
-				requestBody = continueOpenAIChatRequest(baseRequest, emittedText)
-			} else {
-				requestBody = baseRequest
-			}
+		releaseAttemptFailure(lease, 0, "", reason)
+		excludeFailedAttempt(excludedAccounts, lease)
+		if canRetryStreamWithoutContinuation(emittedText, outputDelivered, outcome.unsafeOutput) && waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, reason, "", reconnects) {
+			requestBody = baseRequest
 			continue
 		}
 		if incoming.Context().Err() != nil {
@@ -585,40 +609,61 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 		baseRequest["reasoning"] = map[string]any{"effort": effort}
 		delete(baseRequest, "temperature")
 	}
-	apiURL, err := upstream.ResolveResponsesURL(m.APIURL)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return false
-	}
 	policy := currentStreamRecoveryPolicy()
 	writer := newDownstreamSSEWriter(w)
 	client := &http.Client{Timeout: upstreamStreamTimeout}
 	requestBody := baseRequest
 	emittedText := ""
+	outputDelivered := false
 	lastModelVersion, lastResponseID := "", ""
 	reconnects := 0
+	excludedAccounts := map[string]struct{}{}
 
 	for attempt := 1; ; attempt++ {
+		attemptModel, lease, err := acquireAttemptModel(m, excludedAccounts)
+		if err != nil {
+			trace("responses-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
+			if writer.committed {
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+			} else {
+				http.Error(w, accountPoolError("OpenAI", err), http.StatusServiceUnavailable)
+			}
+			return false
+		}
+		attemptConfig := upstream.ConfigFromModel(*attemptModel)
+		apiURL, err := upstream.ResolveResponsesURLForConfig(attemptConfig)
+		if err != nil {
+			releaseAttemptSuccess(lease)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return false
+		}
 		body, _ := json.Marshal(requestBody)
-		trace("responses-upstream-request", map[string]any{"requestId": requestID, "attempt": attempt})
+		trace("responses-upstream-request", map[string]any{"requestId": requestID, "attempt": attempt, "accountId": func() string {
+			if lease == nil {
+				return ""
+			}
+			return lease.ID
+		}()})
 		req, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, apiURL, bytes.NewReader(body))
 		if err != nil {
+			releaseAttemptSuccess(lease)
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return false
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if err := upstream.ApplyCredentials(req, upstream.ConfigFromModel(*m)); err != nil {
+		if err := upstream.ApplyCredentials(req, attemptConfig); err != nil {
+			releaseAttemptSuccess(lease)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return false
 		}
 		resp, err := client.Do(req)
 		if err != nil {
+			releaseAttemptFailure(lease, 0, "", err.Error())
+			excludeFailedAttempt(excludedAccounts, lease)
 			trace("responses-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			reconnects++
-			if waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, "network", "", reconnects) {
-				if emittedText != "" {
-					requestBody = continueResponsesRequest(baseRequest, emittedText)
-				}
+			if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, "network", "", reconnects) {
+				requestBody = baseRequest
 				continue
 			}
 			if incoming.Context().Err() != nil {
@@ -634,20 +679,23 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			errBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			retryAfter := resp.Header.Get("Retry-After")
 			trace("responses-upstream-error-response", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode, "body": string(errBody[:min(len(errBody), 500)])})
 			if allowFallback && !writer.committed && emittedText == "" && upstream.CanFallbackToChat(resp.StatusCode) {
+				releaseAttemptSuccess(lease)
 				trace("responses-chat-fallback", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode})
 				return true
 			}
-			if isRetryableStatus(resp.StatusCode) {
+			if shouldFailOverAccount(lease, resp.StatusCode) {
+				releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
+				excludeFailedAttempt(excludedAccounts, lease)
 				reconnects++
-				if waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, fmt.Sprintf("http-%d", resp.StatusCode), resp.Header.Get("Retry-After"), reconnects) {
-					if emittedText != "" {
-						requestBody = continueResponsesRequest(baseRequest, emittedText)
-					}
+				if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
+					requestBody = baseRequest
 					continue
 				}
 			}
+			releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
 			if incoming.Context().Err() != nil {
 				return false
 			}
@@ -672,10 +720,15 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 		if outcome.emittedText != "" {
 			emittedText += outcome.emittedText
 		}
+		if outcome.wroteEvent {
+			outputDelivered = true
+		}
 		if outcome.finished {
+			releaseAttemptSuccess(lease)
 			return false
 		}
 		if outcome.unsafeOutput {
+			releaseAttemptSuccess(lease)
 			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
 			return false
 		}
@@ -685,12 +738,10 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 		if outcome.err != nil {
 			reason = outcome.err.Error()
 		}
-		if waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, reason, "", reconnects) {
-			if emittedText != "" {
-				requestBody = continueResponsesRequest(baseRequest, emittedText)
-			} else {
-				requestBody = baseRequest
-			}
+		releaseAttemptFailure(lease, 0, "", reason)
+		excludeFailedAttempt(excludedAccounts, lease)
+		if canRetryStreamWithoutContinuation(emittedText, outputDelivered, outcome.unsafeOutput) && waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, reason, "", reconnects) {
+			requestBody = baseRequest
 			continue
 		}
 		if incoming.Context().Err() != nil {
@@ -752,10 +803,10 @@ func forwardAnthropicLegacy(w http.ResponseWriter, incoming *http.Request, m *st
 			anthReq["max_tokens"] = budget + 8192
 		}
 	}
-	breakpointCount := applyAnthropicPromptCaching(anthReq)
-	cacheEnabled := true
+	breakpointCount := applyAnthropicPromptCachingForModel(anthReq, m)
+	cacheEnabled := breakpointCount > 0
 
-	apiURL, err := upstream.ResolveAnthropicMessagesURL(m.APIURL)
+	apiURL, err := upstream.ResolveAnthropicMessagesURLForConfig(upstream.ConfigFromModel(*m))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -808,6 +859,7 @@ func forwardAnthropicLegacy(w http.ResponseWriter, incoming *http.Request, m *st
 				"body": string(errBody[:min(len(errBody), 500)]),
 			})
 			if cacheEnabled && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+				rememberUnsupportedPromptCache("anthropic", m)
 				stripAnthropicPromptCaching(anthReq)
 				cacheEnabled = false
 				extraAttempts = 1
@@ -851,145 +903,176 @@ func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.
 			baseRequest["max_tokens"] = budget + 8192
 		}
 	}
-	breakpointCount := applyAnthropicPromptCaching(baseRequest)
-	cacheEnabled := true
-
-	apiURL, err := upstream.ResolveAnthropicMessagesURL(m.APIURL)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	breakpointCount := applyAnthropicPromptCachingForModel(baseRequest, m)
+	cacheEnabled := breakpointCount > 0
 
 	policy := currentStreamRecoveryPolicy()
 	writer := newDownstreamSSEWriter(w)
 	client := &http.Client{Timeout: upstreamStreamTimeout}
 	requestBody := baseRequest
 	emittedText := ""
+	outputDelivered := false
 	lastModelVersion, lastResponseID := "", ""
 	reconnects := 0
 	cacheFallbackUsed := false
+	excludedAccounts := map[string]struct{}{}
 
+attemptLoop:
 	for attempt := 1; ; attempt++ {
-		body, _ := json.Marshal(requestBody)
-		trace("anthropic-upstream-request", map[string]any{
-			"requestId": requestID, "attempt": attempt,
-			"promptCache": cacheEnabled, "promptCacheBreakpoints": func() int {
-				if cacheEnabled {
-					return breakpointCount
-				}
-				return 0
-			}(),
-		})
-		req, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, apiURL, bytes.NewReader(body))
+		attemptModel, lease, err := acquireAttemptModel(m, excludedAccounts)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			trace("anthropic-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
+			if writer.committed {
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+			} else {
+				http.Error(w, accountPoolError("Claude", err), http.StatusServiceUnavailable)
+			}
 			return
 		}
-		req.Header.Set("Content-Type", "application/json")
-		if err := upstream.ApplyCredentials(req, upstream.ConfigFromModel(*m)); err != nil {
+		attemptConfig := upstream.ConfigFromModel(*attemptModel)
+		apiURLs, err := upstream.ResolveAnthropicMessageCandidates(attemptConfig)
+		if err != nil {
+			releaseAttemptSuccess(lease)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			trace("anthropic-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
-			reconnects++
-			if waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, "network", "", reconnects) {
-				if emittedText != "" {
-					requestBody = continueAnthropicRequest(baseRequest, emittedText)
-				}
-				continue
-			}
-			if incoming.Context().Err() != nil {
-				return
-			}
-			if writer.committed {
-				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
-				return
-			}
-			http.Error(w, "无法连接上游："+err.Error(), http.StatusBadGateway)
-			return
-		}
-
-		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			errBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			trace("anthropic-upstream-error-response", map[string]any{
-				"requestId": requestID, "statusCode": resp.StatusCode,
-				"body": string(errBody[:min(len(errBody), 500)]),
-			})
-			if cacheEnabled && !cacheFallbackUsed && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
-				stripAnthropicPromptCaching(baseRequest)
-				cacheEnabled = false
-				cacheFallbackUsed = true
-				trace("prompt-cache-fallback", map[string]any{"requestId": requestID, "provider": "anthropic", "statusCode": resp.StatusCode})
-				if emittedText != "" {
-					requestBody = continueAnthropicRequest(baseRequest, emittedText)
-				} else {
-					requestBody = baseRequest
-				}
-				continue
-			}
-			if isRetryableStatus(resp.StatusCode) {
-				reconnects++
-				if waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, fmt.Sprintf("http-%d", resp.StatusCode), resp.Header.Get("Retry-After"), reconnects) {
-					if emittedText != "" {
-						requestBody = continueAnthropicRequest(baseRequest, emittedText)
+		body, _ := json.Marshal(requestBody)
+		for endpointIndex, apiURL := range apiURLs {
+			trace("anthropic-upstream-request", map[string]any{
+				"requestId": requestID, "attempt": attempt, "endpointCandidate": endpointIndex + 1,
+				"accountId": func() string {
+					if lease == nil {
+						return ""
 					}
+					return lease.ID
+				}(),
+				"promptCache": cacheEnabled, "promptCacheBreakpoints": func() int {
+					if cacheEnabled {
+						return breakpointCount
+					}
+					return 0
+				}(),
+			})
+			req, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, apiURL, bytes.NewReader(body))
+			if err != nil {
+				releaseAttemptSuccess(lease)
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if err := upstream.ApplyCredentials(req, attemptConfig); err != nil {
+				releaseAttemptSuccess(lease)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				releaseAttemptFailure(lease, 0, "", err.Error())
+				excludeFailedAttempt(excludedAccounts, lease)
+				trace("anthropic-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
+				reconnects++
+				if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, "network", "", reconnects) {
+					requestBody = baseRequest
+					continue attemptLoop
+				}
+				if incoming.Context().Err() != nil {
+					return
+				}
+				if writer.committed {
+					writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+					return
+				}
+				http.Error(w, "无法连接上游："+err.Error(), http.StatusBadGateway)
+				return
+			}
+
+			if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+				errBody, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				retryAfter := resp.Header.Get("Retry-After")
+				trace("anthropic-upstream-error-response", map[string]any{
+					"requestId": requestID, "statusCode": resp.StatusCode,
+					"body": string(errBody[:min(len(errBody), 500)]),
+				})
+				if endpointIndex+1 < len(apiURLs) && upstream.CanFallbackToChat(resp.StatusCode) {
+					trace("anthropic-compatible-endpoint-fallback", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode})
 					continue
 				}
+				if cacheEnabled && !cacheFallbackUsed && canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+					releaseAttemptSuccess(lease)
+					rememberUnsupportedPromptCache("anthropic", m)
+					stripAnthropicPromptCaching(baseRequest)
+					cacheEnabled = false
+					cacheFallbackUsed = true
+					trace("prompt-cache-fallback", map[string]any{"requestId": requestID, "provider": "anthropic", "statusCode": resp.StatusCode})
+					requestBody = baseRequest
+					continue attemptLoop
+				}
+				if shouldFailOverAccount(lease, resp.StatusCode) {
+					releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
+					excludeFailedAttempt(excludedAccounts, lease)
+					reconnects++
+					if canRetryStreamWithoutContinuation(emittedText, outputDelivered, false) && waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
+						requestBody = baseRequest
+						continue attemptLoop
+					}
+				}
+				releaseAttemptFailure(lease, resp.StatusCode, retryAfter, string(errBody))
+				if incoming.Context().Err() != nil {
+					return
+				}
+				if writer.committed {
+					writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(resp.StatusCode)
+				_, _ = w.Write(errBody)
+				return
+			}
+
+			outcome := streamAnthropicAttempt(writer, resp, requestID, attempt)
+			resp.Body.Close()
+			if outcome.responseID != "" {
+				lastResponseID = outcome.responseID
+			}
+			if outcome.modelVersion != "" {
+				lastModelVersion = outcome.modelVersion
+			}
+			if outcome.emittedText != "" {
+				emittedText += outcome.emittedText
+			}
+			if outcome.wroteEvent {
+				outputDelivered = true
+			}
+			if outcome.finished {
+				releaseAttemptSuccess(lease)
+				return
+			}
+			if outcome.unsafeOutput {
+				releaseAttemptSuccess(lease)
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
+				return
+			}
+
+			reconnects++
+			reason := "incomplete-stream"
+			if outcome.err != nil {
+				reason = outcome.err.Error()
+			}
+			releaseAttemptFailure(lease, 0, "", reason)
+			excludeFailedAttempt(excludedAccounts, lease)
+			if canRetryStreamWithoutContinuation(emittedText, outputDelivered, outcome.unsafeOutput) && waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, reason, "", reconnects) {
+				requestBody = baseRequest
+				continue attemptLoop
 			}
 			if incoming.Context().Err() != nil {
 				return
 			}
-			if writer.committed {
-				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(resp.StatusCode)
-			_, _ = w.Write(errBody)
+			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
 			return
 		}
-
-		outcome := streamAnthropicAttempt(writer, resp, requestID, attempt)
-		resp.Body.Close()
-		if outcome.responseID != "" {
-			lastResponseID = outcome.responseID
-		}
-		if outcome.modelVersion != "" {
-			lastModelVersion = outcome.modelVersion
-		}
-		if outcome.emittedText != "" {
-			emittedText += outcome.emittedText
-		}
-		if outcome.finished {
-			return
-		}
-		if outcome.unsafeOutput {
-			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
-			return
-		}
-
-		reconnects++
-		reason := "incomplete-stream"
-		if outcome.err != nil {
-			reason = outcome.err.Error()
-		}
-		if waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, reason, "", reconnects) {
-			if emittedText != "" {
-				requestBody = continueAnthropicRequest(baseRequest, emittedText)
-			} else {
-				requestBody = baseRequest
-			}
-			continue
-		}
-		if incoming.Context().Err() != nil {
-			return
-		}
-		writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
-		return
 	}
 }
 

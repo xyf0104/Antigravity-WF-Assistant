@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -58,5 +59,55 @@ func TestCustomHeaderAuthentication(t *testing.T) {
 	}
 	if request.Header.Get("X-Token") != "secret" || request.Header.Get("X-Client") != "WF" {
 		t.Fatalf("headers not applied: %#v", request.Header)
+	}
+}
+
+func TestManualEndpointIsPreservedExactly(t *testing.T) {
+	config := Config{
+		Provider:     "openai",
+		APIURL:       "https://gateway.example.com/custom/chat?workspace=wf",
+		EndpointMode: "manual",
+	}
+
+	for name, resolve := range map[string]func(Config) (string, error){
+		"chat":      ResolveChatCompletionsURLForConfig,
+		"responses": ResolveResponsesURLForConfig,
+	} {
+		got, err := resolve(config)
+		if err != nil {
+			t.Fatalf("%s resolver returned error: %v", name, err)
+		}
+		if want := config.APIURL; got != want {
+			t.Errorf("%s manual endpoint = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestAnthropicEndpointModes(t *testing.T) {
+	base := Config{Provider: "anthropic", APIURL: "https://api.example.com"}
+
+	auto, err := ResolveAnthropicMessageCandidates(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"https://api.example.com/v1/messages", "https://api.example.com/v1/chat/messages"}; !reflect.DeepEqual(auto, want) {
+		t.Fatalf("automatic Claude candidates = %#v, want %#v", auto, want)
+	}
+
+	compat, err := ResolveAnthropicMessageCandidates(Config{Provider: "anthropic", APIURL: base.APIURL, MessagePathMode: "compat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"https://api.example.com/v1/chat/messages"}; !reflect.DeepEqual(compat, want) {
+		t.Fatalf("compatible Claude candidates = %#v, want %#v", compat, want)
+	}
+
+	manualURL := "https://api.example.com/claude/messages-v2?tenant=wf"
+	manual, err := ResolveAnthropicMessageCandidates(Config{Provider: "anthropic", APIURL: manualURL, EndpointMode: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{manualURL}; !reflect.DeepEqual(manual, want) {
+		t.Fatalf("manual Claude candidates = %#v, want %#v", manual, want)
 	}
 }

@@ -40,7 +40,7 @@ input {
   border: 0.5px solid var(--separator-strong);
   border-radius: var(--r-sm);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 14px;
   transition: border-color 0.16s var(--ease), box-shadow 0.16s var(--ease);
   width: 100%;
 }
@@ -52,11 +52,11 @@ input:focus {
 
 input.mono {
   font-family: var(--font-num);
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
 
 .hint {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--text-tertiary);
 }
 </style>

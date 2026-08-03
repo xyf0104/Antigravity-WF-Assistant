@@ -1,8 +1,8 @@
-# Antigravity WF助手 Windows x64 v1.3.5
+# Antigravity WF助手 Windows x64 v1.4.0
 
 ## 安装
 
-1. 双击 `Antigravity-WF-Assistant-Windows-x64-v1.3.5-Setup.exe`。
+1. 双击 `Antigravity-WF-Assistant-Windows-x64-v1.4.0-Setup.exe`。
 2. 在“选择组件”页按需要勾选“在桌面创建快捷方式”，然后完成安装并从开始菜单或桌面打开“Antigravity WF助手”。
 3. 安装器默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Antigravity WF助手`，安装助手本身不需要管理员权限。
 

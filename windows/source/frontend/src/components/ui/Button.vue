@@ -39,13 +39,13 @@ defineProps({
 .s-md {
   height: 32px;
   padding: 0 14px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .s-sm {
   height: 26px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: 12.5px;
   border-radius: 7px;
 }
 

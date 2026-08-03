@@ -26,7 +26,7 @@ var streamRecoveryConfig = struct {
 	sync.RWMutex
 	policy streamRecoveryPolicy
 }{
-	policy: streamRecoveryPolicy{enabled: true, maxAttempts: 5, maxDelaySeconds: 20},
+	policy: streamRecoveryPolicy{enabled: true, maxAttempts: 2, maxDelaySeconds: 20},
 }
 
 func ConfigureStreamRecovery(settings storage.StreamRecoverySettings) {
@@ -133,96 +133,26 @@ func waitForStreamRecovery(ctx context.Context, writer *downstreamSSEWriter, pol
 }
 
 func writeRecoveredStreamStop(writer *downstreamSSEWriter, requestID, modelVersion, responseID string, reconnects int, unsafe bool) {
-	message := fmt.Sprintf("上游连接已自动重连 %d 次仍未恢复，已保留当前回复。请直接继续提问以从现有上下文继续。", reconnects)
+	// Do not append a synthetic assistant message here. It would be persisted in
+	// Antigravity's conversation and then sent back to the upstream on the next
+	// user turn, which is both confusing and a source of repeated replies.
+	// A valid SSE comment records the state without becoming chat content.
+	reason := "partial-output"
 	if unsafe {
-		message = "上游在工具调用或生成附件期间中断。为避免重复执行操作，已保留当前回复并安全结束；请直接继续提问以恢复。"
+		reason = "tool-or-attachment"
 	}
-	writer.write(encodeAntigravityStreamEvent(map[string]any{
-		"candidates": []any{map[string]any{
-			"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": message}}},
-		}},
-	}, requestID))
+	writer.writeComment(fmt.Sprintf("wf-stream-stopped reconnects=%d reason=%s", reconnects, reason))
 	writer.write(encodeAntigravityStreamEvent(finalStopResponse(modelVersion, responseID), requestID))
 }
 
-// continuationExcerpt is deliberately bounded. The original prompt is already
-// sent with every retry; only the tail of emitted text is required to tell an
-// account selected after a failover exactly where to continue.
-func continuationExcerpt(text string) string {
-	const maxRunes = 12000
-	text = strings.TrimSpace(text)
-	runes := []rune(text)
-	if len(runes) <= maxRunes {
-		return text
-	}
-	return "[…前文已在当前会话中保留…]" + string(runes[len(runes)-maxRunes:])
-}
-
-func continuationInstruction() string {
-	return "上游流式连接刚刚中断。上方助手内容已经展示给用户；请从其最后一个字符后继续回答，不要重复已有内容，不要重复调用已经完成的工具，只输出后续内容。"
-}
-
-func shallowCloneRequest(request map[string]any) map[string]any {
-	clone := make(map[string]any, len(request)+1)
-	for key, value := range request {
-		clone[key] = value
-	}
-	return clone
-}
-
-func appendRequestItems(value any, additions ...any) []any {
-	items := make([]any, 0, len(additions)+4)
-	switch current := value.(type) {
-	case []any:
-		items = append(items, current...)
-	case []map[string]any:
-		for _, item := range current {
-			items = append(items, item)
-		}
-	case nil:
-		// Keep an empty list when the original request has no conversation.
-	}
-	items = append(items, additions...)
-	return items
-}
-
-func continueOpenAIChatRequest(base map[string]any, emittedText string) map[string]any {
-	request := shallowCloneRequest(base)
-	partial := continuationExcerpt(emittedText)
-	if partial == "" {
-		return request
-	}
-	request["messages"] = appendRequestItems(request["messages"],
-		map[string]any{"role": "assistant", "content": partial},
-		map[string]any{"role": "user", "content": continuationInstruction()},
-	)
-	return request
-}
-
-func continueAnthropicRequest(base map[string]any, emittedText string) map[string]any {
-	request := shallowCloneRequest(base)
-	partial := continuationExcerpt(emittedText)
-	if partial == "" {
-		return request
-	}
-	request["messages"] = appendRequestItems(request["messages"],
-		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": partial}}},
-		map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": continuationInstruction()}}},
-	)
-	return request
-}
-
-func continueResponsesRequest(base map[string]any, emittedText string) map[string]any {
-	request := shallowCloneRequest(base)
-	partial := continuationExcerpt(emittedText)
-	if partial == "" {
-		return request
-	}
-	request["input"] = appendRequestItems(request["input"],
-		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": partial}}},
-		map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": continuationInstruction()}}},
-	)
-	return request
+// canRetryStreamWithoutContinuation is intentionally stricter than a normal
+// network retry. Once an upstream event has reached Antigravity, retrying the
+// generation can execute the same request twice even when there is no visible
+// network outage. We therefore retry only while the request has produced no
+// downstream event at all. This keeps an accepted generation single-shot and
+// prevents duplicated chat turns, tool calls, and token charges.
+func canRetryStreamWithoutContinuation(emittedText string, outputDelivered, unsafeOutput bool) bool {
+	return !outputDelivered && !unsafeOutput && strings.TrimSpace(emittedText) == ""
 }
 
 type streamAttemptOutcome struct {
@@ -233,8 +163,4 @@ type streamAttemptOutcome struct {
 	responseID   string
 	modelVersion string
 	err          error
-}
-
-func (outcome streamAttemptOutcome) canContinue() bool {
-	return !outcome.unsafeOutput && strings.TrimSpace(outcome.emittedText) != ""
 }

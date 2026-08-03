@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -793,6 +794,133 @@ func TestRetryDelay(t *testing.T) {
 	}
 	if got := retryDelay(2, ""); got != 500*time.Millisecond {
 		t.Errorf("exponential delay = %v", got)
+	}
+}
+
+func TestForwardOpenAIChatDoesNotReplayAfterPartialStreamDisconnect(t *testing.T) {
+	previous := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{
+		Enabled: previous.enabled, MaxAttempts: previous.maxAttempts, MaxDelaySeconds: previous.maxDelaySeconds,
+	})
+
+	requests := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests == 1 {
+			_, _ = io.WriteString(w, "data: {\"id\":\"first\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"第一段\"},\"finish_reason\":null}]}\n\n")
+			return // Simulate an upstream connection that ends before STOP.
+		}
+		_, _ = io.WriteString(w, "data: {\"id\":\"second\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"第二段\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	model := &storage.CustomModel{Provider: "openai", APIURL: upstream.URL + "/v1", APIKey: "test-key", ExternalModelName: "gpt-test"}
+	request := httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil)
+	recorder := httptest.NewRecorder()
+	gemini := map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "请回答"}}}}}
+
+	forwardOpenAIChat(recorder, request, model, gemini, "reconnect-test")
+
+	if requests != 1 {
+		t.Fatalf("upstream requests = %d, want 1: a partial answer must never be replayed with injected chat context", requests)
+	}
+	output := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("downstream status = %d, body = %s", recorder.Code, output)
+	}
+	if !strings.Contains(output, "第一段") || strings.Contains(output, "第二段") {
+		t.Fatalf("partial output should be preserved without a replay: %s", output)
+	}
+	if !strings.Contains(output, `"finishReason":"STOP"`) {
+		t.Fatalf("partial stream has no final stop: %s", output)
+	}
+	if strings.Contains(output, "上游连接已自动重连") || strings.Contains(output, "上游流式连接刚刚中断") {
+		t.Fatalf("recovery metadata leaked into the conversation: %s", output)
+	}
+}
+
+func TestStreamRecoveryOnlyRetriesBeforeAnyDownstreamOutput(t *testing.T) {
+	if !canRetryStreamWithoutContinuation("", false, false) {
+		t.Fatal("an unstarted request should remain eligible for a safe retry")
+	}
+	if canRetryStreamWithoutContinuation("", true, false) {
+		t.Fatal("a request with any downstream event must never be replayed")
+	}
+	if canRetryStreamWithoutContinuation("partial text", false, false) {
+		t.Fatal("a request with partial text must never be replayed")
+	}
+	if canRetryStreamWithoutContinuation("", false, true) {
+		t.Fatal("a request with a tool or attachment must never be replayed")
+	}
+}
+
+func TestBoundAccountPoolFailsOverAfterQuotaResponse(t *testing.T) {
+	storage.Init(t.TempDir())
+
+	var firstCalls, secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer first-token" {
+			t.Errorf("first account authorization = %q", got)
+		}
+		w.Header().Set("Retry-After", "0")
+		http.Error(w, `{"error":{"message":"quota exhausted"}}`, http.StatusTooManyRequests)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer second-token" {
+			t.Errorf("second account authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-2\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer second.Close()
+
+	for _, account := range []storage.UpstreamAccount{
+		{ID: "first", Name: "first", Provider: "openai", Type: "api_key", APIURL: first.URL, APIKey: "first-token", AuthMode: "bearer", Enabled: true, Priority: 1, MaxConcurrency: 1},
+		{ID: "second", Name: "second", Provider: "openai", Type: "api_key", APIURL: second.URL, APIKey: "second-token", AuthMode: "bearer", Enabled: true, Priority: 2, MaxConcurrency: 1},
+	} {
+		if err := storage.SaveUpstreamAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	previous := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: previous.enabled, MaxAttempts: previous.maxAttempts, MaxDelaySeconds: previous.maxDelaySeconds})
+
+	model := &storage.CustomModel{
+		Name: "models/gpt-test", DisplayName: "gpt-test", Provider: "openai", ExternalModelName: "gpt-test",
+		AccountIDs: []string{"first", "second"}, APIStyle: "chat_completions",
+	}
+	recorder := httptest.NewRecorder()
+	incoming := httptest.NewRequest(http.MethodPost, "/v1internal:generateContent", nil)
+	forwardOpenAIChat(recorder, incoming, model, map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, "pool-failover")
+
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("account calls = first:%d second:%d, want one request to each", firstCalls.Load(), secondCalls.Load())
+	}
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "ok") {
+		t.Fatalf("unexpected downstream response: %d %s", recorder.Code, recorder.Body.String())
+	}
+	accounts, err := storage.LoadUpstreamAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]storage.UpstreamAccount{}
+	for _, account := range accounts {
+		status[account.ID] = account
+	}
+	if status["first"].CooldownUntil == "" || status["first"].FailureCount == 0 {
+		t.Fatalf("failed account health was not recorded: %#v", status["first"])
+	}
+	if status["second"].LastSuccessAt == "" || status["second"].ActiveRequests != 0 {
+		t.Fatalf("successful account lease was not released: %#v", status["second"])
 	}
 }
 
