@@ -1,14 +1,17 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
-func TestCloseIsMinimisedUnlessExplicitExitWasRequested(t *testing.T) {
+func TestApplicationQuitIsOnlyInterceptedUntilNativeExitIsRequested(t *testing.T) {
 	app := &App{}
-	if !app.shouldMinimiseOnClose() {
-		t.Fatal("a normal window close must be minimised")
+	if !app.beforeClose(context.Background()) {
+		t.Fatal("a system quit must be routed through the explicit native exit path")
 	}
 	app.exitRequested.Store(true)
-	if app.shouldMinimiseOnClose() {
+	if app.beforeClose(context.Background()) {
 		t.Fatal("an explicit exit must be allowed to close the application")
 	}
 }

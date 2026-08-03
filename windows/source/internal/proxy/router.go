@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"antigravity-byok/internal/storage"
+	"antigravity-byok/internal/upstream"
 	"github.com/andybalholm/brotli"
 )
 
@@ -183,7 +184,12 @@ func allocateModelPlaceholders(models []storage.CustomModel, officialModels map[
 
 // buildFakeModelEntry builds the JSON entry injected into the model list.
 func buildFakeModelEntry(m storage.CustomModel, placeholder string) map[string]any {
-	return map[string]any{
+	capabilities := storage.EffectiveCapabilities(m)
+	mimeTypes := make(map[string]any, len(capabilities.SupportedMimeTypes))
+	for _, mimeType := range capabilities.SupportedMimeTypes {
+		mimeTypes[mimeType] = true
+	}
+	entry := map[string]any{
 		"displayName":                  m.DisplayName,
 		"description":                  m.Description,
 		"recommended":                  true,
@@ -195,27 +201,21 @@ func buildFakeModelEntry(m storage.CustomModel, placeholder string) map[string]a
 		"modelProvider":                "MODEL_PROVIDER_GOOGLE",
 		"supportsCumulativeContext":    true,
 		"supportsEstimateTokenCounter": true,
-		"supportsImages":               true,
-		"supportsVideo":                false,
-		"supportedMimeTypes": map[string]any{
-			"image/png":                 true,
-			"image/jpeg":                true,
-			"image/webp":                true,
-			"image/gif":                 true,
-			"text/plain":                true,
-			"text/markdown":             true,
-			"text/html":                 true,
-			"text/css":                  true,
-			"text/xml":                  true,
-			"text/csv":                  true,
-			"application/json":          true,
-			"application/pdf":           true,
-			"application/x-javascript":  true,
-			"application/x-typescript":  true,
-			"application/x-python-code": true,
-			"application/x-ipynb+json":  true,
-		},
+		"supportsImages":               capabilities.SupportsImages,
+		"supportsVideo":                capabilities.SupportsVideo,
+		"supportsFiles":                capabilities.SupportsFiles,
+		"supportsToolCalls":            capabilities.SupportsToolCalls,
+		"supportsThinking":             capabilities.SupportsThinking,
+		"supportsWebSearch":            capabilities.SupportsWebSearch,
+		"supportsImageGeneration":      capabilities.SupportsImageGeneration,
+		"supportedMimeTypes":           mimeTypes,
 	}
+	// The exact field names are version-dependent in Antigravity. Keep the
+	// canonical fields above, and provide these aliases for IDE builds that use
+	// the newer capability schema. Unknown keys are ignored by older builds.
+	entry["supportsTools"] = capabilities.SupportsToolCalls
+	entry["supportsFileInput"] = capabilities.SupportsFiles
+	return entry
 }
 
 var modelContainerKeys = []string{"models", "availableModels", "available_models"}
@@ -1006,9 +1006,30 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	}
 }
 
-// forwardOpenAI translates and forwards to an OpenAI-compatible API.
+// forwardOpenAI chooses the richest configured API surface. Chat Completions
+// remains the compatibility default; automatic mode promotes requests with a
+// file, web-search or image-generation capability to Responses and falls back
+// only when that endpoint itself is unavailable.
 func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
-	openAIReq := toOpenAIRequest(geminiReq, m.ExternalModelName)
+	config := upstream.ConfigFromModel(*m)
+	style := upstream.EffectiveAPIStyle(config)
+	capabilities := storage.EffectiveCapabilities(*m)
+	needsResponses := hasGeminiAttachment(geminiReq) || capabilities.SupportsWebSearch || capabilities.SupportsImageGeneration
+	if style == "responses" || (style == "auto" && needsResponses) {
+		if fallback := forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, style == "auto"); !fallback {
+			return
+		}
+	}
+	forwardOpenAIChat(w, incoming, m, geminiReq, requestID)
+}
+
+func forwardOpenAIChatLegacy(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
+	openAIReq, err := toOpenAIRequestWithMedia(geminiReq, m.ExternalModelName)
+	if err != nil {
+		trace("openai-input-error", map[string]any{"requestId": requestID, "message": err.Error()})
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if m.ReasoningEffort != "" && m.ReasoningEffort != "auto" {
 		openAIReq["reasoning_effort"] = m.ReasoningEffort
 		delete(openAIReq, "temperature")
@@ -1018,7 +1039,11 @@ func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.Cus
 	cache := applyOpenAIPromptCaching(openAIReq, m, geminiReq)
 	cacheEnabled := true
 
-	apiURL := resolveOpenAIChatCompletionsURL(m.APIURL)
+	apiURL, err := upstream.ResolveChatCompletionsURL(m.APIURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	var lastErr error
 	extraAttempts := 0
@@ -1035,7 +1060,10 @@ func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.Cus
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+m.APIKey)
+		if err := upstream.ApplyCredentials(req, upstream.ConfigFromModel(*m)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		client := &http.Client{Timeout: 5 * time.Minute}
 		resp, err := client.Do(req)
@@ -1091,6 +1119,369 @@ func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.Cus
 	}
 }
 
+func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
+	baseRequest, err := toOpenAIRequestWithMedia(geminiReq, m.ExternalModelName)
+	if err != nil {
+		trace("openai-input-error", map[string]any{"requestId": requestID, "message": err.Error()})
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if m.ReasoningEffort != "" && m.ReasoningEffort != "auto" {
+		baseRequest["reasoning_effort"] = m.ReasoningEffort
+		delete(baseRequest, "temperature")
+	}
+	baseRequest["stream"] = true
+	baseRequest["stream_options"] = map[string]any{"include_usage": true}
+	cache := applyOpenAIPromptCaching(baseRequest, m, geminiReq)
+	cacheEnabled := true
+
+	apiURL, err := upstream.ResolveChatCompletionsURL(m.APIURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	policy := currentStreamRecoveryPolicy()
+	writer := newDownstreamSSEWriter(w)
+	client := &http.Client{Timeout: upstreamStreamTimeout}
+	requestBody := baseRequest
+	emittedText := ""
+	lastModelVersion, lastResponseID := "", ""
+	reconnects := 0
+	cacheFallbackUsed := false
+
+	for attempt := 1; ; attempt++ {
+		body, _ := json.Marshal(requestBody)
+		trace("openai-upstream-request", map[string]any{
+			"requestId": requestID, "attempt": attempt,
+			"promptCache": cacheEnabled, "promptCacheExplicit": cacheEnabled && cache.explicit,
+			"promptCacheKeyHash": strings.TrimPrefix(cache.key, "antigravity:"),
+		})
+		req, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, apiURL, bytes.NewReader(body))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if err := upstream.ApplyCredentials(req, upstream.ConfigFromModel(*m)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			trace("openai-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
+			reconnects++
+			if waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, "network", "", reconnects) {
+				if emittedText != "" {
+					requestBody = continueOpenAIChatRequest(baseRequest, emittedText)
+				}
+				continue
+			}
+			if incoming.Context().Err() != nil {
+				return
+			}
+			if writer.committed {
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+				return
+			}
+			http.Error(w, "无法连接上游："+err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			trace("openai-upstream-error-response", map[string]any{
+				"requestId":  requestID,
+				"statusCode": resp.StatusCode,
+				"body":       string(errBody[:min(len(errBody), 500)]),
+			})
+			if cacheEnabled && !cacheFallbackUsed && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+				stripOpenAIPromptCaching(baseRequest)
+				cacheEnabled = false
+				cacheFallbackUsed = true
+				trace("prompt-cache-fallback", map[string]any{"requestId": requestID, "provider": "openai", "statusCode": resp.StatusCode})
+				if emittedText != "" {
+					requestBody = continueOpenAIChatRequest(baseRequest, emittedText)
+				} else {
+					requestBody = baseRequest
+				}
+				continue
+			}
+			if isRetryableStatus(resp.StatusCode) {
+				reconnects++
+				if waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, fmt.Sprintf("http-%d", resp.StatusCode), resp.Header.Get("Retry-After"), reconnects) {
+					if emittedText != "" {
+						requestBody = continueOpenAIChatRequest(baseRequest, emittedText)
+					}
+					continue
+				}
+			}
+			if incoming.Context().Err() != nil {
+				return
+			}
+			if writer.committed {
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(errBody)
+			return
+		}
+
+		outcome := streamOpenAIAttempt(writer, resp, requestID, attempt)
+		resp.Body.Close()
+		if outcome.responseID != "" {
+			lastResponseID = outcome.responseID
+		}
+		if outcome.modelVersion != "" {
+			lastModelVersion = outcome.modelVersion
+		}
+		if outcome.emittedText != "" {
+			emittedText += outcome.emittedText
+		}
+		if outcome.finished {
+			return
+		}
+		if outcome.unsafeOutput {
+			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
+			return
+		}
+
+		reconnects++
+		reason := "incomplete-stream"
+		if outcome.err != nil {
+			reason = outcome.err.Error()
+		}
+		if waitForStreamRecovery(incoming.Context(), writer, policy, "openai", requestID, reason, "", reconnects) {
+			if emittedText != "" {
+				requestBody = continueOpenAIChatRequest(baseRequest, emittedText)
+			} else {
+				requestBody = baseRequest
+			}
+			continue
+		}
+		if incoming.Context().Err() != nil {
+			return
+		}
+		writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+		return
+	}
+}
+
+// forwardOpenAIResponses returns true only when the caller may retry the same
+// request through Chat Completions because the upstream does not expose
+// /responses. It never falls back after a semantic 4xx, which would hide a
+// model capability/configuration error from the user.
+func forwardOpenAIResponsesLegacy(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string, allowFallback bool) bool {
+	requestBody, err := toOpenAIResponsesRequest(geminiReq, m.ExternalModelName, m)
+	if err != nil {
+		trace("responses-input-error", map[string]any{"requestId": requestID, "message": err.Error()})
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return false
+	}
+	if effort := responseReasoningEffort(m.ReasoningEffort); effort != "" {
+		requestBody["reasoning"] = map[string]any{"effort": effort}
+		delete(requestBody, "temperature")
+	}
+	apiURL, err := upstream.ResolveResponsesURL(m.APIURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return false
+	}
+	client := &http.Client{Timeout: 5 * time.Minute}
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		body, _ := json.Marshal(requestBody)
+		trace("responses-upstream-request", map[string]any{"requestId": requestID, "attempt": attempt})
+		req, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, apiURL, bytes.NewReader(body))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return false
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if err := upstream.ApplyCredentials(req, upstream.ConfigFromModel(*m)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return false
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < maxRetries && incoming.Context().Err() == nil {
+				time.Sleep(retryDelay(attempt, ""))
+				continue
+			}
+			break
+		}
+		lastErr = nil
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			trace("responses-upstream-error-response", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode, "body": string(errBody[:min(len(errBody), 500)])})
+			if allowFallback && upstream.CanFallbackToChat(resp.StatusCode) {
+				trace("responses-chat-fallback", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode})
+				return true
+			}
+			if isRetryableStatus(resp.StatusCode) && attempt < maxRetries {
+				time.Sleep(retryDelay(attempt, resp.Header.Get("Retry-After")))
+				continue
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(errBody)
+			return false
+		}
+		defer resp.Body.Close()
+		streamOpenAIResponsesResponse(w, resp, requestID, attempt)
+		return false
+	}
+	if lastErr != nil {
+		http.Error(w, lastErr.Error(), http.StatusBadGateway)
+	}
+	return false
+}
+
+func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string, allowFallback bool) bool {
+	baseRequest, err := toOpenAIResponsesRequest(geminiReq, m.ExternalModelName, m)
+	if err != nil {
+		trace("responses-input-error", map[string]any{"requestId": requestID, "message": err.Error()})
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return false
+	}
+	if effort := responseReasoningEffort(m.ReasoningEffort); effort != "" {
+		baseRequest["reasoning"] = map[string]any{"effort": effort}
+		delete(baseRequest, "temperature")
+	}
+	apiURL, err := upstream.ResolveResponsesURL(m.APIURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return false
+	}
+
+	policy := currentStreamRecoveryPolicy()
+	writer := newDownstreamSSEWriter(w)
+	client := &http.Client{Timeout: upstreamStreamTimeout}
+	requestBody := baseRequest
+	emittedText := ""
+	lastModelVersion, lastResponseID := "", ""
+	reconnects := 0
+
+	for attempt := 1; ; attempt++ {
+		body, _ := json.Marshal(requestBody)
+		trace("responses-upstream-request", map[string]any{"requestId": requestID, "attempt": attempt})
+		req, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, apiURL, bytes.NewReader(body))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return false
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if err := upstream.ApplyCredentials(req, upstream.ConfigFromModel(*m)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return false
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			trace("responses-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
+			reconnects++
+			if waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, "network", "", reconnects) {
+				if emittedText != "" {
+					requestBody = continueResponsesRequest(baseRequest, emittedText)
+				}
+				continue
+			}
+			if incoming.Context().Err() != nil {
+				return false
+			}
+			if writer.committed {
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+				return false
+			}
+			http.Error(w, "无法连接上游："+err.Error(), http.StatusBadGateway)
+			return false
+		}
+
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			trace("responses-upstream-error-response", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode, "body": string(errBody[:min(len(errBody), 500)])})
+			if allowFallback && !writer.committed && emittedText == "" && upstream.CanFallbackToChat(resp.StatusCode) {
+				trace("responses-chat-fallback", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode})
+				return true
+			}
+			if isRetryableStatus(resp.StatusCode) {
+				reconnects++
+				if waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, fmt.Sprintf("http-%d", resp.StatusCode), resp.Header.Get("Retry-After"), reconnects) {
+					if emittedText != "" {
+						requestBody = continueResponsesRequest(baseRequest, emittedText)
+					}
+					continue
+				}
+			}
+			if incoming.Context().Err() != nil {
+				return false
+			}
+			if writer.committed {
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+				return false
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(errBody)
+			return false
+		}
+
+		outcome := streamOpenAIResponsesAttempt(writer, resp, requestID, attempt)
+		resp.Body.Close()
+		if outcome.responseID != "" {
+			lastResponseID = outcome.responseID
+		}
+		if outcome.modelVersion != "" {
+			lastModelVersion = outcome.modelVersion
+		}
+		if outcome.emittedText != "" {
+			emittedText += outcome.emittedText
+		}
+		if outcome.finished {
+			return false
+		}
+		if outcome.unsafeOutput {
+			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
+			return false
+		}
+
+		reconnects++
+		reason := "incomplete-stream"
+		if outcome.err != nil {
+			reason = outcome.err.Error()
+		}
+		if waitForStreamRecovery(incoming.Context(), writer, policy, "responses", requestID, reason, "", reconnects) {
+			if emittedText != "" {
+				requestBody = continueResponsesRequest(baseRequest, emittedText)
+			} else {
+				requestBody = baseRequest
+			}
+			continue
+		}
+		if incoming.Context().Err() != nil {
+			return false
+		}
+		writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+		return false
+	}
+}
+
+func responseReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "minimal", "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
 func resolveOpenAIChatCompletionsURL(rawURL string) string {
 	trimmed := strings.TrimSpace(rawURL)
 	parsed, err := url.Parse(trimmed)
@@ -1119,8 +1510,13 @@ func resolveOpenAIChatCompletionsURL(rawURL string) string {
 }
 
 // forwardAnthropic translates and forwards to Anthropic Messages API.
-func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
-	anthReq := toAnthropicRequest(geminiReq, m.ExternalModelName)
+func forwardAnthropicLegacy(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
+	anthReq, err := toAnthropicRequestWithMedia(geminiReq, m.ExternalModelName)
+	if err != nil {
+		trace("anthropic-input-error", map[string]any{"requestId": requestID, "message": err.Error()})
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if budget := reasoningBudget(m.ReasoningEffort); budget > 0 {
 		anthReq["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 		delete(anthReq, "temperature")
@@ -1131,9 +1527,10 @@ func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.
 	breakpointCount := applyAnthropicPromptCaching(anthReq)
 	cacheEnabled := true
 
-	apiURL := m.APIURL
-	if !strings.Contains(apiURL, "/messages") {
-		apiURL = strings.TrimRight(apiURL, "/") + "/v1/messages"
+	apiURL, err := upstream.ResolveAnthropicMessagesURL(m.APIURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	client := &http.Client{Timeout: 5 * time.Minute}
@@ -1156,8 +1553,10 @@ func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-api-key", m.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
+		if err := upstream.ApplyCredentials(req, upstream.ConfigFromModel(*m)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1207,6 +1606,162 @@ func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.
 	}
 	if lastErr != nil {
 		http.Error(w, lastErr.Error(), 502)
+	}
+}
+
+func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
+	baseRequest, err := toAnthropicRequestWithMedia(geminiReq, m.ExternalModelName)
+	if err != nil {
+		trace("anthropic-input-error", map[string]any{"requestId": requestID, "message": err.Error()})
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if budget := reasoningBudget(m.ReasoningEffort); budget > 0 {
+		baseRequest["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
+		delete(baseRequest, "temperature")
+		if maxTokens, ok := numberAsInt(baseRequest["max_tokens"]); !ok || maxTokens <= budget {
+			baseRequest["max_tokens"] = budget + 8192
+		}
+	}
+	breakpointCount := applyAnthropicPromptCaching(baseRequest)
+	cacheEnabled := true
+
+	apiURL, err := upstream.ResolveAnthropicMessagesURL(m.APIURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	policy := currentStreamRecoveryPolicy()
+	writer := newDownstreamSSEWriter(w)
+	client := &http.Client{Timeout: upstreamStreamTimeout}
+	requestBody := baseRequest
+	emittedText := ""
+	lastModelVersion, lastResponseID := "", ""
+	reconnects := 0
+	cacheFallbackUsed := false
+
+	for attempt := 1; ; attempt++ {
+		body, _ := json.Marshal(requestBody)
+		trace("anthropic-upstream-request", map[string]any{
+			"requestId": requestID, "attempt": attempt,
+			"promptCache": cacheEnabled, "promptCacheBreakpoints": func() int {
+				if cacheEnabled {
+					return breakpointCount
+				}
+				return 0
+			}(),
+		})
+		req, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, apiURL, bytes.NewReader(body))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if err := upstream.ApplyCredentials(req, upstream.ConfigFromModel(*m)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			trace("anthropic-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
+			reconnects++
+			if waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, "network", "", reconnects) {
+				if emittedText != "" {
+					requestBody = continueAnthropicRequest(baseRequest, emittedText)
+				}
+				continue
+			}
+			if incoming.Context().Err() != nil {
+				return
+			}
+			if writer.committed {
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+				return
+			}
+			http.Error(w, "无法连接上游："+err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			trace("anthropic-upstream-error-response", map[string]any{
+				"requestId": requestID, "statusCode": resp.StatusCode,
+				"body": string(errBody[:min(len(errBody), 500)]),
+			})
+			if cacheEnabled && !cacheFallbackUsed && isUnsupportedCacheResponse(resp.StatusCode, string(errBody)) {
+				stripAnthropicPromptCaching(baseRequest)
+				cacheEnabled = false
+				cacheFallbackUsed = true
+				trace("prompt-cache-fallback", map[string]any{"requestId": requestID, "provider": "anthropic", "statusCode": resp.StatusCode})
+				if emittedText != "" {
+					requestBody = continueAnthropicRequest(baseRequest, emittedText)
+				} else {
+					requestBody = baseRequest
+				}
+				continue
+			}
+			if isRetryableStatus(resp.StatusCode) {
+				reconnects++
+				if waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, fmt.Sprintf("http-%d", resp.StatusCode), resp.Header.Get("Retry-After"), reconnects) {
+					if emittedText != "" {
+						requestBody = continueAnthropicRequest(baseRequest, emittedText)
+					}
+					continue
+				}
+			}
+			if incoming.Context().Err() != nil {
+				return
+			}
+			if writer.committed {
+				writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(errBody)
+			return
+		}
+
+		outcome := streamAnthropicAttempt(writer, resp, requestID, attempt)
+		resp.Body.Close()
+		if outcome.responseID != "" {
+			lastResponseID = outcome.responseID
+		}
+		if outcome.modelVersion != "" {
+			lastModelVersion = outcome.modelVersion
+		}
+		if outcome.emittedText != "" {
+			emittedText += outcome.emittedText
+		}
+		if outcome.finished {
+			return
+		}
+		if outcome.unsafeOutput {
+			writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, true)
+			return
+		}
+
+		reconnects++
+		reason := "incomplete-stream"
+		if outcome.err != nil {
+			reason = outcome.err.Error()
+		}
+		if waitForStreamRecovery(incoming.Context(), writer, policy, "anthropic", requestID, reason, "", reconnects) {
+			if emittedText != "" {
+				requestBody = continueAnthropicRequest(baseRequest, emittedText)
+			} else {
+				requestBody = baseRequest
+			}
+			continue
+		}
+		if incoming.Context().Err() != nil {
+			return
+		}
+		writeRecoveredStreamStop(writer, requestID, lastModelVersion, lastResponseID, reconnects, false)
+		return
 	}
 }
 
@@ -1296,6 +1851,68 @@ func streamOpenAIResponse(w http.ResponseWriter, resp *http.Response, requestID 
 			"cacheWriteTokens": cacheWriteTokens,
 			"firstByteMs":      firstByteAt.Sub(startedAt).Milliseconds(),
 			"totalMs":          time.Since(startedAt).Milliseconds(),
+		})
+	}
+}
+
+// streamOpenAIResponsesResponse converts Responses API SSE events into the
+// internal Antigravity/Gemini envelope. It intentionally shares the same
+// downstream headers and empty-stream diagnostics as Chat Completions.
+func streamOpenAIResponsesResponse(w http.ResponseWriter, resp *http.Response, requestID string, attempt int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Content-Disposition", "attachment")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, canFlush := w.(http.Flusher)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	state := openAIResponsesStreamState{traceID: requestID}
+	startedAt := time.Now()
+	var firstByteAt time.Time
+	wroteEvent := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if firstByteAt.IsZero() && line != "" {
+			firstByteAt = time.Now()
+		}
+		geminiLine := convertOpenAIResponsesLineToGemini(line, &state)
+		if geminiLine == "" {
+			continue
+		}
+		if !wroteEvent {
+			w.WriteHeader(http.StatusOK)
+			wroteEvent = true
+		}
+		_, _ = w.Write([]byte(geminiLine))
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if !wroteEvent {
+			writeEmptyUpstreamStreamError(w, "responses", requestID, attempt, resp.Header.Get("Content-Type"), err.Error())
+			return
+		}
+		trace("responses-stream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error(), "downstreamCommitted": true})
+	}
+	if !wroteEvent {
+		writeEmptyUpstreamStreamError(w, "responses", requestID, attempt, resp.Header.Get("Content-Type"), "上游响应中没有可识别的 Responses SSE 事件")
+		return
+	}
+	if !state.finished {
+		trace("responses-stream-missing-stop", map[string]any{"requestId": requestID, "attempt": attempt})
+		_, _ = w.Write([]byte(responsesFinishEvent("STOP", &state)))
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+	if state.usage != nil {
+		prompt, _ := numberAsInt(state.usage["input_tokens"])
+		completion, _ := numberAsInt(state.usage["output_tokens"])
+		trace("usage", map[string]any{
+			"requestId": requestID, "promptTokens": prompt, "completionTokens": completion,
+			"firstByteMs": firstByteAt.Sub(startedAt).Milliseconds(), "totalMs": time.Since(startedAt).Milliseconds(),
 		})
 	}
 }
@@ -1453,4 +2070,125 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// streamOpenAIAttempt converts one upstream stream but deliberately does not
+// synthesize a stop event when the upstream connection vanishes. The caller
+// can then keep the same downstream SSE response alive and retry safely.
+func streamOpenAIAttempt(writer *downstreamSSEWriter, resp *http.Response, requestID string, attempt int) streamAttemptOutcome {
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	state := openAIStreamState{traceID: requestID}
+	startedAt := time.Now()
+	var firstByteAt time.Time
+	outcome := streamAttemptOutcome{}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if firstByteAt.IsZero() && line != "" {
+			firstByteAt = time.Now()
+		}
+		if event := convertOpenAILineToGemini(line, &state); event != "" {
+			writer.write(event)
+			outcome.wroteEvent = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		outcome.err = err
+		trace("openai-stream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error(), "downstreamCommitted": writer.committed})
+	}
+	if state.done && !state.finished {
+		writer.write(encodeAntigravityStreamEvent(finalStopResponse(state.modelVersion, state.responseID), requestID))
+		outcome.wroteEvent = true
+	}
+	outcome.finished = state.finished || state.done
+	outcome.emittedText = state.emittedText.String()
+	outcome.unsafeOutput = state.unsafeOutput
+	outcome.responseID = state.responseID
+	outcome.modelVersion = state.modelVersion
+	if state.usage != nil {
+		promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens := openAIUsage(state.usage)
+		trace("usage", map[string]any{
+			"requestId": requestID, "promptTokens": promptTokens, "completionTokens": completionTokens,
+			"cacheReadTokens": cacheReadTokens, "cacheWriteTokens": cacheWriteTokens,
+			"firstByteMs": firstByteAt.Sub(startedAt).Milliseconds(), "totalMs": time.Since(startedAt).Milliseconds(),
+		})
+	}
+	return outcome
+}
+
+func streamOpenAIResponsesAttempt(writer *downstreamSSEWriter, resp *http.Response, requestID string, attempt int) streamAttemptOutcome {
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	state := openAIResponsesStreamState{traceID: requestID}
+	startedAt := time.Now()
+	var firstByteAt time.Time
+	outcome := streamAttemptOutcome{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if firstByteAt.IsZero() && line != "" {
+			firstByteAt = time.Now()
+		}
+		if event := convertOpenAIResponsesLineToGemini(line, &state); event != "" {
+			writer.write(event)
+			outcome.wroteEvent = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		outcome.err = err
+		trace("responses-stream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error(), "downstreamCommitted": writer.committed})
+	}
+	outcome.finished = state.finished
+	outcome.emittedText = state.emittedText.String()
+	outcome.unsafeOutput = state.unsafeOutput
+	outcome.responseID = state.responseID
+	outcome.modelVersion = state.modelVersion
+	if state.usage != nil {
+		prompt, _ := numberAsInt(state.usage["input_tokens"])
+		completion, _ := numberAsInt(state.usage["output_tokens"])
+		trace("usage", map[string]any{
+			"requestId": requestID, "promptTokens": prompt, "completionTokens": completion,
+			"firstByteMs": firstByteAt.Sub(startedAt).Milliseconds(), "totalMs": time.Since(startedAt).Milliseconds(),
+		})
+	}
+	return outcome
+}
+
+func streamAnthropicAttempt(writer *downstreamSSEWriter, resp *http.Response, requestID string, attempt int) streamAttemptOutcome {
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	startedAt := time.Now()
+	var firstByteAt time.Time
+	totals := anthropicUsageTotals{}
+	state := anthropicStreamState{traceID: requestID}
+	outcome := streamAttemptOutcome{}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if firstByteAt.IsZero() && line != "" {
+			firstByteAt = time.Now()
+		}
+		collectAnthropicUsage(line, &totals)
+		if event := convertAnthropicLineToGemini(line, &state); event != "" {
+			writer.write(event)
+			outcome.wroteEvent = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		outcome.err = err
+		trace("anthropic-stream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error(), "downstreamCommitted": writer.committed})
+	}
+	outcome.finished = state.finished
+	outcome.emittedText = state.emittedText.String()
+	outcome.unsafeOutput = state.unsafeOutput
+	outcome.responseID = state.responseID
+	outcome.modelVersion = state.modelVersion
+	if totals.seen {
+		trace("usage", map[string]any{
+			"requestId": requestID, "promptTokens": totals.input + totals.cacheRead + totals.cacheWrite,
+			"completionTokens": totals.output, "cacheReadTokens": totals.cacheRead, "cacheWriteTokens": totals.cacheWrite,
+			"firstByteMs": firstByteAt.Sub(startedAt).Milliseconds(), "totalMs": time.Since(startedAt).Milliseconds(),
+		})
+	}
+	return outcome
 }

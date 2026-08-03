@@ -638,6 +638,55 @@ func TestRetryDelay(t *testing.T) {
 	}
 }
 
+func TestForwardOpenAIChatContinuesAfterPartialStreamDisconnect(t *testing.T) {
+	previous := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{
+		Enabled: previous.enabled, MaxAttempts: previous.maxAttempts, MaxDelaySeconds: previous.maxDelaySeconds,
+	})
+
+	requests := 0
+	var continuationBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		body, _ := io.ReadAll(r.Body)
+		if requests == 2 {
+			continuationBody = string(body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests == 1 {
+			_, _ = io.WriteString(w, "data: {\"id\":\"first\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"第一段\"},\"finish_reason\":null}]}\n\n")
+			return // Simulate an upstream connection that ends before STOP.
+		}
+		_, _ = io.WriteString(w, "data: {\"id\":\"second\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"第二段\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	model := &storage.CustomModel{Provider: "openai", APIURL: upstream.URL + "/v1", APIKey: "test-key", ExternalModelName: "gpt-test"}
+	request := httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil)
+	recorder := httptest.NewRecorder()
+	gemini := map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "请回答"}}}}}
+
+	forwardOpenAIChat(recorder, request, model, gemini, "reconnect-test")
+
+	if requests != 2 {
+		t.Fatalf("upstream requests = %d, want 2", requests)
+	}
+	if !strings.Contains(continuationBody, "上游流式连接刚刚中断") || !strings.Contains(continuationBody, "第一段") {
+		t.Fatalf("second request did not contain a continuation context: %s", continuationBody)
+	}
+	output := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("downstream status = %d, body = %s", recorder.Code, output)
+	}
+	if !strings.Contains(output, "第一段") || !strings.Contains(output, "第二段") {
+		t.Fatalf("partial output was not preserved and continued: %s", output)
+	}
+	if !strings.Contains(output, `"finishReason":"STOP"`) {
+		t.Fatalf("continued stream has no final stop: %s", output)
+	}
+}
+
 func TestCleanPatchedPath(t *testing.T) {
 	cases := map[string]string{
 		"/v1internal/antigravity-byok/v1internal:streamGenerateContent": "/v1internal:streamGenerateContent",

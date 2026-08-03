@@ -3,6 +3,9 @@ defineProps({
   open: Boolean,
   title: String,
   wide: Boolean,
+  // Persistent sheets intentionally ignore clicks on the dimmed background.
+  // Model credentials can be expensive to re-enter, so the editor uses this.
+  persistent: Boolean,
 });
 defineEmits(["close"]);
 </script>
@@ -10,7 +13,13 @@ defineEmits(["close"]);
 <template>
   <Teleport to="body">
     <Transition name="mask">
-      <div v-if="open" class="mask" role="presentation">
+      <div
+        v-if="open"
+        class="mask"
+        role="presentation"
+        @mousedown.self.prevent
+        @click.self.prevent
+      >
         <Transition name="sheet" appear>
           <div class="sheet" :class="{ wide }" role="dialog" aria-modal="true" :aria-label="title" @click.stop>
             <header class="head">

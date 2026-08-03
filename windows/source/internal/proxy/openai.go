@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -14,10 +15,24 @@ type openAIStreamState struct {
 	responseID   string
 	modelVersion string
 	finished     bool
+	done         bool
+	emittedText  strings.Builder
+	unsafeOutput bool
 }
 
-// toOpenAIRequest converts a Gemini-style request to OpenAI chat completions.
+// toOpenAIRequest is kept for existing unit tests and callers that only need
+// text/tool conversion. The forwarding path uses the error-returning variant
+// so an attachment can never disappear without an explicit error.
 func toOpenAIRequest(gemini map[string]any, modelName string) map[string]any {
+	out, _ := toOpenAIRequestWithMedia(gemini, modelName)
+	return out
+}
+
+// toOpenAIRequestWithMedia converts a Gemini-style request to OpenAI Chat
+// Completions. Image inputs are encoded as data URLs; textual files are kept as
+// text. Arbitrary binary files are intentionally rejected here because Chat
+// Completions does not offer a general file-input contract (Responses does).
+func toOpenAIRequestWithMedia(gemini map[string]any, modelName string) (map[string]any, error) {
 	out := map[string]any{
 		"model":  modelName,
 		"stream": true,
@@ -77,6 +92,9 @@ func toOpenAIRequest(gemini map[string]any, modelName string) map[string]any {
 
 		var textParts []string
 		var contentBlocks []any
+		var toolCalls []any
+		var toolResponses []any
+		hasRichContent := false
 		hasToolCall := false
 
 		for _, p := range parts {
@@ -86,13 +104,30 @@ func toOpenAIRequest(gemini map[string]any, modelName string) map[string]any {
 			}
 			if t, ok := pm["text"].(string); ok {
 				textParts = append(textParts, t)
-			} else if fc, ok := pm["functionCall"].(map[string]any); ok {
+				contentBlocks = append(contentBlocks, map[string]any{"type": "text", "text": t})
+				continue
+			}
+			if attachment, seen, err := attachmentFromGeminiPart(pm); seen {
+				if err != nil {
+					return nil, err
+				}
+				hasRichContent = true
+				if err := appendOpenAIChatAttachment(&contentBlocks, attachment); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if fc, ok := pm["functionCall"].(map[string]any); ok {
 				hasToolCall = true
 				name, _ := fc["name"].(string)
 				argsRaw, _ := json.Marshal(fc["args"])
-				contentBlocks = append(contentBlocks, map[string]any{
+				callID := getString(fc, "id", "callId", "call_id")
+				if callID == "" {
+					callID = "call_" + name
+				}
+				toolCalls = append(toolCalls, map[string]any{
 					"type": "function",
-					"id":   "call_" + name,
+					"id":   callID,
 					"function": map[string]any{
 						"name":      name,
 						"arguments": string(argsRaw),
@@ -101,9 +136,13 @@ func toOpenAIRequest(gemini map[string]any, modelName string) map[string]any {
 			} else if fr, ok := pm["functionResponse"].(map[string]any); ok {
 				name, _ := fr["name"].(string)
 				resp, _ := json.Marshal(fr["response"])
-				contentBlocks = append(contentBlocks, map[string]any{
+				callID := getString(fr, "id", "callId", "call_id")
+				if callID == "" {
+					callID = "call_" + name
+				}
+				toolResponses = append(toolResponses, map[string]any{
 					"role":         "tool",
-					"tool_call_id": "call_" + name,
+					"tool_call_id": callID,
 					"content":      string(resp),
 				})
 			}
@@ -112,15 +151,19 @@ func toOpenAIRequest(gemini map[string]any, modelName string) map[string]any {
 		if hasToolCall {
 			msg := map[string]any{
 				"role":       "assistant",
-				"tool_calls": contentBlocks,
+				"tool_calls": toolCalls,
 			}
 			if len(textParts) > 0 {
-				msg["content"] = strings.Join(textParts, "\n")
+				if hasRichContent {
+					msg["content"] = contentBlocks
+				} else {
+					msg["content"] = strings.Join(textParts, "\n")
+				}
 			}
 			messages = append(messages, msg)
-		} else if len(contentBlocks) > 0 {
+		} else if len(toolResponses) > 0 {
 			// Tool responses are separate messages
-			for _, block := range contentBlocks {
+			for _, block := range toolResponses {
 				if bm, ok := block.(map[string]any); ok {
 					if bm["role"] == "tool" {
 						messages = append(messages, bm)
@@ -128,14 +171,18 @@ func toOpenAIRequest(gemini map[string]any, modelName string) map[string]any {
 				}
 			}
 		} else {
-			content := strings.Join(textParts, "\n")
-			if content == "" {
-				content = " "
+			if hasRichContent {
+				if len(contentBlocks) == 0 {
+					contentBlocks = append(contentBlocks, map[string]any{"type": "text", "text": " "})
+				}
+				messages = append(messages, map[string]any{"role": role, "content": contentBlocks})
+			} else {
+				content := strings.Join(textParts, "\n")
+				if content == "" {
+					content = " "
+				}
+				messages = append(messages, map[string]any{"role": role, "content": content})
 			}
-			messages = append(messages, map[string]any{
-				"role":    role,
-				"content": content,
-			})
 		}
 	}
 
@@ -147,7 +194,32 @@ func toOpenAIRequest(gemini map[string]any, modelName string) map[string]any {
 		out["tools"] = tools
 	}
 
-	return out
+	return out, nil
+}
+
+func appendOpenAIChatAttachment(blocks *[]any, attachment *geminiAttachment) error {
+	if attachment.isImage() {
+		*blocks = append(*blocks, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": attachment.dataURL()},
+		})
+		return nil
+	}
+	if attachment.isText() {
+		text, err := attachment.text()
+		if err != nil {
+			return err
+		}
+		if attachment.Filename != "" {
+			text = "[附件 " + attachment.Filename + "]\n" + text
+		}
+		*blocks = append(*blocks, map[string]any{"type": "text", "text": text})
+		return nil
+	}
+	if attachment.isPDF() {
+		return fmt.Errorf("PDF 附件需要将该模型的 API 模式设为 Responses 或自动")
+	}
+	return fmt.Errorf("%s 附件需要将该模型的 API 模式设为 Responses 或自动", attachment.MimeType)
 }
 
 func geminiToolsToOpenAI(gemini map[string]any) []map[string]any {
@@ -198,6 +270,7 @@ func convertOpenAILineToGemini(line string, state *openAIStreamState) string {
 	payload := strings.TrimPrefix(line, "data: ")
 	payload = strings.TrimSpace(payload)
 	if payload == "[DONE]" {
+		state.done = true
 		return ""
 	}
 	if payload == "" {
@@ -206,6 +279,9 @@ func convertOpenAILineToGemini(line string, state *openAIStreamState) string {
 
 	var chunk map[string]any
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return ""
+	}
+	if _, failed := chunk["error"]; failed {
 		return ""
 	}
 	if responseID, ok := chunk["id"].(string); ok && responseID != "" {
@@ -232,6 +308,7 @@ func convertOpenAILineToGemini(line string, state *openAIStreamState) string {
 
 	// Text content
 	if text, ok := delta["content"].(string); ok && text != "" {
+		state.emittedText.WriteString(text)
 		parts = append(parts, map[string]any{"text": text})
 	}
 
@@ -278,6 +355,7 @@ func convertOpenAILineToGemini(line string, state *openAIStreamState) string {
 					"args": argsMap,
 				},
 			})
+			state.unsafeOutput = true
 		}
 		state.toolCalls = map[int]map[string]any{}
 	}

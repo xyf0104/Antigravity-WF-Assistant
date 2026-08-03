@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,7 +17,7 @@ import (
 	"antigravity-byok/internal/proxy"
 	"antigravity-byok/internal/stats"
 	"antigravity-byok/internal/storage"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"antigravity-byok/internal/upstream"
 )
 
 // App holds all Wails-exposed methods.
@@ -61,19 +62,16 @@ func (a *App) shutdown(ctx context.Context) {
 	_ = proxy.Stop()
 }
 
-// beforeClose keeps the assistant running when the window close button is
-// clicked. The window is minimised to the taskbar/Dock; only QuitApp permits
-// full shutdown, which then releases the local proxy port.
+// beforeClose handles application-level quit requests such as Cmd+Q and the
+// Dock's Quit command. Window close itself is handled by HideWindowOnClose,
+// which sends the assistant to the menu bar instead. Routing a system quit
+// through requestQuit makes it just as reliable as the status-item action.
 func (a *App) beforeClose(ctx context.Context) (prevent bool) {
-	if !a.shouldMinimiseOnClose() {
+	if a.exitRequested.Load() {
 		return false
 	}
-	runtime.WindowMinimise(ctx)
+	a.requestQuit()
 	return true
-}
-
-func (a *App) shouldMinimiseOnClose() bool {
-	return !a.exitRequested.Load()
 }
 
 // QuitApp explicitly exits the assistant. OnShutdown stops the local proxy so
@@ -84,6 +82,28 @@ func (a *App) QuitApp() Result {
 	}
 	a.requestQuit()
 	return Result{OK: true, Message: "正在退出助手并释放本地代理端口。"}
+}
+
+// requestQuit is shared by the menu-bar/tray menu and frontend. It stops the
+// loopback proxy before ending the native event loop, so the port is released
+// before the process disappears. The platform exit call deliberately bypasses
+// the normal close-to-background handler.
+func (a *App) requestQuit() {
+	if a.ctx == nil || a.exitRequested.Swap(true) {
+		return
+	}
+	_ = proxy.Stop()
+	a.stopTray()
+	a.quitNativeApplication()
+	go func() {
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+		<-timer.C
+		if a.exitRequested.Load() {
+			log.Printf("[wf] 正常退出超时，已在释放代理端口后结束进程")
+			os.Exit(0)
+		}
+	}()
 }
 
 // ─── Result types ─────────────────────────────────────────────────────────────
@@ -142,6 +162,12 @@ type HistorySyncStatus struct {
 	State     string `json:"state"`
 	Message   string `json:"message"`
 	LastRunAt string `json:"lastRunAt"`
+}
+
+type BatchModelResult struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+	Added   int    `json:"added"`
 }
 
 // ─── Proxy ────────────────────────────────────────────────────────────────────
@@ -226,10 +252,93 @@ func (a *App) GetModels() []storage.CustomModel {
 }
 
 func (a *App) SaveModel(m storage.CustomModel) Result {
+	if err := upstream.ValidateConfig(upstream.ConfigFromModel(m)); err != nil {
+		return Result{OK: false, Message: err.Error()}
+	}
 	if err := storage.AddOrUpdateModel(m); err != nil {
 		return Result{OK: false, Message: err.Error()}
 	}
 	return Result{OK: true, Message: "模型已保存"}
+}
+
+// DefaultUpstreamConfig provides a useful first-run configuration without
+// embedding any credentials. The user still supplies their own API key.
+func (a *App) DefaultUpstreamConfig() upstream.Config {
+	return upstream.Config{
+		Provider: "openai", APIURL: upstream.DefaultXIASSBaseURL, APIStyle: "auto", AuthMode: "bearer",
+	}
+}
+
+// DiscoverUpstreamModels is a user-initiated, credential-safe GET /models.
+// It never writes configuration or logs an API key.
+func (a *App) DiscoverUpstreamModels(config upstream.Config) upstream.DiscoveryResult {
+	ctx, cancel := a.upstreamContext(30 * time.Second)
+	defer cancel()
+	return upstream.DiscoverModels(ctx, config)
+}
+
+// TestUpstreamModel runs only after the user presses the test control. It is
+// intentionally a tiny request and exposes no upstream response body.
+func (a *App) TestUpstreamModel(config upstream.Config, model string) upstream.TestResult {
+	ctx, cancel := a.upstreamContext(45 * time.Second)
+	defer cancel()
+	return upstream.TestModel(ctx, config, model)
+}
+
+// AddDiscoveredModels saves a selected batch from a previously discovered
+// model list. The default UI selects all discovered models; callers may pass a
+// narrowed list to respect manual selection.
+func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) BatchModelResult {
+	if err := upstream.ValidateConfig(config); err != nil {
+		return BatchModelResult{Message: err.Error()}
+	}
+	provider := upstream.NormalizedProvider(config.Provider)
+	seen := make(map[string]struct{}, len(modelIDs))
+	added := 0
+	for _, rawID := range modelIDs {
+		modelID := strings.TrimSpace(strings.TrimPrefix(rawID, "models/"))
+		if modelID == "" {
+			continue
+		}
+		if _, exists := seen[modelID]; exists {
+			continue
+		}
+		seen[modelID] = struct{}{}
+		model := storage.NewDiscoveredModel(provider, config.APIURL, config.APIKey, modelID)
+		model.APIStyle = upstream.EffectiveAPIStyle(config)
+		model.AuthMode = strings.ToLower(strings.TrimSpace(config.AuthMode))
+		model.AuthHeader = strings.TrimSpace(config.AuthHeader)
+		model.Headers = cloneHeaders(config.Headers)
+		model.Capabilities = storage.DefaultCapabilities(provider, modelID)
+		model.Capabilities.Configured = true
+		if err := storage.AddOrUpdateModel(model); err != nil {
+			return BatchModelResult{Message: fmt.Sprintf("保存 %s 失败：%s", modelID, err.Error()), Added: added}
+		}
+		added++
+	}
+	if added == 0 {
+		return BatchModelResult{Message: "请至少选择一个上游模型"}
+	}
+	return BatchModelResult{OK: true, Added: added, Message: fmt.Sprintf("已添加或更新 %d 个模型；重启 Antigravity 后生效。", added)}
+}
+
+func (a *App) upstreamContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	parent := a.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+func cloneHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(headers))
+	for name, value := range headers {
+		result[name] = value
+	}
+	return result
 }
 
 func (a *App) DeleteModel(name string) Result {

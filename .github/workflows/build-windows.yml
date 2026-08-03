@@ -58,5 +58,5 @@ jobs:
         with:
           name: Antigravity-WF-Assistant-Windows-x64
           path: |
-            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.3.4-Setup.exe
+            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.3.5-Setup.exe
           if-no-files-found: error

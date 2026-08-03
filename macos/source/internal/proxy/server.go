@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"antigravity-byok/internal/storage"
 )
 
 const ProxyPort = 50999
@@ -30,6 +32,11 @@ func Start(storageDir string) error {
 	}
 
 	InitTrace(storageDir)
+	if settings, err := storage.LoadAppSettings(); err != nil {
+		log.Printf("[wf] 读取代理恢复设置失败，使用安全默认值: %v", err)
+	} else {
+		ConfigureStreamRecovery(settings.StreamRecovery)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleRequest)

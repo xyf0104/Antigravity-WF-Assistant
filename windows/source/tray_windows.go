@@ -4,6 +4,7 @@ package main
 
 import (
 	_ "embed"
+	goruntime "runtime"
 	"sync"
 
 	"github.com/getlantern/systray"
@@ -17,11 +18,13 @@ var windowsTrayState struct {
 	sync.RWMutex
 	app     *App
 	started bool
+	ready   bool
 }
 
-// startTray registers a Windows notification-area icon. Register integrates
-// with Wails' existing Windows event loop, so closing the main window can keep
-// the proxy alive and the user can reopen or exit it from the tray menu.
+// startTray creates a real notification-area icon next to the Windows clock.
+// It owns its own locked OS thread and message pump: Wails runs its window
+// pump elsewhere, so systray.Register alone would display an icon but leave
+// its clicks undelivered on some Windows installations.
 func (a *App) startTray() {
 	windowsTrayState.Lock()
 	windowsTrayState.app = a
@@ -32,7 +35,20 @@ func (a *App) startTray() {
 	windowsTrayState.started = true
 	windowsTrayState.Unlock()
 
-	systray.Register(func() {
+	go runWindowsTray()
+}
+
+func runWindowsTray() {
+	// A Win32 window receives messages only on the OS thread that created it.
+	// Keep the systray loop permanently on this dedicated thread.
+	goruntime.LockOSThread()
+	defer goruntime.UnlockOSThread()
+
+	systray.Run(func() {
+		windowsTrayState.Lock()
+		windowsTrayState.ready = true
+		windowsTrayState.Unlock()
+
 		if len(windowsTrayIcon) > 0 {
 			systray.SetIcon(windowsTrayIcon)
 		}
@@ -56,7 +72,12 @@ func (a *App) startTray() {
 				}
 			}
 		}()
-	}, func() {})
+	}, func() {
+		windowsTrayState.Lock()
+		windowsTrayState.ready = false
+		windowsTrayState.started = false
+		windowsTrayState.Unlock()
+	})
 }
 
 func (a *App) stopTray() {
@@ -64,8 +85,11 @@ func (a *App) stopTray() {
 	if windowsTrayState.app == a {
 		windowsTrayState.app = nil
 	}
+	ready := windowsTrayState.ready
 	windowsTrayState.Unlock()
-	systray.Quit()
+	if ready {
+		systray.Quit()
+	}
 }
 
 func currentWindowsTrayApp() *App {
@@ -82,10 +106,13 @@ func (a *App) showMainWindow() {
 	runtime.WindowShow(a.ctx)
 }
 
-func (a *App) requestQuit() {
+func (a *App) hideMainWindow() {
 	if a.ctx == nil {
 		return
 	}
-	a.exitRequested.Store(true)
+	runtime.WindowHide(a.ctx)
+}
+
+func (a *App) quitNativeApplication() {
 	runtime.Quit(a.ctx)
 }

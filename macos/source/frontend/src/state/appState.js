@@ -147,6 +147,24 @@ export async function deleteModel(name) {
   return res;
 }
 
+export async function defaultUpstreamConfig() {
+  return call("DefaultUpstreamConfig");
+}
+
+export async function discoverUpstreamModels(config) {
+  return call("DiscoverUpstreamModels", config);
+}
+
+export async function testUpstreamModel(config, model) {
+  return call("TestUpstreamModel", config, model);
+}
+
+export async function addDiscoveredModels(config, modelIds) {
+  const res = await call("AddDiscoveredModels", config, modelIds);
+  if (res?.ok) await loadModels();
+  return res;
+}
+
 export async function loadStats() {
   state.statsLoading = true;
   try {

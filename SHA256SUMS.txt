@@ -1,0 +1,2 @@
+3b65ff93e5f65912e4a15a1c398fb53603940561c53d1cf847aa5e62313e7ca8  Antigravity-WF-Assistant-macOS-universal-v1.3.5-Installer.pkg
+06eda90956579b2a6ed566cc1254e657646912c0ea81ddcbbb78cc70d9d814a1  Antigravity-WF-Assistant-Windows-x64-v1.3.5-Setup.exe

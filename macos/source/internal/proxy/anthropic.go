@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -15,6 +16,8 @@ type anthropicStreamState struct {
 	responseID   string
 	modelVersion string
 	finished     bool
+	emittedText  strings.Builder
+	unsafeOutput bool
 }
 
 type anthropicUsageTotals struct {
@@ -25,8 +28,17 @@ type anthropicUsageTotals struct {
 	seen       bool
 }
 
-// toAnthropicRequest converts a Gemini-style request to Anthropic Messages API.
+// toAnthropicRequest is retained for existing tests. Runtime forwarding uses
+// toAnthropicRequestWithMedia so attachment conversion failures are surfaced to
+// the user instead of becoming a silently text-only request.
 func toAnthropicRequest(gemini map[string]any, modelName string) map[string]any {
+	out, _ := toAnthropicRequestWithMedia(gemini, modelName)
+	return out
+}
+
+// toAnthropicRequestWithMedia converts Gemini parts into the Anthropic
+// Messages content-block format, including base64 images and PDF documents.
+func toAnthropicRequestWithMedia(gemini map[string]any, modelName string) (map[string]any, error) {
 	out := map[string]any{
 		"model":  modelName,
 		"stream": true,
@@ -87,20 +99,39 @@ func toAnthropicRequest(gemini map[string]any, modelName string) map[string]any 
 			}
 			if t, ok := pm["text"].(string); ok && t != "" {
 				blocks = append(blocks, map[string]any{"type": "text", "text": t})
-			} else if fc, ok := pm["functionCall"].(map[string]any); ok {
+				continue
+			}
+			if attachment, seen, err := attachmentFromGeminiPart(pm); seen {
+				if err != nil {
+					return nil, err
+				}
+				if err := appendAnthropicAttachment(&blocks, attachment); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if fc, ok := pm["functionCall"].(map[string]any); ok {
 				name, _ := fc["name"].(string)
+				callID := getString(fc, "id", "callId", "call_id")
+				if callID == "" {
+					callID = "toolu_" + name
+				}
 				blocks = append(blocks, map[string]any{
 					"type":  "tool_use",
-					"id":    "toolu_" + name,
+					"id":    callID,
 					"name":  name,
 					"input": fc["args"],
 				})
 			} else if fr, ok := pm["functionResponse"].(map[string]any); ok {
 				name, _ := fr["name"].(string)
 				respJSON, _ := json.Marshal(fr["response"])
+				callID := getString(fr, "id", "callId", "call_id")
+				if callID == "" {
+					callID = "toolu_" + name
+				}
 				blocks = append(blocks, map[string]any{
 					"type":        "tool_result",
-					"tool_use_id": "toolu_" + name,
+					"tool_use_id": callID,
 					"content":     string(respJSON),
 				})
 			}
@@ -124,7 +155,40 @@ func toAnthropicRequest(gemini map[string]any, modelName string) map[string]any 
 		out["tools"] = tools
 	}
 
-	return out
+	return out, nil
+}
+
+func appendAnthropicAttachment(blocks *[]any, attachment *geminiAttachment) error {
+	if attachment.isImage() {
+		*blocks = append(*blocks, map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type": "base64", "media_type": attachment.MimeType, "data": attachment.Data,
+			},
+		})
+		return nil
+	}
+	if attachment.isPDF() {
+		*blocks = append(*blocks, map[string]any{
+			"type": "document",
+			"source": map[string]any{
+				"type": "base64", "media_type": attachment.MimeType, "data": attachment.Data,
+			},
+		})
+		return nil
+	}
+	if attachment.isText() {
+		text, err := attachment.text()
+		if err != nil {
+			return err
+		}
+		if attachment.Filename != "" {
+			text = "[附件 " + attachment.Filename + "]\n" + text
+		}
+		*blocks = append(*blocks, map[string]any{"type": "text", "text": text})
+		return nil
+	}
+	return fmt.Errorf("Anthropic Messages 不支持直接转发 %s 附件；请使用 PDF、图片或文本文件", attachment.MimeType)
 }
 
 func geminiToolsToAnthropic(gemini map[string]any) []map[string]any {
@@ -242,6 +306,7 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 			deltaType, _ := delta["type"].(string)
 			if deltaType == "text_delta" {
 				if text, ok := delta["text"].(string); ok && text != "" {
+					state.emittedText.WriteString(text)
 					parts = append(parts, map[string]any{"text": text})
 				}
 			} else if deltaType == "input_json_delta" {
@@ -264,6 +329,7 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 					"args": args,
 				},
 			})
+			state.unsafeOutput = true
 			state.toolName = ""
 			state.toolID = ""
 			state.toolInput.Reset()

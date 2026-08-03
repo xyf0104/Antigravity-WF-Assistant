@@ -8,6 +8,8 @@ package main
 
 void wfTrayStart(const unsigned char *iconBytes, int iconLength);
 void wfTrayStop(void);
+void wfTraySetDockVisible(int visible);
+void wfTrayQuitMainLoop(void);
 */
 import "C"
 
@@ -28,8 +30,8 @@ var darwinTrayState struct {
 }
 
 // startTray adds a native macOS menu-bar item without changing Wails' own
-// NSApplication delegate. The menu remains available while the main window is
-// minimised to the Dock.
+// NSApplication delegate. It stays available while the app is hidden from the
+// Dock after the main window is closed.
 func (a *App) startTray() {
 	darwinTrayState.Lock()
 	darwinTrayState.app = a
@@ -74,14 +76,23 @@ func (a *App) showMainWindow() {
 	if a.ctx == nil {
 		return
 	}
+	C.wfTraySetDockVisible(1)
+	runtime.Show(a.ctx)
 	runtime.WindowUnminimise(a.ctx)
 	runtime.WindowShow(a.ctx)
 }
 
-func (a *App) requestQuit() {
+func (a *App) hideMainWindow() {
 	if a.ctx == nil {
 		return
 	}
-	a.exitRequested.Store(true)
-	runtime.Quit(a.ctx)
+	runtime.WindowHide(a.ctx)
+	C.wfTraySetDockVisible(0)
+}
+
+// quitNativeApplication runs on Cocoa's main queue. Calling Wails' generic
+// Quit from a status-item callback can otherwise re-enter OnBeforeClose and
+// turn an explicit "退出" into another hide operation.
+func (a *App) quitNativeApplication() {
+	C.wfTrayQuitMainLoop()
 }

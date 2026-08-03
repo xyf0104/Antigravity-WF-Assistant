@@ -5,21 +5,43 @@ import Button from "@/components/ui/Button.vue";
 import Field from "@/components/ui/Field.vue";
 import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
-import { state, saveModel, deleteModel } from "@/state/appState";
+import {
+  state,
+  saveModel,
+  deleteModel,
+  discoverUpstreamModels,
+  testUpstreamModel,
+  addDiscoveredModels,
+} from "@/state/appState";
 
-const PRESET_URL = {
-  openai: "https://api.openai.com/v1/chat/completions",
-  anthropic: "https://api.anthropic.com/v1/messages",
-  custom: "",
-};
+const DEFAULT_XIASS_URL = "https://api.xiass.com/v1";
 
 const editorOpen = ref(false);
 const editorError = ref("");
+const editorNotice = ref("");
 const saving = ref(false);
+const discovering = ref(false);
+const testing = ref(false);
 const isNew = ref(false);
 const confirmDelete = ref(null);
+const discoveredModels = ref([]);
+const selectedModelIds = ref([]);
 
-const form = ref(emptyForm());
+function defaultCapabilities(provider = "openai", modelName = "") {
+  const name = String(modelName).toLowerCase();
+  const nonChat = /embedding|whisper|tts/.test(name);
+  return {
+    configured: true,
+    supportsImages: !nonChat,
+    supportsFiles: !nonChat,
+    supportsAudio: false,
+    supportsVideo: false,
+    supportsToolCalls: !nonChat,
+    supportsWebSearch: false,
+    supportsImageGeneration: /gpt-image|image-1/.test(name),
+    supportsThinking: !nonChat,
+  };
+}
 
 function emptyForm() {
   return {
@@ -28,18 +50,36 @@ function emptyForm() {
     description: "",
     provider: "openai",
     apiKey: "",
-    apiUrl: PRESET_URL.openai,
+    apiUrl: DEFAULT_XIASS_URL,
     externalModelName: "",
     reasoningEffort: "auto",
+    apiStyle: "auto",
+    authMode: "bearer",
+    authHeader: "",
+    headersText: "{}",
+    capabilities: defaultCapabilities(),
   };
 }
 
+const form = ref(emptyForm());
+
 const providerOptions = [
   { label: "OpenAI", value: "openai" },
-  { label: "Anthropic", value: "anthropic" },
-  { label: "自定义", value: "custom" },
+  { label: "Claude", value: "anthropic" },
+  { label: "Grok", value: "grok" },
+  { label: "兼容接口", value: "custom" },
 ];
-
+const authOptions = [
+  { label: "Bearer API Key", value: "bearer" },
+  { label: "x-api-key", value: "x_api_key" },
+  { label: "自定义请求头", value: "custom_header" },
+];
+const apiStyleOptions = [
+  { label: "自动", value: "auto" },
+  { label: "Chat", value: "chat_completions" },
+  { label: "Responses", value: "responses" },
+  { label: "Messages", value: "messages" },
+];
 const openAIReasoningOptions = [
   { label: "自动", value: "auto" },
   { label: "无", value: "none" },
@@ -50,36 +90,35 @@ const openAIReasoningOptions = [
   { label: "超高", value: "xhigh" },
   { label: "最大", value: "max" },
 ];
-
 const anthropicReasoningOptions = openAIReasoningOptions.filter((option) =>
   ["auto", "low", "medium", "high"].includes(option.value)
 );
-
 const reasoningOptions = computed(() =>
   form.value.provider === "anthropic" ? anthropicReasoningOptions : openAIReasoningOptions
 );
-
-const displayNamePlaceholder = computed(() =>
-  form.value.externalModelName?.trim() || "自动使用上游模型名"
+const testTarget = computed(() => selectedModelIds.value[0] || form.value.externalModelName?.trim());
+const allDiscoveredSelected = computed(() =>
+  discoveredModels.value.length > 0 && selectedModelIds.value.length === discoveredModels.value.length
 );
+const selectedCount = computed(() => selectedModelIds.value.length);
+
+function providerTone(provider) {
+  return provider === "anthropic" ? "warn" : provider === "openai" ? "info" : "neutral";
+}
+
+function providerLabel(provider) {
+  return provider === "anthropic" ? "Claude" : provider === "grok" ? "Grok" : provider === "openai" ? "OpenAI" : "兼容";
+}
 
 function reasoningLabel(value) {
   return openAIReasoningOptions.find((option) => option.value === value)?.label || "自动";
 }
 
-function providerTone(p) {
-  return p === "anthropic" ? "warn" : p === "openai" ? "info" : "neutral";
-}
-
-function providerLabel(p) {
-  return p === "anthropic" ? "Anthropic" : p === "openai" ? "OpenAI" : "自定义";
-}
-
-function maskKey(k) {
-  const t = String(k || "").trim();
-  if (!t) return "—";
-  if (t.length <= 10) return "•".repeat(t.length);
-  return t.slice(0, 5) + "••••" + t.slice(-4);
+function maskKey(key) {
+  const value = String(key || "").trim();
+  if (!value) return "—";
+  if (value.length <= 10) return "•".repeat(value.length);
+  return `${value.slice(0, 5)}••••${value.slice(-4)}`;
 }
 
 function hostOf(url) {
@@ -90,65 +129,232 @@ function hostOf(url) {
   }
 }
 
+function capabilityLabels(model) {
+  const caps = model.capabilities || defaultCapabilities(model.provider, model.externalModelName);
+  const labels = [];
+  if (caps.supportsImages) labels.push("识图");
+  if (caps.supportsFiles) labels.push("文件");
+  if (caps.supportsToolCalls) labels.push("工具");
+  if (caps.supportsWebSearch) labels.push("联网");
+  if (caps.supportsImageGeneration) labels.push("生图");
+  return labels;
+}
+
+function modelToForm(model) {
+  const capabilities = { ...defaultCapabilities(model.provider, model.externalModelName), ...(model.capabilities || {}), configured: true };
+  return {
+    ...emptyForm(),
+    ...model,
+    reasoningEffort: model.reasoningEffort || "auto",
+    apiStyle: model.apiStyle || (model.provider === "anthropic" ? "messages" : "auto"),
+    authMode: model.authMode || (model.provider === "anthropic" ? "x_api_key" : "bearer"),
+    authHeader: model.authHeader || "",
+    headersText: JSON.stringify(model.headers || {}, null, 2),
+    capabilities,
+  };
+}
+
 function openNew() {
   form.value = emptyForm();
   isNew.value = true;
   editorError.value = "";
+  editorNotice.value = "默认使用 XIASS API 地址；填写你的 API Key 后可先获取所有上游模型。";
+  discoveredModels.value = [];
+  selectedModelIds.value = [];
   editorOpen.value = true;
 }
 
-function openEdit(m) {
-  form.value = { ...m, reasoningEffort: m.reasoningEffort || "auto" };
+function openEdit(model) {
+  form.value = modelToForm(model);
   isNew.value = false;
   editorError.value = "";
+  editorNotice.value = "";
+  discoveredModels.value = [];
+  selectedModelIds.value = [];
   editorOpen.value = true;
 }
 
-function onProviderChange(v) {
-  form.value.provider = v;
-	if (v === "anthropic" && !anthropicReasoningOptions.some((option) => option.value === form.value.reasoningEffort)) {
-		form.value.reasoningEffort = "auto";
-	}
-  if (!form.value.apiUrl || Object.values(PRESET_URL).includes(form.value.apiUrl)) {
-    form.value.apiUrl = PRESET_URL[v] || "";
+function onProviderChange(provider) {
+  form.value.provider = provider;
+  if (provider === "anthropic") {
+    form.value.authMode = "x_api_key";
+    form.value.apiStyle = "messages";
+    if (!anthropicReasoningOptions.some((option) => option.value === form.value.reasoningEffort)) {
+      form.value.reasoningEffort = "auto";
+    }
+  } else if (form.value.authMode === "x_api_key") {
+    form.value.authMode = "bearer";
+    if (form.value.apiStyle === "messages") form.value.apiStyle = "auto";
+  }
+  form.value.capabilities = { ...defaultCapabilities(provider, form.value.externalModelName), ...form.value.capabilities, configured: true };
+}
+
+function parseHeaders() {
+  const raw = String(form.value.headersText || "{}").trim();
+  if (!raw) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("附加请求头必须是 JSON 对象，例如 {\"X-Client\": \"WF\"}");
+  }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new Error("附加请求头必须是 JSON 对象");
+  }
+  const headers = {};
+  for (const [name, value] of Object.entries(parsed)) {
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+      throw new Error(`请求头 ${name} 的值必须是文本、数字或布尔值`);
+    }
+    headers[name] = String(value);
+  }
+  return headers;
+}
+
+function upstreamConfig() {
+  return {
+    provider: form.value.provider,
+    apiUrl: form.value.apiUrl?.trim(),
+    apiKey: form.value.apiKey?.trim(),
+    apiStyle: form.value.apiStyle,
+    authMode: form.value.authMode,
+    authHeader: form.value.authHeader?.trim(),
+    headers: parseHeaders(),
+  };
+}
+
+function validateConnection() {
+  if (!form.value.apiUrl?.trim()) throw new Error("请填写 API 地址");
+  if (!form.value.apiKey?.trim()) throw new Error("请填写 API Key 或访问令牌");
+  return upstreamConfig();
+}
+
+async function fetchModels() {
+  editorError.value = "";
+  editorNotice.value = "";
+  let config;
+  try {
+    config = validateConnection();
+  } catch (error) {
+    editorError.value = error.message;
+    return;
+  }
+  discovering.value = true;
+  try {
+    const result = await discoverUpstreamModels(config);
+    if (!result?.ok) {
+      editorError.value = result?.message || "无法获取上游模型列表";
+      return;
+    }
+    discoveredModels.value = result.models || [];
+    selectedModelIds.value = discoveredModels.value.map((model) => model.id);
+    editorNotice.value = result.message || `已发现 ${selectedModelIds.value.length} 个模型，默认已全部选中。`;
+  } catch (error) {
+    editorError.value = String(error?.message || error);
+  } finally {
+    discovering.value = false;
   }
 }
 
-async function handleSave() {
+function toggleModel(modelID, checked) {
+  if (checked) {
+    if (!selectedModelIds.value.includes(modelID)) selectedModelIds.value.push(modelID);
+  } else {
+    selectedModelIds.value = selectedModelIds.value.filter((id) => id !== modelID);
+  }
+}
+
+function toggleAllModels() {
+  selectedModelIds.value = allDiscoveredSelected.value ? [] : discoveredModels.value.map((model) => model.id);
+}
+
+async function testSelectedModel() {
   editorError.value = "";
-  const f = form.value;
-
-  if (!f.externalModelName?.trim()) {
-    editorError.value = "请填写上游模型名（externalModelName）";
+  editorNotice.value = "";
+  let config;
+  try {
+    config = validateConnection();
+  } catch (error) {
+    editorError.value = error.message;
     return;
   }
-  if (!f.apiUrl?.trim()) {
-    editorError.value = "请填写 API 地址";
+  if (!testTarget.value) {
+    editorError.value = "请先获取模型列表并选择一个模型，或填写上游模型名。";
     return;
   }
-  if (!f.apiKey?.trim()) {
-    editorError.value = "请填写 API Key";
+  testing.value = true;
+  try {
+    const result = await testUpstreamModel(config, testTarget.value);
+    if (result?.ok) editorNotice.value = `${result.message} · ${result.apiStyle}`;
+    else editorError.value = result?.message || "模型测试失败";
+  } catch (error) {
+    editorError.value = String(error?.message || error);
+  } finally {
+    testing.value = false;
+  }
+}
+
+async function saveManualModel() {
+  let config;
+  try {
+    config = validateConnection();
+  } catch (error) {
+    editorError.value = error.message;
     return;
   }
-
-  // 自动补全字段
-  if (!f.name?.trim()) {
-    f.name = "models/" + f.externalModelName.trim().replace(/[^a-zA-Z0-9.-]+/g, "-");
+  const externalModelName = form.value.externalModelName?.trim();
+  if (!externalModelName) {
+    editorError.value = "请填写上游模型名，或先点击“获取全部模型”。";
+    return;
   }
-  if (!f.displayName?.trim()) {
-    f.displayName = f.externalModelName.trim();
-  }
-
+  const model = {
+    ...form.value,
+    ...config,
+    externalModelName,
+    displayName: form.value.displayName?.trim() || externalModelName,
+    name: form.value.name?.trim() || `models/${form.value.provider}-${externalModelName.replace(/[^a-zA-Z0-9.-]+/g, "-")}`,
+    capabilities: { ...form.value.capabilities, configured: true },
+  };
+  delete model.headersText;
   saving.value = true;
   try {
-    const res = await saveModel({ ...f });
-    if (res?.ok) {
+    const result = await saveModel(model);
+    if (result?.ok) {
       editorOpen.value = false;
     } else {
-      editorError.value = res?.message || "保存失败";
+      editorError.value = result?.message || "保存失败";
     }
-  } catch (e) {
-    editorError.value = String(e?.message || e);
+  } catch (error) {
+    editorError.value = String(error?.message || error);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function addSelectedModels() {
+  editorError.value = "";
+  let config;
+  try {
+    config = validateConnection();
+  } catch (error) {
+    editorError.value = error.message;
+    return;
+  }
+  if (!selectedModelIds.value.length) {
+    editorError.value = "请至少勾选一个模型。";
+    return;
+  }
+  saving.value = true;
+  try {
+    const result = await addDiscoveredModels(config, selectedModelIds.value);
+    if (result?.ok) {
+      editorNotice.value = result.message;
+      editorOpen.value = false;
+    } else {
+      editorError.value = result?.message || "批量添加失败";
+    }
+  } catch (error) {
+    editorError.value = String(error?.message || error);
   } finally {
     saving.value = false;
   }
@@ -164,173 +370,127 @@ async function handleDelete() {
 
 <template>
   <div class="page fade-up">
-    <!-- 顶部操作栏 -->
     <div class="row between" style="gap: 12px">
       <div class="col" style="gap: 2px">
-        <div class="t-title">自定义模型</div>
-        <div class="t-caption">
-          共 {{ state.models.length }} 个模型 · 修改后需重启 Antigravity 生效
-        </div>
+        <div class="t-title">自定义上游模型</div>
+        <div class="t-caption">批量发现并导入模型；图片、文件与工具能力会随模型配置注入 Antigravity</div>
       </div>
-      <Button variant="filled" @click="openNew">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-          <path d="M6.5 2.5v8M2.5 6.5h8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-        </svg>
-        新增模型
-      </Button>
+      <Button variant="filled" @click="openNew">添加上游</Button>
     </div>
 
-    <!-- 空态 -->
     <div v-if="state.models.length === 0" class="empty">
-      <div class="empty-icon">
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" stroke-width="1.5"/>
-          <path d="M8 10h8M8 14h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
-      </div>
+      <div class="empty-icon">＋</div>
       <div class="t-headline">还没有配置模型</div>
-      <div class="t-caption" style="margin-top: 4px">
-        添加 OpenAI 兼容或 Anthropic 模型，即可在 Antigravity 中使用
-      </div>
-      <Button variant="tinted" style="margin-top: 14px" @click="openNew">添加第一个模型</Button>
+      <div class="t-caption" style="margin-top: 5px">默认连接 XIASS API；填写 Key 后可获取、全选并添加全部可用模型。</div>
+      <Button variant="tinted" style="margin-top: 14px" @click="openNew">开始配置</Button>
     </div>
 
-    <!-- 模型卡片网格 -->
     <div v-else class="grid">
-      <div v-for="m in state.models" :key="m.name" class="model-card">
-        <div class="row between" style="gap: 10px; align-items: flex-start">
+      <article v-for="model in state.models" :key="model.name" class="model-card">
+        <div class="row between" style="align-items: flex-start; gap: 10px">
           <div class="grow col" style="gap: 2px; min-width: 0">
-            <div class="t-headline truncate">{{ m.displayName || m.name }}</div>
-            <div class="mono truncate" style="color: var(--text-tertiary)">
-              {{ m.externalModelName }}
-            </div>
+            <div class="t-headline truncate">{{ model.displayName || model.externalModelName || model.name }}</div>
+            <div class="mono truncate model-id">{{ model.externalModelName }}</div>
           </div>
-          <Badge :tone="providerTone(m.provider)" :label="providerLabel(m.provider)" />
+          <Badge :tone="providerTone(model.provider)" :label="providerLabel(model.provider)" />
         </div>
-
-        <div class="inset-group" style="margin-top: 12px">
-          <div class="inset-row" style="min-height: 38px; padding: 8px 12px">
-            <span class="t-footnote" style="width: 62px; flex-shrink: 0">HOST</span>
-            <span class="mono truncate grow" style="color: var(--text-secondary)">
-              {{ hostOf(m.apiUrl) }}
-            </span>
-          </div>
-          <div class="inset-row" style="min-height: 38px; padding: 8px 12px">
-            <span class="t-footnote" style="width: 62px; flex-shrink: 0">思考</span>
-            <span class="mono grow" style="color: var(--text-secondary)">
-              {{ reasoningLabel(m.reasoningEffort) }}
-            </span>
-          </div>
-          <div class="inset-row" style="min-height: 38px; padding: 8px 12px">
-            <span class="t-footnote" style="width: 62px; flex-shrink: 0">KEY</span>
-            <span class="mono truncate grow" style="color: var(--text-secondary)">
-              {{ maskKey(m.apiKey) }}
-            </span>
-          </div>
+        <div class="cap-row">
+          <span v-for="label in capabilityLabels(model)" :key="label" class="cap">{{ label }}</span>
+          <span v-if="!capabilityLabels(model).length" class="cap muted">文本</span>
         </div>
-
+        <div class="inset-group" style="margin-top: 11px">
+          <div class="inset-row"><span>HOST</span><code class="truncate">{{ hostOf(model.apiUrl) }}</code></div>
+          <div class="inset-row"><span>模式</span><code>{{ model.apiStyle || "兼容" }}</code></div>
+          <div class="inset-row"><span>KEY</span><code class="truncate">{{ maskKey(model.apiKey) }}</code></div>
+        </div>
         <div class="row" style="gap: 6px; margin-top: 12px; justify-content: flex-end">
-          <Button variant="plain" size="sm" @click="openEdit(m)">编辑</Button>
-          <Button variant="danger" size="sm" @click="confirmDelete = m">删除</Button>
+          <Button variant="plain" size="sm" @click="openEdit(model)">编辑</Button>
+          <Button variant="danger" size="sm" @click="confirmDelete = model">删除</Button>
         </div>
-      </div>
+      </article>
     </div>
 
-    <!-- 编辑器 -->
-    <Modal
-      :open="editorOpen"
-      :title="isNew ? '新增模型' : '编辑模型'"
-      wide
-      @close="editorOpen = false"
-    >
-      <div class="col" style="gap: 14px">
-        <div class="col" style="gap: 6px">
-          <span class="t-footnote">供应商类型</span>
-          <SegmentedControl
-            :options="providerOptions"
-            :model-value="form.provider"
-            @update:model-value="onProviderChange"
-          />
-        </div>
+    <Modal :open="editorOpen" :title="isNew ? '添加上游模型' : '编辑上游模型'" wide persistent @close="editorOpen = false">
+      <div class="col editor" style="gap: 15px">
+        <section class="section">
+          <span class="t-footnote">供应商与协议</span>
+          <SegmentedControl :options="providerOptions" :model-value="form.provider" @update:model-value="onProviderChange" />
+          <div class="two-col">
+            <Field label="API 地址" hint="默认 XIASS：https://api.xiass.com/v1" v-model="form.apiUrl" placeholder="https://api.xiass.com/v1" mono />
+            <Field label="API Key / 访问令牌" type="password" v-model="form.apiKey" placeholder="sk-..." mono />
+          </div>
+          <div class="compact-label">认证方式</div>
+          <SegmentedControl :options="authOptions" :model-value="form.authMode" @update:model-value="form.authMode = $event" />
+          <Field v-if="form.authMode === 'custom_header'" label="认证请求头名称" hint="例如 X-API-Token" v-model="form.authHeader" placeholder="X-API-Token" mono />
+          <label class="text-field">
+            <span class="t-footnote">附加请求头（可选 JSON）</span>
+            <textarea v-model="form.headersText" spellcheck="false" placeholder='{"X-Client": "Antigravity-WF"}'></textarea>
+          </label>
+          <div class="compact-label">上游 API 模式</div>
+          <SegmentedControl :options="apiStyleOptions" :model-value="form.apiStyle" @update:model-value="form.apiStyle = $event" />
+          <div class="t-caption">自动模式：图片/文本附件可兼容 Chat；PDF、通用文件、联网与生图会优先走 Responses，并仅在该端点不存在时降级。</div>
+        </section>
 
-        <Field
-          label="上游模型名"
-          hint="第三方 API 实际接受的模型 ID，例如 claude-fable-5 / gpt-5.6-sol"
-          v-model="form.externalModelName"
-          placeholder="claude-fable-5"
-          mono
-        />
+        <section class="section discover-box">
+          <div class="row between" style="gap: 8px">
+            <div>
+              <div class="t-headline">发现并批量导入</div>
+              <div class="t-caption">点击后读取上游 <code>/models</code>；发现结果默认全选，不会自动保存。</div>
+            </div>
+            <Button variant="tinted" :loading="discovering" @click="fetchModels">获取全部模型</Button>
+          </div>
+          <div v-if="discoveredModels.length" class="selection-list">
+            <label class="select-all"><input type="checkbox" :checked="allDiscoveredSelected" @change="toggleAllModels" /> 全选 {{ discoveredModels.length }} 个模型</label>
+            <label v-for="model in discoveredModels" :key="model.id" class="select-row">
+              <input type="checkbox" :checked="selectedModelIds.includes(model.id)" @change="toggleModel(model.id, $event.target.checked)" />
+              <span class="truncate">{{ model.name || model.id }}</span>
+              <code>{{ model.id }}</code>
+            </label>
+          </div>
+          <div class="row" style="justify-content: flex-end; gap: 7px">
+            <Button variant="plain" size="sm" :disabled="!testTarget" :loading="testing" @click="testSelectedModel">测试 {{ testTarget || '模型' }}</Button>
+          </div>
+        </section>
 
-        <div class="col" style="gap: 6px">
-          <span class="t-footnote">思考强度</span>
-		  <div class="reasoning-grid">
-			<button
-			  v-for="option in reasoningOptions"
-			  :key="option.value"
-			  type="button"
-			  class="reasoning-option"
-			  :class="{ active: form.reasoningEffort === option.value }"
-			  @click="form.reasoningEffort = option.value"
-			>
-			  {{ option.label }}
-			</button>
-		  </div>
-		  <span class="t-caption">
-			自动不覆盖上游默认值；OpenAI 支持无、最小、低、中、高、超高、最大，具体可用等级由模型决定
-		  </span>
-        </div>
+        <section v-if="!discoveredModels.length" class="section manual-box">
+          <div class="t-headline">手动添加单个模型</div>
+          <Field label="上游模型名" hint="例如 gpt-5.6 / claude-sonnet / grok-4" v-model="form.externalModelName" placeholder="gpt-5.6" mono />
+          <Field label="显示名称" hint="留空时使用上游模型名" v-model="form.displayName" :placeholder="form.externalModelName || '自动使用上游模型名'" />
+          <Field label="描述（可选）" v-model="form.description" placeholder="模型用途或上游说明" />
+        </section>
 
-        <Field
-          label="显示名称"
-          hint="留空则使用上游模型名"
-          v-model="form.displayName"
-          :placeholder="displayNamePlaceholder"
-        />
+        <section class="section">
+          <div class="t-headline">能力声明</div>
+          <div class="t-caption">只勾选你确认上游支持的能力；它会控制 Antigravity 是否允许拖入对应内容。</div>
+          <div class="capability-grid">
+            <label><input type="checkbox" v-model="form.capabilities.supportsImages" /> 图片/截图</label>
+            <label><input type="checkbox" v-model="form.capabilities.supportsFiles" /> 文件/PDF</label>
+            <label><input type="checkbox" v-model="form.capabilities.supportsToolCalls" /> 原生工具调用</label>
+            <label><input type="checkbox" v-model="form.capabilities.supportsThinking" /> 推理强度</label>
+            <label><input type="checkbox" v-model="form.capabilities.supportsWebSearch" /> 上游联网搜索</label>
+            <label><input type="checkbox" v-model="form.capabilities.supportsImageGeneration" /> 上游图片生成</label>
+          </div>
+        </section>
 
-        <Field
-          label="API 地址"
-          v-model="form.apiUrl"
-          placeholder="https://api.example.com/v1/chat/completions"
-          mono
-        />
+        <section class="section">
+          <div class="compact-label">思考强度</div>
+          <div class="reasoning-grid">
+            <button v-for="option in reasoningOptions" :key="option.value" type="button" :class="{ active: form.reasoningEffort === option.value }" @click="form.reasoningEffort = option.value">{{ option.label }}</button>
+          </div>
+        </section>
 
-        <Field
-          label="API Key"
-          type="password"
-          v-model="form.apiKey"
-          placeholder="sk-..."
-          mono
-        />
-
-        <Field
-          label="描述"
-          hint="可选"
-          v-model="form.description"
-          placeholder=""
-        />
-
+        <div v-if="editorNotice" class="notice-box">{{ editorNotice }}</div>
         <div v-if="editorError" class="err-box">{{ editorError }}</div>
       </div>
-
       <template #footer>
         <Button variant="plain" @click="editorOpen = false">取消</Button>
-        <Button variant="filled" :loading="saving" @click="handleSave">
-          {{ isNew ? "添加" : "保存" }}
-        </Button>
+        <Button v-if="discoveredModels.length" variant="filled" :loading="saving" @click="addSelectedModels">添加已选 {{ selectedCount }} 个</Button>
+        <Button v-else variant="filled" :loading="saving" @click="saveManualModel">{{ isNew ? '添加模型' : '保存' }}</Button>
       </template>
     </Modal>
 
-    <!-- 删除确认 -->
-    <Modal
-      :open="!!confirmDelete"
-      title="确认删除"
-      @close="confirmDelete = null"
-    >
-      <div class="t-body">
-        确定删除模型
-        <strong>{{ confirmDelete?.displayName || confirmDelete?.name }}</strong>
-        吗？此操作不可撤销。
-      </div>
+    <Modal :open="!!confirmDelete" title="确认删除" @close="confirmDelete = null">
+      <div class="t-body">确定删除 <strong>{{ confirmDelete?.displayName || confirmDelete?.name }}</strong> 吗？此操作不可撤销。</div>
       <template #footer>
         <Button variant="plain" @click="confirmDelete = null">取消</Button>
         <Button variant="danger" @click="handleDelete">删除</Button>
@@ -340,98 +500,42 @@ async function handleDelete() {
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 18px 20px 28px;
-  height: 100%;
-  overflow-y: auto;
-}
-
-.page > * {
-  flex-shrink: 0;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-  gap: 12px;
-}
-
-.model-card {
-  background: var(--bg-card);
-  border: 1px solid var(--separator);
-  border-radius: var(--r-lg);
-  padding: 14px;
-  transition: border-color 0.18s var(--ease), transform 0.18s var(--spring);
-  box-shadow: var(--shadow-card);
-  backdrop-filter: blur(16px);
-}
-
-.model-card:hover {
-  border-color: var(--separator-strong);
-  transform: translateY(-1px);
-}
-
-.empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 40px 20px;
-  border: 1px dashed var(--separator-strong);
-  border-radius: var(--r-lg);
-  min-height: 240px;
-}
-
-.empty-icon {
-  width: 52px;
-  height: 52px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--r-md);
-  background: var(--bg-fill);
-  color: var(--text-tertiary);
-  margin-bottom: 14px;
-}
-
-.err-box {
-  padding: 10px 12px;
-  background: rgba(255, 69, 58, 0.1);
-  border: 0.5px solid rgba(255, 69, 58, 0.25);
-  border-radius: var(--r-sm);
-  color: var(--red);
-  font-size: 12.5px;
-}
-
-.reasoning-grid {
-	display: grid;
-	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 5px;
-}
-
-.reasoning-option {
-	height: 32px;
-	border: 1px solid var(--separator);
-	border-radius: var(--r-sm);
-	background: var(--bg-inset);
-	color: var(--text-secondary);
-	font-size: 12px;
-	transition: all 0.16s var(--ease);
-}
-
-.reasoning-option:hover,
-.reasoning-option.active {
-	border-color: var(--accent);
-	color: var(--text-primary);
-}
-
-.reasoning-option.active {
-	background: var(--accent-soft);
-	box-shadow: 0 0 0 2px var(--accent-border);
-}
+.page { display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 28px; height: 100%; overflow-y: auto; }
+.page > * { flex-shrink: 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: 12px; }
+.model-card { background: var(--bg-card); border: 1px solid var(--separator); border-radius: var(--r-lg); padding: 14px; box-shadow: var(--shadow-card); backdrop-filter: blur(16px); transition: transform .18s var(--spring), border-color .18s var(--ease); }
+.model-card:hover { transform: translateY(-1px); border-color: var(--separator-strong); }
+.model-id { color: var(--text-tertiary); font-size: 11px; }
+.cap-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.cap { font-size: 10px; padding: 3px 6px; color: var(--accent-strong); background: var(--accent-soft); border-radius: 999px; }
+.cap.muted { color: var(--text-tertiary); background: var(--bg-fill); }
+.inset-group { border: 1px solid var(--separator); border-radius: var(--r-sm); overflow: hidden; }
+.inset-row { display: flex; min-height: 32px; align-items: center; gap: 9px; padding: 6px 10px; border-bottom: 1px solid var(--separator); }
+.inset-row:last-child { border-bottom: 0; }
+.inset-row > span { color: var(--text-tertiary); font-size: 10px; width: 39px; letter-spacing: .04em; }
+.inset-row code { min-width: 0; color: var(--text-secondary); font-size: 11px; }
+.empty { flex: 1; min-height: 270px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; text-align: center; border: 1px dashed var(--separator-strong); border-radius: var(--r-lg); }
+.empty-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; font-size: 28px; color: var(--accent-strong); background: var(--accent-soft); margin-bottom: 13px; }
+.editor { padding-bottom: 2px; }
+.section { display: flex; flex-direction: column; gap: 9px; padding: 12px; border: 1px solid var(--separator); border-radius: var(--r-md); background: color-mix(in srgb, var(--bg-inset) 58%, transparent); }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.compact-label { color: var(--text-tertiary); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+.text-field { display: flex; flex-direction: column; gap: 6px; }
+textarea { width: 100%; min-height: 64px; padding: 9px 10px; resize: vertical; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); background: var(--bg-inset); color: var(--text-primary); font: 11.5px var(--font-num); }
+textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
+.discover-box { background: color-mix(in srgb, var(--accent-soft) 28%, var(--bg-card)); }
+.selection-list { max-height: 196px; overflow-y: auto; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
+.select-all, .select-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(90px, .75fr); align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border-bottom: 1px solid var(--separator); font-size: 12px; }
+.select-all { grid-template-columns: 16px 1fr; color: var(--text-secondary); background: var(--bg-fill); position: sticky; top: 0; }
+.select-row:last-child { border-bottom: 0; }
+.select-row code { color: var(--text-tertiary); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.capability-grid label { display: flex; gap: 7px; align-items: center; min-height: 30px; padding: 0 8px; font-size: 12px; color: var(--text-secondary); border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
+.reasoning-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.reasoning-grid button { height: 30px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); color: var(--text-secondary); font-size: 11px; }
+.reasoning-grid button.active { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); }
+.notice-box, .err-box { padding: 10px 11px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.45; }
+.notice-box { color: var(--accent-strong); background: var(--accent-soft); border: 1px solid var(--accent-border); }
+.err-box { color: var(--red); background: rgba(255,69,58,.1); border: 1px solid rgba(255,69,58,.25); }
+@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .capability-grid { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr); } .select-row code { display: none; } }
 </style>
