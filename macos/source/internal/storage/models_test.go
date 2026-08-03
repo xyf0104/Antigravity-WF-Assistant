@@ -54,6 +54,51 @@ func TestEmptyDisplayNameUsesUpstreamModelName(t *testing.T) {
 	}
 }
 
+func TestMergeDiscoveredAccountModelsOnlyPoolsEquivalentUpstreams(t *testing.T) {
+	Init(t.TempDir())
+	first := NewDiscoveredModel("openai", "https://api.example.test", "", "gpt-pool")
+	first.DisplayName = "Keep this model label"
+	first.APIKey = "legacy-direct-model-token"
+	first.AccountIDs = []string{"first"}
+	first.APIStyle = "responses"
+	first.Capabilities = ModelCapabilities{Configured: true, SupportsImages: true}
+
+	secondEndpoint := NewDiscoveredModel("openai", "https://other.example.test", "", "gpt-pool")
+	secondEndpoint.AccountIDs = []string{"other-endpoint"}
+	secondProvider := NewDiscoveredModel("anthropic", "https://api.example.test", "", "gpt-pool")
+	secondProvider.AccountIDs = []string{"other-provider"}
+
+	initial, err := MergeDiscoveredAccountModels([]CustomModel{first, secondEndpoint, secondProvider})
+	if err != nil || initial.Added != 3 || initial.Bound != 0 {
+		t.Fatalf("initial merge = %+v, %v", initial, err)
+	}
+
+	sameUpstream := NewDiscoveredModel("openai", "https://api.example.test/", "", "gpt-pool")
+	sameUpstream.AccountIDs = []string{"second", "first"}
+	merged, err := MergeDiscoveredAccountModels([]CustomModel{sameUpstream})
+	if err != nil || merged.Added != 0 || merged.Bound != 1 || merged.Unchanged != 0 {
+		t.Fatalf("matching upstream merge = %+v, %v", merged, err)
+	}
+
+	models, err := LoadModels()
+	if err != nil || len(models) != 3 {
+		t.Fatalf("models = %#v, %v", models, err)
+	}
+	for _, model := range models {
+		if model.Provider == "openai" && strings.TrimRight(model.APIURL, "/") == "https://api.example.test" {
+			if model.DisplayName != "Keep this model label" || model.APIStyle != "responses" {
+				t.Fatalf("existing model configuration was overwritten: %#v", model)
+			}
+			if len(model.AccountIDs) != 2 || model.AccountIDs[0] != "first" || model.AccountIDs[1] != "second" {
+				t.Fatalf("matching model pool = %#v", model.AccountIDs)
+			}
+			if model.APIKey != "legacy-direct-model-token" {
+				t.Fatalf("pool merge removed the existing direct credential: %#v", model)
+			}
+		}
+	}
+}
+
 func TestDefaultCapabilitiesExposeCompleteChatSurface(t *testing.T) {
 	capabilities := DefaultCapabilities("openai", "gpt-5")
 	if !capabilities.SupportsImages || !capabilities.SupportsFiles || capabilities.SupportsAudio || capabilities.SupportsVideo ||

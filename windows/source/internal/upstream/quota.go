@@ -66,7 +66,7 @@ func FetchQuota(ctx context.Context, config Config, quotaURL string) QuotaResult
 	snapshot := quotaSnapshotFromResponse(response, body)
 	result := QuotaResult{Endpoint: quotaURL, StatusCode: response.StatusCode, Snapshot: snapshot}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		result.Message = statusMessage(response.StatusCode, body)
+		result.Message = statusMessage(response.StatusCode, body, config)
 		return result
 	}
 	result.OK = true

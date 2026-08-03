@@ -41,8 +41,8 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 
 | 系统 | 推荐下载 | 说明 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.4.4-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
-| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.4.4-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.4.5-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
+| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.4.5-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
 
 发布页仅提供以上两个标准安装包及 `SHA256SUMS.txt`，用于校验文件完整性。
 
@@ -50,11 +50,19 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 
 1. 安装并打开 Antigravity WF助手。
 2. 确认首页已检测到 Antigravity 的安装路径；若未检测到，可按系统说明设置路径环境变量。
-3. 在“模型”中添加服务的上游模型名、API 地址、API Key 和协议；也可先在“账户池”保存凭据后，为模型勾选一个或多个同协议账户，无需复制 API Key 到每个模型。
-4. 根据使用范围选择“应用全部补丁”或“仅 IDE 补丁”。
-5. 使用首页的启动按钮打开 Antigravity，并在使用自定义模型期间保持助手运行。
+3. 在“账户池”添加 API Key 账户、导入账户 JSON，或完成 OAuth 登录。保存成功后，直接在该账户卡片点击“同步全部模型”。
+4. 同步会读取该账户真实可用的全部模型并添加到 Antigravity；相同协议、相同上游地址、相同模型名的账户会自动合并为一个账户池，原有模型配置与账户不会被覆盖。
+5. 根据使用范围选择“应用全部补丁”或“仅 IDE 补丁”。
+6. 使用首页的启动按钮打开 Antigravity，并在使用自定义模型期间保持助手运行。
 
 如重新安装或更新 Antigravity，可再次应用补丁。若想撤销本地修改，使用“恢复原始文件”后正常重启 Antigravity。
+
+### 账户池快速使用
+
+1. 每个官方 OAuth、API Key、Bearer Token、Claude 或 JSON 导入账户都有自己的“同步全部模型”按钮，不需要再进入模型页逐个绑定。
+2. 对同一上游再同步一个账户时，同名模型会保留所有已绑定账户。运行时按优先级、并发和健康状态选择账户；遇到可重试的网络、限流或认证故障时会尝试其他可用账户。
+3. “测试连接”只测试当前账户；同步失败时账户卡会直接显示错误，不会改动已保存的模型或其他账户。
+4. “模型”页仍可用于手动添加模型、指定完整接口路径或精细调整模型设置。
 
 - [macOS 安装与使用说明](docs/macOS使用说明.md)
 - [Windows 安装与使用说明](docs/Windows使用说明.md)

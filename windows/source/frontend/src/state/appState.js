@@ -242,6 +242,36 @@ export async function discoverAccountModels(accountID) {
   return call("DiscoverAccountModels", accountID);
 }
 
+// The account-card quick path discovers every model for exactly one saved
+// account and merges it into Antigravity. Refresh both sides of the binding on
+// success so the account card and Models view never disagree about the pool.
+export async function syncUpstreamAccountModels(accountID) {
+  const res = await call("SyncUpstreamAccountModels", accountID);
+  if (!res?.ok) return res;
+  state.modelsLoading = true;
+  state.accountsLoading = true;
+  try {
+    const [models, accounts] = await Promise.all([
+      call("GetModels"),
+      call("GetUpstreamAccounts"),
+    ]);
+    state.models = models || [];
+    state.accounts = accounts || [];
+  } catch (error) {
+    // The native sync succeeded, but presenting an out-of-date pool as if it
+    // were current would make a retry unsafe and confusing.
+    return {
+      ...res,
+      refreshFailed: true,
+      message: `${res.message || "模型已同步。"} 本地列表刷新失败，请重新进入账户池确认。`,
+    };
+  } finally {
+    state.modelsLoading = false;
+    state.accountsLoading = false;
+  }
+  return res;
+}
+
 export async function testUpstreamAccount(accountID, model) {
   return call("TestUpstreamAccount", accountID, model);
 }

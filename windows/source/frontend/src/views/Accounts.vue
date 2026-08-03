@@ -26,6 +26,7 @@ import {
   startOAuthAuthorization,
   startOAuthProviderAuthorization,
   state,
+  syncUpstreamAccountModels,
   testUpstreamAccountDetailed,
 } from "@/state/appState";
 import {
@@ -50,6 +51,8 @@ const importing = ref(false);
 const oauthBusy = ref(false);
 const tokenRefreshBusy = ref("");
 const quotaRefreshBusy = ref("");
+const syncingAccountID = ref("");
+const accountSyncMessages = ref({});
 const editorError = ref("");
 const editorNotice = ref("");
 const importError = ref("");
@@ -1242,6 +1245,33 @@ function previewAccountTestImage(image) {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+function setAccountSyncMessage(accountID, tone, message) {
+  accountSyncMessages.value = {
+    ...accountSyncMessages.value,
+    [accountID]: { tone, message },
+  };
+}
+
+async function syncAllAccountModels(account) {
+  if (!account?.id || syncingAccountID.value) return;
+  syncingAccountID.value = account.id;
+  setAccountSyncMessage(account.id, "progress", "正在读取该账户的全部模型并同步到 Antigravity…");
+  try {
+    const result = await syncUpstreamAccountModels(account.id);
+    if (result?.ok && !result?.refreshFailed) {
+      setAccountSyncMessage(account.id, "success", result.message || "该账户的模型已同步到 Antigravity。");
+    } else if (result?.ok) {
+      setAccountSyncMessage(account.id, "warning", result.message || "模型已同步，但账户池列表尚未刷新。");
+    } else {
+      setAccountSyncMessage(account.id, "error", result?.message || "模型同步失败，请检查账户和上游接口后重试。");
+    }
+  } catch (error) {
+    setAccountSyncMessage(account.id, "error", String(error?.message || error || "模型同步失败"));
+  } finally {
+    syncingAccountID.value = "";
+  }
+}
+
 async function discoverModels() {
   if (!form.value.id) {
     editorError.value = "请先保存账户，再获取模型并将其绑定到该账户。";
@@ -1370,7 +1400,7 @@ onBeforeUnmount(() => {
     <div class="row between page-head" style="gap: 12px">
       <div class="col" style="gap: 2px">
         <div class="t-title">上游账户池</div>
-        <div class="t-caption">API Key、OAuth/Bearer Token、x-api-key、Setup Token 与账户 JSON 导入；凭据仅保存在本机。</div>
+        <div class="t-caption">每张账户卡点“同步全部模型”即可加入 Antigravity；同一上游的同名模型会自动组成账户池。</div>
       </div>
       <div class="row" style="gap: 7px">
         <Button variant="plain" @click="openJSONImport()">导入 JSON</Button>
@@ -1433,7 +1463,14 @@ onBeforeUnmount(() => {
           </div>
           <span class="quota-meta">未配置可查询的上游额度接口</span>
         </div>
+        <div
+          v-if="accountSyncMessages[account.id]"
+          class="account-sync-feedback"
+          :class="accountSyncMessages[account.id].tone"
+          role="status"
+        >{{ accountSyncMessages[account.id].message }}</div>
         <div class="row" style="gap: 6px; margin-top: 12px; justify-content: flex-end">
+          <Button variant="filled" size="sm" :loading="syncingAccountID === account.id" :disabled="Boolean(syncingAccountID) && syncingAccountID !== account.id" :title="syncingAccountID && syncingAccountID !== account.id ? '请等待当前账户同步完成' : ''" @click="syncAllAccountModels(account)">同步全部模型</Button>
           <Button variant="tinted" size="sm" @click="openAccountTest(account)">测试连接</Button>
           <Button v-if="account.type === 'oauth'" variant="plain" size="sm" :loading="tokenRefreshBusy === account.id" @click="refreshOAuthToken(account)">刷新令牌</Button>
           <Button variant="plain" size="sm" @click="toggleAccount(account)">{{ account.enabled ? '暂停' : '恢复' }}</Button>
@@ -1702,6 +1739,11 @@ onBeforeUnmount(() => {
 .error-row code { color: var(--orange); }
 .usage-band, .quota-band { margin-top: 10px; padding: 9px 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-inset); }
 .usage-band { display: flex; flex-direction: column; gap: 5px; }
+.account-sync-feedback { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-secondary); background: var(--bg-inset); font-size: 11.5px; line-height: 1.45; }
+.account-sync-feedback.progress { color: var(--text-secondary); border-color: var(--accent-border); background: var(--accent-soft); }
+.account-sync-feedback.success { color: #20a968; border-color: color-mix(in srgb, #20a968 48%, var(--separator)); background: color-mix(in srgb, #20a968 10%, var(--bg-inset)); }
+.account-sync-feedback.warning { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 46%, var(--separator)); background: color-mix(in srgb, var(--orange) 10%, var(--bg-inset)); }
+.account-sync-feedback.error { color: var(--red); border-color: rgba(255,69,58,.28); background: rgba(255,69,58,.09); }
 .usage-label { color: var(--text-tertiary); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
 .usage-values { display: flex; flex-wrap: wrap; gap: 8px 12px; color: var(--text-secondary); font-size: 11px; }
 .usage-values b { color: var(--text-primary); font-weight: 700; }

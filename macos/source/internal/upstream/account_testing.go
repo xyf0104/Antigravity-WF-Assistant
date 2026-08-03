@@ -337,7 +337,7 @@ func (r *accountTestRunner) finishTextProbe(probe accountTestHTTPResult, style s
 		return
 	}
 	if probe.StatusCode < http.StatusOK || probe.StatusCode >= http.StatusMultipleChoices {
-		r.fail("error", safeAccountTestHTTPError(probe.StatusCode, probe.Body))
+		r.fail("error", safeAccountTestHTTPError(probe.StatusCode, probe.Body, r.config))
 		return
 	}
 	r.step("connected", "success", fmt.Sprintf("已连接到 API（HTTP %d）", probe.StatusCode))
@@ -367,7 +367,7 @@ func (r *accountTestRunner) finishImageProbe(probe accountTestHTTPResult, style 
 		return
 	}
 	if probe.StatusCode < http.StatusOK || probe.StatusCode >= http.StatusMultipleChoices {
-		r.fail("error", safeAccountTestHTTPError(probe.StatusCode, probe.Body))
+		r.fail("error", safeAccountTestHTTPError(probe.StatusCode, probe.Body, r.config))
 		return
 	}
 	r.step("connected", "success", fmt.Sprintf("已连接到 API（HTTP %d）", probe.StatusCode))
@@ -817,15 +817,21 @@ func appendAccountTestImage(images *[]AccountTestImage, seen map[string]struct{}
 	*images = append(*images, image)
 }
 
-func safeAccountTestHTTPError(statusCode int, body []byte) string {
+func safeAccountTestHTTPError(statusCode int, body []byte, config Config) string {
+	// Account testing has its own detailed response parser. Check the raw body
+	// first because a gateway can echo the configured value in an unfamiliar
+	// JSON field that the parser intentionally ignores.
+	if containsConfiguredCredential(string(body), config) {
+		return fmt.Sprintf("上游返回 HTTP %d：上游拒绝了请求（鉴权详情已隐藏）", statusCode)
+	}
 	parsed := parseAccountTestResponse(body)
 	if parsed.Err != "" {
-		return fmt.Sprintf("上游返回 HTTP %d：%s", statusCode, parsed.Err)
+		return fmt.Sprintf("上游返回 HTTP %d：%s", statusCode, safeStatusDetail(parsed.Err, config))
 	}
 	var object map[string]any
 	if json.Unmarshal(body, &object) == nil {
 		if message := accountTestErrorFromValue(object); message != "" {
-			return fmt.Sprintf("上游返回 HTTP %d：%s", statusCode, message)
+			return fmt.Sprintf("上游返回 HTTP %d：%s", statusCode, safeStatusDetail(message, config))
 		}
 	}
 	return fmt.Sprintf("上游返回 HTTP %d", statusCode)

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -264,6 +265,225 @@ func AddOrUpdateModel(m CustomModel) error {
 	}
 	models = append(models, m)
 	return saveModelsLocked(models)
+}
+
+// DiscoveredAccountModelMergeResult describes an account-pool import without
+// exposing any account credential. Added counts new Antigravity models; Bound
+// counts existing models that gained one or more account bindings; Unchanged
+// counts models that were already bound to every requested account.
+type DiscoveredAccountModelMergeResult struct {
+	Added     int
+	Bound     int
+	Unchanged int
+}
+
+// ErrAccountSyncChanged is returned before any model write when the saved
+// account was deleted or its connection route changed while its /models request
+// was in flight. It intentionally does not include account metadata or
+// credentials because it is displayed directly to the user.
+var ErrAccountSyncChanged = errors.New("账户在同步期间已删除或连接配置发生变化，请重新同步")
+
+// AccountSyncSnapshot captures only the route fields that make a discovered
+// model list safe to attach to an account. It deliberately excludes API keys,
+// refresh tokens, quota state, and scheduling metadata. A credential rotation
+// can therefore complete during a model-list request without discarding a safe
+// result, while an endpoint or protocol change cannot attach stale models.
+type AccountSyncSnapshot struct {
+	AccountID        string
+	Provider         string
+	Type             string
+	APIURL           string
+	EndpointMode     string
+	APIStyle         string
+	MessagePathMode  string
+	AuthMode         string
+	AuthHeader       string
+	Headers          map[string]string
+	OAuthUpstream    string
+	ChatGPTAccountID string
+}
+
+func NewAccountSyncSnapshot(account UpstreamAccount) AccountSyncSnapshot {
+	return AccountSyncSnapshot{
+		AccountID:        strings.TrimSpace(account.ID),
+		Provider:         normalizeAccountProvider(account.Provider),
+		Type:             normalizeAccountType(account.Type),
+		APIURL:           strings.TrimSpace(account.APIURL),
+		EndpointMode:     normalizeEndpointMode(account.EndpointMode),
+		APIStyle:         strings.ToLower(strings.TrimSpace(account.APIStyle)),
+		MessagePathMode:  normalizeMessagePathMode(account.MessagePathMode),
+		AuthMode:         strings.ToLower(strings.TrimSpace(account.AuthMode)),
+		AuthHeader:       strings.TrimSpace(account.AuthHeader),
+		Headers:          cloneStringMap(account.Headers),
+		OAuthUpstream:    strings.ToLower(strings.TrimSpace(account.OAuth.Upstream)),
+		ChatGPTAccountID: strings.TrimSpace(account.Identity.ChatGPTAccountID),
+	}
+}
+
+func (snapshot AccountSyncSnapshot) matches(account UpstreamAccount) bool {
+	current := NewAccountSyncSnapshot(account)
+	return snapshot.AccountID != "" && snapshot.AccountID == current.AccountID &&
+		snapshot.Provider == current.Provider && snapshot.Type == current.Type &&
+		snapshot.APIURL == current.APIURL && snapshot.EndpointMode == current.EndpointMode &&
+		snapshot.APIStyle == current.APIStyle && snapshot.MessagePathMode == current.MessagePathMode &&
+		snapshot.AuthMode == current.AuthMode && snapshot.AuthHeader == current.AuthHeader &&
+		snapshot.OAuthUpstream == current.OAuthUpstream && snapshot.ChatGPTAccountID == current.ChatGPTAccountID &&
+		equalModelHeaders(snapshot.Headers, current.Headers)
+}
+
+func equalModelHeaders(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+// MergeDiscoveredAccountModels atomically adds discovered models to the local
+// catalog or attaches their account pool to an existing equivalent model. It
+// deliberately preserves the existing model's user-facing name, capabilities,
+// direct credential, and prior account IDs. A sync from one account must never
+// overwrite a model already configured for another account.
+//
+// An equivalent model has the same provider, upstream endpoint, and external
+// model identifier. Manual endpoints remain exact because a trailing slash or
+// query can be meaningful to a user-managed gateway.
+func MergeDiscoveredAccountModels(candidates []CustomModel) (DiscoveredAccountModelMergeResult, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	return mergeDiscoveredAccountModelsLocked(candidates)
+}
+
+// MergeDiscoveredAccountModelsForCurrentAccount verifies the account snapshot
+// and persists the model bindings while holding the account and model storage
+// locks together. This prevents a slow discovery response from binding a
+// deleted account ID or models from an endpoint the user has since replaced.
+func MergeDiscoveredAccountModelsForCurrentAccount(snapshot AccountSyncSnapshot, candidates []CustomModel) (DiscoveredAccountModelMergeResult, error) {
+	result := DiscoveredAccountModelMergeResult{}
+	if strings.TrimSpace(snapshot.AccountID) == "" {
+		return result, ErrAccountSyncChanged
+	}
+	accountsMu.Lock()
+	defer accountsMu.Unlock()
+	accounts, err := loadAccountsLocked()
+	if err != nil {
+		return result, err
+	}
+	var current *UpstreamAccount
+	for index := range accounts {
+		if accounts[index].ID == snapshot.AccountID {
+			current = &accounts[index]
+			break
+		}
+	}
+	if current == nil || !snapshot.matches(*current) {
+		return result, ErrAccountSyncChanged
+	}
+	for _, candidate := range candidates {
+		bound := false
+		for _, accountID := range normalizedAccountIDs(candidate.AccountIDs) {
+			if accountID == snapshot.AccountID {
+				bound = true
+				break
+			}
+		}
+		if !bound {
+			return result, ErrAccountSyncChanged
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	return mergeDiscoveredAccountModelsLocked(candidates)
+}
+
+func mergeDiscoveredAccountModelsLocked(candidates []CustomModel) (DiscoveredAccountModelMergeResult, error) {
+	result := DiscoveredAccountModelMergeResult{}
+	if len(candidates) == 0 {
+		return result, nil
+	}
+	models, err := loadModelsLocked()
+	if err != nil {
+		return result, err
+	}
+
+	changed := false
+	for _, candidate := range candidates {
+		candidate = normalizeModelDisplayName(candidate)
+		if len(candidate.AccountIDs) == 0 {
+			continue
+		}
+		index := equivalentDiscoveredAccountModelIndex(models, candidate)
+		if index < 0 {
+			models = append(models, candidate)
+			result.Added++
+			changed = true
+			continue
+		}
+
+		mergedIDs, didBind := mergeModelAccountIDs(models[index].AccountIDs, candidate.AccountIDs)
+		if !didBind {
+			result.Unchanged++
+			continue
+		}
+		models[index].AccountIDs = mergedIDs
+		models[index] = normalizeModelDisplayName(models[index])
+		result.Bound++
+		changed = true
+	}
+
+	if !changed {
+		return result, nil
+	}
+	return result, saveModelsLocked(models)
+}
+
+func equivalentDiscoveredAccountModelIndex(models []CustomModel, candidate CustomModel) int {
+	for index, existing := range models {
+		existing = normalizeModelDisplayName(existing)
+		if !strings.EqualFold(existing.Provider, candidate.Provider) ||
+			!strings.EqualFold(discoveredExternalModelID(existing.ExternalModelName), discoveredExternalModelID(candidate.ExternalModelName)) ||
+			!sameDiscoveredModelEndpoint(existing, candidate) {
+			continue
+		}
+		return index
+	}
+	return -1
+}
+
+func discoveredExternalModelID(value string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(value), "models/"))
+}
+
+func sameDiscoveredModelEndpoint(existing, candidate CustomModel) bool {
+	existingURL := strings.TrimSpace(existing.APIURL)
+	candidateURL := strings.TrimSpace(candidate.APIURL)
+	if existing.EndpointMode == "manual" || candidate.EndpointMode == "manual" {
+		return existingURL == candidateURL
+	}
+	return strings.TrimRight(existingURL, "/") == strings.TrimRight(candidateURL, "/")
+}
+
+func mergeModelAccountIDs(existing, incoming []string) ([]string, bool) {
+	merged := normalizedAccountIDs(existing)
+	seen := make(map[string]struct{}, len(merged))
+	for _, id := range merged {
+		seen[id] = struct{}{}
+	}
+	changed := false
+	for _, id := range normalizedAccountIDs(incoming) {
+		if _, found := seen[id]; found {
+			continue
+		}
+		seen[id] = struct{}{}
+		merged = append(merged, id)
+		changed = true
+	}
+	return merged, changed
 }
 
 func normalizeModelDisplayName(model CustomModel) CustomModel {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -144,6 +145,59 @@ func TestAcquireAccountForModelRejectsExpiredOAuthWithoutRefreshToken(t *testing
 	cooldown, ok := parseAccountTime(stored.CooldownUntil)
 	if !ok || !cooldown.After(time.Now()) {
 		t.Fatalf("cooldown = %q, want future OAuth refresh cooldown", stored.CooldownUntil)
+	}
+}
+
+func TestAcquireAccountForModelUsesDirectCredentialWhenBoundPoolIsUnavailable(t *testing.T) {
+	Init(t.TempDir())
+	saveOAuthRefreshTestAccount(t, UpstreamAccount{
+		ID: "temporarily-disabled", Name: "Temporarily disabled", Provider: "openai", Type: "api_key",
+		APIURL: "https://account.example.test", APIKey: "account-token", AuthMode: "bearer", Enabled: true, MaxConcurrency: 1,
+	})
+	if err := SetUpstreamAccountEnabled("temporarily-disabled", false); err != nil {
+		t.Fatalf("disable account: %v", err)
+	}
+
+	model := CustomModel{
+		Provider: "openai", APIURL: "https://direct.example.test", APIKey: "legacy-direct-token",
+		AccountIDs: []string{"temporarily-disabled"},
+	}
+	selected, lease, err := AcquireAccountForModel(model, nil)
+	if err != nil {
+		t.Fatalf("acquire direct fallback: %v", err)
+	}
+	if lease != nil || selected.APIKey != "legacy-direct-token" || selected.APIURL != "https://direct.example.test" {
+		t.Fatalf("selected direct fallback = %#v, lease = %#v", selected, lease)
+	}
+
+	if err := SetUpstreamAccountEnabled("temporarily-disabled", true); err != nil {
+		t.Fatalf("re-enable account: %v", err)
+	}
+	selected, lease, err = AcquireAccountForModel(model, nil)
+	if err != nil {
+		t.Fatalf("acquire healthy account: %v", err)
+	}
+	if lease == nil || lease.ID != "temporarily-disabled" || selected.APIKey != "account-token" || selected.APIURL != "https://account.example.test" {
+		t.Fatalf("healthy pool account did not take precedence: selected = %#v, lease = %#v", selected, lease)
+	}
+	lease.Finish(http.StatusOK, "", "")
+}
+
+func TestAcquireAccountForModelUsesDirectCredentialWhenPoolStorageCannotBeRead(t *testing.T) {
+	Init(t.TempDir())
+	if err := os.WriteFile(accountsFile, []byte(`{"accounts":`), 0o600); err != nil {
+		t.Fatalf("corrupt account storage for fallback test: %v", err)
+	}
+	model := CustomModel{
+		Provider: "openai", APIURL: "https://direct.example.test", APIKey: "legacy-direct-token",
+		AccountIDs: []string{"missing-or-unreadable-account"},
+	}
+	selected, lease, err := AcquireAccountForModel(model, nil)
+	if err != nil {
+		t.Fatalf("direct fallback after account storage read error: %v", err)
+	}
+	if lease != nil || selected.APIKey != model.APIKey || selected.APIURL != model.APIURL {
+		t.Fatalf("storage-error fallback = %#v, lease = %#v", selected, lease)
 	}
 }
 

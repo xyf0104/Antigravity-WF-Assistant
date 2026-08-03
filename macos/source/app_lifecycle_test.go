@@ -29,9 +29,9 @@ func TestQuitAppBeforeStartupIsRejected(t *testing.T) {
 func TestFreshUpdateCacheMessageDoesNotClaimGitHubFailed(t *testing.T) {
 	message := cachedUpdateCheckMessage(updater.Info{
 		Cached: true, CacheReason: "fresh", CheckedAt: "2026-08-04T12:00:00Z",
-		Available: true, LatestVersion: "1.4.4",
+		Available: true, LatestVersion: "1.4.6",
 	})
-	if !strings.Contains(message, "使用最近成功检查结果") || !strings.Contains(message, "v1.4.4") {
+	if !strings.Contains(message, "使用最近成功检查结果") || !strings.Contains(message, "v1.4.6") {
 		t.Fatalf("fresh cache message = %q", message)
 	}
 	if strings.Contains(message, "GitHub 暂时无法确认") {

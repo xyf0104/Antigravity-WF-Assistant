@@ -1,0 +1,181 @@
+name: Publish Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: Build macOS installer
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: macos/source
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          test "${GITHUB_REF_NAME#v}" = "$(tr -d '\r\n' < VERSION)"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: macos/source/go.mod
+          cache-dependency-path: macos/source/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: macos/source/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: macos/source/frontend
+        run: npm ci
+
+      - name: Run frontend build
+        working-directory: macos/source/frontend
+        run: npm run build
+
+      - name: Run OAuth status tests
+        working-directory: macos/source/frontend
+        run: npm run test:oauth
+
+      - name: Run OAuth login UX tests
+        working-directory: macos/source/frontend
+        run: npm run test:oauth-ux
+
+      - name: Run update-check tests
+        working-directory: macos/source/frontend
+        run: npm run test:update-check
+
+      - name: Run Go race tests
+        run: go test -race ./...
+
+      - name: Build Universal App
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform darwin/universal -trimpath -o "Antigravity WF助手"
+
+      - name: Package macOS installer
+        run: ./build/darwin/package-installer.sh
+
+      - name: Upload macOS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installer
+          path: macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v*-Installer.pkg
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows/source
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ("${{ github.ref_name }}" -ne "v$version") { throw "Tag and VERSION differ" }
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: windows/source/go.mod
+          cache-dependency-path: windows/source/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/source/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: windows/source/frontend
+        run: npm ci
+
+      - name: Run frontend build
+        working-directory: windows/source/frontend
+        run: npm run build
+
+      - name: Run OAuth status tests
+        working-directory: windows/source/frontend
+        run: npm run test:oauth
+
+      - name: Run OAuth login UX tests
+        working-directory: windows/source/frontend
+        run: npm run test:oauth-ux
+
+      - name: Run update-check tests
+        working-directory: windows/source/frontend
+        run: npm run test:update-check
+
+      - name: Run Go race tests
+        run: go test -race ./...
+
+      - name: Build Windows x64
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手-${{ github.ref_name }}.exe"
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build NSIS installer
+        working-directory: windows/source/build/windows
+        run: '& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 installer.nsi'
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v*-Setup.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish verified release
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create SHA256 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          cd release-assets
+          macos="Antigravity-WF-Assistant-macOS-universal-v${version}-Installer.pkg"
+          windows="Antigravity-WF-Assistant-Windows-x64-v${version}-Setup.exe"
+          test -f "$macos"
+          test -f "$windows"
+          sha256sum "$macos" "$windows" > SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Antigravity WF助手 ${{ github.ref_name }}
+          generate_release_notes: false
+          body: |
+            ## Antigravity WF助手
+
+            - 账户卡可一键同步当前账户的全部可用模型；同一上游的同名模型自动合并为账户池。
+            - 账户池会按优先级、并发和健康状态调度，网络、限流或认证故障时可切换其他已绑定账户。
+            - 本版本仅提供 macOS Universal `.pkg`、Windows x64 `.exe` 和校验清单。
+
+            请下载与系统匹配的安装包，并在安装前使用 `SHA256SUMS.txt` 核验完整性。
+          files: release-assets/*

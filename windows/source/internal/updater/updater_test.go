@@ -11,12 +11,12 @@ import (
 )
 
 const testReleaseJSON = `{
-  "tag_name":"v1.4.5",
-  "html_url":"https://example.test/releases/v1.4.5",
+  "tag_name":"v1.4.6",
+  "html_url":"https://example.test/releases/v1.4.6",
   "published_at":"2026-08-04T00:00:00Z",
   "assets":[
-    {"name":"Antigravity-WF-Assistant-macOS-universal-v1.4.5-Installer.pkg","browser_download_url":"https://example.test/macos.pkg","size":123},
-    {"name":"Antigravity-WF-Assistant-Windows-x64-v1.4.5-Setup.exe","browser_download_url":"https://example.test/windows.exe","size":456}
+    {"name":"Antigravity-WF-Assistant-macOS-universal-v1.4.6-Installer.pkg","browser_download_url":"https://example.test/macos.pkg","size":123},
+    {"name":"Antigravity-WF-Assistant-Windows-x64-v1.4.6-Setup.exe","browser_download_url":"https://example.test/windows.exe","size":456}
   ]
 }`
 
@@ -56,14 +56,14 @@ func TestCheckWithCacheUsesETagAnd304(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first check: %v", err)
 	}
-	if !first.Available || first.Cached || first.LatestVersion != "1.4.5" || first.CheckedAt == "" {
+	if !first.Available || first.Cached || first.LatestVersion != "1.4.6" || first.CheckedAt == "" {
 		t.Fatalf("first check info = %#v", first)
 	}
 	second, err := CheckWithCache(context.Background(), "", cachePath)
 	if err != nil {
 		t.Fatalf("fresh cache check: %v", err)
 	}
-	if !second.Available || !second.Cached || second.CacheReason != "fresh" || second.LatestVersion != "1.4.5" || second.CheckedAt == "" {
+	if !second.Available || !second.Cached || second.CacheReason != "fresh" || second.LatestVersion != "1.4.6" || second.CheckedAt == "" {
 		t.Fatalf("fresh cache info = %#v", second)
 	}
 	if requests != 1 {
@@ -75,7 +75,7 @@ func TestCheckWithCacheUsesETagAnd304(t *testing.T) {
 	if err != nil {
 		t.Fatalf("conditional check: %v", err)
 	}
-	if !third.Available || third.Cached || third.LatestVersion != "1.4.5" || third.CheckedAt == "" {
+	if !third.Available || third.Cached || third.LatestVersion != "1.4.6" || third.CheckedAt == "" {
 		t.Fatalf("conditional check info = %#v", third)
 	}
 	if requests != 2 {
@@ -116,7 +116,7 @@ func TestCheckWithCacheFallsBackAfterServerFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fallback check: %v", err)
 	}
-	if !info.Cached || info.CacheReason != "network" || !info.Available || info.LatestVersion != "1.4.5" {
+	if !info.Cached || info.CacheReason != "network" || !info.Available || info.LatestVersion != "1.4.6" {
 		t.Fatalf("fallback info = %#v", info)
 	}
 }
@@ -144,7 +144,7 @@ func TestCheckWithCacheMarksTimeoutFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("timeout fallback: %v", err)
 	}
-	if !info.Cached || info.CacheReason != "timeout" || info.LatestVersion != "1.4.5" {
+	if !info.Cached || info.CacheReason != "timeout" || info.LatestVersion != "1.4.6" {
 		t.Fatalf("timeout fallback info = %#v", info)
 	}
 }

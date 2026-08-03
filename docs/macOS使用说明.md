@@ -1,8 +1,8 @@
-# Antigravity WF助手 macOS v1.4.4
+# Antigravity WF助手 macOS v1.4.5
 
 ## 安装
 
-1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.4.4-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
+1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.4.5-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
 2. 首次打开如果 macOS 显示开发者提示，请在 Finder 中右键 App，选择“打开”。
 
 App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时不需要 Python、Node.js 或外置补丁脚本。
@@ -20,7 +20,8 @@ App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时�
 1. 在“账户池”中可添加 API Key、Bearer / Access Token、x-api-key、Setup Token、Codex PAT 或自定义认证头；默认只需填写基础域名，选择“完整路径（手动）”后可完全自行指定请求地址。
 2. 使用 ChatGPT / Codex 时，在“OAuth 授权登录”中选择“OpenAI / Codex”，点击“浏览器登录”。助手会显示并自动打开完整授权链接；在浏览器选择 ChatGPT 账户后会自动回到助手，账户卡可显示 OAuth 类型、邮箱、套餐、令牌到期和本机用量。自动回调同时保留手动兜底：复制浏览器跳转后的完整回调 URL，或只复制 `code` 值粘贴即可自动识别并完成；本机回调端口被占用时也会自动切换到此方式。
 3. 已有 `auth.json`、OAuth JSON 或 XIASS 风格账户导出时，使用“导入账户 JSON”；Refresh Token / Mobile RT 使用专门的兑换入口，不能当作 API Key 直接保存。
-4. 一个模型可绑定多个同协议账户。正常请求会按优先级、并发与健康状态调度；可在账户卡片查看本机转发用量、上游限流快照及可显示的账号身份/套餐资料。
+4. 保存或登录成功后，直接在该账户卡片点击“同步全部模型”。它会读取当前账户的真实模型列表并添加到 Antigravity；与已有模型的协议、上游地址和模型名都一致时，会追加该账户到同一个账户池，不会覆盖其他账户或模型设置。
+5. 每个账户卡的“测试连接”只测试该账户；运行时同一个模型会按优先级、并发与健康状态从已绑定账户中调度，遇到可重试的故障时尝试其他可用账户。
 
 ## 启动与重启保护
 

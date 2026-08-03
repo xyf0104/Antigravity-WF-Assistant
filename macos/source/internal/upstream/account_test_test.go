@@ -163,6 +163,34 @@ func TestAccountTestResponseRedactsSecretsAndRejectsUnsafeImageURLs(t *testing.T
 	}
 }
 
+func TestRunAccountTestRedactsBareConfiguredCredentialValues(t *testing.T) {
+	const apiKey = "account-test-bare-api-secret"
+	const customHeaderValue = "account-test-header-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"gateway echoed ` + apiKey + ` and ` + customHeaderValue + `"}}`))
+	}))
+	defer server.Close()
+
+	result := RunAccountTest(context.Background(), Config{
+		Provider: "openai", APIURL: server.URL, APIKey: apiKey, AuthMode: "custom_header", AuthHeader: "X-Token",
+		Headers: map[string]string{"X-Workspace-Secret": customHeaderValue},
+	}, AccountTestRequest{AccountID: "redaction-account", Model: "gpt-test"})
+	if result.OK || result.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unexpected account test result: %#v", result)
+	}
+	text := accountTestResultText(result)
+	for _, secret := range []string{apiKey, customHeaderValue} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("account test leaked configured credential %q: %#v", secret, result)
+		}
+	}
+	if !strings.Contains(text, "鉴权详情已隐藏") {
+		t.Fatalf("account test did not report a safe redaction: %#v", result)
+	}
+}
+
 func accountTestResultText(result AccountTestResult) string {
 	parts := []string{result.Message, result.Content, result.Endpoint}
 	for _, step := range result.Steps {

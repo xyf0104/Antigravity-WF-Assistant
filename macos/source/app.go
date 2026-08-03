@@ -245,9 +245,11 @@ type HistorySyncStatus struct {
 }
 
 type BatchModelResult struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message"`
-	Added   int    `json:"added"`
+	OK        bool   `json:"ok"`
+	Message   string `json:"message"`
+	Added     int    `json:"added"`
+	Bound     int    `json:"bound"`
+	Unchanged int    `json:"unchanged"`
 }
 
 type UpdateCheckResult struct {
@@ -606,9 +608,17 @@ func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) Bat
 	if err := upstream.ValidateConfig(resolved); err != nil {
 		return BatchModelResult{Message: err.Error()}
 	}
+	return a.saveDiscoveredModels(resolved, boundAccountIDs, modelIDs, nil)
+}
+
+// saveDiscoveredModels writes a discovery result without ever copying an
+// account credential into a model configuration. Account-backed imports use a
+// storage-layer merge so one account can be added to an existing pool without
+// replacing its peers or creating a duplicate Antigravity model.
+func (a *App) saveDiscoveredModels(resolved upstream.Config, boundAccountIDs, modelIDs []string, accountSnapshot *storage.AccountSyncSnapshot) BatchModelResult {
 	provider := upstream.NormalizedProvider(resolved.Provider)
 	seen := make(map[string]struct{}, len(modelIDs))
-	added := 0
+	candidates := make([]storage.CustomModel, 0, len(modelIDs))
 	for _, rawID := range modelIDs {
 		modelID := strings.TrimSpace(strings.TrimPrefix(rawID, "models/"))
 		if modelID == "" {
@@ -633,15 +643,59 @@ func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) Bat
 		}
 		model.Capabilities = storage.DefaultCapabilitiesForAPIStyle(provider, modelID, model.APIStyle)
 		model.Capabilities.Configured = true
+		candidates = append(candidates, model)
+	}
+	if len(candidates) == 0 {
+		return BatchModelResult{Message: "请至少选择一个上游模型"}
+	}
+
+	if len(boundAccountIDs) > 0 {
+		var (
+			merged storage.DiscoveredAccountModelMergeResult
+			err    error
+		)
+		if accountSnapshot != nil {
+			merged, err = storage.MergeDiscoveredAccountModelsForCurrentAccount(*accountSnapshot, candidates)
+		} else {
+			merged, err = storage.MergeDiscoveredAccountModels(candidates)
+		}
+		if err != nil {
+			if errors.Is(err, storage.ErrAccountSyncChanged) {
+				return BatchModelResult{Message: err.Error()}
+			}
+			return BatchModelResult{Message: "保存模型失败：" + err.Error()}
+		}
+		return BatchModelResult{
+			OK: true, Added: merged.Added, Bound: merged.Bound, Unchanged: merged.Unchanged,
+			Message: accountModelSyncMessage(merged.Added, merged.Bound, merged.Unchanged),
+		}
+	}
+
+	added := 0
+	for _, model := range candidates {
 		if err := storage.AddOrUpdateModel(model); err != nil {
-			return BatchModelResult{Message: fmt.Sprintf("保存 %s 失败：%s", modelID, err.Error()), Added: added}
+			return BatchModelResult{Message: fmt.Sprintf("保存 %s 失败：%s", model.ExternalModelName, err.Error()), Added: added}
 		}
 		added++
 	}
-	if added == 0 {
-		return BatchModelResult{Message: "请至少选择一个上游模型"}
-	}
 	return BatchModelResult{OK: true, Added: added, Message: fmt.Sprintf("已添加或更新 %d 个模型；重启 Antigravity 后生效。", added)}
+}
+
+func accountModelSyncMessage(added, bound, unchanged int) string {
+	parts := make([]string, 0, 3)
+	if added > 0 {
+		parts = append(parts, fmt.Sprintf("新增 %d 个模型", added))
+	}
+	if bound > 0 {
+		parts = append(parts, fmt.Sprintf("已将 %d 个已有模型加入账户池", bound))
+	}
+	if unchanged > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个模型已绑定", unchanged))
+	}
+	if len(parts) == 0 {
+		return "没有可同步的模型"
+	}
+	return "已同步到 Antigravity：" + strings.Join(parts, "；") + "。"
 }
 
 // ─── Upstream account pool ───────────────────────────────────────────────────
@@ -737,6 +791,46 @@ func (a *App) DiscoverAccountModels(accountID string) upstream.DiscoveryResult {
 	ctx, cancel := a.upstreamContext(30 * time.Second)
 	defer cancel()
 	return upstream.DiscoverModels(ctx, upstream.ConfigFromAccount(account))
+}
+
+// SyncUpstreamAccountModels is the account-card one-click path: discover every
+// model available to this saved account, then atomically make those models
+// available to Antigravity. Explicit account actions bypass scheduler status,
+// so a paused account can be repaired and synced before it is enabled again.
+func (a *App) SyncUpstreamAccountModels(accountID string) BatchModelResult {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return BatchModelResult{Message: "请选择需要同步的账户"}
+	}
+	account, err := storage.GetUpstreamAccount(accountID)
+	if err != nil {
+		return BatchModelResult{Message: err.Error()}
+	}
+	// Capture only connection-routing metadata before issuing the slow upstream
+	// request. The storage merge revalidates this snapshot under its account
+	// lock, so a deleted or reconfigured account can never receive stale models.
+	snapshot := storage.NewAccountSyncSnapshot(account)
+	config := upstream.ConfigFromAccount(account)
+	if err := upstream.ValidateConfig(config); err != nil {
+		return BatchModelResult{Message: err.Error()}
+	}
+	ctx, cancel := a.upstreamContext(30 * time.Second)
+	defer cancel()
+	discovery := upstream.DiscoverModels(ctx, config)
+	if !discovery.OK {
+		return BatchModelResult{Message: "无法获取该账户的模型列表：" + strings.TrimSpace(discovery.Message)}
+	}
+	modelIDs := make([]string, 0, len(discovery.Models))
+	for _, model := range discovery.Models {
+		if modelID := strings.TrimSpace(model.ID); modelID != "" {
+			modelIDs = append(modelIDs, modelID)
+		}
+	}
+	result := a.saveDiscoveredModels(config, []string{account.ID}, modelIDs, &snapshot)
+	if result.OK && result.Message == "" {
+		result.Message = accountModelSyncMessage(result.Added, result.Bound, result.Unchanged)
+	}
+	return result
 }
 
 func (a *App) TestUpstreamAccount(accountID, model string) upstream.TestResult {

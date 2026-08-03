@@ -46,7 +46,21 @@ func applyOpenAICodexOAuthHeaders(req *http.Request, config Config) {
 // Responses route. This keeps tests and a user-owned local relay possible
 // while production OpenAI OAuth naturally resolves to chatgpt.com.
 func ResolveOpenAICodexModelsURL(config Config) (string, error) {
-	return resolveOpenAICodexSiblingURL(config.APIURL, openAICodexModelsPath)
+	endpoint, err := resolveOpenAICodexSiblingURL(config.APIURL, openAICodexModelsPath)
+	if err != nil {
+		return "", err
+	}
+	// The ChatGPT Codex manifest rejects a request without this query value.
+	// Keep it tied to the public Version header so an update cannot leave the
+	// two protocol identifiers out of sync.
+	parsed, err := validateBaseURL(endpoint)
+	if err != nil {
+		return "", err
+	}
+	query := parsed.Query()
+	query.Set("client_version", openAICodexVersion)
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 // ResolveOpenAICodexQuotaURL returns the XIASS-compatible /wham/usage route

@@ -75,6 +75,10 @@ type TestResult struct {
 
 var headerNamePattern = regexp.MustCompile(`^[!#$%&'*+\-.^_` + "`" + `|~0-9A-Za-z]+$`)
 
+// Upstreams sometimes echo request headers in a JSON error message. Preserve
+// useful non-sensitive diagnostics, but never surface credentials in the UI.
+var sensitiveUpstreamErrorDetailPattern = regexp.MustCompile(`(?i)(?:authorization|bearer|x[\s_-]*api[\s_-]*key|api[\s_-]*key|apikey)`)
+
 var blockedHeaderNames = map[string]struct{}{
 	"host": {}, "content-length": {}, "content-type": {}, "transfer-encoding": {},
 	"connection": {}, "keep-alive": {}, "proxy-authorization": {}, "proxy-authenticate": {},
@@ -385,7 +389,7 @@ func DiscoverModels(ctx context.Context, config Config) DiscoveryResult {
 	defer response.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return DiscoveryResult{Message: statusMessage(response.StatusCode, body), Endpoint: endpoint, StatusCode: response.StatusCode}
+		return DiscoveryResult{Message: statusMessage(response.StatusCode, body, config), Endpoint: endpoint, StatusCode: response.StatusCode}
 	}
 	models, err := ParseModels(body)
 	if err != nil {
@@ -439,7 +443,11 @@ func collectModelList(value any, seen map[string]ModelInfo, depth int) {
 }
 
 func modelID(value map[string]any) string {
-	for _, field := range []string{"id", "model", "model_id", "modelId", "name"} {
+	// The direct ChatGPT Codex manifest identifies a model with `slug`, while
+	// ordinary OpenAI-compatible /models responses use `id`. Accept both so
+	// the OAuth account list reflects the live manifest instead of falling
+	// back to a local default model.
+	for _, field := range []string{"id", "model", "model_id", "modelId", "slug", "name"} {
 		candidate, _ := value[field].(string)
 		candidate = strings.TrimSpace(strings.TrimPrefix(candidate, "models/"))
 		if candidate != "" {
@@ -450,7 +458,7 @@ func modelID(value map[string]any) string {
 }
 
 func modelDisplayName(value map[string]any, fallback string) string {
-	for _, field := range []string{"display_name", "displayName", "name", "id", "model"} {
+	for _, field := range []string{"display_name", "displayName", "name", "id", "model", "slug"} {
 		if candidate, ok := value[field].(string); ok && strings.TrimSpace(candidate) != "" {
 			return strings.TrimSpace(strings.TrimPrefix(candidate, "models/"))
 		}
@@ -551,7 +559,7 @@ func doTestRequest(ctx context.Context, config Config, endpoint, style string, b
 	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 512<<10))
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return TestResult{Message: statusMessage(response.StatusCode, responseBody), Endpoint: endpoint, APIStyle: style, StatusCode: response.StatusCode}
+		return TestResult{Message: statusMessage(response.StatusCode, responseBody, config), Endpoint: endpoint, APIStyle: style, StatusCode: response.StatusCode}
 	}
 	return TestResult{OK: true, Message: fmt.Sprintf("模型可用（HTTP %d）", response.StatusCode), Endpoint: endpoint, APIStyle: style, StatusCode: response.StatusCode}
 }
@@ -563,17 +571,52 @@ func safeNetworkError(err error) string {
 	return "连接失败"
 }
 
-func statusMessage(statusCode int, body []byte) string {
+func statusMessage(statusCode int, body []byte, config Config) string {
 	var decoded map[string]any
 	if json.Unmarshal(body, &decoded) == nil {
 		if errorValue, ok := decoded["error"].(map[string]any); ok {
 			if message, ok := errorValue["message"].(string); ok && strings.TrimSpace(message) != "" {
-				return fmt.Sprintf("上游返回 HTTP %d：%s", statusCode, strings.TrimSpace(message))
+				return fmt.Sprintf("上游返回 HTTP %d：%s", statusCode, safeStatusDetail(message, config))
 			}
 		}
 		if message, ok := decoded["message"].(string); ok && strings.TrimSpace(message) != "" {
-			return fmt.Sprintf("上游返回 HTTP %d：%s", statusCode, strings.TrimSpace(message))
+			return fmt.Sprintf("上游返回 HTTP %d：%s", statusCode, safeStatusDetail(message, config))
 		}
 	}
 	return fmt.Sprintf("上游返回 HTTP %d", statusCode)
+}
+
+func safeStatusDetail(message string, config Config) string {
+	message = strings.TrimSpace(message)
+	if sensitiveUpstreamErrorDetailPattern.MatchString(message) || containsConfiguredCredential(message, config) {
+		return "上游拒绝了请求（鉴权详情已隐藏）"
+	}
+	return message
+}
+
+// containsConfiguredCredential catches a gateway that mirrors a request value
+// verbatim without a recognizable Authorization or API-key label. Treat every
+// configured credential/header value as opaque: once any exact value appears
+// in an error, hide the entire upstream detail rather than trying to preserve
+// a potentially incomplete or transformed fragment.
+func containsConfiguredCredential(message string, config Config) bool {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return false
+	}
+	values := make([]string, 0, len(config.Headers)+1)
+	if apiKey := strings.TrimSpace(config.APIKey); apiKey != "" {
+		values = append(values, apiKey)
+	}
+	for _, value := range config.Headers {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	for _, value := range values {
+		if strings.Contains(message, value) {
+			return true
+		}
+	}
+	return false
 }

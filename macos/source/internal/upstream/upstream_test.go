@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"antigravity-byok/internal/storage"
@@ -15,6 +16,9 @@ func TestDiscoverModelsUsesConfiguredAuth(t *testing.T) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
 			return
+		}
+		if got := r.URL.Query().Get("client_version"); got != "" {
+			t.Errorf("ordinary API model discovery unexpectedly sent client_version = %q", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer token" {
 			t.Errorf("authorization = %q", got)
@@ -30,11 +34,68 @@ func TestDiscoverModelsUsesConfiguredAuth(t *testing.T) {
 	}
 }
 
+func TestDiscoverModelsRedactsUpstreamCredentialEchoes(t *testing.T) {
+	const bearerSecret = "oauth-bearer-secret-value"
+	const apiKeySecret = "api-key-secret-value"
+	const xAPIKeySecret = "x-api-key-secret-value"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"request rejected: Authorization: Bearer ` + bearerSecret + `; api_key=` + apiKeySecret + `; x-api-key: ` + xAPIKeySecret + `"}}`))
+	}))
+	defer server.Close()
+
+	result := DiscoverModels(context.Background(), Config{Provider: "openai", APIURL: server.URL + "/v1", APIKey: "configured-token", AuthMode: "bearer"})
+	if result.OK || result.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unexpected discovery result: %#v", result)
+	}
+	for _, secret := range []string{bearerSecret, apiKeySecret, xAPIKeySecret} {
+		if strings.Contains(result.Message, secret) {
+			t.Fatalf("discovery error leaked credential %q: %q", secret, result.Message)
+		}
+	}
+	if !strings.Contains(result.Message, "HTTP 400") || !strings.Contains(result.Message, "鉴权详情已隐藏") {
+		t.Fatalf("discovery error did not retain a safe diagnostic: %q", result.Message)
+	}
+}
+
+func TestDiscoverModelsRedactsBareConfiguredCredentialValues(t *testing.T) {
+	const apiKey = "bare-configured-api-secret"
+	const customHeaderValue = "bare-configured-header-secret"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"gateway echo: ` + apiKey + ` / ` + customHeaderValue + `"}}`))
+	}))
+	defer server.Close()
+
+	result := DiscoverModels(context.Background(), Config{
+		Provider: "openai", APIURL: server.URL + "/v1", APIKey: apiKey, AuthMode: "bearer",
+		Headers: map[string]string{"X-Tenant-Secret": customHeaderValue},
+	})
+	if result.OK || result.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unexpected discovery result: %#v", result)
+	}
+	for _, secret := range []string{apiKey, customHeaderValue} {
+		if strings.Contains(result.Message, secret) {
+			t.Fatalf("bare configured credential leaked %q: %q", secret, result.Message)
+		}
+	}
+	if !strings.Contains(result.Message, "鉴权详情已隐藏") {
+		t.Fatalf("bare credential echo was not redacted: %q", result.Message)
+	}
+}
+
 func TestOpenAICodexOAuthDiscoveryUsesDirectManifestAndCodexHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/codex/models" {
 			http.NotFound(w, r)
 			return
+		}
+		if got, want := r.URL.Query().Get("client_version"), openAICodexVersion; got != want {
+			t.Errorf("client_version = %q, want %q", got, want)
 		}
 		if got, want := r.Header.Get("Authorization"), "Bearer oauth-access-token"; got != want {
 			t.Errorf("authorization = %q, want %q", got, want)
@@ -45,8 +106,14 @@ func TestOpenAICodexOAuthDiscoveryUsesDirectManifestAndCodexHeaders(t *testing.T
 		if got, want := r.Header.Get("Originator"), "codex_cli_rs"; got != want {
 			t.Errorf("originator = %q, want %q", got, want)
 		}
+		if got, want := r.Header.Get("Version"), openAICodexVersion; got != want {
+			t.Errorf("version = %q, want %q", got, want)
+		}
+		if got, want := r.Header.Get("User-Agent"), openAICodexUserAgent; got != want {
+			t.Errorf("user-agent = %q, want %q", got, want)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5"},{"id":"gpt-5-mini"}]}`))
+		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.4","display_name":"GPT-5.4"},{"slug":"gpt-5.4-mini","display_name":"GPT-5.4 Mini"}]}`))
 	}))
 	defer server.Close()
 
@@ -55,8 +122,14 @@ func TestOpenAICodexOAuthDiscoveryUsesDirectManifestAndCodexHeaders(t *testing.T
 		EndpointMode: "manual", APIStyle: "responses", AuthMode: "bearer",
 		OAuthUpstream: storage.OpenAICodexOAuthUpstream, ChatGPTAccountID: "acct-chatgpt",
 	})
-	if !result.OK || len(result.Models) != 2 || result.Endpoint != server.URL+"/backend-api/codex/models" {
+	if !result.OK || len(result.Models) != 2 || result.Endpoint != server.URL+"/backend-api/codex/models?client_version="+openAICodexVersion {
 		t.Fatalf("unexpected direct OAuth discovery result: %#v", result)
+	}
+	if got, want := result.Models[0], (ModelInfo{ID: "gpt-5.4", Name: "GPT-5.4"}); got != want {
+		t.Errorf("first manifest model = %#v, want %#v", got, want)
+	}
+	if got, want := result.Models[1], (ModelInfo{ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini"}); got != want {
+		t.Errorf("second manifest model = %#v, want %#v", got, want)
 	}
 }
 

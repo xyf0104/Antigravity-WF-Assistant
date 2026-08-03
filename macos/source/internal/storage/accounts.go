@@ -1031,6 +1031,9 @@ func saveAccountsLocked(accounts []UpstreamAccount) error {
 // accounts are sorted by priority, current concurrency and least-recent use;
 // accounts in a temporary cooldown are skipped. A model without bindings
 // deliberately retains legacy per-model credentials for backward compatibility.
+// A model that predates account-pool sync can retain both: its direct credential
+// is used only when every bound account is unavailable, so attaching a new pool
+// never turns a previously working model into an account-only configuration.
 func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (CustomModel, *AccountLease, error) {
 	ids := normalizedAccountIDs(model.AccountIDs)
 	if len(ids) == 0 {
@@ -1048,6 +1051,9 @@ func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (Cu
 	accounts, err := loadAccountsLocked()
 	accountsMu.RUnlock()
 	if err != nil {
+		if hasDirectModelCredential(model) {
+			return model, nil, nil
+		}
 		return model, nil, err
 	}
 	now := time.Now()
@@ -1088,6 +1094,9 @@ func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (Cu
 	}
 	accountRun.Unlock()
 	if len(candidates) == 0 {
+		if hasDirectModelCredential(model) {
+			return model, nil, nil
+		}
 		return model, nil, fmt.Errorf("绑定账户当前均不可调度：请检查额度、冷却时间或并发限制")
 	}
 	selected := candidates[0].account
@@ -1095,6 +1104,10 @@ func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (Cu
 		account.LastUsedAt = now.UTC().Format(time.RFC3339)
 	})
 	return selected.ToModel(model), &AccountLease{ID: selected.ID}, nil
+}
+
+func hasDirectModelCredential(model CustomModel) bool {
+	return strings.TrimSpace(model.APIKey) != ""
 }
 
 func normalizedAccountIDs(values []string) []string {
