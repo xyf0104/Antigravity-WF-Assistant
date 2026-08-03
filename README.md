@@ -1,113 +1,71 @@
-<p align="center">
-  <img src="assets/logo.png" alt="Antigravity WF助手 Logo" width="220">
-</p>
+![Antigravity WF助手 Logo](assets/logo.png)
 
-<h1 align="center">Antigravity WF助手</h1>
+# Antigravity WF助手
 
-<p align="center">
-  让 Antigravity IDE / Antigravity 2.x 使用自定义 OpenAI 兼容与 Anthropic 模型<br>
-  macOS Universal · Windows x64 · 中文桌面界面
-</p>
+面向 macOS 与 Windows 的 Antigravity 本地模型管理与启动工具。它帮助已安装 Antigravity IDE / Antigravity 2.x 的用户接入自定义模型服务、管理本地配置，并从一个桌面界面完成补丁、恢复与启动操作。
 
-<p align="center">
-  <a href="https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest"><img src="https://img.shields.io/github/v/release/xyf0104/Antigravity-WF-Assistant?label=release" alt="Release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
-  <img src="https://img.shields.io/badge/macOS-Universal-5b5b5b" alt="macOS Universal">
-  <img src="https://img.shields.io/badge/Windows-x64-0078d4" alt="Windows x64">
-</p>
+[![Release](https://img.shields.io/github/v/release/xyf0104/Antigravity-WF-Assistant?label=release)](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![macOS Universal](https://img.shields.io/badge/macOS-Universal-5b5b5b)
+![Windows x64](https://img.shields.io/badge/Windows-x64-0078d4)
 
-## 项目说明
+## 工具作用
 
-`Antigravity WF助手` 由 **WF 开发与维护**，是在 Antigravity BYOK 开源代码基础上持续完善的非官方二次开发版本。它不是 Antigravity 官方产品，也不代表官方授权或背书。
+Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用符合 OpenAI 或 Anthropic 协议的模型服务。它会管理所需的本地配置和 IDE 补丁，并尽可能自动找到已安装的 Antigravity 应用。
 
-本项目把本地代理、模型管理、安装路径检测、补丁与恢复、历史会话保护、终端权限和启动器集成在一个桌面 App 中。安装后的正常使用不要求 Python、Node.js 或外置补丁脚本。
+适用于希望：
 
-## 下载
-
-前往 [最新版本下载页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest)。
-
-| 系统 | 推荐文件 | 说明 |
-| --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.3-Installer.pkg` | 推荐；标准安装器，可选“在桌面创建快捷方式” |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.3.dmg` | 拖入 Applications 即可，兼容 Apple Silicon 与 Intel |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.3.zip` | DMG 无法使用时的备用包 |
-| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.3.3-Setup.exe` | 推荐；当前用户安装，可选“在桌面创建快捷方式” |
-| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.3.3-Portable.exe` | 免安装便携版 |
-
-下载后可用同一发布页中的 `SHA256SUMS.txt` 核对文件完整性。
+- 添加、编辑和管理自定义模型；
+- 使用 OpenAI Chat Completions、OpenAI 兼容接口或 Anthropic Messages API；
+- 管理 GPT 的推理等级；
+- 自动检测并启动 Antigravity IDE / Antigravity 2.x；
+- 在更新 Antigravity 后重新应用本地配置；
+- 保留已有聊天会话并安全恢复历史记录的用户。
 
 ## 主要功能
 
-- 自动检测 Antigravity、Antigravity IDE 与 Antigravity 2.x；同时安装两个版本时分别显示两个启动按钮。
-- 根据运行状态显示“启动”或“重启”；重启只请求应用正常退出，绝不强制结束进程，前后均同步聊天历史。
-- 支持 OpenAI Chat Completions、OpenAI 兼容服务与 Anthropic Messages API。
-- OpenAI 推理等级包含：自动、无、最小、低、中、高、超高、最大；实际可用值仍由上游模型决定。
-- 显示名称留空时自动使用上游模型名。
-- 新增/编辑模型弹窗固定为最高层级，点击外部空白或按 Esc 不会意外消失。
-- 自动规范化工具 JSON Schema，处理 `BOOLEAN` 等非标准类型，避免相关 HTTP 400。
-- 保留“应用全部补丁”“仅 IDE 补丁”和“恢复原始文件”。
-- 启动时安全合并历史会话：只补充缺失文件，不覆盖现有会话。
-- 可配置终端命令自动批准范围，并保留原始配置备份。
-- 浅色、深色、跟随系统三种主题。
-- 补丁前原子备份，失败自动回滚；Antigravity 升级后可重新应用。
-- 点击窗口关闭按钮只会最小化到任务栏或 Dock，代理继续运行；左下角电源按钮可明确“退出助手并释放端口”。
+- 自动检测 Antigravity、Antigravity IDE 和 Antigravity 2.x；若安装了多个版本，首页会分别提供启动或重启按钮。
+- 模型配置支持自定义显示名、上游模型名、API 地址、API Key、协议和推理等级；显示名留空时自动使用上游模型名。
+- 支持浅色、深色和跟随系统主题。
+- 提供“应用全部补丁”“仅 IDE 补丁”“恢复原始文件”三项操作，并在修改前创建本地备份。
+- 启动时安全合并历史会话；关闭窗口时最小化到 Dock 或任务栏，选择退出后释放本地端口。
+- 可设置终端命令的自动批准范围；请只在完全可信的工作区和指令来源中启用。
 
-## 首次使用
+## 下载
 
-1. 先安装并启动 Antigravity，确认已使用本地凭据正常登录。
-2. 安装并打开 `Antigravity WF助手`。
-3. 进入“模型”，点击新增模型，填写上游模型名、API 地址、API Key 和协议；“显示名称”可留空。
-4. 回到“总览”，确认助手已检测到正确的 Antigravity 安装路径。
-5. 通常点击“应用全部补丁”；只想修改 IDE 模型列表时可选“仅 IDE 补丁”。
-6. 使用首页的 Antigravity 启动/重启按钮打开对应版本。
-7. 使用自定义模型期间保持 WF助手运行。
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载对应系统的安装包。
 
-如果更新或重装了 Antigravity，请重新应用补丁。需要撤销时，点击“恢复原始文件”，然后正常重启 Antigravity。
+| 系统 | 推荐下载 | 说明 |
+| --- | --- | --- |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.3-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
+| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.3.3-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
 
-详细说明：
+发布页还提供 macOS DMG、macOS ZIP、Windows 便携版和 `SHA256SUMS.txt` 供校验文件完整性。
 
-- [macOS 安装与使用](docs/macOS使用说明.md)
-- [Windows 安装与使用](docs/Windows使用说明.md)
+## 使用方法
 
-## 自动检测范围
+1. 安装并打开 Antigravity WF助手。
+2. 确认首页已检测到 Antigravity 的安装路径；若未检测到，可按系统说明设置路径环境变量。
+3. 在“模型”中添加服务的上游模型名、API 地址、API Key 和协议。
+4. 根据使用范围选择“应用全部补丁”或“仅 IDE 补丁”。
+5. 使用首页的启动按钮打开 Antigravity，并在使用自定义模型期间保持助手运行。
 
-macOS 会检查 `/Applications`、`~/Applications`、当前运行中的应用以及 Spotlight 结果。
+如重新安装或更新 Antigravity，可再次应用补丁。若想撤销本地修改，使用“恢复原始文件”后正常重启 Antigravity。
 
-Windows 会检查 LocalAppData、Program Files、当前运行进程、卸载注册表，以及 C: 到 Z: 各磁盘常见的便携安装目录，包括类似 `D:\Antigravity` 的位置。
+- [macOS 安装与使用说明](docs/macOS使用说明.md)
+- [Windows 安装与使用说明](docs/Windows使用说明.md)
 
-如需限定目标，可设置：
+## 自动检测与数据
 
-- 单路径：`ANTIGRAVITY_APP_PATH`
-- 多路径：`ANTIGRAVITY_APP_PATHS`（macOS 用冒号分隔，Windows 用分号分隔）
+macOS 会检查 `/Applications`、`~/Applications`、当前运行中的应用和 Spotlight 结果。Windows 会检查常见安装目录、运行中的进程、卸载注册表和各磁盘上的便携安装目录。
 
-显式设置路径后，助手只处理指定安装，不会回退修改其他位置。
+如需指定安装位置，可设置：
 
-## 数据、安全与兼容
+- `ANTIGRAVITY_APP_PATH`：单个路径
+- `ANTIGRAVITY_APP_PATHS`：多个路径（macOS 使用冒号分隔，Windows 使用分号分隔）
 
-- 本地代理仅监听 `127.0.0.1:50999`。
-- 模型配置、凭据引用、统计和补丁备份仅保存在本机。
-- macOS/Windows 继续使用 `.antigravity-byok` 兼容目录和部分旧环境变量/协议头。这是为了无损读取已有模型、凭据与备份，不是遗漏的旧品牌。
-- 不要上传自己的 API Key、Cookie、Token、日志、`custom_models.json` 或运行目录。
-- “所有终端命令自动批准”属于高风险选项，只应在工作区内容和指令来源完全可信时使用。
-- 当前公开构建没有商业代码签名/公证证书，macOS Gatekeeper 或 Windows SmartScreen 可能显示开发者/发布者提示；请从本仓库发布页下载并核对 SHA-256。
-
-## 源码结构
-
-```text
-macos/source/    macOS Universal 源码与测试
-windows/source/  Windows x64 源码、路径检测与 NSIS 安装器
-docs/            安装和使用说明
-assets/          WF 品牌资源
-```
-
-两个平台均使用 Go、Wails v2.13.0 与 Vue 3。详细构建命令见各平台源码目录中的 `README.md`。GitHub Actions 会分别执行前端构建、Go 测试和平台打包。
-
-## Logo
-
-新版 Logo 只保留 Antigravity 拱形识别轮廓与 `WF`，采用珊瑚红、日落橙、紫罗兰到青绿色的自定义渐变；整个画布的其余部分均为透明，以便与官方彩虹标识区分。桌面、Dock/任务栏、安装器与应用内均使用同一份完整原图。
+本地代理仅监听 `127.0.0.1:50999`。模型配置、凭据引用和备份保存在本机；请勿上传 API Key、Cookie、Token、运行日志或模型配置文件。
 
 ## 许可证与声明
 
-代码按 [MIT License](LICENSE) 发布。请保留许可证中的 WF 与上游贡献者版权声明。
-
-Antigravity 名称与相关商标归各自权利人所有。本项目仅用于本地兼容与开发辅助，使用第三方模型服务时请遵守对应服务条款。
+代码按 [MIT License](LICENSE) 发布。Antigravity 名称及相关商标归各自权利人所有；本项目为本地兼容与开发辅助工具，不代表 Antigravity 官方授权或背书。使用第三方模型服务时，请遵守对应的服务条款。
