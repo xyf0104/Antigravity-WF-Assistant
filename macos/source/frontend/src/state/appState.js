@@ -275,6 +275,13 @@ export async function syncHistoryNow() {
   }
 }
 
+// QuitApp is intentionally separate from the window close button: closing the
+// window only minimises the assistant, while this call stops the proxy and
+// releases its loopback port during application shutdown.
+export async function requestQuit() {
+  return call("QuitApp");
+}
+
 async function waitForStartupHistorySync() {
   if (!go()) return;
   for (let attempt = 0; attempt < 120; attempt++) {

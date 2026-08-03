@@ -53,11 +53,16 @@ jobs:
         working-directory: windows/source/build/windows
         run: '& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 installer.nsi'
 
+      - name: Name portable executable
+        shell: pwsh
+        run: Copy-Item -LiteralPath "build/bin/Antigravity WF助手.exe" -Destination "build/bin/Antigravity-WF-Assistant-Windows-x64-v1.3.1-Portable.exe"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Antigravity-WF-Assistant-Windows-x64
           path: |
             windows/source/build/bin/Antigravity WF助手.exe
-            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.3.0-Setup.exe
+            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.3.1-Setup.exe
+            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.3.1-Portable.exe
           if-no-files-found: error

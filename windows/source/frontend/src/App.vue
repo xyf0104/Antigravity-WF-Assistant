@@ -3,10 +3,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import Dashboard from "@/views/Dashboard.vue";
 import Models from "@/views/Models.vue";
 import Permissions from "@/views/Permissions.vue";
+import Button from "@/components/ui/Button.vue";
+import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
-import { bootstrap } from "@/state/appState";
+import { bootstrap, requestQuit } from "@/state/appState";
 
 const tab = ref("dashboard");
+const exitDialogOpen = ref(false);
 const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 const tabs = [
   { label: "总览", value: "dashboard", hint: "运行状态与快捷操作" },
@@ -34,6 +37,10 @@ function applyTheme() {
 
 function handleSystemThemeChange() {
   if (themeMode.value === "system") applyTheme();
+}
+
+function quitAssistant() {
+  requestQuit().catch(console.error);
 }
 
 watch(themeMode, (value) => {
@@ -81,7 +88,19 @@ onUnmounted(() => {
       </nav>
 
       <div class="sidebar-foot">
-        <span class="version-pill">v1.3</span>
+        <button
+          class="exit-trigger"
+          type="button"
+          title="退出助手并释放本地代理端口"
+          aria-label="退出助手并释放本地代理端口"
+          style="--wails-draggable: no-drag"
+          @click="exitDialogOpen = true"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
+          </svg>
+        </button>
+        <span class="version-pill">v1.3.1</span>
       </div>
     </aside>
 
@@ -110,6 +129,14 @@ onUnmounted(() => {
         </Transition>
       </main>
     </section>
+
+    <Modal :open="exitDialogOpen" title="退出助手？" @close="exitDialogOpen = false">
+      <p class="exit-copy">退出后会停止本地代理并释放 127.0.0.1:50999。点击窗口叉号只会最小化到任务栏，不会中断当前服务。</p>
+      <template #footer>
+        <Button variant="plain" @click="exitDialogOpen = false">取消</Button>
+        <Button variant="danger" @click="quitAssistant">退出并释放端口</Button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -208,6 +235,41 @@ onUnmounted(() => {
 
 .sidebar-foot {
   margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.exit-trigger {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--text-tertiary);
+  transition: color 0.16s var(--ease), background 0.16s var(--ease);
+}
+
+.exit-trigger:hover {
+  color: var(--red);
+  background: rgba(255, 69, 58, 0.12);
+}
+
+.exit-trigger svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+}
+
+.exit-copy {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .version-pill {

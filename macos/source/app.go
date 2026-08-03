@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"antigravity-byok/internal/launcher"
@@ -15,6 +16,7 @@ import (
 	"antigravity-byok/internal/proxy"
 	"antigravity-byok/internal/stats"
 	"antigravity-byok/internal/storage"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App holds all Wails-exposed methods.
@@ -26,6 +28,7 @@ type App struct {
 	historyRunMu  sync.Mutex
 	historyStatus HistorySyncStatus
 	launchMu      sync.Mutex
+	exitRequested atomic.Bool
 }
 
 func newApp() *App {
@@ -54,6 +57,32 @@ func (a *App) startup(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	_ = proxy.Stop()
+}
+
+// beforeClose keeps the assistant running when the window close button is
+// clicked. The window is minimised to the taskbar/Dock; only QuitApp permits
+// full shutdown, which then releases the local proxy port.
+func (a *App) beforeClose(ctx context.Context) (prevent bool) {
+	if !a.shouldMinimiseOnClose() {
+		return false
+	}
+	runtime.WindowMinimise(ctx)
+	return true
+}
+
+func (a *App) shouldMinimiseOnClose() bool {
+	return !a.exitRequested.Load()
+}
+
+// QuitApp explicitly exits the assistant. OnShutdown stops the local proxy so
+// 127.0.0.1:50999 is released for the next launch.
+func (a *App) QuitApp() Result {
+	if a.ctx == nil {
+		return Result{OK: false, Message: "助手尚未完成启动，请稍后再试。"}
+	}
+	a.exitRequested.Store(true)
+	runtime.Quit(a.ctx)
+	return Result{OK: true, Message: "正在退出助手并释放本地代理端口。"}
 }
 
 // ─── Result types ─────────────────────────────────────────────────────────────

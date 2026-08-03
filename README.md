@@ -28,10 +28,11 @@
 
 | 系统 | 推荐文件 | 说明 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.0.dmg` | 推荐；拖入 Applications 即可，兼容 Apple Silicon 与 Intel |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.0.zip` | DMG 无法使用时的备用包 |
-| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.3.0-Setup.exe` | 推荐；当前用户安装，不要求安装器提权 |
-| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.3.0-Portable.exe` | 免安装便携版 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.1-Installer.pkg` | 推荐；标准安装器，可选“在桌面创建快捷方式” |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.1.dmg` | 拖入 Applications 即可，兼容 Apple Silicon 与 Intel |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.3.1.zip` | DMG 无法使用时的备用包 |
+| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.3.1-Setup.exe` | 推荐；当前用户安装，可选“在桌面创建快捷方式” |
+| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.3.1-Portable.exe` | 免安装便携版 |
 
 下载后可用同一发布页中的 `SHA256SUMS.txt` 核对文件完整性。
 
@@ -49,6 +50,7 @@
 - 可配置终端命令自动批准范围，并保留原始配置备份。
 - 浅色、深色、跟随系统三种主题。
 - 补丁前原子备份，失败自动回滚；Antigravity 升级后可重新应用。
+- 点击窗口关闭按钮只会最小化到任务栏或 Dock，代理继续运行；左下角电源按钮可明确“退出助手并释放端口”。
 
 ## 首次使用
 
@@ -102,7 +104,7 @@ assets/          WF 品牌资源
 
 ## Logo
 
-新版 Logo 保留 Antigravity 拱形识别轮廓与 `WF`，使用珊瑚红、日落橙、紫罗兰到青绿色的自定义渐变，并采用透明背景，以便和官方彩虹标识区分。该位图使用 OpenAI 内置 ImageGen 生成并完成本地透明边缘处理。
+新版 Logo 保留 Antigravity 拱形识别轮廓与 `WF`，采用珊瑚红、日落橙、紫罗兰到青绿色的自定义渐变和透明背景，以便与官方彩虹标识区分。桌面、Dock/任务栏、安装器与应用内均使用同一份完整原图。
 
 ## 许可证与声明
 

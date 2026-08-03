@@ -47,11 +47,25 @@ jobs:
         run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform darwin/universal -trimpath -o "Antigravity WF助手"
 
       - name: Package ZIP
-        run: ditto -c -k --sequesterRsrc --keepParent "build/bin/Antigravity WF助手.app" "build/bin/Antigravity-WF-Assistant-macOS-universal.zip"
+        run: ditto -c -k --sequesterRsrc --keepParent "build/bin/Antigravity WF助手.app" "build/bin/Antigravity-WF-Assistant-macOS-universal-v1.3.1.zip"
+
+      - name: Package DMG
+        run: |
+          staging="$(mktemp -d)"
+          trap 'rm -rf "$staging"' EXIT
+          ditto "build/bin/Antigravity WF助手.app" "$staging/Antigravity WF助手.app"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "Antigravity WF助手" -srcfolder "$staging" -ov -format UDZO "build/bin/Antigravity-WF-Assistant-macOS-universal-v1.3.1.dmg"
+
+      - name: Package macOS installer
+        run: ./build/darwin/package-installer.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Antigravity-WF-Assistant-macOS-universal
-          path: macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal.zip
+          path: |
+            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v1.3.1.zip
+            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v1.3.1.dmg
+            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v1.3.1-Installer.pkg
           if-no-files-found: error

@@ -1,0 +1,24 @@
+#!/bin/bash
+# Installer scripts run as root. Find the foreground console user and only add
+# the optional link when its destination is unused, never replacing user data.
+set -euo pipefail
+
+CONSOLE_USER="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+case "$CONSOLE_USER" in
+  ""|root|loginwindow|_mbsetupuser)
+    exit 0
+    ;;
+esac
+
+USER_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+if [[ -z "$USER_HOME" || ! -d "$USER_HOME/Desktop" ]]; then
+  exit 0
+fi
+
+SHORTCUT_PATH="$USER_HOME/Desktop/Antigravity WF助手.app"
+if [[ -e "$SHORTCUT_PATH" || -L "$SHORTCUT_PATH" ]]; then
+  exit 0
+fi
+
+/bin/ln -s "/Applications/Antigravity WF助手.app" "$SHORTCUT_PATH"
+/usr/sbin/chown -h "$CONSOLE_USER":staff "$SHORTCUT_PATH" 2>/dev/null || true

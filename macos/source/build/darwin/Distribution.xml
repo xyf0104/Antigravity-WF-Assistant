@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+  <title>Antigravity WF助手</title>
+  <options customize="always" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+  <choices-outline>
+    <line choice="mainChoice"/>
+    <line choice="desktopShortcutChoice"/>
+  </choices-outline>
+  <choice id="mainChoice" title="Antigravity WF助手" description="安装到 Applications 文件夹。" start_selected="true" start_enabled="true" start_visible="true">
+    <pkg-ref id="com.wufeng.antigravity-wf-assistant"/>
+  </choice>
+  <choice id="desktopShortcutChoice" title="在桌面创建快捷方式" description="可选：在当前用户桌面创建指向 Applications 中应用的快捷方式。" start_selected="false" start_enabled="true" start_visible="true">
+    <pkg-ref id="com.wufeng.antigravity-wf-assistant.desktop-shortcut"/>
+  </choice>
+  <pkg-ref id="com.wufeng.antigravity-wf-assistant" version="__VERSION__" auth="root">wf-assistant.pkg</pkg-ref>
+  <pkg-ref id="com.wufeng.antigravity-wf-assistant.desktop-shortcut" version="__VERSION__" auth="root">wf-desktop-shortcut.pkg</pkg-ref>
+</installer-gui-script>
