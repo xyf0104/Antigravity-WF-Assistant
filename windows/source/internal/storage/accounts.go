@@ -17,6 +17,17 @@ import (
 	"time"
 )
 
+// OpenAICodexOAuthUpstream marks an OAuth account whose access token is used
+// directly with the ChatGPT Codex backend. It is deliberately public routing
+// metadata, not a credential. Keeping it on the account prevents a Codex
+// access token from being accidentally sent to a generic API-key gateway.
+const OpenAICodexOAuthUpstream = "openai_codex"
+
+// OpenAICodexResponsesURL is the direct Responses endpoint used by the local
+// XIASS OpenAI OAuth implementation. It is kept here so account migration and
+// the scheduler share one stable, non-secret route.
+const OpenAICodexResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
+
 // UpstreamAccount is a reusable credential and scheduling unit. Models can
 // bind one or more account IDs; the local proxy then selects an eligible
 // account without exposing account rotation to Antigravity.
@@ -73,6 +84,10 @@ type UpstreamAccount struct {
 // confidential OAuth client. The provider must have registered the redirect
 // URI and client ID entered by the account owner.
 type OAuthConfiguration struct {
+	// Upstream identifies a built-in OAuth transport. Empty means generic OAuth
+	// and preserves the user's custom API endpoint. The current built-in value
+	// is openai_codex, which uses ChatGPT's Codex Responses transport.
+	Upstream         string `json:"upstream,omitempty"`
 	AuthorizationURL string `json:"authorizationUrl,omitempty"`
 	TokenURL         string `json:"tokenUrl,omitempty"`
 	ClientID         string `json:"clientId,omitempty"`
@@ -118,6 +133,26 @@ type QuotaSnapshot struct {
 	TokensReset       string `json:"tokensReset,omitempty"`
 	RetryAfter        string `json:"retryAfter,omitempty"`
 	Message           string `json:"message,omitempty"`
+	// Windows preserves the actual quota windows returned by a provider (for
+	// example the OpenAI/Codex 5h and 7d windows). Empty windows mean that the
+	// upstream did not expose detailed account quota information.
+	Windows   []QuotaWindow `json:"windows,omitempty"`
+	Plan      string        `json:"plan,omitempty"`
+	Email     string        `json:"email,omitempty"`
+	AccountID string        `json:"accountId,omitempty"`
+}
+
+// QuotaWindow is a typed, credential-free representation of one upstream
+// rate-limit window. ResetAt is RFC3339 when the upstream supplied an absolute
+// timestamp; ResetAfterSeconds is retained when it only supplied a duration.
+type QuotaWindow struct {
+	Label              string  `json:"label"`
+	UsedPercent        float64 `json:"usedPercent"`
+	LimitWindowSeconds int64   `json:"limitWindowSeconds,omitempty"`
+	ResetAfterSeconds  int64   `json:"resetAfterSeconds,omitempty"`
+	ResetAt            string  `json:"resetAt,omitempty"`
+	Allowed            bool    `json:"allowed"`
+	LimitReached       bool    `json:"limitReached,omitempty"`
 }
 
 type accountsStore struct {
@@ -223,6 +258,7 @@ func normalizeAccount(account UpstreamAccount) UpstreamAccount {
 		account.Credentials = normalizeImportedCredentials(account.Credentials)
 	}
 	populateIdentityFromCredentials(&account, "导入的 OAuth 声明")
+	normalizeOpenAICodexOAuthAccount(&account)
 	now := time.Now().UTC().Format(time.RFC3339)
 	if account.CreatedAt == "" {
 		account.CreatedAt = now
@@ -384,6 +420,15 @@ func (account UpstreamAccount) EffectiveAPIKey() string {
 	return effectiveAPIKeyFromCredentials(account.Credentials)
 }
 
+// IsOpenAICodexOAuth reports whether this is the XIASS-compatible direct
+// OpenAI OAuth transport. Generic OAuth accounts intentionally remain false:
+// their manually configured endpoint and headers must never be rewritten.
+func (account UpstreamAccount) IsOpenAICodexOAuth() bool {
+	return normalizeAccountProvider(account.Provider) == "openai" &&
+		normalizeAccountType(account.Type) == "oauth" &&
+		strings.EqualFold(strings.TrimSpace(account.OAuth.Upstream), OpenAICodexOAuthUpstream)
+}
+
 func (account UpstreamAccount) ToModel(model CustomModel) CustomModel {
 	model.Provider = account.Provider
 	model.APIURL = account.APIURL
@@ -400,6 +445,14 @@ func (account UpstreamAccount) ToModel(model CustomModel) CustomModel {
 	model.AuthMode = account.AuthMode
 	model.AuthHeader = account.AuthHeader
 	model.Headers = cloneStringMap(account.Headers)
+	model.RuntimeOAuthUpstream = account.OAuth.Upstream
+	model.RuntimeChatGPTAccountID = account.Identity.ChatGPTAccountID
+	if account.IsOpenAICodexOAuth() {
+		model.APIURL = OpenAICodexResponsesURL
+		model.EndpointMode = "manual"
+		model.APIStyle = "responses"
+		model.AuthMode = "bearer"
+	}
 	return model
 }
 
@@ -451,6 +504,7 @@ func normalizeLoadedAccount(account UpstreamAccount) UpstreamAccount {
 	account.Quota = normalizeQuotaSnapshot(account.Quota)
 	account.Credentials = normalizeImportedCredentials(account.Credentials)
 	populateIdentityFromCredentials(&account, "导入的 OAuth 声明")
+	normalizeOpenAICodexOAuthAccount(&account)
 	if account.MaxConcurrency <= 0 {
 		account.MaxConcurrency = 2
 	}
@@ -461,6 +515,7 @@ func normalizeLoadedAccount(account UpstreamAccount) UpstreamAccount {
 }
 
 func normalizeOAuthConfiguration(config OAuthConfiguration) OAuthConfiguration {
+	config.Upstream = strings.ToLower(strings.TrimSpace(config.Upstream))
 	config.AuthorizationURL = strings.TrimSpace(config.AuthorizationURL)
 	config.TokenURL = strings.TrimSpace(config.TokenURL)
 	config.ClientID = strings.TrimSpace(config.ClientID)
@@ -493,7 +548,52 @@ func normalizeQuotaSnapshot(snapshot QuotaSnapshot) QuotaSnapshot {
 	snapshot.TokensReset = strings.TrimSpace(snapshot.TokensReset)
 	snapshot.RetryAfter = strings.TrimSpace(snapshot.RetryAfter)
 	snapshot.Message = strings.TrimSpace(snapshot.Message)
+	snapshot.Plan = strings.TrimSpace(snapshot.Plan)
+	snapshot.Email = strings.TrimSpace(snapshot.Email)
+	snapshot.AccountID = strings.TrimSpace(snapshot.AccountID)
+	if len(snapshot.Windows) > 0 {
+		windows := make([]QuotaWindow, 0, len(snapshot.Windows))
+		for _, window := range snapshot.Windows {
+			window.Label = strings.TrimSpace(window.Label)
+			window.ResetAt = strings.TrimSpace(window.ResetAt)
+			if window.Label == "" {
+				continue
+			}
+			windows = append(windows, window)
+		}
+		snapshot.Windows = windows
+	}
 	return snapshot
+}
+
+// normalizeOpenAICodexOAuthAccount migrates the old WF profile (which pointed
+// an OAuth token at api.xiass.com as if it were an API key) to XIASS's real
+// OpenAI OAuth route. Detection is deliberately narrow: a user-created custom
+// OAuth account is never changed unless it already carries Codex identity
+// metadata, the known public Codex profile client ID, or the Codex endpoint.
+func normalizeOpenAICodexOAuthAccount(account *UpstreamAccount) {
+	if account == nil || normalizeAccountProvider(account.Provider) != "openai" || normalizeAccountType(account.Type) != "oauth" {
+		return
+	}
+	endpoint := strings.ToLower(strings.TrimSpace(account.APIURL))
+	knownProfile := strings.TrimSpace(account.OAuth.ClientID) == "app_EMoamEEZ73f0CkXaXp7hrann"
+	hasCodexIdentity := strings.TrimSpace(account.Identity.ChatGPTAccountID) != "" ||
+		strings.TrimSpace(account.Identity.ChatGPTUserID) != ""
+	isCodexEndpoint := strings.Contains(endpoint, "chatgpt.com/backend-api/codex")
+	isLegacyXIASSProfile := knownProfile && (endpoint == "" || strings.Contains(endpoint, "api.xiass.com"))
+	if !strings.EqualFold(account.OAuth.Upstream, OpenAICodexOAuthUpstream) && !hasCodexIdentity && !isCodexEndpoint && !isLegacyXIASSProfile {
+		return
+	}
+	account.OAuth.Upstream = OpenAICodexOAuthUpstream
+	// A generic, previous-version xiass URL is unsafe for an OAuth access token;
+	// use the direct XIASS Codex route. A deliberately entered direct endpoint
+	// remains untouched so local tests/proxying can still be used.
+	if endpoint == "" || strings.Contains(endpoint, "api.xiass.com") || isCodexEndpoint {
+		account.APIURL = OpenAICodexResponsesURL
+	}
+	account.EndpointMode = "manual"
+	account.APIStyle = "responses"
+	account.AuthMode = "bearer"
 }
 
 // populateIdentityFromCredentials imports non-secret OAuth metadata when it
@@ -740,7 +840,42 @@ func SaveQuotaSnapshot(accountID string, snapshot QuotaSnapshot) error {
 	quotaRun.Unlock()
 	return updateUpstreamAccount(accountID, func(account *UpstreamAccount) {
 		account.Quota = snapshot
+		mergeOpenAICodexQuotaIdentity(account, snapshot)
 	})
+}
+
+// mergeOpenAICodexQuotaIdentity fills display-only fields returned by the
+// authenticated Codex quota endpoint. It never replaces an existing OAuth or
+// imported identity value: a quota response is useful enrichment, not an
+// authority for silently changing which account the user believes is active.
+func mergeOpenAICodexQuotaIdentity(account *UpstreamAccount, snapshot QuotaSnapshot) {
+	if account == nil || !account.IsOpenAICodexOAuth() {
+		return
+	}
+	changed := false
+	if account.Identity.Email == "" && snapshot.Email != "" {
+		account.Identity.Email = snapshot.Email
+		changed = true
+	}
+	if account.Identity.Plan == "" && snapshot.Plan != "" {
+		account.Identity.Plan = snapshot.Plan
+		changed = true
+	}
+	if account.Identity.ChatGPTAccountID == "" && snapshot.AccountID != "" {
+		account.Identity.ChatGPTAccountID = snapshot.AccountID
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if account.Identity.Source == "" {
+		account.Identity.Source = "OpenAI / Codex OAuth 用量接口"
+	}
+	if snapshot.UpdatedAt != "" {
+		account.Identity.UpdatedAt = snapshot.UpdatedAt
+	} else {
+		account.Identity.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
 }
 
 func firstHeader(headers http.Header, names ...string) string {

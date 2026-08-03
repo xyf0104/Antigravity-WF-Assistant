@@ -439,6 +439,13 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 // chat turn. Responses is selected only for an actual attachment or an
 // explicit native/locally requested Responses feature.
 func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
+	// A Codex OAuth access token is valid only against ChatGPT's Responses
+	// surface. Account-pool metadata is copied into the selected model later,
+	// so inspect the model binding before choosing the initial route too.
+	if isOpenAICodexOAuthModel(m) {
+		forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false)
+		return
+	}
 	config := upstream.ConfigFromModel(*m)
 	style := upstream.EffectiveAPIStyle(config)
 	needsResponses := requiresOpenAIResponses(geminiReq)
@@ -648,6 +655,15 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 			return
 		}
 		attemptConfig := upstream.ConfigFromModel(*attemptModel)
+		if upstream.IsOpenAICodexOAuth(attemptConfig) {
+			// Account metadata can change after forwardOpenAI made its routing
+			// decision. This second guard is intentionally immediately before
+			// URL/credential construction: a Codex OAuth token must never reach
+			// a Chat Completions endpoint.
+			releaseAttemptSuccess(lease)
+			forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false)
+			return
+		}
 		apiURL, err := upstream.ResolveChatCompletionsURLForConfig(attemptConfig)
 		if err != nil {
 			releaseAttemptSuccess(lease)
@@ -769,7 +785,8 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 // /responses. It never falls back after a semantic 4xx, which would hide a
 // model capability/configuration error from the user.
 func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string, allowFallback bool) bool {
-	baseRequest, err := toOpenAIResponsesRequest(geminiReq, m.ExternalModelName, m)
+	conversionModel := openAICodexResponsesConversionModel(m)
+	baseRequest, err := toOpenAIResponsesRequest(geminiReq, m.ExternalModelName, conversionModel)
 	if err != nil {
 		trace("responses-input-error", map[string]any{"requestId": requestID, "message": err.Error()})
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -798,6 +815,12 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 			return false
 		}
 		attemptConfig := upstream.ConfigFromModel(*attemptModel)
+		codexOAuth := upstream.IsOpenAICodexOAuth(attemptConfig)
+		if codexOAuth {
+			// Never send a Codex access token to Chat Completions, even if this
+			// model entered through generic automatic routing.
+			allowFallback = false
+		}
 		apiURL, err := upstream.ResolveResponsesURLForConfig(attemptConfig)
 		if err != nil {
 			releaseAttemptSuccess(lease)
@@ -808,6 +831,13 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 		// account which rejects hosted tools must not disable them for another
 		// account that may support them.
 		requestBody, suppressedBuiltinTools := responseRequestForModel(baseRequest, attemptModel)
+		if codexOAuth {
+			// Preserve every image and tool requested by Antigravity. Codex has
+			// its own Responses contract, rather than the gateway compatibility
+			// cache used for generic OpenAI-compatible endpoints.
+			requestBody = normalizeOpenAICodexResponsesRequest(baseRequest)
+			suppressedBuiltinTools = nil
+		}
 		if len(suppressedBuiltinTools) > 0 {
 			trace("responses-builtin-tools-suppressed", map[string]any{
 				"requestId": requestID, "tools": suppressedBuiltinTools,
@@ -849,16 +879,18 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 			resp.Body.Close()
 			retryAfter := resp.Header.Get("Retry-After")
 			trace("responses-upstream-error-response", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode, "body": string(errBody[:min(len(errBody), 500)])})
-			if rejectedTools := rejectedResponsesBuiltinTools(resp.StatusCode, string(errBody), requestBody); len(rejectedTools) > 0 && !writer.committed {
-				// A concrete 4xx validation response proves this request did not
-				// begin a generation. It is therefore safe to retry once with
-				// only the rejected optional hosted tools removed.
-				releaseAttemptSuccess(lease)
-				rememberUnsupportedResponsesBuiltinTools(attemptModel, rejectedTools)
-				trace("responses-builtin-tools-fallback", map[string]any{
-					"requestId": requestID, "statusCode": resp.StatusCode, "tools": responseBuiltinToolNames(rejectedTools),
-				})
-				continue
+			if !codexOAuth {
+				if rejectedTools := rejectedResponsesBuiltinTools(resp.StatusCode, string(errBody), requestBody); len(rejectedTools) > 0 && !writer.committed {
+					// A concrete 4xx validation response proves this request did not
+					// begin a generation. It is therefore safe to retry once with
+					// only the rejected optional hosted tools removed.
+					releaseAttemptSuccess(lease)
+					rememberUnsupportedResponsesBuiltinTools(attemptModel, rejectedTools)
+					trace("responses-builtin-tools-fallback", map[string]any{
+						"requestId": requestID, "statusCode": resp.StatusCode, "tools": responseBuiltinToolNames(rejectedTools),
+					})
+					continue
+				}
 			}
 			if allowFallback && !writer.committed && upstream.CanFallbackToChat(resp.StatusCode) {
 				releaseAttemptSuccess(lease)

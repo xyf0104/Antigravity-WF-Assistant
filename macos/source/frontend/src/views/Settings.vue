@@ -4,7 +4,8 @@ import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import {
-  state,
+	state,
+	cancelUpdateCheck,
   checkForUpdates,
   installLatestUpdate,
   loadSettings,
@@ -22,11 +23,13 @@ const error = ref("");
 const updateInfo = computed(() => state.update.info || {});
 const progressPercent = computed(() => Math.min(100, Math.max(0, Number(state.update.progress?.percent) || 0)));
 const updateTone = computed(() => {
+	if (state.update.checking) return "warn";
   if (state.update.installing) return "warn";
   if (updateInfo.value.available && !updateInfo.value.skipped) return "ok";
   return "neutral";
 });
 const updateLabel = computed(() => {
+	if (state.update.checking) return "正在检查";
   if (state.update.installing) return "正在更新";
   if (updateInfo.value.available && !updateInfo.value.skipped) return `发现 v${updateInfo.value.latestVersion}`;
   if (updateInfo.value.skipped) return `已跳过 v${updateInfo.value.latestVersion}`;
@@ -76,8 +79,16 @@ async function handleSave() {
 
 async function handleCheck() {
   error.value = "";
+	message.value = "";
   const res = await checkForUpdates();
   if (!res?.ok) error.value = res?.message || "检查更新失败";
+}
+
+async function handleCancelCheck() {
+	error.value = "";
+	const res = await cancelUpdateCheck();
+	if (res?.ok) message.value = res.message || "已取消检查更新";
+	else error.value = res?.message || "无法取消检查更新";
 }
 
 async function handleSkip() {
@@ -99,6 +110,14 @@ function formatBytes(value) {
   if (!bytes) return "";
   if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatCheckedAt(value) {
+	const timestamp = Date.parse(value || "");
+	if (!Number.isFinite(timestamp)) return "—";
+	return new Intl.DateTimeFormat("zh-CN", {
+		month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+	}).format(timestamp);
 }
 
 onMounted(async () => {
@@ -150,7 +169,7 @@ onMounted(async () => {
         <label class="switch-row">
           <div class="grow">
             <div class="t-headline">启动时检查更新</div>
-            <div class="t-caption">仅查询本工具的公开 GitHub Release；安装前会校验 SHA256 文件清单。</div>
+			<div class="t-caption">仅查询本工具的公开 GitHub Release；最近 10 分钟的结果会立即显示，过期后检查最多 5 秒，可随时取消，安装前会校验 SHA256 文件清单。</div>
           </div>
           <input v-model="form.updates.autoCheck" type="checkbox" class="switch-input" />
           <span class="switch"></span>
@@ -160,7 +179,13 @@ onMounted(async () => {
           <div class="info-row"><span>当前版本</span><strong>v{{ updateInfo.currentVersion || '—' }}</strong></div>
           <div v-if="updateInfo.latestVersion" class="info-row"><span>最新版本</span><strong>v{{ updateInfo.latestVersion }}</strong></div>
           <div v-if="updateInfo.assetName" class="info-row"><span>安装包</span><span class="mono truncate">{{ updateInfo.assetName }} {{ formatBytes(updateInfo.assetSize) ? `· ${formatBytes(updateInfo.assetSize)}` : '' }}</span></div>
+			<div v-if="updateInfo.checkedAt" class="info-row"><span>上次检查</span><span>{{ formatCheckedAt(updateInfo.checkedAt) }}</span></div>
         </div>
+		<div v-if="updateInfo.cached" class="note-box">
+			<template v-if="updateInfo.cacheReason === 'fresh'">正在显示最近缓存的更新结果；无需重复等待网络。下载并安装前仍会重新校验版本与 SHA256。</template>
+			<template v-else-if="updateInfo.cacheReason === 'timeout'">本次 GitHub 检查已超时，正在显示上一次确认到的更新结果；下载并安装前仍会重新校验版本与 SHA256。</template>
+			<template v-else>当前无法连接 GitHub，正在显示上一次确认到的更新结果；下载并安装前仍会重新校验版本与 SHA256。</template>
+		</div>
 
         <div v-if="state.update.installing || state.update.progress?.phase === 'downloading'" class="progress-wrap">
           <div class="progress-meta"><span>{{ state.update.progress?.message || '正在处理更新' }}</span><strong>{{ progressPercent }}%</strong></div>
@@ -172,7 +197,8 @@ onMounted(async () => {
         <div v-if="message" class="result-box success">{{ message }}</div>
 
         <div class="row between" style="gap:8px; flex-wrap:wrap">
-          <Button variant="plain" :loading="state.update.checking" :disabled="state.update.checking || state.update.installing" @click="handleCheck">检查更新</Button>
+		  <Button v-if="state.update.checking" variant="plain" @click="handleCancelCheck">取消检查</Button>
+		  <Button v-else variant="plain" :disabled="state.update.installing" @click="handleCheck">检查更新</Button>
           <div class="row" style="gap:8px">
             <Button v-if="updateInfo.available && !updateInfo.skipped" variant="plain" :disabled="state.update.installing" @click="handleSkip">跳过此版本</Button>
             <Button v-if="updateInfo.available" variant="filled" :loading="state.update.installing" :disabled="state.update.installing" @click="handleInstall">下载并安装</Button>

@@ -187,6 +187,11 @@ type CustomModel struct {
 	// preserves legacy per-model API credentials for existing installations.
 	AccountIDs   []string          `json:"accountIds,omitempty"`
 	Capabilities ModelCapabilities `json:"capabilities,omitempty"`
+	// RuntimeOAuthUpstream and RuntimeChatGPTAccountID are copied only from the
+	// account selected for an in-flight request. They are intentionally not
+	// persisted in custom_models.json and can never expose an OAuth token.
+	RuntimeOAuthUpstream    string `json:"-"`
+	RuntimeChatGPTAccountID string `json:"-"`
 }
 
 type modelsStore struct {

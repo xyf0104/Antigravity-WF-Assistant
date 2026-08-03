@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,9 +24,18 @@ import (
 
 const (
 	Repository     = "xyf0104/Antigravity-WF-Assistant"
-	CurrentVersion = "1.4.3"
+	CurrentVersion = "1.4.4"
 	maxAssetBytes  = int64(2 << 30) // installers are normally tens of MB
+	// CheckTimeout keeps a background update check from blocking the UI when a
+	// network, DNS resolver, proxy, or captive portal is unhealthy.
+	CheckTimeout = 5 * time.Second
+	// FreshCacheTTL lets repeat checks return immediately from the last verified
+	// release metadata instead of holding the UI open for another network call.
+	// Expired entries still make a conditional request with their ETag.
+	FreshCacheTTL = 10 * time.Minute
 )
+
+var githubLatestReleaseURL = "https://api.github.com/repos/" + Repository + "/releases/latest"
 
 type githubAsset struct {
 	Name               string `json:"name"`
@@ -35,12 +45,12 @@ type githubAsset struct {
 
 type githubRelease struct {
 	TagName     string        `json:"tag_name"`
-	HTMLURL      string        `json:"html_url"`
-	Body         string        `json:"body"`
-	PublishedAt  string        `json:"published_at"`
-	Prerelease   bool          `json:"prerelease"`
-	Draft        bool          `json:"draft"`
-	Assets       []githubAsset `json:"assets"`
+	HTMLURL     string        `json:"html_url"`
+	Body        string        `json:"body"`
+	PublishedAt string        `json:"published_at"`
+	Prerelease  bool          `json:"prerelease"`
+	Draft       bool          `json:"draft"`
+	Assets      []githubAsset `json:"assets"`
 }
 
 // Info is renderer-safe metadata. AssetURL is intentionally omitted; the
@@ -55,20 +65,46 @@ type Info struct {
 	AssetSize      int64  `json:"assetSize"`
 	PublishedAt    string `json:"publishedAt"`
 	Notes          string `json:"notes"`
+	// Cached is true when last verified release metadata is being shown either
+	// immediately from a fresh cache or as a network fallback. Downloads never
+	// trust it: they always fetch the release and checksum again.
+	Cached      bool   `json:"cached"`
+	CacheReason string `json:"cacheReason,omitempty"`
+	CheckedAt   string `json:"checkedAt"`
 }
 
 func Check(ctx context.Context, skippedVersion string) (Info, error) {
-	release, err := latestRelease(ctx)
+	return CheckWithCache(ctx, skippedVersion, "")
+}
+
+// CheckWithCache returns a recent verified cache immediately. Once it expires,
+// it performs one short conditional release request using the cached ETag so
+// GitHub can reply 304 without sending release JSON. If that request fails,
+// the stale cache is an explicitly marked display fallback. cachePath may be
+// empty for callers that do not need disk caching (for example unit tests).
+func CheckWithCache(ctx context.Context, skippedVersion, cachePath string) (Info, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, CheckTimeout)
+	defer cancel()
+	release, cached, cacheReason, checkedAt, err := latestReleaseWithCache(ctx, cachePath)
 	if err != nil {
 		return Info{CurrentVersion: CurrentVersion}, err
 	}
+	info, err := infoForRelease(release, skippedVersion, runtime.GOOS, cached, checkedAt)
+	info.CacheReason = cacheReason
+	return info, err
+}
+
+func infoForRelease(release githubRelease, skippedVersion, platform string, cached bool, checkedAt string) (Info, error) {
 	latest := normalizeVersion(release.TagName)
 	if latest == "" {
 		return Info{CurrentVersion: CurrentVersion}, fmt.Errorf("更新源返回了无效版本号")
 	}
-	asset, err := selectInstaller(release, runtime.GOOS)
+	asset, err := selectInstaller(release, platform)
 	if err != nil {
-		return Info{CurrentVersion: CurrentVersion, LatestVersion: latest, ReleaseURL: release.HTMLURL}, err
+		return Info{CurrentVersion: CurrentVersion, LatestVersion: latest, ReleaseURL: release.HTMLURL, Cached: cached, CheckedAt: checkedAt}, err
 	}
 	available := compareVersions(latest, CurrentVersion) > 0
 	return Info{
@@ -81,6 +117,8 @@ func Check(ctx context.Context, skippedVersion string) (Info, error) {
 		AssetSize:      asset.Size,
 		PublishedAt:    release.PublishedAt,
 		Notes:          truncateNotes(release.Body),
+		Cached:         cached,
+		CheckedAt:      checkedAt,
 	}, nil
 }
 
@@ -183,29 +221,181 @@ func DownloadLatestInstaller(ctx context.Context, report func(downloaded, total 
 	}, nil
 }
 
+type releaseCache struct {
+	ETag      string        `json:"etag,omitempty"`
+	CheckedAt string        `json:"checkedAt,omitempty"`
+	Release   githubRelease `json:"release"`
+}
+
 func latestRelease(ctx context.Context) (githubRelease, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+Repository+"/releases/latest", nil)
+	release, _, _, err := fetchLatestRelease(ctx, "")
+	return release, err
+}
+
+func latestReleaseWithCache(ctx context.Context, cachePath string) (githubRelease, bool, string, string, error) {
+	cache, cacheOK := loadReleaseCache(cachePath)
+	// A caller cancellation always wins, including when a fresh cache exists.
+	// Otherwise clicking “取消检查” could misleadingly look successful.
+	if err := ctx.Err(); err != nil {
+		return githubRelease{}, false, "", "", err
+	}
+	if cacheOK && isFreshReleaseCache(cache, time.Now()) {
+		return cache.Release, true, "fresh", cache.CheckedAt, nil
+	}
+	etag := ""
+	if cacheOK {
+		etag = cache.ETag
+	}
+	release, receivedETag, notModified, err := fetchLatestRelease(ctx, etag)
 	if err != nil {
-		return githubRelease{}, err
+		// A user explicitly canceled this request. Returning cached data here
+		// would make a cancelled check look as if it had completed normally.
+		if errors.Is(err, context.Canceled) {
+			return githubRelease{}, false, "", "", err
+		}
+		if cacheOK {
+			reason := "network"
+			if errors.Is(err, context.DeadlineExceeded) {
+				reason = "timeout"
+			}
+			return cache.Release, true, reason, cache.CheckedAt, nil
+		}
+		return githubRelease{}, false, "", "", err
+	}
+
+	checkedAt := time.Now().UTC().Format(time.RFC3339)
+	if notModified {
+		if !cacheOK {
+			return githubRelease{}, false, "", "", fmt.Errorf("GitHub 返回了缓存状态，但本地更新缓存不可用；请重试")
+		}
+		cache.CheckedAt = checkedAt
+		if receivedETag != "" {
+			cache.ETag = receivedETag
+		}
+		_ = saveReleaseCache(cachePath, cache)
+		return cache.Release, false, "", checkedAt, nil
+	}
+
+	cache = releaseCache{ETag: receivedETag, CheckedAt: checkedAt, Release: release}
+	_ = saveReleaseCache(cachePath, cache)
+	return release, false, "", checkedAt, nil
+}
+
+func isFreshReleaseCache(cache releaseCache, now time.Time) bool {
+	if FreshCacheTTL <= 0 {
+		return false
+	}
+	checkedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(cache.CheckedAt))
+	if err != nil || checkedAt.After(now) {
+		return false
+	}
+	return now.Sub(checkedAt) < FreshCacheTTL
+}
+
+// fetchLatestRelease returns notModified for a conditional 304 response. It
+// intentionally wraps context errors so the application can distinguish a
+// user cancellation from the short update-check timeout.
+func fetchLatestRelease(ctx context.Context, etag string) (githubRelease, string, bool, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, githubLatestReleaseURL, nil)
+	if err != nil {
+		return githubRelease{}, "", false, fmt.Errorf("无法创建更新请求: %w", err)
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("User-Agent", "Antigravity-WF-Assistant/"+CurrentVersion)
+	if strings.TrimSpace(etag) != "" {
+		request.Header.Set("If-None-Match", etag)
+	}
 	response, err := httpClient().Do(request)
 	if err != nil {
-		return githubRelease{}, fmt.Errorf("无法连接 GitHub 更新服务")
+		return githubRelease{}, "", false, fmt.Errorf("无法连接 GitHub 更新服务: %w", err)
 	}
 	defer response.Body.Close()
+	responseETag := strings.TrimSpace(response.Header.Get("ETag"))
+	if response.StatusCode == http.StatusNotModified {
+		return githubRelease{}, responseETag, true, nil
+	}
 	if response.StatusCode != http.StatusOK {
-		return githubRelease{}, fmt.Errorf("检查更新失败（HTTP %d）", response.StatusCode)
+		return githubRelease{}, "", false, fmt.Errorf("检查更新失败（HTTP %d）", response.StatusCode)
 	}
 	var release githubRelease
 	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&release); err != nil {
-		return githubRelease{}, fmt.Errorf("更新信息解析失败")
+		return githubRelease{}, "", false, fmt.Errorf("更新信息解析失败: %w", err)
 	}
 	if release.Draft || release.Prerelease {
-		return githubRelease{}, fmt.Errorf("没有可用的稳定版更新")
+		return githubRelease{}, "", false, fmt.Errorf("没有可用的稳定版更新")
 	}
-	return release, nil
+	return release, responseETag, false, nil
+}
+
+func loadReleaseCache(path string) (releaseCache, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return releaseCache{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 || len(data) > 2<<20 {
+		return releaseCache{}, false
+	}
+	var cache releaseCache
+	if json.Unmarshal(data, &cache) != nil || normalizeVersion(cache.Release.TagName) == "" || cache.Release.Draft || cache.Release.Prerelease {
+		return releaseCache{}, false
+	}
+	return cache, true
+}
+
+func saveReleaseCache(path string, cache releaseCache) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return err
+	}
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(directory, ".update-release-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	cleanup := func() {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+	}
+	if err := temp.Chmod(0o600); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		// Windows may reject Rename when the destination already exists. The
+		// cache is only a convenience layer, so retrying after removal is safer
+		// than leaving every later check unable to refresh its ETag.
+		info, statErr := os.Stat(path)
+		if statErr != nil || info.IsDir() {
+			_ = os.Remove(tempPath)
+			return err
+		}
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			_ = os.Remove(tempPath)
+			return err
+		}
+		if retryErr := os.Rename(tempPath, path); retryErr != nil {
+			_ = os.Remove(tempPath)
+			return retryErr
+		}
+	}
+	return nil
 }
 
 func releaseChecksum(ctx context.Context, release githubRelease, assetName string) (string, error) {

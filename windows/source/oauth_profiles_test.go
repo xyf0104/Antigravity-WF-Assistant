@@ -134,6 +134,12 @@ func TestOpenAICodexProfileUsesReviewedHexPKCEFormat(t *testing.T) {
 	if got, want := profile.PKCEVerifierFormat, oauthflow.PKCEVerifierFormatOpenAIHex; got != want {
 		t.Fatalf("OpenAI profile verifier format = %q, want %q", got, want)
 	}
+	if got, want := profile.APIURL, storage.OpenAICodexResponsesURL; got != want {
+		t.Fatalf("OpenAI profile endpoint = %q, want direct Codex route %q", got, want)
+	}
+	if profile.EndpointMode != "manual" || profile.APIStyle != "responses" || profile.OAuth.Upstream != storage.OpenAICodexOAuthUpstream {
+		t.Fatalf("OpenAI profile direct transport = %#v", profile)
+	}
 	encoded, err := json.Marshal(profile)
 	if err != nil {
 		t.Fatal(err)

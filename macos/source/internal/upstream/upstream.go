@@ -44,6 +44,11 @@ type Config struct {
 	AuthMode        string            `json:"authMode"`
 	AuthHeader      string            `json:"authHeader"`
 	Headers         map[string]string `json:"headers"`
+	// OAuthUpstream and ChatGPTAccountID are non-secret runtime metadata copied
+	// from a selected account. They make the OpenAI/Codex OAuth route distinct
+	// from a normal Bearer API-key gateway.
+	OAuthUpstream    string `json:"oauthUpstream,omitempty"`
+	ChatGPTAccountID string `json:"chatgptAccountId,omitempty"`
 }
 
 type ModelInfo struct {
@@ -80,7 +85,7 @@ func ConfigFromModel(model storage.CustomModel) Config {
 	return Config{
 		Provider: model.Provider, APIURL: model.APIURL, APIKey: model.APIKey,
 		EndpointMode: model.EndpointMode, APIStyle: model.APIStyle, MessagePathMode: model.MessagePathMode, AuthMode: model.AuthMode, AuthHeader: model.AuthHeader,
-		Headers: model.Headers,
+		Headers: model.Headers, OAuthUpstream: model.RuntimeOAuthUpstream, ChatGPTAccountID: model.RuntimeChatGPTAccountID,
 	}
 }
 
@@ -90,7 +95,17 @@ func ConfigFromAccount(account storage.UpstreamAccount) Config {
 		EndpointMode: account.EndpointMode, APIKey: account.EffectiveAPIKey(), APIStyle: account.APIStyle,
 		MessagePathMode: account.MessagePathMode, AuthMode: account.AuthMode,
 		AuthHeader: account.AuthHeader, Headers: account.Headers,
+		OAuthUpstream: account.OAuth.Upstream, ChatGPTAccountID: account.Identity.ChatGPTAccountID,
 	}
+}
+
+// IsOpenAICodexOAuth is intentionally narrower than "type == oauth": only
+// the built-in XIASS-compatible direct route gets Codex identity headers and
+// alternate model/quota endpoints. Custom OAuth accounts retain their own
+// configured HTTP contract.
+func IsOpenAICodexOAuth(config Config) bool {
+	return NormalizedProvider(config.Provider) == "openai" &&
+		strings.EqualFold(strings.TrimSpace(config.OAuthUpstream), storage.OpenAICodexOAuthUpstream)
 }
 
 func NormalizedProvider(value string) string {
@@ -126,6 +141,9 @@ func UsesManualEndpoint(config Config) bool {
 // EffectiveAPIStyle preserves legacy configs (which were Chat Completions)
 // while letting newly-created models opt into automatic Responses detection.
 func EffectiveAPIStyle(config Config) string {
+	if IsOpenAICodexOAuth(config) {
+		return "responses"
+	}
 	if NormalizedProvider(config.Provider) == "anthropic" {
 		return "messages"
 	}
@@ -256,6 +274,9 @@ func ResolveModelsURL(rawURL string) (string, error) { return endpointURL(rawURL
 // A full chat endpoint cannot also be a model-list endpoint, while this keeps
 // discovery convenient and leaves manually-added models entirely unrestricted.
 func ResolveModelsURLForConfig(config Config) (string, error) {
+	if IsOpenAICodexOAuth(config) {
+		return ResolveOpenAICodexModelsURL(config)
+	}
 	if UsesManualEndpoint(config) {
 		parsed, err := validateBaseURL(config.APIURL)
 		if err != nil {
@@ -333,6 +354,9 @@ func ApplyCredentials(req *http.Request, config Config) error {
 	}
 	if NormalizedProvider(config.Provider) == "anthropic" {
 		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+	if IsOpenAICodexOAuth(config) {
+		applyOpenAICodexOAuthHeaders(req, config)
 	}
 	return nil
 }

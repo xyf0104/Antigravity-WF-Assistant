@@ -148,8 +148,10 @@ func TestImportUpstreamAccountsReadsCodexAuthJSONWithoutDefaultOAuthClient(t *te
 		account.Identity.Plan != "pro" || account.Identity.OrganizationID != "chatgpt-account" {
 		t.Fatalf("identity = %#v, want Codex token claims", account.Identity)
 	}
-	if account.OAuth != (OAuthConfiguration{}) {
-		t.Fatalf("OAuth config must stay empty when JSON did not provide one: %#v", account.OAuth)
+	if account.OAuth.Upstream != OpenAICodexOAuthUpstream || account.OAuth.AuthorizationURL != "" ||
+		account.OAuth.TokenURL != "" || account.OAuth.ClientID != "" || account.OAuth.RedirectURI != "" ||
+		account.OAuth.Scopes != "" || account.OAuth.RefreshScopes != "" {
+		t.Fatalf("Codex import must retain only the non-secret direct transport marker: %#v", account.OAuth)
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -25,19 +26,32 @@ import (
 
 // App holds all Wails-exposed methods.
 type App struct {
-	ctx            context.Context
-	storageDir     string
-	permissions    *permissions.Manager
-	historyMu      sync.RWMutex
-	historyRunMu   sync.Mutex
-	historyStatus  HistorySyncStatus
-	launchMu       sync.Mutex
-	updateMu       sync.Mutex
-	oauthMu        sync.Mutex
-	oauthSessions  map[string]*pendingOAuthSession
-	oauthResults   map[string]oauthAuthorizationRecord
-	oauthLoopbacks map[string]*oauthLoopbackListener
-	exitRequested  atomic.Bool
+	ctx                   context.Context
+	storageDir            string
+	permissions           *permissions.Manager
+	historyMu             sync.RWMutex
+	historyRunMu          sync.Mutex
+	historyStatus         HistorySyncStatus
+	launchMu              sync.Mutex
+	updateMu              sync.Mutex
+	updateCheckMu         sync.Mutex
+	updateCheckCancel     context.CancelFunc
+	updateCheckGeneration uint64
+	accountTestMu         sync.Mutex
+	accountTestCancels    map[string]*activeAccountTest
+	oauthMu               sync.Mutex
+	oauthSessions         map[string]*pendingOAuthSession
+	oauthResults          map[string]oauthAuthorizationRecord
+	oauthLoopbacks        map[string]*oauthLoopbackListener
+	exitRequested         atomic.Bool
+}
+
+// activeAccountTest is deliberately keyed by an opaque renderer-generated
+// request ID rather than an account ID. A user may test two different models
+// from the same account, while a cancellation must only stop the one modal
+// request the user just closed.
+type activeAccountTest struct {
+	cancel context.CancelFunc
 }
 
 func newApp() *App {
@@ -47,12 +61,13 @@ func newApp() *App {
 	_ = os.Chmod(dir, 0o700)
 	storage.Init(dir)
 	return &App{
-		storageDir:     dir,
-		permissions:    permissions.New(home, dir),
-		oauthSessions:  make(map[string]*pendingOAuthSession),
-		oauthResults:   make(map[string]oauthAuthorizationRecord),
-		oauthLoopbacks: make(map[string]*oauthLoopbackListener),
-		historyStatus:  HistorySyncStatus{State: "pending", Message: "等待启动时同步历史会话"},
+		storageDir:         dir,
+		permissions:        permissions.New(home, dir),
+		accountTestCancels: make(map[string]*activeAccountTest),
+		oauthSessions:      make(map[string]*pendingOAuthSession),
+		oauthResults:       make(map[string]oauthAuthorizationRecord),
+		oauthLoopbacks:     make(map[string]*oauthLoopbackListener),
+		historyStatus:      HistorySyncStatus{State: "pending", Message: "等待启动时同步历史会话"},
 	}
 }
 
@@ -252,11 +267,14 @@ func (a *App) CheckForUpdates() UpdateCheckResult {
 	if err != nil {
 		settings = storage.DefaultAppSettings()
 	}
-	ctx, cancel := a.upstreamContext(50 * time.Second)
-	defer cancel()
-	info, err := updater.Check(ctx, settings.Updates.SkippedVersion)
+	ctx, cancel, generation := a.beginUpdateCheck()
+	defer a.finishUpdateCheck(generation, cancel)
+	info, err := updater.CheckWithCache(ctx, settings.Updates.SkippedVersion, filepath.Join(a.storageDir, "update-release-cache.json"))
 	if err != nil {
-		return UpdateCheckResult{Message: err.Error(), Info: info}
+		return UpdateCheckResult{Message: updateCheckErrorMessage(err), Info: info}
+	}
+	if info.Cached {
+		return UpdateCheckResult{OK: true, Message: cachedUpdateCheckMessage(info), Info: info}
 	}
 	if !info.Available {
 		return UpdateCheckResult{OK: true, Message: "当前已是最新版本", Info: info}
@@ -265,6 +283,81 @@ func (a *App) CheckForUpdates() UpdateCheckResult {
 		return UpdateCheckResult{OK: true, Message: fmt.Sprintf("已跳过 v%s；可随时在设置中重新安装", info.LatestVersion), Info: info}
 	}
 	return UpdateCheckResult{OK: true, Message: fmt.Sprintf("发现新版本 v%s", info.LatestVersion), Info: info}
+}
+
+// CancelUpdateCheck interrupts the short-lived request immediately. The
+// renderer also clears its local spinner without waiting for a stale Wails
+// promise, so closing Settings or losing the network never leaves a forever
+// loading state behind.
+func (a *App) CancelUpdateCheck() Result {
+	a.updateCheckMu.Lock()
+	cancel := a.updateCheckCancel
+	a.updateCheckMu.Unlock()
+	if cancel == nil {
+		return Result{OK: true, Message: "当前没有正在进行的更新检查"}
+	}
+	cancel()
+	return Result{OK: true, Message: "已取消检查更新"}
+}
+
+func (a *App) beginUpdateCheck() (context.Context, context.CancelFunc, uint64) {
+	parent := a.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	a.updateCheckMu.Lock()
+	if a.updateCheckCancel != nil {
+		a.updateCheckCancel()
+	}
+	ctx, cancel := context.WithTimeout(parent, updater.CheckTimeout)
+	a.updateCheckGeneration++
+	generation := a.updateCheckGeneration
+	a.updateCheckCancel = cancel
+	a.updateCheckMu.Unlock()
+	return ctx, cancel, generation
+}
+
+func (a *App) finishUpdateCheck(generation uint64, cancel context.CancelFunc) {
+	cancel()
+	a.updateCheckMu.Lock()
+	if generation == a.updateCheckGeneration && a.updateCheckCancel != nil {
+		a.updateCheckCancel = nil
+	}
+	a.updateCheckMu.Unlock()
+}
+
+func updateCheckErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "已取消检查更新"
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Sprintf("检查更新超时（最多 %d 秒）。请检查网络后重试。", int(updater.CheckTimeout/time.Second))
+	default:
+		return "检查更新失败：" + err.Error()
+	}
+}
+
+func cachedUpdateCheckMessage(info updater.Info) string {
+	checkedAt := strings.TrimSpace(info.CheckedAt)
+	if checkedAt == "" {
+		checkedAt = "上次成功检查"
+	} else {
+		checkedAt = "上次检查 " + checkedAt
+	}
+	if info.CacheReason == "fresh" {
+		if info.Available {
+			return fmt.Sprintf("使用最近成功检查结果（%s）：发现 v%s。", checkedAt, info.LatestVersion)
+		}
+		return fmt.Sprintf("使用最近成功检查结果（%s）。", checkedAt)
+	}
+	prefix := "GitHub 暂时无法确认新版本"
+	if info.CacheReason == "timeout" {
+		prefix = fmt.Sprintf("检查更新在 %d 秒后超时", int(updater.CheckTimeout/time.Second))
+	}
+	if info.Available {
+		return fmt.Sprintf("%s，显示缓存结果（%s）：发现 v%s；安装前仍会重新验证。", prefix, checkedAt, info.LatestVersion)
+	}
+	return fmt.Sprintf("%s，显示缓存结果（%s）；这不代表一定是最新版本。", prefix, checkedAt)
 }
 
 func (a *App) SkipUpdateVersion(version string) Result {
@@ -426,6 +519,29 @@ func (a *App) TestUpstreamModel(config upstream.Config, model string) upstream.T
 	return upstream.TestModel(ctx, resolved, model)
 }
 
+// TestUpstreamModelDetailed is the replayable XIASS-style account test used
+// by the account-card modal. The returned log is already credential-safe: the
+// renderer never receives authorization values, headers, raw request bodies,
+// or complete upstream response bodies.
+func (a *App) TestUpstreamModelDetailed(config upstream.Config, request upstream.AccountTestRequest) upstream.AccountTestResult {
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	resolved, err := a.resolveUpstreamConfig(config)
+	if err != nil {
+		return upstream.AccountTestResult{
+			AccountID: request.AccountID,
+			RequestID: request.RequestID,
+			Message:   err.Error(),
+			Steps:     []upstream.AccountTestStep{{Type: "error", Tone: "error", Text: err.Error()}},
+		}
+	}
+	ctx, release, err := a.beginAccountTest(request.RequestID, 60*time.Second)
+	if err != nil {
+		return failedAccountTestRequest(request, err)
+	}
+	defer release()
+	return upstream.RunAccountTest(ctx, resolved, request)
+}
+
 // AddDiscoveredModels saves a selected batch from a previously discovered
 // model list. The default UI selects all discovered models; callers may pass a
 // narrowed list to respect manual selection.
@@ -566,7 +682,12 @@ func (a *App) DiscoverAccountModels(accountID string) upstream.DiscoveryResult {
 	if err != nil {
 		return upstream.DiscoveryResult{Message: err.Error()}
 	}
-	return a.DiscoverUpstreamModels(upstream.ConfigFromAccount(account))
+	// This is an explicit account-card action, not a scheduler acquisition. A
+	// paused or cooling-down account remains discoverable/testable so it can be
+	// repaired before being re-enabled in the pool.
+	ctx, cancel := a.upstreamContext(30 * time.Second)
+	defer cancel()
+	return upstream.DiscoverModels(ctx, upstream.ConfigFromAccount(account))
 }
 
 func (a *App) TestUpstreamAccount(accountID, model string) upstream.TestResult {
@@ -575,6 +696,60 @@ func (a *App) TestUpstreamAccount(accountID, model string) upstream.TestResult {
 		return upstream.TestResult{Message: err.Error()}
 	}
 	return a.TestUpstreamModel(upstream.ConfigFromAccount(account), model)
+}
+
+// TestUpstreamAccountDetailed resolves the reusable account on the Go side
+// before testing it. Keeping accountId, model, prompt, and mode in one
+// request matches the XIASS account-card interaction while preserving the
+// legacy two-argument TestUpstreamAccount API for existing views.
+func (a *App) TestUpstreamAccountDetailed(request upstream.AccountTestRequest) upstream.AccountTestResult {
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	accountID := strings.TrimSpace(request.AccountID)
+	if accountID == "" {
+		return upstream.AccountTestResult{
+			RequestID: request.RequestID,
+			Message:   "请选择需要测试的账户",
+			Steps:     []upstream.AccountTestStep{{Type: "error", Tone: "error", Text: "请选择需要测试的账户"}},
+		}
+	}
+	account, err := storage.GetUpstreamAccount(accountID)
+	if err != nil {
+		return upstream.AccountTestResult{
+			AccountID: accountID,
+			RequestID: request.RequestID,
+			Message:   err.Error(),
+			Steps:     []upstream.AccountTestStep{{Type: "error", Tone: "error", Text: err.Error()}},
+		}
+	}
+	request.AccountID = account.ID
+	// Manual account tests intentionally bypass pool eligibility. An account
+	// that is paused for scheduling, cooling down, or being repaired still
+	// needs an explicit XIASS-style health probe from its own card.
+	ctx, release, err := a.beginAccountTest(request.RequestID, 60*time.Second)
+	if err != nil {
+		return failedAccountTestRequest(request, err)
+	}
+	defer release()
+	return upstream.RunAccountTest(ctx, upstream.ConfigFromAccount(account), request)
+}
+
+// CancelUpstreamAccountTest stops one explicit account-card probe. It never
+// touches the proxy, an account's saved credentials, or another test for the
+// same account. The renderer must create a fresh opaque requestId for every
+// test attempt; duplicate active IDs are rejected by beginAccountTest.
+func (a *App) CancelUpstreamAccountTest(requestID string) Result {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return Result{Message: "缺少测试请求标识，无法取消测试。"}
+	}
+	a.accountTestMu.Lock()
+	active := a.accountTestCancels[requestID]
+	a.accountTestMu.Unlock()
+	if active == nil {
+		return Result{Message: "没有正在进行的账户测试。"}
+	}
+	active.cancel()
+	return Result{OK: true, Message: "已取消正在进行的账户测试。"}
 }
 
 func (a *App) resolveUpstreamConfig(config upstream.Config) (upstream.Config, error) {
@@ -657,6 +832,60 @@ func normalizedAccountIDs(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+const accountTestRequestIDMaxBytes = 128
+
+// beginAccountTest owns the cancellation lifetime for an explicit account
+// test. A duplicate active request ID is rejected instead of replacing the
+// existing cancel function: this keeps a delayed cancel from one modal action
+// from ever being applied to a newer test action with the same ID. Cleanup is
+// pointer-guarded as an additional race safety net.
+func (a *App) beginAccountTest(requestID string, timeout time.Duration) (context.Context, func(), error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		ctx, cancel := a.upstreamContext(timeout)
+		return ctx, cancel, nil
+	}
+	if len(requestID) > accountTestRequestIDMaxBytes || strings.ContainsAny(requestID, "\x00\r\n\t") {
+		return nil, nil, errors.New("测试请求标识无效，请重新开始测试。")
+	}
+
+	ctx, cancel := a.upstreamContext(timeout)
+	active := &activeAccountTest{cancel: cancel}
+	a.accountTestMu.Lock()
+	if a.accountTestCancels == nil {
+		a.accountTestCancels = make(map[string]*activeAccountTest)
+	}
+	if _, exists := a.accountTestCancels[requestID]; exists {
+		a.accountTestMu.Unlock()
+		cancel()
+		return nil, nil, errors.New("同一测试请求仍在进行中，请等待其结束后重试。")
+	}
+	a.accountTestCancels[requestID] = active
+	a.accountTestMu.Unlock()
+
+	return ctx, func() {
+		cancel()
+		a.accountTestMu.Lock()
+		if a.accountTestCancels[requestID] == active {
+			delete(a.accountTestCancels, requestID)
+		}
+		a.accountTestMu.Unlock()
+	}, nil
+}
+
+func failedAccountTestRequest(request upstream.AccountTestRequest, err error) upstream.AccountTestResult {
+	message := "账户测试无法开始"
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		message = err.Error()
+	}
+	return upstream.AccountTestResult{
+		AccountID: request.AccountID,
+		RequestID: request.RequestID,
+		Message:   message,
+		Steps:     []upstream.AccountTestStep{{Type: "error", Tone: "error", Text: message}},
+	}
 }
 
 func (a *App) upstreamContext(timeout time.Duration) (context.Context, context.CancelFunc) {

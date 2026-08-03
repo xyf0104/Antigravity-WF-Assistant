@@ -5,8 +5,11 @@ import Button from "@/components/ui/Button.vue";
 import Field from "@/components/ui/Field.vue";
 import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
+import AccountTestModal from "@/components/accounts/AccountTestModal.vue";
+import AccountQuotaWindows from "@/components/accounts/AccountQuotaWindows.vue";
 import {
   addDiscoveredModels,
+	cancelUpstreamAccountTest,
   completeOAuthAuthorization,
   defaultUpstreamAccount,
   deleteUpstreamAccount,
@@ -23,21 +26,25 @@ import {
   startOAuthAuthorization,
   startOAuthProviderAuthorization,
   state,
-  testUpstreamAccount,
+  testUpstreamAccountDetailed,
 } from "@/state/appState";
 import {
-	canManuallyCompleteOAuthSession,
+  canManuallyCompleteOAuthSession,
   isAutomaticOAuthPendingSession,
   isTerminalOAuthAuthorizationState,
   redactOAuthAuthorizationStatus,
 } from "@/state/oauthAuthorizationStatus";
+import {
+  canStartOAuthLogin,
+  chooseOAuthProfileID,
+  usesSimplifiedOAuthLogin,
+} from "@/state/oauthLoginUX";
 
 const DEFAULT_XIASS_URL = "https://api.xiass.com";
 const editorOpen = ref(false);
 const importOpen = ref(false);
 const confirmDelete = ref(null);
 const saving = ref(false);
-const testing = ref(false);
 const discovering = ref(false);
 const importing = ref(false);
 const oauthBusy = ref(false);
@@ -50,6 +57,19 @@ const importNotice = ref("");
 const importText = ref("");
 const discoveredModels = ref([]);
 const selectedModelIds = ref([]);
+const accountTestOpen = ref(false);
+const accountTestAccount = ref(null);
+const accountTestModels = ref([]);
+const accountTestLoadingModels = ref(false);
+const accountTestStatus = ref("idle");
+const accountTestOutputLines = ref([]);
+const accountTestContent = ref("");
+const accountTestError = ref("");
+const accountTestImages = ref([]);
+const accountTestDefaultModelID = ref("");
+const accountTestRequestID = ref("");
+let accountTestGeneration = 0;
+let accountTestRequestSerial = 0;
 const oauthSession = ref(null);
 const oauthCallback = ref("");
 const oauthProfiles = ref([]);
@@ -58,6 +78,7 @@ const oauthProfilesLoaded = ref(false);
 const oauthProfilesError = ref("");
 const selectedOAuthProfileID = ref("");
 const oauthAdvancedOpen = ref(false);
+const oauthCredentialSwitchOpen = ref(false);
 let removeOAuthCompletionListener = null;
 const OAUTH_STATUS_POLL_INTERVAL_MS = 2000;
 let oauthStatusPollTimer = null;
@@ -260,9 +281,35 @@ const form = ref(emptyForm());
 const isExisting = computed(() => Boolean(form.value.id));
 const isJSONImportTypeSelected = computed(() => isJSONImportType(form.value.type));
 const isRefreshTokenTypeSelected = computed(() => isRefreshTokenType(form.value.type));
+const isOAuthAuthorizationLogin = computed(() => form.value.type === "oauth");
 const selectedOAuthProfile = computed(() => oauthProfiles.value.find((profile) => profile.id === selectedOAuthProfileID.value) || null);
-const usingOAuthProviderProfile = computed(() => form.value.type === "oauth" && Boolean(selectedOAuthProfile.value));
-const showOAuthCustomFields = computed(() => !usingOAuthProviderProfile.value || oauthAdvancedOpen.value || selectedOAuthProfile.value?.requiresClientId === true);
+const usesSimpleOAuthLogin = computed(() => usesSimplifiedOAuthLogin(form.value.type, oauthAdvancedOpen.value));
+const showOAuthCredentialTypeChooser = computed(() => !usesSimpleOAuthLogin.value || oauthCredentialSwitchOpen.value);
+const showOAuthAccountFields = computed(() => !isOAuthAuthorizationLogin.value || oauthAdvancedOpen.value);
+const showOAuthCustomFields = computed(() => isRefreshTokenTypeSelected.value || (isOAuthAuthorizationLogin.value && oauthAdvancedOpen.value));
+const showQuotaURLField = computed(() => showOAuthAccountFields.value && !isOAuthAuthorizationLogin.value && !isRefreshTokenTypeSelected.value);
+const showCredentialSecretField = computed(() => showOAuthAccountFields.value && !isOAuthAuthorizationLogin.value && !isRefreshTokenTypeSelected.value && !isJSONImportTypeSelected.value);
+const showCustomHeaderName = computed(() => form.value.type === "custom_header");
+const showAdditionalHeaders = computed(() => form.value.type === "custom_header" || oauthAdvancedOpen.value);
+const showSchedulingControls = computed(() => showOAuthAccountFields.value && !isJSONImportTypeSelected.value);
+const canStartSelectedOAuth = computed(() => {
+  const profileNeedsCustomClient = selectedOAuthProfile.value?.requiresClientId === true && !oauthAdvancedOpen.value;
+  return !profileNeedsCustomClient && canStartOAuthLogin(selectedOAuthProfile.value, oauthAdvancedOpen.value);
+});
+const oauthLoginTitle = computed(() => oauthAdvancedOpen.value
+  ? "高级自定义 OAuth"
+  : (selectedOAuthProfile.value?.label || "OpenAI / Codex"));
+const oauthLoginDescription = computed(() => {
+  if (selectedOAuthProfile.value?.description) return selectedOAuthProfile.value.description;
+  if (oauthProfilesLoading.value) return "正在读取可用的一键登录方式…";
+  if (oauthAdvancedOpen.value) return "使用你自己注册的公开 OAuth 客户端；不会保存客户端密钥。";
+  return "未读取到默认登录预设。可刷新预设，或主动切换到高级自定义 OAuth。";
+});
+const oauthLoginButtonLabel = computed(() => {
+  if (oauthAdvancedOpen.value) return "打开授权页";
+  if (selectedOAuthProfile.value?.requiresClientId) return "需要高级配置";
+  return selectedOAuthProfile.value ? `${selectedOAuthProfile.value.label} 一键登录` : "等待可用预设";
+});
 const oauthManualCompletionRequired = computed(() => {
   const session = oauthSession.value;
   return Boolean(session && (session.manualCompletionRequired === true || session.automaticCallback === false));
@@ -279,6 +326,41 @@ const apiURLHint = computed(() => {
 const apiURLPlaceholder = computed(() => form.value.endpointMode === "manual"
   ? (form.value.provider === "anthropic" ? "https://api.xiass.com/v1/messages" : "https://api.xiass.com/v1/chat/completions")
   : DEFAULT_XIASS_URL);
+const credentialLabel = computed(() => {
+  const prefix = isExisting.value ? "新的" : "";
+  const retained = isExisting.value ? "（留空保留原凭据）" : "";
+  switch (form.value.type) {
+    case "bearer_token": return `${prefix}Bearer / Access Token${retained}`;
+    case "x_api_key": return `${prefix}x-api-key${retained}`;
+    case "setup_token": return `${prefix}Setup Token${retained}`;
+    case "codex_pat": return `${prefix}Codex PAT${retained}`;
+    case "custom_header": return `${prefix}认证头值${retained}`;
+    default: return `${prefix}API Key${retained}`;
+  }
+});
+const credentialHint = computed(() => {
+  switch (form.value.type) {
+    case "bearer_token": return "将以 Authorization: Bearer 发送。";
+    case "x_api_key": return "将以 x-api-key 请求头发送。";
+    case "setup_token": return "将以 Bearer 令牌方式发送。";
+    case "codex_pat": return "将以 Bearer 令牌方式发送。";
+    case "custom_header": return "仅发送到下方配置的自定义认证请求头。";
+    default: return form.value.provider === "anthropic" ? "Claude 默认以 x-api-key 发送。" : "OpenAI 兼容接口默认以 Bearer 发送。";
+  }
+});
+const credentialPlaceholder = computed(() => {
+  switch (form.value.type) {
+    case "setup_token": return "setup token…";
+    case "codex_pat": return "pat…";
+    case "bearer_token": return "access token…";
+    default: return form.value.type === "custom_header" ? "认证头值…" : "sk-…";
+  }
+});
+const fixedAuthModeLabel = computed(() => {
+  if (form.value.type === "x_api_key" || (form.value.type === "api_key" && form.value.provider === "anthropic")) return "x-api-key";
+  if (form.value.type === "custom_header") return form.value.authHeader?.trim() || "自定义请求头";
+  return "Bearer";
+});
 
 function providerLabel(provider) {
   return provider === "anthropic" ? "Claude" : provider === "grok" ? "Grok" : provider === "custom" ? "兼容" : "OpenAI";
@@ -431,9 +513,10 @@ async function openNew() {
   editorNotice.value = "地址默认只需填写域名。保存后可获取模型并默认全选导入；完整接口地址可随时切换为手动模式。";
   discoveredModels.value = [];
   selectedModelIds.value = [];
-  selectedOAuthProfileID.value = "";
-  oauthAdvancedOpen.value = false;
-  void loadOAuthLoginProfiles();
+	selectedOAuthProfileID.value = "";
+	oauthAdvancedOpen.value = false;
+	oauthCredentialSwitchOpen.value = false;
+	void loadOAuthLoginProfiles();
   editorOpen.value = true;
 }
 
@@ -444,9 +527,10 @@ function openEdit(account) {
   editorNotice.value = "为保护已保存的凭据，令牌栏不会回显；留空保存将保留原有凭据。";
   discoveredModels.value = [];
   selectedModelIds.value = [];
-  selectedOAuthProfileID.value = "";
-  oauthAdvancedOpen.value = true;
-  void loadOAuthLoginProfiles();
+	selectedOAuthProfileID.value = "";
+	oauthAdvancedOpen.value = false;
+	oauthCredentialSwitchOpen.value = false;
+	void loadOAuthLoginProfiles();
   editorOpen.value = true;
 }
 
@@ -482,9 +566,19 @@ function onTypeChange(type) {
   }
 
   const nextType = isRefreshTokenType(type) ? "refresh_token" : type;
-  if (nextType !== "oauth") clearOAuthSession();
-  form.value.type = nextType;
-  if (form.value.type !== "oauth") selectedOAuthProfileID.value = "";
+  clearOAuthSession();
+	form.value.type = nextType;
+	if (form.value.type === "oauth") {
+		selectedOAuthProfileID.value = "";
+		oauthAdvancedOpen.value = false;
+		oauthCredentialSwitchOpen.value = false;
+    editorError.value = "";
+    editorNotice.value = "正在准备 OpenAI / Codex 一键登录…";
+    void loadOAuthLoginProfiles({ autoSelectDefault: true });
+    return;
+	}
+	selectedOAuthProfileID.value = "";
+	oauthCredentialSwitchOpen.value = false;
   if (isRefreshTokenType(form.value.type)) {
     form.value.apiKey = "";
   }
@@ -507,14 +601,19 @@ function onAPIURLChange(value) {
   form.value.apiUrl = form.value.endpointMode === "auto" ? smartBaseAPIURL(raw) : raw;
 }
 
-async function loadOAuthLoginProfiles({ force = false } = {}) {
-  if (oauthProfilesLoading.value || (oauthProfilesLoaded.value && !force)) return;
+async function loadOAuthLoginProfiles({ force = false, autoSelectDefault = false } = {}) {
+  if (oauthProfilesLoading.value) return;
+  if (oauthProfilesLoaded.value && !force) {
+    if (autoSelectDefault) ensureDefaultOAuthProfile({ silent: true });
+    return;
+  }
   oauthProfilesLoading.value = true;
   oauthProfilesError.value = "";
   try {
     const result = await getOAuthLoginProfiles();
     oauthProfiles.value = normalizeOAuthProfiles(result);
     oauthProfilesLoaded.value = true;
+    if (autoSelectDefault) ensureDefaultOAuthProfile({ silent: true });
     if (!oauthProfiles.value.length) {
       oauthProfilesError.value = "当前没有可用的安全 OAuth 登录预设；仍可使用高级自定义 OAuth。";
     }
@@ -529,7 +628,31 @@ async function loadOAuthLoginProfiles({ force = false } = {}) {
   }
 }
 
-function selectOAuthProfile(profile) {
+function refreshOAuthLoginProfiles() {
+  return loadOAuthLoginProfiles({
+    force: true,
+    autoSelectDefault: isOAuthAuthorizationLogin.value && !oauthAdvancedOpen.value,
+  });
+}
+
+function ensureDefaultOAuthProfile({ silent = false } = {}) {
+  if (!isOAuthAuthorizationLogin.value || oauthAdvancedOpen.value) return false;
+  const profileID = chooseOAuthProfileID(oauthProfiles.value, {
+    selectedProfileID: selectedOAuthProfileID.value,
+    advancedCustomOpen: oauthAdvancedOpen.value,
+  });
+  if (!profileID) {
+    selectedOAuthProfileID.value = "";
+    return false;
+  }
+  if (profileID === selectedOAuthProfileID.value) return true;
+  const profile = oauthProfiles.value.find((item) => item.id === profileID);
+  if (!profile) return false;
+  selectOAuthProfile(profile, { silent });
+  return true;
+}
+
+function selectOAuthProfile(profile, { silent = false } = {}) {
   if (!profile?.id) return;
   clearOAuthSession();
   if (profile.available === "custom_only") {
@@ -547,21 +670,38 @@ function selectOAuthProfile(profile) {
     form.value.messagePathMode = profile.provider === "anthropic" ? "standard" : "auto";
   }
   form.value.type = "oauth";
-  selectedOAuthProfileID.value = profile.id;
-  oauthAdvancedOpen.value = profile.requiresClientId === true;
+	selectedOAuthProfileID.value = profile.id;
+	oauthAdvancedOpen.value = false;
+	oauthCredentialSwitchOpen.value = false;
   editorError.value = "";
-  editorNotice.value = profile.requiresClientId
-    ? `已选择 ${profile.label}。请先填写你自己的公开 OAuth Client ID；无需且不会保存 Client Secret。`
-    : (profile.message || `已选择 ${profile.label} 安全登录。将由本机后端提供已审核的 OAuth 配置。`);
+  if (!silent) {
+    editorNotice.value = profile.requiresClientId
+      ? `已选择 ${profile.label}。如需自有客户端，请主动点击“高级自定义 OAuth”填写公开 Client ID。`
+      : (profile.message || `已选择 ${profile.label} 安全登录。将由本机后端提供已审核的 OAuth 配置。`);
+  }
 }
 
 function useCustomOAuth() {
   clearOAuthSession();
-  selectedOAuthProfileID.value = "";
-  form.value.type = "oauth";
-  oauthAdvancedOpen.value = true;
-  editorError.value = "";
-  editorNotice.value = "高级自定义 OAuth 已启用：请填写你自己注册的公开客户端信息。";
+	selectedOAuthProfileID.value = "";
+	form.value.type = "oauth";
+	oauthAdvancedOpen.value = true;
+	oauthCredentialSwitchOpen.value = false;
+	editorError.value = "";
+	editorNotice.value = "高级自定义 OAuth 已启用：请填写你自己注册的公开客户端信息。";
+}
+
+function returnToSimpleOAuthLogin() {
+	clearOAuthSession();
+	oauthAdvancedOpen.value = false;
+	oauthCredentialSwitchOpen.value = false;
+	editorError.value = "";
+	if (ensureDefaultOAuthProfile({ silent: true })) {
+		editorNotice.value = "已返回一键 OAuth 登录，可切换其他预设或直接在浏览器授权。";
+		return;
+	}
+	editorNotice.value = "正在读取可用的一键登录方式…";
+	void loadOAuthLoginProfiles({ force: true, autoSelectDefault: true });
 }
 
 function missingOAuthConfiguration() {
@@ -600,16 +740,24 @@ function parseHeaders() {
   return headers;
 }
 
+function fixedAuthMode(type, provider) {
+  if (type === "x_api_key" || (type === "api_key" && provider === "anthropic")) return "x_api_key";
+  if (type === "custom_header") return "custom_header";
+  return "bearer";
+}
+
 function accountPayload() {
   const rawAPIURL = form.value.apiUrl?.trim();
   const payload = {
     ...form.value,
     apiUrl: form.value.endpointMode === "auto" ? smartBaseAPIURL(rawAPIURL) : rawAPIURL,
     apiKey: form.value.apiKey?.trim(),
+    authMode: fixedAuthMode(form.value.type, form.value.provider),
     authHeader: form.value.authHeader?.trim(),
     quotaUrl: form.value.quotaUrl?.trim(),
-    oauth: {
-      authorizationUrl: form.value.oauth?.authorizationUrl?.trim(),
+		oauth: {
+			upstream: form.value.oauth?.upstream?.trim(),
+			authorizationUrl: form.value.oauth?.authorizationUrl?.trim(),
       tokenUrl: form.value.oauth?.tokenUrl?.trim(),
       clientId: form.value.oauth?.clientId?.trim(),
       redirectUri: form.value.oauth?.redirectUri?.trim(),
@@ -715,11 +863,13 @@ async function startOAuth() {
   try {
     account = accountPayload();
     if (!account.apiUrl) throw new Error("请填写 API 地址");
-    if (profile?.requiresClientId && !readText(account.oauth?.clientId)) {
-      oauthAdvancedOpen.value = true;
-      throw new Error("该登录方式需要填写你自己的公开 OAuth Client ID；无需填写 Client Secret。");
+    if (!profile && !oauthAdvancedOpen.value) {
+      throw new Error("暂未读取到可用的一键登录预设。请刷新预设，或主动点击“高级自定义 OAuth”。");
     }
-    if (!profile) requireCustomOAuthConfiguration();
+    if (profile?.requiresClientId && !readText(account.oauth?.clientId)) {
+      throw new Error("该预设需要自有公开 Client ID。请主动点击“高级自定义 OAuth”后填写；无需 Client Secret。");
+    }
+    if (!profile && oauthAdvancedOpen.value) requireCustomOAuthConfiguration();
   } catch (error) {
     editorError.value = error.message;
     return;
@@ -913,6 +1063,13 @@ function accountIdentity(account) {
 function quotaSummary(account) {
   const quota = account?.quota || {};
   if (!quota.available) return "上游未返回额度";
+  if (Array.isArray(quota.windows) && quota.windows.length) {
+    return quota.windows.map((window) => {
+      const label = readText(window?.label) || "额度";
+      const used = Number(window?.usedPercent);
+      return Number.isFinite(used) ? `${label} 已用 ${Math.max(0, Math.min(100, Math.round(used)))}%` : label;
+    }).join(" · ");
+  }
   const values = [];
   if (quota.requestsRemaining !== undefined && quota.requestsRemaining !== null) {
     values.push(`请求余量 ${quota.requestsRemaining}`);
@@ -922,6 +1079,167 @@ function quotaSummary(account) {
   }
   if (quota.retryAfter) values.push(`重试 ${quota.retryAfter}`);
   return values.join(" · ") || "上游已返回额度快照";
+}
+
+function canRefreshAccountQuota(account) {
+  if (readText(account?.quotaUrl)) return true;
+  return readText(account?.oauth?.upstream).toLowerCase() === "openai_codex";
+}
+
+function modelID(model) {
+  if (typeof model === "string") return model.trim();
+  return String(model?.id ?? model?.externalModelName ?? model?.name ?? "").trim();
+}
+
+function modelLabel(model) {
+  if (typeof model === "string") return model;
+  return String(model?.displayName ?? model?.display_name ?? model?.name ?? modelID(model)).trim();
+}
+
+function uniqueTestModels(...groups) {
+  const seen = new Set();
+  const result = [];
+  for (const group of groups) {
+    for (const model of Array.isArray(group) ? group : []) {
+      const id = modelID(model);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      result.push({ id, name: modelLabel(model) || id });
+    }
+  }
+  return result;
+}
+
+function defaultTestModelForAccount(account) {
+  const provider = String(account?.provider || "openai").toLowerCase();
+  if (provider === "anthropic") return "claude-sonnet-4-5";
+  if (provider === "grok") return "grok-4";
+  return "gpt-5.4";
+}
+
+function modelsBoundToAccount(accountID) {
+  return state.models.filter((model) => Array.isArray(model?.accountIds) && model.accountIds.includes(accountID));
+}
+
+function accountTestSteps(steps) {
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .map((step) => ({ text: readText(step?.text), tone: readText(step?.tone) || "muted" }))
+    .filter((step) => step.text);
+}
+
+function nextAccountTestRequestID() {
+  const nativeID = globalThis.crypto?.randomUUID?.();
+  if (typeof nativeID === "string" && nativeID) return `account-test-${nativeID}`;
+  accountTestRequestSerial += 1;
+  return `account-test-${Date.now().toString(36)}-${accountTestRequestSerial}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function cancelActiveAccountTest() {
+  const requestID = accountTestRequestID.value;
+  accountTestRequestID.value = "";
+  if (!requestID) return;
+  // The native side owns the HTTP context. Treat a late/finished result as a
+  // harmless no-op, while still cancelling a slow upstream stream promptly.
+  void cancelUpstreamAccountTest(requestID).catch(() => {});
+}
+
+async function openAccountTest(account) {
+  if (!account?.id) return;
+	cancelActiveAccountTest();
+  const generation = ++accountTestGeneration;
+  accountTestAccount.value = account;
+  accountTestOpen.value = true;
+  accountTestStatus.value = "idle";
+  accountTestContent.value = "";
+  accountTestError.value = "";
+  accountTestImages.value = [];
+  accountTestModels.value = uniqueTestModels(modelsBoundToAccount(account.id));
+  accountTestDefaultModelID.value = accountTestModels.value[0]?.id || defaultTestModelForAccount(account);
+  accountTestOutputLines.value = [{ text: "正在读取该账户可用模型…", tone: "info" }];
+  accountTestLoadingModels.value = true;
+  try {
+    const result = await discoverAccountModels(account.id);
+    if (generation !== accountTestGeneration || accountTestAccount.value?.id !== account.id) return;
+    if (result?.ok) {
+      accountTestModels.value = uniqueTestModels(result.models, modelsBoundToAccount(account.id));
+      accountTestDefaultModelID.value = accountTestModels.value[0]?.id || defaultTestModelForAccount(account);
+      accountTestOutputLines.value = [{ text: result.message || `已获取 ${accountTestModels.value.length} 个可测试模型。`, tone: "success" }];
+      return;
+    }
+    if (!accountTestModels.value.length) {
+      accountTestModels.value = [{ id: defaultTestModelForAccount(account), name: defaultTestModelForAccount(account) }];
+      accountTestDefaultModelID.value = accountTestModels.value[0].id;
+    }
+    accountTestOutputLines.value = [{ text: `未能获取模型列表：${readText(result?.message) || "可直接使用默认模型测试。"}`, tone: "warning" }];
+  } catch {
+    if (generation !== accountTestGeneration || accountTestAccount.value?.id !== account.id) return;
+    if (!accountTestModels.value.length) {
+      accountTestModels.value = [{ id: defaultTestModelForAccount(account), name: defaultTestModelForAccount(account) }];
+      accountTestDefaultModelID.value = accountTestModels.value[0].id;
+    }
+    accountTestOutputLines.value = [{ text: "模型列表读取失败；可直接使用默认模型测试。", tone: "warning" }];
+  } finally {
+    if (generation === accountTestGeneration) accountTestLoadingModels.value = false;
+  }
+}
+
+async function runAccountTest(payload) {
+  const account = accountTestAccount.value;
+  if (!account?.id || !payload?.modelId || accountTestStatus.value === "connecting") return;
+  const generation = ++accountTestGeneration;
+	const requestID = nextAccountTestRequestID();
+	accountTestRequestID.value = requestID;
+  accountTestStatus.value = "connecting";
+  accountTestError.value = "";
+  accountTestContent.value = "";
+  accountTestImages.value = [];
+  accountTestOutputLines.value = [{ text: "正在发送账户测试请求…", tone: "info" }];
+  try {
+    const result = await testUpstreamAccountDetailed({
+      accountId: account.id,
+		requestId: requestID,
+      model: payload.modelId,
+      prompt: String(payload.prompt || "hi").trim() || "hi",
+      mode: String(payload.mode || "default"),
+    });
+    if (generation !== accountTestGeneration || accountTestAccount.value?.id !== account.id) return;
+    accountTestOutputLines.value = accountTestSteps(result?.steps);
+    accountTestContent.value = readText(result?.content);
+    accountTestImages.value = Array.isArray(result?.images) ? result.images : [];
+    if (result?.ok) {
+      accountTestStatus.value = "success";
+      if (!accountTestOutputLines.value.length) accountTestOutputLines.value = [{ text: result.message || "模型可用", tone: "success" }];
+    } else {
+      accountTestStatus.value = "error";
+      accountTestError.value = readText(result?.message) || "账户测试失败";
+      if (!accountTestOutputLines.value.length) accountTestOutputLines.value = [{ text: accountTestError.value, tone: "error" }];
+    }
+    await loadAccounts();
+  } catch {
+    if (generation !== accountTestGeneration || accountTestAccount.value?.id !== account.id) return;
+    accountTestStatus.value = "error";
+    accountTestError.value = "账户测试请求失败";
+    accountTestOutputLines.value = [{ text: accountTestError.value, tone: "error" }];
+	} finally {
+		if (accountTestRequestID.value === requestID) accountTestRequestID.value = "";
+  }
+}
+
+function cancelAccountTest() {
+  accountTestGeneration += 1;
+	cancelActiveAccountTest();
+}
+
+function closeAccountTest() {
+	cancelAccountTest();
+  accountTestOpen.value = false;
+}
+
+function previewAccountTestImage(image) {
+  const url = readText(typeof image === "string" ? image : image?.url);
+  if (!url) return;
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 async function discoverModels() {
@@ -948,27 +1266,22 @@ async function discoverModels() {
   }
 }
 
-async function testAccount() {
-  const model = selectedModelIds.value[0];
-  if (!form.value.id) {
-    editorError.value = "请先保存账户后再测试。";
+function openEditorAccountTest() {
+  const accountID = readText(form.value.id);
+  if (!accountID) {
+    editorError.value = "请先保存账户；保存后可从该账户卡片打开完整测试。";
     return;
   }
-  if (!model) {
-    editorError.value = "请先获取模型列表并选择一个模型。";
+  const account = state.accounts.find((item) => item?.id === accountID);
+  if (!account) {
+    editorError.value = "未找到该账户，请关闭编辑器后从账户卡片重新打开测试。";
     return;
   }
-  editorError.value = "";
-  testing.value = true;
-  try {
-    const result = await testUpstreamAccount(form.value.id, model);
-    if (result?.ok) editorNotice.value = `${result.message} · ${result.endpoint}`;
-    else editorError.value = result?.message || "账户测试失败";
-  } catch (error) {
-    editorError.value = String(error?.message || error);
-  } finally {
-    testing.value = false;
-  }
+  // The editor only manages discovery/import. Every real probe goes through
+  // the XIASS-style modal bound to exactly this saved account, so selecting a
+  // model here can never silently test another account or its first model.
+  closeEditor();
+  void openAccountTest(account);
 }
 
 function toggleAllModels() {
@@ -1045,6 +1358,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+	cancelAccountTest();
   clearOAuthSession();
   if (typeof removeOAuthCompletionListener === "function") removeOAuthCompletionListener();
   removeOAuthCompletionListener = null;
@@ -1104,15 +1418,23 @@ onBeforeUnmount(() => {
             <span>缓存 {{ formatTokens(account.localUsage?.cacheReadTokens) }}</span>
           </div>
         </div>
-        <div class="quota-band" :class="{ available: account.quota?.available }">
+        <AccountQuotaWindows
+          v-if="canRefreshAccountQuota(account)"
+          :account="account"
+          :loading="quotaRefreshBusy === account.id"
+          :show-identity="false"
+          @refresh="refreshQuota(account)"
+        />
+        <div v-else class="quota-band" :class="{ available: account.quota?.available }">
           <div class="quota-copy">
             <span class="usage-label">上游额度</span>
             <span class="quota-text">{{ quotaSummary(account) }}</span>
             <span v-if="account.quota?.updatedAt" class="quota-meta">{{ account.quota.source }} · {{ formatTime(account.quota.updatedAt) }}</span>
           </div>
-          <Button variant="plain" size="sm" :loading="quotaRefreshBusy === account.id" :disabled="!account.quotaUrl" @click="refreshQuota(account)">刷新额度</Button>
+          <span class="quota-meta">未配置可查询的上游额度接口</span>
         </div>
         <div class="row" style="gap: 6px; margin-top: 12px; justify-content: flex-end">
+          <Button variant="tinted" size="sm" @click="openAccountTest(account)">测试连接</Button>
           <Button v-if="account.type === 'oauth'" variant="plain" size="sm" :loading="tokenRefreshBusy === account.id" @click="refreshOAuthToken(account)">刷新令牌</Button>
           <Button variant="plain" size="sm" @click="toggleAccount(account)">{{ account.enabled ? '暂停' : '恢复' }}</Button>
           <Button variant="plain" size="sm" @click="openEdit(account)">编辑</Button>
@@ -1123,28 +1445,43 @@ onBeforeUnmount(() => {
 
     <Modal :open="editorOpen" :title="isExisting ? '编辑上游账户' : '添加上游账户'" wide persistent @close="closeEditor">
       <div class="col editor" style="gap: 15px">
-        <section class="section">
+		<section class="section">
           <span class="t-footnote">账户类型与协议</span>
-          <SegmentedControl :options="providerOptions" :model-value="form.provider" @update:model-value="onProviderChange" />
-          <label class="select-field">
-            <span class="t-footnote">凭据类型</span>
-            <select :value="form.type" @change="onTypeChange($event.target.value)">
-              <option v-for="option in accountTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
-          </label>
-          <div class="compact-label">接口地址输入方式</div>
-          <SegmentedControl :options="endpointModeOptions" :model-value="form.endpointMode" @update:model-value="onEndpointModeChange" />
-          <div class="two-col">
-            <Field :label="apiURLLabel" :hint="apiURLHint" :model-value="form.apiUrl" :placeholder="apiURLPlaceholder" mono @update:model-value="onAPIURLChange" />
-            <Field label="账户名称" hint="可选；用于模型绑定时识别" v-model="form.name" placeholder="例如 XIASS 主账户" />
+          <template v-if="showOAuthCredentialTypeChooser">
+            <SegmentedControl :options="providerOptions" :model-value="form.provider" @update:model-value="onProviderChange" />
+            <label class="select-field">
+              <span class="t-footnote">凭据类型</span>
+              <select :value="form.type" @change="onTypeChange($event.target.value)">
+                <option v-for="option in accountTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+            </label>
+            <div v-if="isOAuthAuthorizationLogin" class="row" style="justify-content: flex-end">
+              <Button variant="plain" size="sm" @click="oauthCredentialSwitchOpen = false">返回一键登录</Button>
+            </div>
+          </template>
+          <div v-else class="oauth-entry-summary">
+            <div>
+              <div class="t-headline">一键 OAuth 登录</div>
+              <div class="t-caption">无需填写 API 地址、名称或 API Key；授权成功后会自动保存为可调度账户。</div>
+            </div>
+            <Button variant="plain" size="sm" @click="oauthCredentialSwitchOpen = true">切换其他登录/凭据方式</Button>
           </div>
-          <Field label="上游额度接口（可选）" hint="仅在点击“刷新额度”时请求；填写上游文档提供的完整 URL。" v-model="form.quotaUrl" placeholder="https://provider.example.com/v1/usage" mono />
-          <div v-if="form.provider === 'anthropic' && form.endpointMode !== 'manual'" class="claude-path-control">
-            <div class="compact-label">Claude 路径</div>
-            <SegmentedControl :options="anthropicPathOptions" :model-value="form.messagePathMode" @update:model-value="form.messagePathMode = $event" />
-            <div class="t-caption">自动时先走 <code>/v1/messages</code>，接口不存在才改试 <code>/v1/chat/messages</code>。</div>
-          </div>
-          <div v-else-if="form.provider === 'anthropic'" class="t-caption">手动模式下会严格使用完整地址，例如 <code>/v1/messages</code> 或 <code>/v1/chat/messages</code>。</div>
+
+          <template v-if="showOAuthAccountFields">
+            <div class="compact-label">接口地址输入方式</div>
+            <SegmentedControl :options="endpointModeOptions" :model-value="form.endpointMode" @update:model-value="onEndpointModeChange" />
+            <div class="two-col">
+              <Field :label="apiURLLabel" :hint="apiURLHint" :model-value="form.apiUrl" :placeholder="apiURLPlaceholder" mono @update:model-value="onAPIURLChange" />
+              <Field label="账户名称" hint="可选；用于模型绑定时识别" v-model="form.name" placeholder="例如 XIASS 主账户" />
+            </div>
+			<Field v-if="showQuotaURLField" label="上游额度接口（可选）" hint="仅在点击“刷新额度”时请求；填写上游文档提供的完整 URL。" v-model="form.quotaUrl" placeholder="https://provider.example.com/v1/usage" mono />
+            <div v-if="form.provider === 'anthropic' && form.endpointMode !== 'manual'" class="claude-path-control">
+              <div class="compact-label">Claude 路径</div>
+              <SegmentedControl :options="anthropicPathOptions" :model-value="form.messagePathMode" @update:model-value="form.messagePathMode = $event" />
+              <div class="t-caption">自动时先走 <code>/v1/messages</code>，接口不存在才改试 <code>/v1/chat/messages</code>。</div>
+            </div>
+            <div v-else-if="form.provider === 'anthropic'" class="t-caption">手动模式下会严格使用完整地址，例如 <code>/v1/messages</code> 或 <code>/v1/chat/messages</code>。</div>
+          </template>
         </section>
 
         <section v-if="isJSONImportTypeSelected" class="section json-import-box">
@@ -1155,23 +1492,25 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-else class="section">
-          <div class="t-headline">认证与调度</div>
-          <Field
-            v-if="!isRefreshTokenTypeSelected"
-            :label="isExisting ? '新 API Key / Token（留空保留原凭据）' : 'API Key / Token'"
+		<section v-else-if="showCredentialSecretField" class="section">
+          <div class="t-headline">认证凭据</div>
+		  <Field
+            :label="credentialLabel"
+            :hint="credentialHint"
             type="password"
             v-model="form.apiKey"
-            :placeholder="form.type === 'setup_token' ? 'setup token…' : form.type === 'oauth' ? 'access token…' : 'sk-…'"
+            :placeholder="credentialPlaceholder"
             mono
           />
-          <div class="compact-label">认证方式</div>
-          <SegmentedControl :options="authOptions" :model-value="form.authMode" @update:model-value="form.authMode = $event" />
-          <Field v-if="form.authMode === 'custom_header'" label="认证请求头名称" hint="例如 X-API-Token" v-model="form.authHeader" placeholder="X-API-Token" mono />
-          <label class="text-field">
+          <div class="fixed-auth-row"><span>认证方式</span><code>{{ fixedAuthModeLabel }}</code></div>
+          <Field v-if="showCustomHeaderName" label="认证请求头名称" hint="例如 X-API-Token" v-model="form.authHeader" placeholder="X-API-Token" mono />
+          <label v-if="showAdditionalHeaders" class="text-field">
             <span class="t-footnote">附加请求头（可选 JSON）</span>
             <textarea v-model="form.headersText" spellcheck="false" placeholder='{"X-Client":"Antigravity-WF"}'></textarea>
           </label>
+        </section>
+        <section v-if="showSchedulingControls" class="section">
+          <div class="t-headline">调度设置</div>
           <div class="two-col">
             <Field label="优先级" hint="数值越小越先调度" type="number" v-model="form.priority" />
             <Field label="最大并发" hint="每个账户 1–32" type="number" v-model="form.maxConcurrency" />
@@ -1179,67 +1518,73 @@ onBeforeUnmount(() => {
           <label class="enabled-check"><input v-model="form.enabled" type="checkbox" /> 保存后立即参与调度</label>
         </section>
 
-        <section v-if="form.type === 'oauth' || isRefreshTokenTypeSelected" class="section oauth-box">
-          <div class="row between" style="gap: 8px">
-            <div>
-              <div class="t-headline">{{ isRefreshTokenTypeSelected ? '刷新令牌 / Mobile RT 导入' : 'OAuth 授权登录' }}</div>
-              <div class="t-caption">使用已注册的公开客户端与回调地址。WF 不内置第三方客户端 ID 或密钥。</div>
-            </div>
-            <Button v-if="form.type === 'oauth'" variant="tinted" :loading="oauthBusy" @click="startOAuth">{{ selectedOAuthProfile ? '浏览器登录' : '生成登录链接' }}</Button>
-          </div>
+		<section v-if="isOAuthAuthorizationLogin || isRefreshTokenTypeSelected" class="section oauth-box">
+		  <div class="row between" style="gap: 8px">
+			<div>
+			  <div class="t-headline">{{ isRefreshTokenTypeSelected ? '刷新令牌 / Mobile RT 导入' : oauthLoginTitle }}</div>
+			  <div class="t-caption">{{ isRefreshTokenTypeSelected ? '使用已注册的公开客户端与回调地址；刷新令牌不会作为 API Key 保存。' : oauthLoginDescription }}</div>
+			</div>
+			<Button
+				v-if="isOAuthAuthorizationLogin"
+				variant="tinted"
+				:loading="oauthBusy"
+				:disabled="!canStartSelectedOAuth"
+				@click="startOAuth"
+			>{{ oauthLoginButtonLabel }}</Button>
+		  </div>
 
-          <div v-if="form.type === 'oauth'" class="oauth-profiles">
-            <div class="row between" style="gap: 8px">
-              <div>
-                <div class="compact-label">安全 OAuth 快速登录</div>
-                <div class="t-caption">预设由本机后端提供；前端不会内置第三方 Client ID 或密钥。</div>
-              </div>
-              <Button variant="plain" size="sm" :loading="oauthProfilesLoading" @click="loadOAuthLoginProfiles({ force: true })">刷新预设</Button>
-            </div>
-            <div v-if="oauthProfilesLoading && !oauthProfiles.length" class="oauth-profile-empty">正在读取可用登录方式…</div>
-            <div v-else-if="oauthProfiles.length" class="oauth-profile-grid" role="group" aria-label="OAuth 登录方式">
-              <button
-                v-for="profile in oauthProfiles"
-                :key="profile.id"
-                type="button"
-                class="oauth-profile"
-                :class="{ active: selectedOAuthProfileID === profile.id }"
-                :aria-pressed="selectedOAuthProfileID === profile.id"
-                @click="selectOAuthProfile(profile)"
-              >
-                <span class="oauth-profile-title">{{ profile.label }}</span>
-                <span v-if="profile.description" class="oauth-profile-description">{{ profile.description }}</span>
-                <span v-else class="oauth-profile-description">使用该提供方的安全 OAuth 登录流程</span>
-              </button>
-            </div>
-            <div v-else class="oauth-profile-empty">{{ oauthProfilesError }}</div>
-            <div class="row" style="flex-wrap: wrap; gap: 7px">
-              <Button variant="plain" size="sm" @click="useCustomOAuth">高级自定义 OAuth</Button>
-              <Button variant="plain" size="sm" @click="openJSONImport('请粘贴完整的 auth.json / OAuth JSON；导入器会安全提取令牌与账户信息。')">导入 OAuth JSON</Button>
-              <Button variant="plain" size="sm" @click="onTypeChange('refresh_token')">使用 Refresh Token</Button>
-            </div>
-			  <div v-if="selectedOAuthProfile" class="oauth-profile-selected">
-				<template v-if="selectedOAuthProfile.requiresClientId">已选择 <b>{{ selectedOAuthProfile.label }}</b>。此预设需要填写你自己的公开 OAuth Client ID；其他公开字段可按需调整。</template>
-				<template v-else>已选择 <b>{{ selectedOAuthProfile.label }}</b>。授权成功后会按该安全预设保存账户；需要自有客户端时可切换到高级自定义 OAuth。</template>
+			<div v-if="isOAuthAuthorizationLogin" class="oauth-profiles">
+			  <div class="row between" style="gap: 8px">
+				<div>
+				  <div class="compact-label">切换 OAuth 登录方式</div>
+				  <div class="t-caption">默认使用 OpenAI / Codex；也可选择 Claude、Grok 等安全预设。</div>
+				</div>
+				<Button variant="plain" size="sm" :loading="oauthProfilesLoading" @click="refreshOAuthLoginProfiles">刷新预设</Button>
 			  </div>
-          </div>
+			  <div v-if="oauthProfilesLoading && !oauthProfiles.length" class="oauth-profile-empty">正在读取可用登录方式…</div>
+			  <div v-else-if="oauthProfiles.length" class="oauth-profile-grid" role="group" aria-label="OAuth 登录方式">
+				<button
+				  v-for="profile in oauthProfiles"
+				  :key="profile.id"
+				  type="button"
+				  class="oauth-profile"
+				  :class="{ active: selectedOAuthProfileID === profile.id }"
+				  :aria-pressed="selectedOAuthProfileID === profile.id"
+				  @click="selectOAuthProfile(profile)"
+				>
+				  <span class="oauth-profile-title">{{ profile.label }}</span>
+				  <span v-if="profile.description" class="oauth-profile-description">{{ profile.description }}</span>
+				  <span v-else class="oauth-profile-description">使用该提供方的安全 OAuth 登录流程</span>
+				</button>
+			  </div>
+			  <div v-else class="oauth-profile-empty">{{ oauthProfilesError }}</div>
+			  <div class="row" style="flex-wrap: wrap; gap: 7px">
+				<Button variant="plain" size="sm" @click="useCustomOAuth">高级自定义 OAuth</Button>
+				<Button variant="plain" size="sm" @click="openJSONImport('请粘贴完整的 auth.json / OAuth JSON；导入器会安全提取令牌与账户信息。')">导入 OAuth JSON</Button>
+				<Button variant="plain" size="sm" @click="onTypeChange('refresh_token')">使用 Refresh Token</Button>
+			  </div>
+			  <div v-if="selectedOAuthProfile" class="oauth-profile-selected">
+				<template v-if="selectedOAuthProfile.requiresClientId">已选择 <b>{{ selectedOAuthProfile.label }}</b>。该预设需要你的公开 Client ID；请主动打开“高级自定义 OAuth”后填写。</template>
+				<template v-else>已选择 <b>{{ selectedOAuthProfile.label }}</b>。授权成功后会自动保存为可调度账户。</template>
+			  </div>
+			</div>
 
-          <div v-if="showOAuthCustomFields" class="oauth-custom-fields">
-            <div class="row between" style="gap: 8px">
-              <div>
-                <div class="t-headline">高级自定义 OAuth</div>
-                <div class="t-caption">仅填写你自己注册的公开客户端；不需要也不应填写客户端密钥。</div>
-              </div>
-				<Button v-if="usingOAuthProviderProfile && !selectedOAuthProfile?.requiresClientId" variant="plain" size="sm" @click="oauthAdvancedOpen = false">收起</Button>
-            </div>
-            <div class="two-col">
-              <Field label="授权地址" v-model="form.oauth.authorizationUrl" placeholder="https://provider.example.com/oauth/authorize" mono />
-              <Field label="令牌地址" v-model="form.oauth.tokenUrl" placeholder="https://provider.example.com/oauth/token" mono />
-              <Field label="公开客户端 ID" v-model="form.oauth.clientId" placeholder="OAuth public client ID" mono />
-              <Field label="已注册回调地址" v-model="form.oauth.redirectUri" placeholder="http://localhost:1455/auth/callback" mono />
-            </div>
-            <Field label="Scopes（可选）" v-model="form.oauth.scopes" placeholder="openid profile email offline_access" mono />
-          </div>
+			<div v-if="showOAuthCustomFields" class="oauth-custom-fields">
+			  <div class="row between" style="gap: 8px">
+				<div>
+				  <div class="t-headline">高级自定义 OAuth</div>
+				  <div class="t-caption">仅填写你自己注册的公开客户端；不需要也不应填写客户端密钥。</div>
+				</div>
+				<Button v-if="isOAuthAuthorizationLogin && oauthAdvancedOpen" variant="plain" size="sm" @click="returnToSimpleOAuthLogin">返回一键登录</Button>
+			  </div>
+			  <div class="two-col">
+				<Field label="授权地址" v-model="form.oauth.authorizationUrl" placeholder="https://provider.example.com/oauth/authorize" mono />
+				<Field label="令牌地址" v-model="form.oauth.tokenUrl" placeholder="https://provider.example.com/oauth/token" mono />
+				<Field label="公开客户端 ID" v-model="form.oauth.clientId" placeholder="OAuth public client ID" mono />
+				<Field label="已注册回调地址" v-model="form.oauth.redirectUri" placeholder="http://localhost:1455/auth/callback" mono />
+			  </div>
+			  <Field label="Scopes（可选）" v-model="form.oauth.scopes" placeholder="openid profile email offline_access" mono />
+			</div>
 
           <div v-if="isRefreshTokenTypeSelected" class="oauth-result">
             <Field label="Refresh Token / Mobile RT" hint="仅发送至上方 OAuth 令牌地址；不会作为 API Key 保存或发往模型接口。" type="password" v-model="form.refreshToken" placeholder="粘贴刷新令牌" mono />
@@ -1285,7 +1630,7 @@ onBeforeUnmount(() => {
             </label>
           </div>
           <div class="row" style="justify-content: flex-end; gap: 7px">
-            <Button variant="plain" size="sm" :disabled="!selectedModelIds.length" :loading="testing" @click="testAccount">测试已选模型</Button>
+            <Button variant="plain" size="sm" @click="openEditorAccountTest">在账户卡测试</Button>
             <Button variant="filled" size="sm" :disabled="!selectedModelIds.length" :loading="saving" @click="addSelectedModels">添加已选 {{ selectedCount }} 个</Button>
           </div>
         </section>
@@ -1300,9 +1645,25 @@ onBeforeUnmount(() => {
       </div>
       <template #footer>
         <Button variant="plain" @click="closeEditor">取消</Button>
-        <Button v-if="!isRefreshTokenTypeSelected && !isJSONImportTypeSelected" variant="filled" :loading="saving" @click="saveAccount">保存账户</Button>
+		<Button v-if="!isOAuthAuthorizationLogin && !isRefreshTokenTypeSelected && !isJSONImportTypeSelected" variant="filled" :loading="saving" @click="saveAccount">保存账户</Button>
       </template>
     </Modal>
+
+    <AccountTestModal
+      :open="accountTestOpen"
+      :account="accountTestAccount"
+      :models="accountTestModels"
+      :loading-models="accountTestLoadingModels"
+      :status="accountTestStatus"
+      :output-lines="accountTestOutputLines"
+      :error-message="accountTestError"
+      :generated-images="accountTestImages"
+      :default-model-id="accountTestDefaultModelID"
+      @test="runAccountTest"
+		@cancel="cancelAccountTest"
+      @close="closeAccountTest"
+      @preview-image="previewAccountTestImage"
+    />
 
     <Modal :open="importOpen" title="导入账户 JSON" wide persistent @close="importOpen = false">
       <div class="col" style="gap: 10px">
@@ -1356,6 +1717,7 @@ onBeforeUnmount(() => {
 .discover-box { background: color-mix(in srgb, var(--accent-soft) 28%, var(--bg-card)); }
 .hint-box { background: color-mix(in srgb, var(--blue-soft) 28%, var(--bg-card)); }
 .oauth-box { background: color-mix(in srgb, var(--blue-soft) 24%, var(--bg-card)); }
+.oauth-entry-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border: 1px solid var(--accent-border); border-radius: var(--r-sm); background: color-mix(in srgb, var(--accent-soft) 36%, var(--bg-card)); }
 .oauth-profiles, .oauth-custom-fields { display: flex; flex-direction: column; gap: 9px; padding: 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
 .oauth-profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 7px; }
 .oauth-profile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 68px; padding: 9px 10px; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); color: var(--text-primary); background: var(--bg-inset); text-align: left; transition: border-color .16s var(--ease), background .16s var(--ease), transform .14s var(--spring); }
@@ -1371,6 +1733,7 @@ onBeforeUnmount(() => {
 .oauth-link { display: block; max-height: 74px; overflow: auto; padding: 8px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-secondary); font-size: 11px; line-height: 1.45; word-break: break-all; background: var(--bg-inset); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .compact-label { color: var(--text-tertiary); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+.fixed-auth-row { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 0 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-tertiary); background: var(--bg-inset); font-size: 11px; }.fixed-auth-row code { color: var(--text-secondary); font-size: 11px; }
 .claude-path-control { display: flex; flex-direction: column; gap: 7px; padding: 9px; border: 1px dashed var(--separator-strong); border-radius: var(--r-sm); background: var(--bg-card); }
 .select-field, .text-field { display: flex; flex-direction: column; gap: 6px; }
 select, textarea { width: 100%; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); background: var(--bg-inset); color: var(--text-primary); outline: none; }

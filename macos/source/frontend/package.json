@@ -1,13 +1,15 @@
 {
   "name": "antigravity-wf-assistant-frontend",
   "private": true,
-  "version": "1.4.3",
+  "version": "1.4.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:oauth": "node --test test/oauthAuthorizationStatus.test.mjs"
+    "test:oauth": "node --test test/oauthAuthorizationStatus.test.mjs",
+    "test:oauth-ux": "node --test test/oauthLoginUX.test.mjs",
+    "test:update-check": "node --test test/updateCheckState.test.mjs"
   },
   "dependencies": {
     "vue": "^3.5.40"

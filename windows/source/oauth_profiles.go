@@ -45,6 +45,7 @@ type OAuthProviderProfile struct {
 	Description             string                     `json:"description"`
 	Provider                string                     `json:"provider"`
 	APIURL                  string                     `json:"apiUrl"`
+	EndpointMode            string                     `json:"endpointMode,omitempty"`
 	APIStyle                string                     `json:"apiStyle"`
 	AuthMode                string                     `json:"authMode"`
 	OAuth                   storage.OAuthConfiguration `json:"oauth"`
@@ -603,10 +604,11 @@ func newOAuthNonce() (string, error) {
 func builtInOAuthProviderProfiles() []OAuthProviderProfile {
 	return []OAuthProviderProfile{
 		{
-			ID: "openai-codex", Name: "OpenAI / Codex", Provider: "openai", APIURL: upstream.DefaultXIASSBaseURL,
-			APIStyle: "responses", AuthMode: "bearer", Available: oauthProfileReady, AutoLoopback: true,
+			ID: "openai-codex", Name: "OpenAI / Codex", Provider: "openai", APIURL: storage.OpenAICodexResponsesURL,
+			EndpointMode: "manual", APIStyle: "responses", AuthMode: "bearer", Available: oauthProfileReady, AutoLoopback: true,
 			Description: "公开客户端的 OAuth 2.0 + PKCE 登录，使用本机回调。",
 			OAuth: storage.OAuthConfiguration{
+				Upstream:         storage.OpenAICodexOAuthUpstream,
 				AuthorizationURL: "https://auth.openai.com/oauth/authorize", TokenURL: "https://auth.openai.com/oauth/token",
 				ClientID: "app_EMoamEEZ73f0CkXaXp7hrann", RedirectURI: "http://localhost:1455/auth/callback",
 				Scopes: "openid profile email offline_access",
@@ -729,8 +731,16 @@ func applyOAuthProviderProfile(draft storage.UpstreamAccount, profile OAuthProvi
 	if strings.TrimSpace(profile.Provider) != "" {
 		draft.Provider = profile.Provider
 	}
-	if strings.TrimSpace(draft.APIURL) == "" {
+	// A new account draft starts with the generic XIASS base URL. The built-in
+	// Codex OAuth flow must replace that legacy default so its access token is
+	// never saved for, or sent to, an API-key gateway. A deliberate non-XIASS
+	// endpoint is preserved to support a user-owned local relay/test server.
+	if strings.TrimSpace(draft.APIURL) == "" ||
+		(strings.EqualFold(strings.TrimSpace(profile.OAuth.Upstream), storage.OpenAICodexOAuthUpstream) && strings.Contains(strings.ToLower(draft.APIURL), "api.xiass.com")) {
 		draft.APIURL = profile.APIURL
+	}
+	if strings.TrimSpace(profile.EndpointMode) != "" {
+		draft.EndpointMode = profile.EndpointMode
 	}
 	if strings.TrimSpace(profile.APIStyle) != "" {
 		draft.APIStyle = profile.APIStyle
@@ -743,10 +753,17 @@ func applyOAuthProviderProfile(draft storage.UpstreamAccount, profile OAuthProvi
 		oauthDefaults.RefreshScopes = profile.RefreshScopes
 	}
 	draft.OAuth = mergeOAuthProfileConfiguration(draft.OAuth, oauthDefaults, profile.AutoLoopback)
+	// Profiles own their transport marker. In particular, switching away from
+	// the direct Codex profile must not leave its special request headers on a
+	// generic OAuth account.
+	draft.OAuth.Upstream = strings.TrimSpace(profile.OAuth.Upstream)
 	return draft
 }
 
 func mergeOAuthProfileConfiguration(current, defaults storage.OAuthConfiguration, autoLoopback bool) storage.OAuthConfiguration {
+	if strings.TrimSpace(current.Upstream) == "" {
+		current.Upstream = defaults.Upstream
+	}
 	if strings.TrimSpace(current.AuthorizationURL) == "" {
 		current.AuthorizationURL = defaults.AuthorizationURL
 	}

@@ -28,6 +28,12 @@ type QuotaResult struct {
 // portable quota endpoint for OpenAI-compatible services, so callers must
 // supply a provider-supported full URL rather than guessing one from APIURL.
 func FetchQuota(ctx context.Context, config Config, quotaURL string) QuotaResult {
+	// The built-in OpenAI/Codex OAuth account has a real, authenticated quota
+	// route. It intentionally does not require a user-entered quota URL, and
+	// must be handled before the generic URL validation below.
+	if IsOpenAICodexOAuth(config) {
+		return FetchOpenAICodexQuota(ctx, config)
+	}
 	quotaURL = strings.TrimSpace(quotaURL)
 	if quotaURL == "" {
 		return QuotaResult{Message: "未配置上游额度接口"}

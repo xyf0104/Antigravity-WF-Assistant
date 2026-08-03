@@ -108,6 +108,9 @@ export const state = reactive({
       assetSize: 0,
       publishedAt: "",
       notes: "",
+			cached: false,
+			cacheReason: "",
+			checkedAt: "",
     },
     progress: { phase: "idle", downloaded: 0, total: 0, percent: 0, message: "" },
   },
@@ -241,6 +244,21 @@ export async function discoverAccountModels(accountID) {
 
 export async function testUpstreamAccount(accountID, model) {
   return call("TestUpstreamAccount", accountID, model);
+}
+
+// The detailed account-card probe returns a credential-safe, replayable log,
+// bounded text output, and strictly validated image previews. It is kept
+// separate from the legacy two-argument probe so existing integrations stay
+// compatible while every saved account can use the XIASS-style test modal.
+export async function testUpstreamAccountDetailed(request) {
+  return call("TestUpstreamAccountDetailed", request);
+}
+
+// Cancels only the explicit account-card test identified by requestId. This
+// is intentionally separate from proxy or account controls: closing a test
+// dialog must never pause the account or affect another model request.
+export async function cancelUpstreamAccountTest(requestID) {
+  return call("CancelUpstreamAccountTest", requestID);
 }
 
 export async function startOAuthAuthorization(account) {
@@ -442,20 +460,46 @@ export async function saveSettings(settings) {
   }
 }
 
+let updateCheckGeneration = 0;
+
 export async function checkForUpdates() {
+	if (state.update.checking) {
+		return { ok: false, message: "正在检查更新，请稍候或取消后重试。" };
+	}
+	const generation = ++updateCheckGeneration;
   state.update.checking = true;
   state.update.message = "正在检查更新…";
   try {
     const res = await call("CheckForUpdates");
+		if (generation !== updateCheckGeneration) return { ok: false, message: "更新检查已取消" };
     if (res?.info) state.update.info = { ...state.update.info, ...res.info };
     state.update.message = res?.message || (res?.ok ? "检查完成" : "检查更新失败");
     return res;
   } catch (e) {
+		if (generation !== updateCheckGeneration) return { ok: false, message: "更新检查已取消" };
     state.update.message = e?.message || "检查更新失败";
     return { ok: false, message: state.update.message };
   } finally {
-    state.update.checking = false;
+		if (generation === updateCheckGeneration) state.update.checking = false;
   }
+}
+
+// Wails promises cannot be force-aborted by the renderer. Invalidate the
+// local request first, then ask the native short-lived context to cancel; the
+// interface becomes responsive even if an old bridge result arrives later.
+export async function cancelUpdateCheck() {
+	if (!state.update.checking) return { ok: true, message: "当前没有正在进行的更新检查" };
+	updateCheckGeneration += 1;
+	state.update.checking = false;
+	state.update.message = "正在取消检查更新…";
+	try {
+		const res = await call("CancelUpdateCheck");
+		state.update.message = res?.message || "已取消检查更新";
+		return res || { ok: true, message: state.update.message };
+	} catch (e) {
+		state.update.message = e?.message || "无法取消检查；它将在 5 秒超时后自动结束。";
+		return { ok: false, message: state.update.message };
+	}
 }
 
 export async function skipUpdateVersion(version) {

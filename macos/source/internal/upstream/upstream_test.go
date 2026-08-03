@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+
+	"antigravity-byok/internal/storage"
 )
 
 func TestDiscoverModelsUsesConfiguredAuth(t *testing.T) {
@@ -25,6 +27,74 @@ func TestDiscoverModelsUsesConfiguredAuth(t *testing.T) {
 	result := DiscoverModels(context.Background(), Config{Provider: "openai", APIURL: server.URL + "/v1", APIKey: "token", AuthMode: "bearer"})
 	if !result.OK || len(result.Models) != 2 || result.Models[0].ID != "claude-b" {
 		t.Fatalf("unexpected discovery result: %#v", result)
+	}
+}
+
+func TestOpenAICodexOAuthDiscoveryUsesDirectManifestAndCodexHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if got, want := r.Header.Get("Authorization"), "Bearer oauth-access-token"; got != want {
+			t.Errorf("authorization = %q, want %q", got, want)
+		}
+		if got, want := r.Header.Get("chatgpt-account-id"), "acct-chatgpt"; got != want {
+			t.Errorf("chatgpt-account-id = %q, want %q", got, want)
+		}
+		if got, want := r.Header.Get("Originator"), "codex_cli_rs"; got != want {
+			t.Errorf("originator = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5"},{"id":"gpt-5-mini"}]}`))
+	}))
+	defer server.Close()
+
+	result := DiscoverModels(context.Background(), Config{
+		Provider: "openai", APIURL: server.URL + "/backend-api/codex/responses", APIKey: "oauth-access-token",
+		EndpointMode: "manual", APIStyle: "responses", AuthMode: "bearer",
+		OAuthUpstream: storage.OpenAICodexOAuthUpstream, ChatGPTAccountID: "acct-chatgpt",
+	})
+	if !result.OK || len(result.Models) != 2 || result.Endpoint != server.URL+"/backend-api/codex/models" {
+		t.Fatalf("unexpected direct OAuth discovery result: %#v", result)
+	}
+}
+
+func TestOpenAICodexOAuthQuotaUsesWHAMWithoutConfiguredQuotaURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/wham/usage" {
+			http.NotFound(w, r)
+			return
+		}
+		if got, want := r.Header.Get("Authorization"), "Bearer oauth-access-token"; got != want {
+			t.Errorf("authorization = %q, want %q", got, want)
+		}
+		if got, want := r.Header.Get("chatgpt-account-id"), "acct-chatgpt"; got != want {
+			t.Errorf("chatgpt-account-id = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"email":"person@example.test", "account_id":"acct-chatgpt", "plan_type":"free",
+			"rate_limit":{"allowed":true,"limit_reached":false,
+			"primary_window":{"used_percent":12.5,"limit_window_seconds":18000,"reset_after_seconds":120},
+			"secondary_window":{"used_percent":44,"limit_window_seconds":604800,"reset_after_seconds":3600}}
+		}`))
+	}))
+	defer server.Close()
+
+	result := FetchQuota(context.Background(), Config{
+		Provider: "openai", APIURL: server.URL + "/backend-api/codex/responses", APIKey: "oauth-access-token",
+		EndpointMode: "manual", APIStyle: "responses", AuthMode: "bearer",
+		OAuthUpstream: storage.OpenAICodexOAuthUpstream, ChatGPTAccountID: "acct-chatgpt",
+	}, "")
+	if !result.OK || result.Endpoint != server.URL+"/backend-api/wham/usage" {
+		t.Fatalf("unexpected direct OAuth quota result: %#v", result)
+	}
+	if got, want := result.Snapshot.Plan, "free"; got != want {
+		t.Fatalf("plan = %q, want %q", got, want)
+	}
+	if len(result.Snapshot.Windows) != 2 || result.Snapshot.Windows[0].Label != "5h" || result.Snapshot.Windows[1].Label != "7d" {
+		t.Fatalf("quota windows = %#v, want 5h and 7d", result.Snapshot.Windows)
 	}
 }
 
