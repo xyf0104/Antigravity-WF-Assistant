@@ -1,4 +1,4 @@
-![Antigravity WF助手 Logo](assets/logo.png)
+<p align="center"><img src="assets/logo.png" alt="Antigravity WF助手 Logo" width="180"></p>
 
 # Antigravity WF助手
 
