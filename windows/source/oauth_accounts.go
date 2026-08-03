@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"antigravity-byok/internal/oauthflow"
@@ -18,18 +19,23 @@ import (
 // pendingOAuthSession binds a short-lived PKCE session to the account draft
 // entered in the renderer. Secrets never leave this Go-side structure.
 type pendingOAuthSession struct {
-	flow    *oauthflow.Flow
-	account storage.UpstreamAccount
-	state   string
-	expires time.Time
+	flow         *oauthflow.Flow
+	account      storage.UpstreamAccount
+	state        string
+	expires      time.Time
+	completionMu sync.Mutex
 }
 
 type OAuthAuthorizationResult struct {
-	OK               bool   `json:"ok"`
-	Message          string `json:"message"`
-	SessionID        string `json:"sessionId,omitempty"`
-	AuthorizationURL string `json:"authorizationUrl,omitempty"`
-	ExpiresAt        string `json:"expiresAt,omitempty"`
+	OK                       bool   `json:"ok"`
+	Message                  string `json:"message"`
+	SessionID                string `json:"sessionId,omitempty"`
+	AuthorizationURL         string `json:"authorizationUrl,omitempty"`
+	RedirectURI              string `json:"redirectUri,omitempty"`
+	ProfileID                string `json:"profileId,omitempty"`
+	AutomaticCallback        bool   `json:"automaticCallback"`
+	ManualCompletionRequired bool   `json:"manualCompletionRequired"`
+	ExpiresAt                string `json:"expiresAt,omitempty"`
 }
 
 type OAuthCompletionResult struct {
@@ -78,6 +84,7 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 		PublicClientID:   draft.OAuth.ClientID,
 		RedirectURI:      draft.OAuth.RedirectURI,
 		Scopes:           strings.Fields(draft.OAuth.Scopes),
+		RefreshScopes:    strings.Fields(draft.OAuth.RefreshScopes),
 	})
 	if err != nil {
 		return OAuthAuthorizationResult{Message: oauthErrorMessage(err)}
@@ -93,6 +100,7 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 	}
 
 	a.oauthMu.Lock()
+	a.ensureOAuthMapsLocked()
 	a.discardExpiredOAuthSessionsLocked(time.Now())
 	a.oauthSessions[authorization.SessionID] = &pendingOAuthSession{
 		flow: flow, account: draft, state: authorization.State, expires: authorization.ExpiresAt,
@@ -102,9 +110,13 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 		runtime.BrowserOpenURL(a.ctx, authorization.URL)
 	}
 	return OAuthAuthorizationResult{
-		OK: true, Message: "已在浏览器打开授权页；授权后请粘贴完整回调 URL 或授权码。",
-		SessionID: authorization.SessionID, AuthorizationURL: authorization.URL,
-		ExpiresAt: authorization.ExpiresAt.UTC().Format(time.RFC3339),
+		OK:                       true,
+		Message:                  "已在浏览器打开授权页；授权后请粘贴完整回调 URL 或授权码。",
+		SessionID:                authorization.SessionID,
+		AuthorizationURL:         authorization.URL,
+		RedirectURI:              draft.OAuth.RedirectURI,
+		ManualCompletionRequired: true,
+		ExpiresAt:                authorization.ExpiresAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -114,12 +126,34 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 func (a *App) CompleteOAuthAuthorization(sessionID, callback string) OAuthCompletionResult {
 	sessionID = strings.TrimSpace(sessionID)
 	a.oauthMu.Lock()
+	a.ensureOAuthMapsLocked()
 	a.discardExpiredOAuthSessionsLocked(time.Now())
+	if record, found := a.oauthResults[sessionID]; found && record.result.OK {
+		a.oauthMu.Unlock()
+		return record.result
+	}
 	session := a.oauthSessions[sessionID]
 	a.oauthMu.Unlock()
 	if session == nil {
 		return OAuthCompletionResult{Message: "授权会话不存在或已过期，请重新生成登录链接。"}
 	}
+	// A manual fallback and a loopback redirect can arrive at nearly the same
+	// time. Serialising them at the session (not HTTP listener) level lets both
+	// paths safely converge on one persisted account and one completion result.
+	session.completionMu.Lock()
+	defer session.completionMu.Unlock()
+
+	a.oauthMu.Lock()
+	a.discardExpiredOAuthSessionsLocked(time.Now())
+	if record, found := a.oauthResults[sessionID]; found && record.result.OK {
+		a.oauthMu.Unlock()
+		return record.result
+	}
+	if a.oauthSessions[sessionID] != session {
+		a.oauthMu.Unlock()
+		return OAuthCompletionResult{Message: "授权会话不存在或已过期，请重新生成登录链接。"}
+	}
+	a.oauthMu.Unlock()
 
 	parsed, err := oauthflow.ExtractCallback(callback)
 	if err != nil {
@@ -141,16 +175,19 @@ func (a *App) CompleteOAuthAuthorization(sessionID, callback string) OAuthComple
 		return OAuthCompletionResult{Message: result.Message}
 	}
 	stored, err := storage.GetUpstreamAccount(account.ID)
+	completion := OAuthCompletionResult{
+		OK: true, Message: "OAuth 授权已完成，账户已加入本地账户池。", AccountID: account.ID,
+	}
+	if err != nil {
+		completion.Message = result.Message
+	} else {
+		completion.Identity = stored.Identity
+	}
+	a.recordOAuthAuthorizationResult(sessionID, completion)
 	a.oauthMu.Lock()
 	delete(a.oauthSessions, sessionID)
 	a.oauthMu.Unlock()
-	if err != nil {
-		return OAuthCompletionResult{OK: true, Message: "OAuth 授权已完成，账户已加入本地账户池。"}
-	}
-	return OAuthCompletionResult{
-		OK: true, Message: "OAuth 授权已完成，账户已加入本地账户池。",
-		AccountID: stored.ID, Identity: stored.Identity,
-	}
+	return completion
 }
 
 // ImportOAuthRefreshToken exchanges a user-supplied refresh token with the
@@ -194,6 +231,7 @@ func (a *App) ImportOAuthRefreshToken(draft storage.UpstreamAccount, refreshToke
 		PublicClientID:   draft.OAuth.ClientID,
 		RedirectURI:      draft.OAuth.RedirectURI,
 		Scopes:           strings.Fields(draft.OAuth.Scopes),
+		RefreshScopes:    strings.Fields(draft.OAuth.RefreshScopes),
 	})
 	if err != nil {
 		return OAuthCompletionResult{Message: oauthErrorMessage(err)}
@@ -243,6 +281,7 @@ func (a *App) RefreshUpstreamOAuthAccount(accountID string) Result {
 		PublicClientID:   account.OAuth.ClientID,
 		RedirectURI:      account.OAuth.RedirectURI,
 		Scopes:           strings.Fields(account.OAuth.Scopes),
+		RefreshScopes:    strings.Fields(account.OAuth.RefreshScopes),
 	})
 	if err != nil {
 		return Result{Message: oauthErrorMessage(err)}
@@ -283,12 +322,21 @@ func (a *App) discardExpiredOAuthSessionsLocked(now time.Time) {
 	for sessionID, session := range a.oauthSessions {
 		if session == nil || !now.Before(session.expires) {
 			delete(a.oauthSessions, sessionID)
+			if callback := a.oauthLoopbacks[sessionID]; callback != nil {
+				callback.Close()
+				delete(a.oauthLoopbacks, sessionID)
+			}
+		}
+	}
+	for sessionID, record := range a.oauthResults {
+		if !now.Before(record.expires) {
+			delete(a.oauthResults, sessionID)
 		}
 	}
 }
 
 func applyOAuthToken(account storage.UpstreamAccount, token oauthflow.Token, source string) storage.UpstreamAccount {
-	credentials := make(map[string]any, len(account.Credentials)+6)
+	credentials := make(map[string]any, len(account.Credentials)+7)
 	for key, value := range account.Credentials {
 		credentials[key] = value
 	}
@@ -304,6 +352,12 @@ func applyOAuthToken(account storage.UpstreamAccount, token oauthflow.Token, sou
 	}
 	if token.Scope != "" {
 		credentials["scope"] = token.Scope
+	}
+	// Keep the public OAuth client beside the rotated tokens. This mirrors
+	// XIASS exports and lets a later JSON re-import refresh with the exact
+	// registered client rather than guessing one. It is not a client secret.
+	if clientID := strings.TrimSpace(account.OAuth.ClientID); clientID != "" {
+		credentials["client_id"] = clientID
 	}
 	account.Type = "oauth"
 	account.APIKey = token.AccessToken

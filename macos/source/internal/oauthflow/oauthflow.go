@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,12 +24,13 @@ import (
 )
 
 const (
-	defaultSessionTTL      = 10 * time.Minute
-	maxSessionTTL          = 30 * time.Minute
-	defaultHTTPTimeout     = 30 * time.Second
-	maxTokenResponseBytes  = 1 << 20
-	randomValueBytes       = 32
-	maxExpirationInSeconds = int64((1<<63 - 1) / int64(time.Second))
+	defaultSessionTTL       = 10 * time.Minute
+	maxSessionTTL           = 30 * time.Minute
+	defaultHTTPTimeout      = 30 * time.Second
+	maxTokenResponseBytes   = 1 << 20
+	randomValueBytes        = 32
+	openAIPKCEVerifierBytes = 64
+	maxExpirationInSeconds  = int64((1<<63 - 1) / int64(time.Second))
 )
 
 var (
@@ -60,8 +62,30 @@ type Config struct {
 	PublicClientID   string
 	RedirectURI      string
 	Scopes           []string
-	SessionTTL       time.Duration
+	// RefreshScopes optionally narrows the scope value sent on refresh-token
+	// requests. When empty, Scopes is retained for backwards compatibility.
+	RefreshScopes []string
+	// PKCEVerifierFormat selects the representation of the one-time verifier.
+	// RFC 7636 base64url is the safe default for custom OAuth. The OpenAI Codex
+	// public client is an interoperability exception: its official desktop
+	// clients generate a 64-byte lowercase-hex verifier, so the built-in profile
+	// explicitly opts into that public, non-secret format.
+	PKCEVerifierFormat PKCEVerifierFormat
+	// AuthorizationParameters contains provider-documented, non-secret
+	// parameters that are appended to the authorization request. Core OAuth and
+	// PKCE parameters are always owned by Flow and cannot be overridden here.
+	AuthorizationParameters map[string]string
+	SessionTTL              time.Duration
 }
+
+// PKCEVerifierFormat controls the encoding of a freshly generated verifier.
+// It is deliberately a small closed set so callers cannot inject a verifier.
+type PKCEVerifierFormat string
+
+const (
+	PKCEVerifierFormatBase64URL PKCEVerifierFormat = "base64url"
+	PKCEVerifierFormatOpenAIHex PKCEVerifierFormat = "openai_hex"
+)
 
 // Authorization is returned by Begin. State is safe to retain beside the
 // session ID for manual callback entry; the PKCE verifier is never exposed.
@@ -168,7 +192,7 @@ func (flow *Flow) Begin() (Authorization, error) {
 	if err != nil {
 		return Authorization{}, fmt.Errorf("%w: could not generate state", ErrTokenExchange)
 	}
-	verifier, err := randomURLValue()
+	verifier, err := randomPKCEVerifier(flow.config.PKCEVerifierFormat)
 	if err != nil {
 		return Authorization{}, fmt.Errorf("%w: could not generate verifier", ErrTokenExchange)
 	}
@@ -190,6 +214,9 @@ func (flow *Flow) Begin() (Authorization, error) {
 	query.Set("state", state)
 	query.Set("code_challenge", challenge)
 	query.Set("code_challenge_method", "S256")
+	for key, value := range flow.config.AuthorizationParameters {
+		query.Set(key, value)
+	}
 	endpoint.RawQuery = query.Encode()
 
 	now := flow.now().UTC()
@@ -274,8 +301,12 @@ func (flow *Flow) Refresh(ctx context.Context, refreshToken string) (Token, erro
 		"client_id":     {flow.config.PublicClientID},
 		"refresh_token": {refreshToken},
 	}
-	if len(flow.config.Scopes) > 0 {
-		form.Set("scope", strings.Join(flow.config.Scopes, " "))
+	refreshScopes := flow.config.RefreshScopes
+	if len(refreshScopes) == 0 {
+		refreshScopes = flow.config.Scopes
+	}
+	if len(refreshScopes) > 0 {
+		form.Set("scope", strings.Join(refreshScopes, " "))
 	}
 
 	result, err := flow.requestToken(ctx, form)
@@ -497,6 +528,22 @@ func normalizeConfig(config Config) (Config, error) {
 		}
 	}
 	config.Scopes = normalizeScopes(config.Scopes)
+	config.RefreshScopes = normalizeScopes(config.RefreshScopes)
+	config.PKCEVerifierFormat = PKCEVerifierFormat(strings.ToLower(strings.TrimSpace(string(config.PKCEVerifierFormat))))
+	switch config.PKCEVerifierFormat {
+	case "", PKCEVerifierFormatBase64URL:
+		config.PKCEVerifierFormat = PKCEVerifierFormatBase64URL
+	case PKCEVerifierFormatOpenAIHex:
+		// OpenAI Codex compatibility is intentionally opt-in through the
+		// reviewed built-in profile. It still uses crypto/rand and S256.
+	default:
+		return Config{}, fmt.Errorf("%w: unsupported PKCE verifier format", ErrInvalidConfig)
+	}
+	parameters, err := normalizeAuthorizationParameters(config.AuthorizationParameters)
+	if err != nil {
+		return Config{}, err
+	}
+	config.AuthorizationParameters = parameters
 	if config.SessionTTL == 0 {
 		config.SessionTTL = defaultSessionTTL
 	}
@@ -507,6 +554,44 @@ func normalizeConfig(config Config) (Config, error) {
 		config.SessionTTL = maxSessionTTL
 	}
 	return config, nil
+}
+
+var reservedAuthorizationParameters = map[string]struct{}{
+	"response_type":         {},
+	"client_id":             {},
+	"redirect_uri":          {},
+	"scope":                 {},
+	"state":                 {},
+	"code_challenge":        {},
+	"code_challenge_method": {},
+	"code_verifier":         {},
+	"grant_type":            {},
+	"refresh_token":         {},
+	"authorization":         {},
+}
+
+func normalizeAuthorizationParameters(values map[string]string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	result := make(map[string]string, len(values))
+	for rawKey, rawValue := range values {
+		key := strings.TrimSpace(rawKey)
+		value := strings.TrimSpace(rawValue)
+		if key == "" || value == "" || len(key) > 128 || len(value) > 4096 {
+			return nil, fmt.Errorf("%w: invalid authorization parameter", ErrInvalidConfig)
+		}
+		for _, character := range key {
+			if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '_' || character == '-' || character == '.') {
+				return nil, fmt.Errorf("%w: invalid authorization parameter", ErrInvalidConfig)
+			}
+		}
+		if _, reserved := reservedAuthorizationParameters[strings.ToLower(key)]; reserved {
+			return nil, fmt.Errorf("%w: authorization parameter %q is reserved", ErrInvalidConfig, key)
+		}
+		result[key] = value
+	}
+	return result, nil
 }
 
 func validateOAuthURL(raw string) (string, error) {
@@ -567,6 +652,23 @@ func randomURLValue() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+func randomPKCEVerifier(format PKCEVerifierFormat) (string, error) {
+	switch format {
+	case PKCEVerifierFormatOpenAIHex:
+		bytes := make([]byte, openAIPKCEVerifierBytes)
+		if _, err := rand.Read(bytes); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(bytes), nil
+	case PKCEVerifierFormatBase64URL:
+		return randomURLValue()
+	default:
+		// Config normalization makes this unreachable for normal callers, but
+		// retain a defensive error in case a future internal caller mutates it.
+		return "", fmt.Errorf("unsupported PKCE verifier format")
+	}
 }
 
 func pkceChallenge(verifier string) string {

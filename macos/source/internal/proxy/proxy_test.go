@@ -443,13 +443,15 @@ func TestToAnthropicRequestCacheBreakpoints(t *testing.T) {
 func TestToAnthropicRoleMapping(t *testing.T) {
 	gemini := map[string]any{
 		"contents": []any{
+			map[string]any{"role": "user", "parts": []any{map[string]any{"text": "question"}}},
 			map[string]any{"role": "model", "parts": []any{map[string]any{"text": "response"}}},
+			map[string]any{"role": "user", "parts": []any{map[string]any{"text": "follow up"}}},
 		},
 	}
 	out := toAnthropicRequest(gemini, "claude-x")
 	msgs := out["messages"].([]map[string]any)
-	if msgs[0]["role"] != "assistant" {
-		t.Errorf("model should map to assistant, got %v", msgs[0]["role"])
+	if msgs[1]["role"] != "assistant" {
+		t.Errorf("model should map to assistant, got %v", msgs[1]["role"])
 	}
 }
 

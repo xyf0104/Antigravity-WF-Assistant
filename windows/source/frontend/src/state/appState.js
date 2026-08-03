@@ -50,6 +50,7 @@ export const state = reactive({
     lastModelIndexes: "",
     lastModelStatusCode: 0,
     lastModelEncoding: "",
+    lastModelRequestCanceled: false,
     lastError: "",
     asarPath: "",
     lsPath: "",
@@ -244,6 +245,24 @@ export async function testUpstreamAccount(accountID, model) {
 
 export async function startOAuthAuthorization(account) {
   return call("StartOAuthAuthorization", account);
+}
+
+// These two bindings intentionally mirror the provider-profile API exposed by
+// App. Profiles are supplied by the native backend so the renderer never ships
+// a third-party OAuth client ID, secret, or provider-owned endpoint.
+export async function getOAuthLoginProfiles() {
+  return call("GetOAuthLoginProfiles");
+}
+
+export async function startOAuthProviderAuthorization(profileID, account) {
+  return call("StartOAuthProviderAuthorization", profileID, account);
+}
+
+// The native status endpoint returns only redacted authorization progress and
+// display metadata. It is intentionally queried by the view only while a
+// loopback OAuth session is pending; credentials never reach renderer state.
+export async function getOAuthAuthorizationStatus(sessionID) {
+  return call("GetOAuthAuthorizationStatus", sessionID);
 }
 
 export async function completeOAuthAuthorization(sessionID, callback) {

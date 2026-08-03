@@ -79,6 +79,15 @@ const launchTargets = computed(() =>
   (state.patch.targets || []).filter((target) => target.launchable !== false)
 );
 
+function isCanceledModelRequest(error) {
+  const message = String(error || "").trim().toLowerCase();
+  return message.includes("context canceled") ||
+    message.includes("context cancelled") ||
+    message.includes("client disconnected") ||
+    message.includes("broken pipe") ||
+    message.includes("connection reset by peer");
+}
+
 const proxyDiagnostic = computed(() => {
   const configured = state.models.length;
   if (!state.patch.proxyListening) {
@@ -86,6 +95,9 @@ const proxyDiagnostic = computed(() => {
   }
   if (!state.patch.proxyManaged) {
     return { tone: "warn", text: "端口 50999 正由其他进程占用，请先关闭旧版助手后再试。" };
+  }
+  if (state.patch.lastModelRequestCanceled || isCanceledModelRequest(state.patch.lastError)) {
+    return { tone: "neutral", text: "最近一次模型列表请求已取消，未影响已保存的自定义模型。" };
   }
   if (state.patch.lastError) {
     const details = [

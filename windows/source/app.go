@@ -25,17 +25,19 @@ import (
 
 // App holds all Wails-exposed methods.
 type App struct {
-	ctx           context.Context
-	storageDir    string
-	permissions   *permissions.Manager
-	historyMu     sync.RWMutex
-	historyRunMu  sync.Mutex
-	historyStatus HistorySyncStatus
-	launchMu      sync.Mutex
-	updateMu      sync.Mutex
-	oauthMu       sync.Mutex
-	oauthSessions map[string]*pendingOAuthSession
-	exitRequested atomic.Bool
+	ctx            context.Context
+	storageDir     string
+	permissions    *permissions.Manager
+	historyMu      sync.RWMutex
+	historyRunMu   sync.Mutex
+	historyStatus  HistorySyncStatus
+	launchMu       sync.Mutex
+	updateMu       sync.Mutex
+	oauthMu        sync.Mutex
+	oauthSessions  map[string]*pendingOAuthSession
+	oauthResults   map[string]oauthAuthorizationRecord
+	oauthLoopbacks map[string]*oauthLoopbackListener
+	exitRequested  atomic.Bool
 }
 
 func newApp() *App {
@@ -45,9 +47,12 @@ func newApp() *App {
 	_ = os.Chmod(dir, 0o700)
 	storage.Init(dir)
 	return &App{
-		storageDir: dir, permissions: permissions.New(home, dir),
-		oauthSessions: make(map[string]*pendingOAuthSession),
-		historyStatus: HistorySyncStatus{State: "pending", Message: "等待启动时同步历史会话"},
+		storageDir:     dir,
+		permissions:    permissions.New(home, dir),
+		oauthSessions:  make(map[string]*pendingOAuthSession),
+		oauthResults:   make(map[string]oauthAuthorizationRecord),
+		oauthLoopbacks: make(map[string]*oauthLoopbackListener),
+		historyStatus:  HistorySyncStatus{State: "pending", Message: "等待启动时同步历史会话"},
 	}
 }
 
@@ -61,6 +66,7 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.stopOAuthLoopbacks()
 	a.stopTray()
 	_ = proxy.Stop()
 }
@@ -117,29 +123,30 @@ type Result struct {
 }
 
 type PatchStatus struct {
-	AgentPatched           bool                `json:"agentPatched"`
-	IDEPatched             bool                `json:"idePatched"`
-	ProxyListening         bool                `json:"proxyListening"`
-	ProxyManaged           bool                `json:"proxyManaged"`
-	ProxyOwned             bool                `json:"proxyOwned"`
-	LastRequestAt          string              `json:"lastRequestAt"`
-	LastRequestPath        string              `json:"lastRequestPath"`
-	LastModelFetchAt       string              `json:"lastModelFetchAt"`
-	LastModelInjectionAt   string              `json:"lastModelInjectionAt"`
-	LastInjectedModelCount int                 `json:"lastInjectedModelCount"`
-	LastInjectedModelNames []string            `json:"lastInjectedModelNames"`
-	LastInjectedModelSlugs []string            `json:"lastInjectedModelSlugs"`
-	LastModelShape         string              `json:"lastModelShape"`
-	LastModelIndexes       string              `json:"lastModelIndexes"`
-	LastModelStatusCode    int                 `json:"lastModelStatusCode"`
-	LastModelEncoding      string              `json:"lastModelEncoding"`
-	LastError              string              `json:"lastError"`
-	AsarPath               string              `json:"asarPath"`
-	LSPath                 string              `json:"lsPath"`
-	IDEExtension           string              `json:"ideExtension"`
-	IDELS                  string              `json:"ideLS"`
-	Log                    string              `json:"log"`
-	Targets                []PatchTargetStatus `json:"targets"`
+	AgentPatched             bool                `json:"agentPatched"`
+	IDEPatched               bool                `json:"idePatched"`
+	ProxyListening           bool                `json:"proxyListening"`
+	ProxyManaged             bool                `json:"proxyManaged"`
+	ProxyOwned               bool                `json:"proxyOwned"`
+	LastRequestAt            string              `json:"lastRequestAt"`
+	LastRequestPath          string              `json:"lastRequestPath"`
+	LastModelFetchAt         string              `json:"lastModelFetchAt"`
+	LastModelInjectionAt     string              `json:"lastModelInjectionAt"`
+	LastInjectedModelCount   int                 `json:"lastInjectedModelCount"`
+	LastInjectedModelNames   []string            `json:"lastInjectedModelNames"`
+	LastInjectedModelSlugs   []string            `json:"lastInjectedModelSlugs"`
+	LastModelShape           string              `json:"lastModelShape"`
+	LastModelIndexes         string              `json:"lastModelIndexes"`
+	LastModelStatusCode      int                 `json:"lastModelStatusCode"`
+	LastModelEncoding        string              `json:"lastModelEncoding"`
+	LastModelRequestCanceled bool                `json:"lastModelRequestCanceled"`
+	LastError                string              `json:"lastError"`
+	AsarPath                 string              `json:"asarPath"`
+	LSPath                   string              `json:"lsPath"`
+	IDEExtension             string              `json:"ideExtension"`
+	IDELS                    string              `json:"ideLS"`
+	Log                      string              `json:"log"`
+	Targets                  []PatchTargetStatus `json:"targets"`
 }
 
 type PatchTargetStatus struct {
@@ -505,15 +512,24 @@ func (a *App) SaveUpstreamAccount(account storage.UpstreamAccount) Result {
 	if strings.EqualFold(strings.TrimSpace(account.Type), "refresh_token") {
 		return Result{OK: false, Message: "Refresh Token / Mobile RT 必须通过“兑换并保存 OAuth 账户”导入，不能作为 API Key 直接保存。"}
 	}
-	if strings.TrimSpace(account.ID) != "" && strings.TrimSpace(account.EffectiveAPIKey()) == "" {
+	if strings.TrimSpace(account.ID) != "" {
 		existing, err := storage.GetUpstreamAccount(account.ID)
-		if err != nil {
+		if err == nil {
+			if strings.TrimSpace(account.EffectiveAPIKey()) == "" {
+				// Leaving the secret blank in an edit means "keep existing". This lets
+				// the frontend avoid ever receiving stored API keys or OAuth JSON.
+				account.APIKey = existing.APIKey
+				account.Credentials = existing.Credentials
+			}
+			// RefreshScopes is provider profile metadata that older renderer forms do
+			// not expose as a field. Preserve it on a normal credential-safe edit so
+			// the next automatic token refresh retains the provider-required scope.
+			if strings.TrimSpace(account.OAuth.RefreshScopes) == "" {
+				account.OAuth.RefreshScopes = existing.OAuth.RefreshScopes
+			}
+		} else if strings.TrimSpace(account.EffectiveAPIKey()) == "" {
 			return Result{OK: false, Message: err.Error()}
 		}
-		// Leaving the secret blank in an edit means "keep existing". This lets
-		// the frontend avoid ever receiving stored API keys or OAuth JSON.
-		account.APIKey = existing.APIKey
-		account.Credentials = existing.Credentials
 	}
 	if err := upstream.ValidateConfig(upstream.ConfigFromAccount(account)); err != nil {
 		return Result{OK: false, Message: err.Error()}
@@ -691,28 +707,29 @@ func (a *App) GetPatchStatus() PatchStatus {
 		})
 	}
 	return PatchStatus{
-		AgentPatched:           agentPatched,
-		IDEPatched:             idePatched,
-		ProxyListening:         proxy.IsListening(),
-		ProxyManaged:           proxy.IsManagedListener(),
-		ProxyOwned:             proxy.OwnsListener(),
-		LastRequestAt:          diagnostics.LastRequestAt,
-		LastRequestPath:        diagnostics.LastRequestPath,
-		LastModelFetchAt:       diagnostics.LastModelFetchAt,
-		LastModelInjectionAt:   diagnostics.LastModelInjectionAt,
-		LastInjectedModelCount: diagnostics.LastInjectedModelCount,
-		LastInjectedModelNames: diagnostics.LastInjectedModelNames,
-		LastInjectedModelSlugs: diagnostics.LastInjectedModelSlugs,
-		LastModelShape:         diagnostics.LastModelShape,
-		LastModelIndexes:       diagnostics.LastModelIndexes,
-		LastModelStatusCode:    diagnostics.LastModelStatusCode,
-		LastModelEncoding:      diagnostics.LastModelContentEncoding,
-		LastError:              diagnostics.LastError,
-		AsarPath:               s.AsarPath,
-		LSPath:                 s.LSPath,
-		IDEExtension:           s.IDEExtensionPath,
-		IDELS:                  s.IDELSPath,
-		Targets:                targets,
+		AgentPatched:             agentPatched,
+		IDEPatched:               idePatched,
+		ProxyListening:           proxy.IsListening(),
+		ProxyManaged:             proxy.IsManagedListener(),
+		ProxyOwned:               proxy.OwnsListener(),
+		LastRequestAt:            diagnostics.LastRequestAt,
+		LastRequestPath:          diagnostics.LastRequestPath,
+		LastModelFetchAt:         diagnostics.LastModelFetchAt,
+		LastModelInjectionAt:     diagnostics.LastModelInjectionAt,
+		LastInjectedModelCount:   diagnostics.LastInjectedModelCount,
+		LastInjectedModelNames:   diagnostics.LastInjectedModelNames,
+		LastInjectedModelSlugs:   diagnostics.LastInjectedModelSlugs,
+		LastModelShape:           diagnostics.LastModelShape,
+		LastModelIndexes:         diagnostics.LastModelIndexes,
+		LastModelStatusCode:      diagnostics.LastModelStatusCode,
+		LastModelEncoding:        diagnostics.LastModelContentEncoding,
+		LastModelRequestCanceled: diagnostics.LastModelRequestCanceled,
+		LastError:                diagnostics.LastError,
+		AsarPath:                 s.AsarPath,
+		LSPath:                   s.LSPath,
+		IDEExtension:             s.IDEExtensionPath,
+		IDELS:                    s.IDELSPath,
+		Targets:                  targets,
 	}
 }
 

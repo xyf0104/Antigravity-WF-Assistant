@@ -15,6 +15,13 @@ import {
 } from "@/state/appState";
 
 const DEFAULT_XIASS_URL = "https://api.xiass.com";
+const AUTO_ENDPOINT_SUFFIXES = [
+  "/chat/completions",
+  "/chat/messages",
+  "/responses",
+  "/messages",
+  "/models",
+];
 
 const editorOpen = ref(false);
 const editorError = ref("");
@@ -208,6 +215,36 @@ function hostOf(url) {
   }
 }
 
+// Older releases stored a full inference endpoint even when endpointMode was
+// "auto". In that mode the proxy owns the protocol suffix, so showing the
+// full path is both confusing and makes a later provider switch error-prone.
+// Preserve a non-standard base path and query string; strip only recognised
+// endpoint leaves. Manual mode never calls this function.
+function normalizeAutoBaseURL(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return DEFAULT_XIASS_URL;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return raw;
+    let path = parsed.pathname.replace(/\/+$/, "");
+    const lowered = path.toLowerCase();
+    for (const suffix of AUTO_ENDPOINT_SUFFIXES) {
+      if (lowered.endsWith(suffix)) {
+        path = path.slice(0, -suffix.length);
+        break;
+      }
+    }
+    // XIASS's default is intentionally just the domain. Its resolver adds
+    // /v1 itself, whereas a third-party /v1 base path remains intact.
+    if (parsed.hostname.toLowerCase() === "api.xiass.com" && (path === "" || path === "/v1")) {
+      path = "";
+    }
+    return `${parsed.protocol}//${parsed.host}${path}${parsed.search}`;
+  } catch {
+    return raw;
+  }
+}
+
 function capabilityLabels(model) {
   const caps = automaticCapabilities(model.provider, model.externalModelName, model.capabilities, model.apiStyle);
   const labels = [];
@@ -221,10 +258,12 @@ function capabilityLabels(model) {
 
 function modelToForm(model) {
   const capabilities = automaticCapabilities(model.provider, model.externalModelName, model.capabilities, model.apiStyle);
+  const endpointMode = model.endpointMode || (model.messagePathMode === "manual" ? "manual" : "auto");
   return {
     ...emptyForm(),
     ...model,
-    endpointMode: model.endpointMode || (model.messagePathMode === "manual" ? "manual" : "auto"),
+    apiUrl: endpointMode === "auto" ? normalizeAutoBaseURL(model.apiUrl) : model.apiUrl,
+    endpointMode,
     accountIds: Array.isArray(model.accountIds) ? [...model.accountIds] : [],
     reasoningEffort: model.reasoningEffort || "auto",
     apiStyle: model.apiStyle || (model.provider === "anthropic" ? "messages" : "auto"),
@@ -251,7 +290,10 @@ function openEdit(model) {
   form.value = modelToForm(model);
   isNew.value = false;
   editorError.value = "";
-  editorNotice.value = "";
+  const originalURL = String(model.apiUrl || "").trim();
+  editorNotice.value = form.value.endpointMode === "auto" && originalURL && form.value.apiUrl !== originalURL
+    ? "已将旧版保存的完整接口尾缀收敛为基础地址；智能补全会自动选择正确路径。"
+    : "";
   testSuccess.value = "";
   discoveredModels.value = [];
   selectedModelIds.value = [];
@@ -278,8 +320,21 @@ function onEndpointModeChange(mode) {
   if (mode === "manual") {
     editorNotice.value = "手动完整路径已启用：WF 会原样使用你填写的 API 地址，不再补全或替换路径。";
   } else {
-    editorNotice.value = "智能补全已启用：只需填写域名或基础路径，WF 会按当前协议补全请求地址。";
+    const originalURL = String(form.value.apiUrl || "").trim();
+    form.value.apiUrl = normalizeAutoBaseURL(originalURL);
+    editorNotice.value = form.value.apiUrl !== originalURL
+      ? "智能补全已启用：已将完整接口尾缀收敛为基础地址，WF 会按当前协议补全请求路径。"
+      : "智能补全已启用：只需填写域名或基础路径，WF 会按当前协议补全请求地址。";
   }
+}
+
+// Keep the model editor consistent with the account editor: automatic mode
+// owns the protocol leaf, so a pasted legacy /v1/chat/completions-style URL is
+// immediately displayed as its base address. Manual mode deliberately leaves
+// every character untouched so users can override any endpoint themselves.
+function onAPIURLChange(value) {
+  const raw = typeof value === "string" ? value : "";
+  form.value.apiUrl = form.value.endpointMode === "auto" ? normalizeAutoBaseURL(raw) : raw;
 }
 
 function parseHeaders() {
@@ -306,10 +361,14 @@ function parseHeaders() {
 
 function upstreamConfig() {
   const accountIds = selectedAccounts.value.map((account) => account.id);
+  const endpointMode = form.value.endpointMode;
+  const apiUrl = endpointMode === "auto"
+    ? normalizeAutoBaseURL(form.value.apiUrl)
+    : form.value.apiUrl?.trim();
   return {
     provider: form.value.provider,
-    apiUrl: form.value.apiUrl?.trim(),
-    endpointMode: form.value.endpointMode,
+    apiUrl,
+    endpointMode,
     apiKey: form.value.apiKey?.trim(),
     apiStyle: form.value.apiStyle,
     messagePathMode: form.value.messagePathMode,
@@ -521,7 +580,7 @@ async function handleDelete() {
           <div class="compact-label">接口地址输入方式</div>
           <SegmentedControl :options="endpointModeOptions" :model-value="form.endpointMode" @update:model-value="onEndpointModeChange" />
           <div class="two-col">
-            <Field :label="apiURLLabel" :hint="apiURLHint" v-model="form.apiUrl" :placeholder="apiURLPlaceholder" mono />
+            <Field :label="apiURLLabel" :hint="apiURLHint" :model-value="form.apiUrl" :placeholder="apiURLPlaceholder" mono @update:model-value="onAPIURLChange" />
             <Field label="API Key / 访问令牌" type="password" v-model="form.apiKey" placeholder="sk-..." mono />
           </div>
           <div v-if="form.provider === 'anthropic' && form.endpointMode !== 'manual'" class="claude-path-control">

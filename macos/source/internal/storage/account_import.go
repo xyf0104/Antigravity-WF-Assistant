@@ -138,7 +138,16 @@ func canonicalizeImportedCredentials(target map[string]any, sources []map[string
 		{"secret", []string{"secret"}},
 		{"token_type", []string{"token_type", "tokenType"}},
 		{"scope", []string{"scope", "scopes"}},
+		// XIASS records the public OAuth client in credentials so a later local
+		// refresh uses the same registered client. It is public metadata, never
+		// a client secret.
+		{"client_id", []string{"client_id", "clientId", "oauth_client_id", "oauthClientId"}},
 		{"account_id", []string{"account_id", "accountId", "chatgpt_account_id"}},
+		{"chatgpt_account_id", []string{"chatgpt_account_id", "chatgptAccountId"}},
+		{"chatgpt_user_id", []string{"chatgpt_user_id", "chatgptUserId"}},
+		{"organization_id", []string{"organization_id", "organizationId", "org_id", "orgId", "organization"}},
+		{"plan_type", []string{"plan_type", "planType", "chatgpt_plan_type", "chatgptPlanType", "plan", "tier"}},
+		{"subscription_expires_at", []string{"subscription_expires_at", "subscriptionExpiresAt", "plan_expires_at", "planExpiresAt"}},
 		{"email", []string{"email", "user_email", "userEmail"}},
 	} {
 		if text := importedStringFromMaps(sources, field.keys...); text != "" {
@@ -198,12 +207,17 @@ func importedOAuthConfiguration(value map[string]any) OAuthConfiguration {
 			sources = append(sources, child)
 		}
 	}
+	// XIASS-style exports put client_id beside tokens under credentials. Include
+	// the bounded credential containers only for this public configuration
+	// lookup; this never treats a token as an OAuth client setting.
+	sources = append(sources, importedCredentialMaps(value)...)
 	return normalizeOAuthConfiguration(OAuthConfiguration{
 		AuthorizationURL: importedStringFromMaps(sources, "authorizationUrl", "authorization_url", "authorizeUrl", "authorize_url", "authUrl", "auth_url"),
 		TokenURL:         importedStringFromMaps(sources, "tokenUrl", "token_url", "tokenEndpoint", "token_endpoint"),
 		ClientID:         importedStringFromMaps(sources, "clientId", "client_id", "publicClientId", "public_client_id"),
 		RedirectURI:      importedStringFromMaps(sources, "redirectUri", "redirect_uri", "callbackUrl", "callback_url"),
 		Scopes:           importedScopesFromMaps(sources),
+		RefreshScopes:    importedStringFromMaps(sources, "refreshScopes", "refresh_scopes"),
 	})
 }
 
@@ -242,8 +256,10 @@ func importedAccountIdentity(value map[string]any) AccountIdentity {
 	return normalizeAccountIdentity(AccountIdentity{
 		Email:                 importedStringFromMaps(sources, "email", "user_email", "userEmail"),
 		Subject:               importedStringFromMaps(sources, "sub", "subject", "user_id", "userId", "chatgpt_user_id"),
+		ChatGPTAccountID:      importedStringFromMaps(sources, "chatgpt_account_id", "chatgptAccountId"),
+		ChatGPTUserID:         importedStringFromMaps(sources, "chatgpt_user_id", "chatgptUserId"),
 		Plan:                  importedStringFromMaps(sources, "plan", "plan_type", "planType", "chatgpt_plan_type", "tier"),
-		OrganizationID:        importedStringFromMaps(sources, "organization_id", "organizationId", "org_id", "orgId", "account_id", "accountId", "chatgpt_account_id", "poid"),
+		OrganizationID:        importedStringFromMaps(sources, "organization_id", "organizationId", "organization", "org_id", "orgId", "account_id", "accountId", "poid"),
 		SubscriptionExpiresAt: importedStringFromMaps(sources, "subscription_expires_at", "subscriptionExpiresAt", "plan_expires_at", "planExpiresAt"),
 		PrivacyMode:           importedStringFromMaps(sources, "privacy_mode", "privacyMode"),
 		Source:                importedStringFromMaps(sources, "identity_source", "identitySource"),

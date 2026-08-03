@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import Field from "@/components/ui/Field.vue";
@@ -13,15 +13,24 @@ import {
   discoverAccountModels,
   importOAuthRefreshToken,
   importUpstreamAccounts,
+  getOAuthAuthorizationStatus,
+  getOAuthLoginProfiles,
   loadAccounts,
   refreshUpstreamAccountQuota,
   refreshUpstreamOAuthAccount,
   saveUpstreamAccount,
   setUpstreamAccountEnabled,
   startOAuthAuthorization,
+  startOAuthProviderAuthorization,
   state,
   testUpstreamAccount,
 } from "@/state/appState";
+import {
+	canManuallyCompleteOAuthSession,
+  isAutomaticOAuthPendingSession,
+  isTerminalOAuthAuthorizationState,
+  redactOAuthAuthorizationStatus,
+} from "@/state/oauthAuthorizationStatus";
 
 const DEFAULT_XIASS_URL = "https://api.xiass.com";
 const editorOpen = ref(false);
@@ -43,6 +52,19 @@ const discoveredModels = ref([]);
 const selectedModelIds = ref([]);
 const oauthSession = ref(null);
 const oauthCallback = ref("");
+const oauthProfiles = ref([]);
+const oauthProfilesLoading = ref(false);
+const oauthProfilesLoaded = ref(false);
+const oauthProfilesError = ref("");
+const selectedOAuthProfileID = ref("");
+const oauthAdvancedOpen = ref(false);
+let removeOAuthCompletionListener = null;
+const OAUTH_STATUS_POLL_INTERVAL_MS = 2000;
+let oauthStatusPollTimer = null;
+let oauthStatusPollSessionID = "";
+let oauthStatusPollInFlight = false;
+let completingOAuthSessionID = "";
+let oauthStartGeneration = 0;
 
 const providerOptions = [
   { label: "OpenAI", value: "openai" },
@@ -108,6 +130,102 @@ function editorCredentialType(type) {
   return type || "api_key";
 }
 
+function readText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function knownProvider(value) {
+  const provider = readText(value).toLowerCase();
+  return providerOptions.some((option) => option.value === provider) ? provider : "";
+}
+
+// OAuth profiles are deliberately supplied by GetOAuthLoginProfiles(). Do not
+// add provider-owned client IDs, secrets, or auth endpoints to this renderer.
+// This sanitised shape is the only profile data the UI retains or displays.
+function normalizeOAuthProfile(profile) {
+  const id = readText(profile?.id ?? profile?.profileId ?? profile?.profileID ?? profile?.profile_id);
+  if (!id) return null;
+  const automaticCallback = typeof profile?.automaticCallback === "boolean"
+    ? profile.automaticCallback
+    : typeof profile?.autoLoopback === "boolean"
+      ? profile.autoLoopback
+      : undefined;
+  return {
+    id,
+    label: readText(profile?.label ?? profile?.displayName ?? profile?.display_name ?? profile?.name ?? profile?.provider) || "OAuth 登录",
+    description: readText(profile?.description ?? profile?.hint),
+    provider: knownProvider(profile?.provider),
+    available: readText(profile?.available),
+    message: readText(profile?.message),
+    requiresClientId: profile?.requiresClientId === true || profile?.requiresClientID === true,
+    manualCompletionRequired: profile?.manualCompletionRequired === true,
+    automaticCallback,
+  };
+}
+
+function normalizeOAuthProfiles(result) {
+  const entries = Array.isArray(result)
+    ? result
+    : Array.isArray(result?.profiles)
+      ? result.profiles
+      : Array.isArray(result?.items)
+        ? result.items
+        : [];
+  return entries.map(normalizeOAuthProfile).filter(Boolean);
+}
+
+// Smart endpoint mode owns the protocol suffix. Old saved configurations may
+// still contain a request endpoint, so only strip a closed set of endpoint
+// tails here. Manual mode deliberately bypasses this helper unchanged.
+const SMART_API_ENDPOINT_SUFFIXES = [
+  "/v1/chat/completions",
+  "/v1/chat/messages",
+  "/v1/responses",
+  "/v1/messages",
+  "/v1/models",
+  "/chat/completions",
+  "/chat/messages",
+  "/responses",
+  "/messages",
+  "/models",
+];
+
+function smartBaseAPIURL(value) {
+  let raw = readText(value);
+  if (!raw) return "";
+  // Smart mode owns the request path. A pasted endpoint often also carries a
+  // copied query/hash; neither belongs to a reusable base URL. Manual mode
+  // bypasses this helper entirely and continues to preserve those bytes.
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+      parsed.search = "";
+      parsed.hash = "";
+      raw = parsed.toString();
+    }
+  } catch {
+    // Leave an incomplete address untouched while the user is still typing;
+    // the backend supplies the final validation on save.
+  }
+  const withoutTrailingSlashes = raw.replace(/\/+$/, "");
+  const lower = withoutTrailingSlashes.toLowerCase();
+  for (const suffix of SMART_API_ENDPOINT_SUFFIXES) {
+    if (!lower.endsWith(suffix)) continue;
+    const base = withoutTrailingSlashes.slice(0, -suffix.length).replace(/\/+$/, "");
+    return base || raw;
+  }
+  return raw;
+}
+
+function accountEndpointMode(account) {
+  return account?.endpointMode || (account?.messagePathMode === "manual" ? "manual" : "auto");
+}
+
+function accountDisplayAPIURL(account) {
+  const value = readText(account?.apiUrl);
+  return accountEndpointMode(account) === "auto" ? smartBaseAPIURL(value) : value;
+}
+
 function emptyForm() {
   return {
     id: "",
@@ -142,6 +260,14 @@ const form = ref(emptyForm());
 const isExisting = computed(() => Boolean(form.value.id));
 const isJSONImportTypeSelected = computed(() => isJSONImportType(form.value.type));
 const isRefreshTokenTypeSelected = computed(() => isRefreshTokenType(form.value.type));
+const selectedOAuthProfile = computed(() => oauthProfiles.value.find((profile) => profile.id === selectedOAuthProfileID.value) || null);
+const usingOAuthProviderProfile = computed(() => form.value.type === "oauth" && Boolean(selectedOAuthProfile.value));
+const showOAuthCustomFields = computed(() => !usingOAuthProviderProfile.value || oauthAdvancedOpen.value || selectedOAuthProfile.value?.requiresClientId === true);
+const oauthManualCompletionRequired = computed(() => {
+  const session = oauthSession.value;
+  return Boolean(session && (session.manualCompletionRequired === true || session.automaticCallback === false));
+});
+const showOAuthManualFallback = computed(() => canManuallyCompleteOAuthSession(oauthSession.value));
 const selectedCount = computed(() => selectedModelIds.value.length);
 const allSelected = computed(() => discoveredModels.value.length > 0 && selectedModelIds.value.length === discoveredModels.value.length);
 const apiURLLabel = computed(() => form.value.endpointMode === "manual" ? "完整 API 地址" : "基础域名 / 基础路径");
@@ -181,11 +307,13 @@ function formatTime(value) {
 
 function accountToForm(account) {
   const defaults = emptyForm();
+  const endpointMode = accountEndpointMode(account);
   return {
     ...defaults,
     ...account,
     type: editorCredentialType(account.type),
-    endpointMode: account.endpointMode || (account.messagePathMode === "manual" ? "manual" : "auto"),
+    apiUrl: endpointMode === "auto" ? smartBaseAPIURL(account.apiUrl || defaults.apiUrl) : account.apiUrl,
+    endpointMode,
     messagePathMode: account.messagePathMode === "manual" ? "auto" : (account.messagePathMode || "auto"),
     headersText: JSON.stringify(account.headers || {}, null, 2),
     oauth: { ...defaults.oauth, ...(account.oauth || {}) },
@@ -194,7 +322,97 @@ function accountToForm(account) {
   };
 }
 
+function clearOAuthStatusPolling(sessionID = "") {
+  // A late completion from an older browser tab must not stop a newer login.
+  if (sessionID && oauthStatusPollSessionID && oauthStatusPollSessionID !== sessionID) return;
+  if (oauthStatusPollTimer !== null) window.clearTimeout(oauthStatusPollTimer);
+  oauthStatusPollTimer = null;
+  oauthStatusPollSessionID = "";
+  oauthStatusPollInFlight = false;
+}
+
+function clearOAuthSession() {
+  // Invalidate an in-flight authorization-start call before clearing local
+  // state. A browser result that arrives after close/profile switching must
+  // never re-open polling or restore a stale session in the renderer.
+  oauthStartGeneration += 1;
+  clearOAuthStatusPolling();
+  oauthSession.value = null;
+  oauthCallback.value = "";
+  oauthBusy.value = false;
+}
+
+function closeEditor() {
+  clearOAuthSession();
+  editorOpen.value = false;
+}
+
+function shouldPollOAuthStatus(session = oauthSession.value) {
+  return isAutomaticOAuthPendingSession(session, editorOpen.value);
+}
+
+function scheduleOAuthStatusPoll(sessionID, delay = OAUTH_STATUS_POLL_INTERVAL_MS) {
+  if (!sessionID || oauthStatusPollSessionID !== sessionID || oauthStatusPollTimer !== null || oauthStatusPollInFlight) return;
+  oauthStatusPollTimer = window.setTimeout(() => {
+    oauthStatusPollTimer = null;
+    void pollOAuthAuthorizationStatus(sessionID);
+  }, delay);
+}
+
+async function pollOAuthAuthorizationStatus(sessionID) {
+  if (oauthStatusPollSessionID !== sessionID || oauthStatusPollInFlight) return;
+  if (!shouldPollOAuthStatus() || oauthSession.value?.sessionId !== sessionID) {
+    clearOAuthStatusPolling(sessionID);
+    return;
+  }
+
+  oauthStatusPollInFlight = true;
+  let shouldContinue = true;
+  try {
+    const status = redactOAuthAuthorizationStatus(await getOAuthAuthorizationStatus(sessionID));
+    if (!status || status.sessionId !== sessionID || oauthStatusPollSessionID !== sessionID) return;
+
+    if (isTerminalOAuthAuthorizationState(status.state) && (status.state === "completed" || status.state === "failed")) {
+      shouldContinue = false;
+      await handleOAuthCompletionEvent(status.completion);
+      return;
+    }
+
+    if (isTerminalOAuthAuthorizationState(status.state)) {
+      shouldContinue = false;
+      clearOAuthStatusPolling(sessionID);
+      if (oauthSession.value?.sessionId === sessionID) {
+        oauthBusy.value = false;
+        oauthSession.value = null;
+        oauthCallback.value = "";
+        editorError.value = status.message || "OAuth 授权会话已失效，请重新开始授权。";
+      }
+    }
+    // A transient native bridge failure intentionally stays pending. The
+    // existing completion event can still arrive, and the next low-frequency
+    // status query provides a reliable fallback without touching credentials.
+  } catch {
+    // Keep waiting for the native completion event and retry on the interval.
+  } finally {
+    if (oauthStatusPollSessionID === sessionID) {
+      oauthStatusPollInFlight = false;
+      if (shouldContinue && shouldPollOAuthStatus() && oauthSession.value?.sessionId === sessionID) {
+        scheduleOAuthStatusPoll(sessionID);
+      }
+    }
+  }
+}
+
+function startOAuthStatusPolling() {
+  const session = oauthSession.value;
+  clearOAuthStatusPolling();
+  if (!shouldPollOAuthStatus(session)) return;
+  oauthStatusPollSessionID = session.sessionId;
+  void pollOAuthAuthorizationStatus(session.sessionId);
+}
+
 async function openNew() {
+  clearOAuthSession();
   let defaults = {};
   try {
     defaults = await defaultUpstreamAccount();
@@ -208,28 +426,38 @@ async function openNew() {
     oauth: { ...emptyForm().oauth, ...(defaults?.oauth || {}) },
     apiKey: "",
   };
+	if (form.value.endpointMode === "auto") form.value.apiUrl = smartBaseAPIURL(form.value.apiUrl);
   editorError.value = "";
   editorNotice.value = "地址默认只需填写域名。保存后可获取模型并默认全选导入；完整接口地址可随时切换为手动模式。";
   discoveredModels.value = [];
   selectedModelIds.value = [];
-  oauthSession.value = null;
-  oauthCallback.value = "";
+  selectedOAuthProfileID.value = "";
+  oauthAdvancedOpen.value = false;
+  void loadOAuthLoginProfiles();
   editorOpen.value = true;
 }
 
 function openEdit(account) {
+  clearOAuthSession();
   form.value = accountToForm(account);
   editorError.value = "";
   editorNotice.value = "为保护已保存的凭据，令牌栏不会回显；留空保存将保留原有凭据。";
   discoveredModels.value = [];
   selectedModelIds.value = [];
-  oauthSession.value = null;
-  oauthCallback.value = "";
+  selectedOAuthProfileID.value = "";
+  oauthAdvancedOpen.value = true;
+  void loadOAuthLoginProfiles();
   editorOpen.value = true;
 }
 
 function onProviderChange(provider) {
+  if (provider !== form.value.provider) clearOAuthSession();
+  if (selectedOAuthProfile.value?.provider && selectedOAuthProfile.value.provider !== provider) {
+    selectedOAuthProfileID.value = "";
+    oauthAdvancedOpen.value = true;
+  }
   form.value.provider = provider;
+  if (form.value.endpointMode === "auto") form.value.apiUrl = smartBaseAPIURL(form.value.apiUrl);
   if (provider === "anthropic") {
     form.value.authMode = "x_api_key";
     form.value.apiStyle = "messages";
@@ -241,23 +469,24 @@ function onProviderChange(provider) {
 
 function onTypeChange(type) {
   if (isJSONImportType(type)) {
+    clearOAuthSession();
+    selectedOAuthProfileID.value = "";
     form.value.type = "auth_json";
     form.value.apiKey = "";
     form.value.refreshToken = "";
-    oauthSession.value = null;
-    oauthCallback.value = "";
     editorError.value = "";
     editorNotice.value = "auth.json / OAuth JSON 需要通过 JSON 导入解析，不能作为 API Key 保存。";
-    editorOpen.value = false;
+    closeEditor();
     openJSONImport("请粘贴完整的账户 JSON；它将按凭据字段安全导入，而不会被当作普通 API Key。");
     return;
   }
 
-  form.value.type = isRefreshTokenType(type) ? "refresh_token" : type;
+  const nextType = isRefreshTokenType(type) ? "refresh_token" : type;
+  if (nextType !== "oauth") clearOAuthSession();
+  form.value.type = nextType;
+  if (form.value.type !== "oauth") selectedOAuthProfileID.value = "";
   if (isRefreshTokenType(form.value.type)) {
     form.value.apiKey = "";
-    oauthSession.value = null;
-    oauthCallback.value = "";
   }
   if (form.value.type === "x_api_key") form.value.authMode = "x_api_key";
   else if (form.value.type === "custom_header") form.value.authMode = "custom_header";
@@ -267,9 +496,90 @@ function onTypeChange(type) {
 
 function onEndpointModeChange(mode) {
   form.value.endpointMode = mode;
+  if (mode === "auto") form.value.apiUrl = smartBaseAPIURL(form.value.apiUrl);
   editorNotice.value = mode === "manual"
     ? "手动完整路径已启用：WF 会严格使用上方地址。"
     : "智能补全已启用：WF 会根据协议补全请求路径。";
+}
+
+function onAPIURLChange(value) {
+  const raw = typeof value === "string" ? value : "";
+  form.value.apiUrl = form.value.endpointMode === "auto" ? smartBaseAPIURL(raw) : raw;
+}
+
+async function loadOAuthLoginProfiles({ force = false } = {}) {
+  if (oauthProfilesLoading.value || (oauthProfilesLoaded.value && !force)) return;
+  oauthProfilesLoading.value = true;
+  oauthProfilesError.value = "";
+  try {
+    const result = await getOAuthLoginProfiles();
+    oauthProfiles.value = normalizeOAuthProfiles(result);
+    oauthProfilesLoaded.value = true;
+    if (!oauthProfiles.value.length) {
+      oauthProfilesError.value = "当前没有可用的安全 OAuth 登录预设；仍可使用高级自定义 OAuth。";
+    }
+  } catch {
+    // Older builds may not expose profiles yet. Custom PKCE OAuth remains a
+    // complete fallback, so intentionally do not surface an internal error.
+    oauthProfiles.value = [];
+    oauthProfilesLoaded.value = true;
+    oauthProfilesError.value = "安全 OAuth 登录预设暂不可用；仍可使用高级自定义 OAuth。";
+  } finally {
+    oauthProfilesLoading.value = false;
+  }
+}
+
+function selectOAuthProfile(profile) {
+  if (!profile?.id) return;
+  clearOAuthSession();
+  if (profile.available === "custom_only") {
+    selectedOAuthProfileID.value = "";
+    form.value.type = "oauth";
+    oauthAdvancedOpen.value = true;
+    editorError.value = "";
+    editorNotice.value = profile.message || "该登录方式需要使用高级自定义 OAuth。";
+    return;
+  }
+  if (profile.provider) {
+    form.value.provider = profile.provider;
+    form.value.authMode = "bearer";
+    form.value.apiStyle = profile.provider === "anthropic" ? "messages" : "auto";
+    form.value.messagePathMode = profile.provider === "anthropic" ? "standard" : "auto";
+  }
+  form.value.type = "oauth";
+  selectedOAuthProfileID.value = profile.id;
+  oauthAdvancedOpen.value = profile.requiresClientId === true;
+  editorError.value = "";
+  editorNotice.value = profile.requiresClientId
+    ? `已选择 ${profile.label}。请先填写你自己的公开 OAuth Client ID；无需且不会保存 Client Secret。`
+    : (profile.message || `已选择 ${profile.label} 安全登录。将由本机后端提供已审核的 OAuth 配置。`);
+}
+
+function useCustomOAuth() {
+  clearOAuthSession();
+  selectedOAuthProfileID.value = "";
+  form.value.type = "oauth";
+  oauthAdvancedOpen.value = true;
+  editorError.value = "";
+  editorNotice.value = "高级自定义 OAuth 已启用：请填写你自己注册的公开客户端信息。";
+}
+
+function missingOAuthConfiguration() {
+  const oauth = form.value.oauth || {};
+  const labels = [
+    [oauth.authorizationUrl, "授权地址"],
+    [oauth.tokenUrl, "令牌地址"],
+    [oauth.clientId, "公开客户端 ID"],
+    [oauth.redirectUri, "已注册回调地址"],
+  ];
+  return labels.filter(([value]) => !readText(value)).map(([, label]) => label);
+}
+
+function requireCustomOAuthConfiguration() {
+  const missing = missingOAuthConfiguration();
+  if (!missing.length) return;
+  oauthAdvancedOpen.value = true;
+  throw new Error(`请先填写高级自定义 OAuth：${missing.join("、")}`);
 }
 
 function parseHeaders() {
@@ -291,9 +601,10 @@ function parseHeaders() {
 }
 
 function accountPayload() {
+  const rawAPIURL = form.value.apiUrl?.trim();
   const payload = {
     ...form.value,
-    apiUrl: form.value.apiUrl?.trim(),
+    apiUrl: form.value.endpointMode === "auto" ? smartBaseAPIURL(rawAPIURL) : rawAPIURL,
     apiKey: form.value.apiKey?.trim(),
     authHeader: form.value.authHeader?.trim(),
     quotaUrl: form.value.quotaUrl?.trim(),
@@ -332,7 +643,7 @@ async function saveAccount() {
   try {
     const result = await saveUpstreamAccount(account);
     if (result?.ok) {
-      editorOpen.value = false;
+      closeEditor();
     } else {
       editorError.value = result?.message || "账户保存失败";
     }
@@ -351,6 +662,7 @@ async function importRefreshToken() {
   try {
     account = accountPayload();
     if (!account.apiUrl) throw new Error("请填写 API 地址");
+    requireCustomOAuthConfiguration();
     if (!refreshToken) throw new Error("请填写 Refresh Token 或 Mobile RT。");
   } catch (error) {
     editorError.value = error.message;
@@ -365,7 +677,7 @@ async function importRefreshToken() {
     }
     form.value.refreshToken = "";
     editorNotice.value = result.message || "刷新令牌已兑换为 OAuth 账户。";
-    editorOpen.value = false;
+    closeEditor();
   } catch (error) {
     editorError.value = String(error?.message || error);
   } finally {
@@ -373,31 +685,146 @@ async function importRefreshToken() {
   }
 }
 
+// Keep only the normal authorization result fields in renderer state. In
+// particular, do not spread a native result because it might later gain token
+// fields that must never be held by or logged from the WebView.
+function oauthSessionFromResult(result, { manualFallback = false, profile = null } = {}) {
+  const resultAutomaticCallback = result?.automaticCallback === true
+    ? true
+    : result?.automaticCallback === false
+      ? false
+      : undefined;
+  const automaticCallback = resultAutomaticCallback ?? profile?.automaticCallback;
+  return {
+    sessionId: readText(result?.sessionId ?? result?.sessionID),
+    authorizationUrl: readText(result?.authorizationUrl ?? result?.authorizationURL),
+    expiresAt: readText(result?.expiresAt),
+    manualCompletionRequired: manualFallback
+      || result?.manualCompletionRequired === true
+      || profile?.manualCompletionRequired === true
+      || automaticCallback === false,
+    automaticCallback,
+  };
+}
+
 async function startOAuth() {
   editorError.value = "";
   editorNotice.value = "";
   let account;
+  const profile = selectedOAuthProfile.value;
   try {
     account = accountPayload();
     if (!account.apiUrl) throw new Error("请填写 API 地址");
+    if (profile?.requiresClientId && !readText(account.oauth?.clientId)) {
+      oauthAdvancedOpen.value = true;
+      throw new Error("该登录方式需要填写你自己的公开 OAuth Client ID；无需填写 Client Secret。");
+    }
+    if (!profile) requireCustomOAuthConfiguration();
   } catch (error) {
     editorError.value = error.message;
     return;
   }
+  clearOAuthSession();
+  const startGeneration = oauthStartGeneration;
   oauthBusy.value = true;
   try {
-    const result = await startOAuthAuthorization(account);
+    const result = profile
+      ? await startOAuthProviderAuthorization(profile.id, account)
+      : await startOAuthAuthorization(account);
+    if (startGeneration !== oauthStartGeneration || !editorOpen.value) return;
     if (!result?.ok) {
       editorError.value = result?.message || "无法生成 OAuth 授权链接";
       return;
     }
-    oauthSession.value = result;
+    // Generic custom OAuth is intentionally a copy-and-paste completion flow.
+    // Provider profiles declare whether their callback completes automatically.
+    const session = oauthSessionFromResult(result, { manualFallback: !profile, profile });
+    if (!session.sessionId) {
+      editorError.value = "OAuth 授权会话创建失败，请重新开始授权。";
+      return;
+    }
+    oauthSession.value = session;
     oauthCallback.value = "";
-    editorNotice.value = result.message || "授权链接已生成。";
+    editorNotice.value = result.message || (profile ? "已打开浏览器，等待授权完成。" : "授权链接已生成。");
+    startOAuthStatusPolling();
   } catch (error) {
-    editorError.value = String(error?.message || error);
+    if (startGeneration === oauthStartGeneration && editorOpen.value) {
+      editorError.value = String(error?.message || error);
+    }
   } finally {
-    oauthBusy.value = false;
+    if (startGeneration === oauthStartGeneration) oauthBusy.value = false;
+  }
+}
+
+function redactedOAuthIdentity(identity) {
+  if (!identity || typeof identity !== "object") return null;
+  const safe = {
+    email: readText(identity.email),
+    subject: readText(identity.subject ?? identity.sub),
+    plan: readText(identity.plan ?? identity.planType ?? identity.plan_type),
+  };
+  return Object.values(safe).some(Boolean) ? safe : null;
+}
+
+// wf:oauth-completed is a redacted native event contract. Deliberately copy
+// only sessionId, ok, message, accountId and display-only identity fields;
+// never retain arbitrary payload properties in the renderer.
+function redactedOAuthCompletionEvent(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const sessionId = readText(payload.sessionId ?? payload.sessionID);
+  if (!sessionId) return null;
+  return {
+    sessionId,
+    ok: payload.ok === true,
+    message: readText(payload.message),
+    accountId: readText(payload.accountId ?? payload.accountID),
+    identity: redactedOAuthIdentity(payload.identity),
+  };
+}
+
+function completedIdentityLabel(identity) {
+  return identity?.email || identity?.subject || identity?.plan || "";
+}
+
+async function handleOAuthCompletionEvent(payload) {
+  const completion = redactedOAuthCompletionEvent(payload);
+  if (!completion || completion.sessionId !== oauthSession.value?.sessionId) return;
+  if (completingOAuthSessionID === completion.sessionId) return;
+  completingOAuthSessionID = completion.sessionId;
+  clearOAuthStatusPolling(completion.sessionId);
+  oauthBusy.value = false;
+  oauthSession.value = null;
+  oauthCallback.value = "";
+  try {
+    if (!completion.ok) {
+      editorError.value = completion.message || "浏览器授权未完成，请重试或改用高级自定义 OAuth。";
+      return;
+    }
+    const identity = completedIdentityLabel(completion.identity);
+    editorError.value = "";
+    editorNotice.value = completion.message || (identity ? `已完成授权：${identity}` : "OAuth 授权已完成。");
+    await loadAccounts();
+    closeEditor();
+  } finally {
+    completingOAuthSessionID = "";
+  }
+}
+
+function bindOAuthCompletionEvents() {
+  if (removeOAuthCompletionListener) return;
+  const runtime = window.runtime;
+  if (typeof runtime?.EventsOn !== "function") return;
+  const unsubscribe = runtime.EventsOn("wf:oauth-completed", (payload) => {
+    void handleOAuthCompletionEvent(payload);
+  });
+  // Wails runtime builds differ: newer generated bindings return an unsubscribe
+  // callback, while some bundled runtimes return void. In the latter case use
+  // EventsOff during unmount so returning to this route cannot stack listeners
+  // and process the same OAuth completion more than once.
+  if (typeof unsubscribe === "function") {
+    removeOAuthCompletionListener = unsubscribe;
+  } else if (typeof runtime.EventsOff === "function") {
+    removeOAuthCompletionListener = () => runtime.EventsOff("wf:oauth-completed");
   }
 }
 
@@ -408,15 +835,17 @@ async function completeOAuth() {
     return;
   }
   editorError.value = "";
+  const sessionID = oauthSession.value.sessionId;
   oauthBusy.value = true;
   try {
-    const result = await completeOAuthAuthorization(oauthSession.value.sessionId, oauthCallback.value.trim());
+    const result = await completeOAuthAuthorization(sessionID, oauthCallback.value.trim());
+    if (oauthSession.value?.sessionId !== sessionID) return;
     if (!result?.ok) {
       editorError.value = result?.message || "OAuth 授权兑换失败";
       return;
     }
     editorNotice.value = result.message || "OAuth 授权完成。";
-    editorOpen.value = false;
+    closeEditor();
   } catch (error) {
     editorError.value = String(error?.message || error);
   } finally {
@@ -603,12 +1032,23 @@ async function importAccounts() {
 }
 
 function openJSONImport(notice = "") {
+  if (editorOpen.value) closeEditor();
   importError.value = "";
   importNotice.value = notice;
   importOpen.value = true;
 }
 
-onMounted(() => loadAccounts());
+onMounted(() => {
+  loadAccounts();
+  void loadOAuthLoginProfiles();
+  bindOAuthCompletionEvents();
+});
+
+onBeforeUnmount(() => {
+  clearOAuthSession();
+  if (typeof removeOAuthCompletionListener === "function") removeOAuthCompletionListener();
+  removeOAuthCompletionListener = null;
+});
 </script>
 
 <template>
@@ -639,7 +1079,7 @@ onMounted(() => loadAccounts());
         <div class="row between" style="align-items: flex-start; gap: 10px">
           <div class="grow col" style="gap: 3px; min-width: 0">
             <div class="t-headline truncate">{{ account.name || providerLabel(account.provider) + ' 账户' }}</div>
-            <div class="mono truncate">{{ account.apiUrl }}</div>
+            <div class="mono truncate">{{ accountDisplayAPIURL(account) }}</div>
           </div>
           <Badge :tone="providerTone(account.provider)" :label="providerLabel(account.provider)" />
         </div>
@@ -681,7 +1121,7 @@ onMounted(() => loadAccounts());
       </article>
     </div>
 
-    <Modal :open="editorOpen" :title="isExisting ? '编辑上游账户' : '添加上游账户'" wide persistent @close="editorOpen = false">
+    <Modal :open="editorOpen" :title="isExisting ? '编辑上游账户' : '添加上游账户'" wide persistent @close="closeEditor">
       <div class="col editor" style="gap: 15px">
         <section class="section">
           <span class="t-footnote">账户类型与协议</span>
@@ -695,7 +1135,7 @@ onMounted(() => loadAccounts());
           <div class="compact-label">接口地址输入方式</div>
           <SegmentedControl :options="endpointModeOptions" :model-value="form.endpointMode" @update:model-value="onEndpointModeChange" />
           <div class="two-col">
-            <Field :label="apiURLLabel" :hint="apiURLHint" v-model="form.apiUrl" :placeholder="apiURLPlaceholder" mono />
+            <Field :label="apiURLLabel" :hint="apiURLHint" :model-value="form.apiUrl" :placeholder="apiURLPlaceholder" mono @update:model-value="onAPIURLChange" />
             <Field label="账户名称" hint="可选；用于模型绑定时识别" v-model="form.name" placeholder="例如 XIASS 主账户" />
           </div>
           <Field label="上游额度接口（可选）" hint="仅在点击“刷新额度”时请求；填写上游文档提供的完整 URL。" v-model="form.quotaUrl" placeholder="https://provider.example.com/v1/usage" mono />
@@ -745,15 +1185,62 @@ onMounted(() => loadAccounts());
               <div class="t-headline">{{ isRefreshTokenTypeSelected ? '刷新令牌 / Mobile RT 导入' : 'OAuth 授权登录' }}</div>
               <div class="t-caption">使用已注册的公开客户端与回调地址。WF 不内置第三方客户端 ID 或密钥。</div>
             </div>
-            <Button v-if="form.type === 'oauth'" variant="tinted" :loading="oauthBusy" @click="startOAuth">生成登录链接</Button>
+            <Button v-if="form.type === 'oauth'" variant="tinted" :loading="oauthBusy" @click="startOAuth">{{ selectedOAuthProfile ? '浏览器登录' : '生成登录链接' }}</Button>
           </div>
-          <div class="two-col">
-            <Field label="授权地址" v-model="form.oauth.authorizationUrl" placeholder="https://provider.example.com/oauth/authorize" mono />
-            <Field label="令牌地址" v-model="form.oauth.tokenUrl" placeholder="https://provider.example.com/oauth/token" mono />
-            <Field label="公开客户端 ID" v-model="form.oauth.clientId" placeholder="OAuth public client ID" mono />
-            <Field label="已注册回调地址" v-model="form.oauth.redirectUri" placeholder="http://localhost:1455/auth/callback" mono />
+
+          <div v-if="form.type === 'oauth'" class="oauth-profiles">
+            <div class="row between" style="gap: 8px">
+              <div>
+                <div class="compact-label">安全 OAuth 快速登录</div>
+                <div class="t-caption">预设由本机后端提供；前端不会内置第三方 Client ID 或密钥。</div>
+              </div>
+              <Button variant="plain" size="sm" :loading="oauthProfilesLoading" @click="loadOAuthLoginProfiles({ force: true })">刷新预设</Button>
+            </div>
+            <div v-if="oauthProfilesLoading && !oauthProfiles.length" class="oauth-profile-empty">正在读取可用登录方式…</div>
+            <div v-else-if="oauthProfiles.length" class="oauth-profile-grid" role="group" aria-label="OAuth 登录方式">
+              <button
+                v-for="profile in oauthProfiles"
+                :key="profile.id"
+                type="button"
+                class="oauth-profile"
+                :class="{ active: selectedOAuthProfileID === profile.id }"
+                :aria-pressed="selectedOAuthProfileID === profile.id"
+                @click="selectOAuthProfile(profile)"
+              >
+                <span class="oauth-profile-title">{{ profile.label }}</span>
+                <span v-if="profile.description" class="oauth-profile-description">{{ profile.description }}</span>
+                <span v-else class="oauth-profile-description">使用该提供方的安全 OAuth 登录流程</span>
+              </button>
+            </div>
+            <div v-else class="oauth-profile-empty">{{ oauthProfilesError }}</div>
+            <div class="row" style="flex-wrap: wrap; gap: 7px">
+              <Button variant="plain" size="sm" @click="useCustomOAuth">高级自定义 OAuth</Button>
+              <Button variant="plain" size="sm" @click="openJSONImport('请粘贴完整的 auth.json / OAuth JSON；导入器会安全提取令牌与账户信息。')">导入 OAuth JSON</Button>
+              <Button variant="plain" size="sm" @click="onTypeChange('refresh_token')">使用 Refresh Token</Button>
+            </div>
+			  <div v-if="selectedOAuthProfile" class="oauth-profile-selected">
+				<template v-if="selectedOAuthProfile.requiresClientId">已选择 <b>{{ selectedOAuthProfile.label }}</b>。此预设需要填写你自己的公开 OAuth Client ID；其他公开字段可按需调整。</template>
+				<template v-else>已选择 <b>{{ selectedOAuthProfile.label }}</b>。授权成功后会按该安全预设保存账户；需要自有客户端时可切换到高级自定义 OAuth。</template>
+			  </div>
           </div>
-          <Field label="Scopes（可选）" v-model="form.oauth.scopes" placeholder="openid profile email offline_access" mono />
+
+          <div v-if="showOAuthCustomFields" class="oauth-custom-fields">
+            <div class="row between" style="gap: 8px">
+              <div>
+                <div class="t-headline">高级自定义 OAuth</div>
+                <div class="t-caption">仅填写你自己注册的公开客户端；不需要也不应填写客户端密钥。</div>
+              </div>
+				<Button v-if="usingOAuthProviderProfile && !selectedOAuthProfile?.requiresClientId" variant="plain" size="sm" @click="oauthAdvancedOpen = false">收起</Button>
+            </div>
+            <div class="two-col">
+              <Field label="授权地址" v-model="form.oauth.authorizationUrl" placeholder="https://provider.example.com/oauth/authorize" mono />
+              <Field label="令牌地址" v-model="form.oauth.tokenUrl" placeholder="https://provider.example.com/oauth/token" mono />
+              <Field label="公开客户端 ID" v-model="form.oauth.clientId" placeholder="OAuth public client ID" mono />
+              <Field label="已注册回调地址" v-model="form.oauth.redirectUri" placeholder="http://localhost:1455/auth/callback" mono />
+            </div>
+            <Field label="Scopes（可选）" v-model="form.oauth.scopes" placeholder="openid profile email offline_access" mono />
+          </div>
+
           <div v-if="isRefreshTokenTypeSelected" class="oauth-result">
             <Field label="Refresh Token / Mobile RT" hint="仅发送至上方 OAuth 令牌地址；不会作为 API Key 保存或发往模型接口。" type="password" v-model="form.refreshToken" placeholder="粘贴刷新令牌" mono />
             <div class="t-caption">该值不会作为 API Key 保存或发往模型接口；兑换成功后仅保留 OAuth 访问令牌和刷新凭据。</div>
@@ -767,12 +1254,16 @@ onMounted(() => loadAccounts());
             <div class="row" style="justify-content: flex-end; gap: 7px">
               <Button variant="plain" size="sm" @click="copyText(oauthSession.authorizationUrl)">复制链接</Button>
             </div>
-            <label class="text-field">
-              <span class="t-footnote">回调 URL 或授权码</span>
+            <div v-if="!oauthManualCompletionRequired" class="oauth-auto-callback">
+              <div class="t-footnote">正在等待浏览器授权完成</div>
+              <div class="t-caption">自动回调优先。请保持此窗口打开；若浏览器没有自动返回，可在下方粘贴完整回调地址或 code 继续完成。</div>
+            </div>
+            <label v-if="showOAuthManualFallback" class="text-field">
+              <span class="t-footnote">{{ oauthManualCompletionRequired ? '回调 URL 或授权码' : '手动兜底：回调 URL 或授权码' }}</span>
               <textarea v-model="oauthCallback" spellcheck="false" placeholder="粘贴浏览器跳转后的完整地址，或仅粘贴 code"></textarea>
             </label>
-            <div class="row" style="justify-content: flex-end; gap: 7px">
-              <Button variant="filled" size="sm" :loading="oauthBusy" @click="completeOAuth">兑换并保存账户</Button>
+            <div v-if="showOAuthManualFallback" class="row" style="justify-content: flex-end; gap: 7px">
+              <Button variant="filled" size="sm" :loading="oauthBusy" @click="completeOAuth">{{ oauthManualCompletionRequired ? '兑换并保存账户' : '手动兑换并保存账户' }}</Button>
             </div>
           </div>
         </section>
@@ -808,7 +1299,7 @@ onMounted(() => loadAccounts());
         <div v-if="editorError" class="err-box">{{ editorError }}</div>
       </div>
       <template #footer>
-        <Button variant="plain" @click="editorOpen = false">取消</Button>
+        <Button variant="plain" @click="closeEditor">取消</Button>
         <Button v-if="!isRefreshTokenTypeSelected && !isJSONImportTypeSelected" variant="filled" :loading="saving" @click="saveAccount">保存账户</Button>
       </template>
     </Modal>
@@ -865,6 +1356,17 @@ onMounted(() => loadAccounts());
 .discover-box { background: color-mix(in srgb, var(--accent-soft) 28%, var(--bg-card)); }
 .hint-box { background: color-mix(in srgb, var(--blue-soft) 28%, var(--bg-card)); }
 .oauth-box { background: color-mix(in srgb, var(--blue-soft) 24%, var(--bg-card)); }
+.oauth-profiles, .oauth-custom-fields { display: flex; flex-direction: column; gap: 9px; padding: 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
+.oauth-profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 7px; }
+.oauth-profile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 68px; padding: 9px 10px; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); color: var(--text-primary); background: var(--bg-inset); text-align: left; transition: border-color .16s var(--ease), background .16s var(--ease), transform .14s var(--spring); }
+.oauth-profile:hover { border-color: var(--accent-border); background: var(--accent-soft); }
+.oauth-profile:active { transform: scale(.985); }
+.oauth-profile.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent); }
+.oauth-profile-title { font-size: 12.5px; font-weight: 650; }
+.oauth-profile-description { color: var(--text-tertiary); font-size: 10.5px; line-height: 1.35; }
+.oauth-profile-empty, .oauth-profile-selected, .oauth-auto-callback { padding: 8px 9px; border: 1px dashed var(--separator-strong); border-radius: var(--r-sm); color: var(--text-secondary); font-size: 11.5px; line-height: 1.45; background: var(--bg-inset); }
+.oauth-profile-selected { border-style: solid; border-color: var(--accent-border); color: var(--accent-strong); background: var(--accent-soft); }
+.oauth-auto-callback { display: flex; flex-direction: column; gap: 4px; border-style: solid; border-color: var(--accent-border); background: color-mix(in srgb, var(--accent-soft) 56%, var(--bg-card)); }
 .oauth-result { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--accent-border); border-radius: var(--r-sm); background: var(--bg-card); }
 .oauth-link { display: block; max-height: 74px; overflow: auto; padding: 8px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-secondary); font-size: 11px; line-height: 1.45; word-break: break-all; background: var(--bg-inset); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

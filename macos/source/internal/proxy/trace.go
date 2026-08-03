@@ -28,6 +28,7 @@ type Diagnostics struct {
 	LastModelIndexes         string   `json:"lastModelIndexes"`
 	LastModelStatusCode      int      `json:"lastModelStatusCode"`
 	LastModelContentEncoding string   `json:"lastModelContentEncoding"`
+	LastModelRequestCanceled bool     `json:"lastModelRequestCanceled"`
 	LastError                string   `json:"lastError"`
 }
 
@@ -77,6 +78,9 @@ func updateDiagnostics(event string, fields map[string]any, now string) {
 	case "models-injected":
 		diag.LastModelInjectionAt = now
 		diag.LastError = ""
+		diag.LastModelRequestCanceled = false
+		diag.LastModelStatusCode = 0
+		diag.LastModelContentEncoding = ""
 		switch count := fields["customCount"].(type) {
 		case int:
 			diag.LastInjectedModelCount = count
@@ -90,21 +94,50 @@ func updateDiagnostics(event string, fields map[string]any, now string) {
 		diag.LastInjectedModelSlugs = traceStringSlice(fields["customSlugs"])
 		diag.LastModelIndexes = strings.Join(traceStringSlice(fields["indexPaths"]), ", ")
 	default:
-		if strings.Contains(event, "error") {
-			if message, ok := fields["message"].(string); ok {
-				diag.LastError = message
-			}
-			switch code := fields["statusCode"].(type) {
-			case int:
-				diag.LastModelStatusCode = code
-			case float64:
-				diag.LastModelStatusCode = int(code)
-			}
-			if encoding, ok := fields["encoding"].(string); ok {
-				diag.LastModelContentEncoding = encoding
-			}
+		// The dashboard's model status only describes the model-list injection
+		// request. Do not let ordinary chat or stream errors overwrite it.
+		if !strings.HasPrefix(event, "model-") || !strings.Contains(event, "error") {
+			return
+		}
+
+		message, _ := fields["message"].(string)
+		if isCanceledModelRequest(message) {
+			// Antigravity can cancel this request while switching a session,
+			// restarting, or stopping a request. It is not an injection failure;
+			// clear status metadata too, so an earlier HTTP error is not shown
+			// next to the cancellation message.
+			diag.LastModelRequestCanceled = true
+			diag.LastError = ""
+			diag.LastModelStatusCode = 0
+			diag.LastModelContentEncoding = ""
+			return
+		}
+
+		diag.LastModelRequestCanceled = false
+		diag.LastError = message
+		// A model-side failure without an HTTP response must not inherit a
+		// stale status/encoding from an earlier request.
+		diag.LastModelStatusCode = 0
+		diag.LastModelContentEncoding = ""
+		switch code := fields["statusCode"].(type) {
+		case int:
+			diag.LastModelStatusCode = code
+		case float64:
+			diag.LastModelStatusCode = int(code)
+		}
+		if encoding, ok := fields["encoding"].(string); ok {
+			diag.LastModelContentEncoding = encoding
 		}
 	}
+}
+
+func isCanceledModelRequest(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(message, "context canceled") ||
+		strings.Contains(message, "context cancelled") ||
+		strings.Contains(message, "client disconnected") ||
+		strings.Contains(message, "broken pipe") ||
+		strings.Contains(message, "connection reset by peer")
 }
 
 func traceStringSlice(value any) []string {

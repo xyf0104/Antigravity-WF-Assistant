@@ -78,13 +78,24 @@ type OAuthConfiguration struct {
 	ClientID         string `json:"clientId,omitempty"`
 	RedirectURI      string `json:"redirectUri,omitempty"`
 	Scopes           string `json:"scopes,omitempty"`
+	// RefreshScopes is an optional provider-specific scope set for refresh
+	// grants. It is public OAuth-client metadata (not a token) and lets a
+	// profile use the narrower scope required by its token endpoint while
+	// keeping the original authorization scopes intact.
+	RefreshScopes string `json:"refreshScopes,omitempty"`
 }
 
 // AccountIdentity is metadata shown beside a credential. It is never used to
 // authorize requests or infer billing entitlement.
 type AccountIdentity struct {
-	Email                 string `json:"email,omitempty"`
-	Subject               string `json:"subject,omitempty"`
+	Email   string `json:"email,omitempty"`
+	Subject string `json:"subject,omitempty"`
+	// ChatGPTAccountID and ChatGPTUserID are display-only identifiers returned
+	// by OpenAI/Codex OAuth claims or an account export. They are kept separate
+	// from OrganizationID because a ChatGPT account can belong to more than one
+	// organization/workspace.
+	ChatGPTAccountID      string `json:"chatgptAccountId,omitempty"`
+	ChatGPTUserID         string `json:"chatgptUserId,omitempty"`
 	Plan                  string `json:"plan,omitempty"`
 	OrganizationID        string `json:"organizationId,omitempty"`
 	SubscriptionExpiresAt string `json:"subscriptionExpiresAt,omitempty"`
@@ -455,12 +466,15 @@ func normalizeOAuthConfiguration(config OAuthConfiguration) OAuthConfiguration {
 	config.ClientID = strings.TrimSpace(config.ClientID)
 	config.RedirectURI = strings.TrimSpace(config.RedirectURI)
 	config.Scopes = strings.Join(strings.Fields(config.Scopes), " ")
+	config.RefreshScopes = strings.Join(strings.Fields(config.RefreshScopes), " ")
 	return config
 }
 
 func normalizeAccountIdentity(identity AccountIdentity) AccountIdentity {
 	identity.Email = strings.TrimSpace(identity.Email)
 	identity.Subject = strings.TrimSpace(identity.Subject)
+	identity.ChatGPTAccountID = strings.TrimSpace(identity.ChatGPTAccountID)
+	identity.ChatGPTUserID = strings.TrimSpace(identity.ChatGPTUserID)
 	identity.Plan = strings.TrimSpace(identity.Plan)
 	identity.OrganizationID = strings.TrimSpace(identity.OrganizationID)
 	identity.SubscriptionExpiresAt = strings.TrimSpace(identity.SubscriptionExpiresAt)
@@ -501,6 +515,12 @@ func populateIdentityFromCredentials(account *UpstreamAccount, fallbackSource st
 	if identity.Subject == "" {
 		identity.Subject = importedStringFromMaps(credentialMaps, "sub", "subject", "user_id", "userId", "chatgpt_user_id")
 	}
+	if identity.ChatGPTAccountID == "" {
+		identity.ChatGPTAccountID = importedStringFromMaps(credentialMaps, "chatgpt_account_id", "chatgptAccountId")
+	}
+	if identity.ChatGPTUserID == "" {
+		identity.ChatGPTUserID = importedStringFromMaps(credentialMaps, "chatgpt_user_id", "chatgptUserId")
+	}
 	if identity.Plan == "" {
 		identity.Plan = importedStringFromMaps(credentialMaps, "plan", "plan_type", "planType", "chatgpt_plan_type", "tier")
 	}
@@ -522,7 +542,13 @@ func populateIdentityFromCredentials(account *UpstreamAccount, fallbackSource st
 	if account.AuthExpiresAt == "" {
 		account.AuthExpiresAt = importedAuthExpiresAt(account.Credentials)
 	}
-	if identity.Email != "" || identity.Subject != "" || identity.Plan != "" || identity.OrganizationID != "" {
+	// Older exports only carry chatgpt_account_id. Retain the historical
+	// organization fallback for those records while keeping a real organization
+	// ID separate whenever the provider supplied one.
+	if identity.OrganizationID == "" && identity.ChatGPTAccountID != "" {
+		identity.OrganizationID = identity.ChatGPTAccountID
+	}
+	if identity.Email != "" || identity.Subject != "" || identity.ChatGPTAccountID != "" || identity.ChatGPTUserID != "" || identity.Plan != "" || identity.OrganizationID != "" || identity.SubscriptionExpiresAt != "" {
 		if identity.Source == "" {
 			identity.Source = fallbackSource
 		}
@@ -562,20 +588,75 @@ func mergeIdentityClaims(identity *AccountIdentity, claims map[string]any) {
 	if identity.Subject == "" {
 		identity.Subject = stringValue(claims, "sub", "user_id", "chatgpt_user_id")
 	}
+	if identity.ChatGPTAccountID == "" {
+		identity.ChatGPTAccountID = stringValue(claims, "chatgpt_account_id", "chatgptAccountId")
+	}
+	if identity.ChatGPTUserID == "" {
+		identity.ChatGPTUserID = stringValue(claims, "chatgpt_user_id", "chatgptUserId")
+	}
 	if identity.Plan == "" {
 		identity.Plan = stringValue(claims, "plan", "plan_type", "chatgpt_plan_type")
 	}
+	if identity.SubscriptionExpiresAt == "" {
+		identity.SubscriptionExpiresAt = stringValue(claims, "subscription_expires_at", "subscriptionExpiresAt", "plan_expires_at", "planExpiresAt")
+	}
 	if identity.OrganizationID == "" {
-		identity.OrganizationID = stringValue(claims, "organization_id", "org_id", "account_id", "chatgpt_account_id", "poid")
+		identity.OrganizationID = stringValue(claims, "organization_id", "organization", "org_id", "account_id", "poid")
 	}
 	if authClaims := mapValue(claims, "https://api.openai.com/auth", "auth"); authClaims != nil {
+		if identity.Subject == "" {
+			identity.Subject = stringValue(authClaims, "user_id", "chatgpt_user_id")
+		}
+		if identity.ChatGPTAccountID == "" {
+			identity.ChatGPTAccountID = stringValue(authClaims, "chatgpt_account_id")
+		}
+		if identity.ChatGPTUserID == "" {
+			identity.ChatGPTUserID = stringValue(authClaims, "chatgpt_user_id")
+		}
 		if identity.Plan == "" {
 			identity.Plan = stringValue(authClaims, "chatgpt_plan_type", "plan_type", "plan")
 		}
+		if identity.SubscriptionExpiresAt == "" {
+			identity.SubscriptionExpiresAt = stringValue(authClaims, "subscription_expires_at", "subscriptionExpiresAt", "plan_expires_at", "planExpiresAt")
+		}
 		if identity.OrganizationID == "" {
-			identity.OrganizationID = stringValue(authClaims, "chatgpt_account_id", "organization_id", "poid")
+			identity.OrganizationID = stringValue(authClaims, "organization_id", "org_id", "poid")
+			if identity.OrganizationID == "" {
+				identity.OrganizationID = openAIOrganizationID(authClaims)
+			}
 		}
 	}
+	if identity.OrganizationID == "" && identity.ChatGPTAccountID != "" {
+		identity.OrganizationID = identity.ChatGPTAccountID
+	}
+}
+
+// openAIOrganizationID obtains a display-only default organization ID from
+// the documented OpenAI ID-token claim. It intentionally makes no authorization
+// decision from an unsigned JWT payload.
+func openAIOrganizationID(claims map[string]any) string {
+	items, ok := claims["organizations"].([]any)
+	if !ok {
+		return ""
+	}
+	first := ""
+	for _, item := range items {
+		organization, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := stringValue(organization, "id", "organization_id", "organizationId")
+		if id == "" {
+			continue
+		}
+		if first == "" {
+			first = id
+		}
+		if enabled, ok := organization["is_default"].(bool); ok && enabled {
+			return id
+		}
+	}
+	return first
 }
 
 func withActiveRequestCounts(accounts []UpstreamAccount) []UpstreamAccount {

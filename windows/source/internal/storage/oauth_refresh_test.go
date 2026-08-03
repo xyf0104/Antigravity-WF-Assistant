@@ -17,6 +17,7 @@ func oauthRefreshTestConfiguration(serverURL string) OAuthConfiguration {
 		ClientID:         "wf-public-client",
 		RedirectURI:      serverURL + "/callback",
 		Scopes:           "openid offline_access",
+		RefreshScopes:    "openid",
 	}
 }
 
@@ -50,8 +51,8 @@ func TestAcquireAccountForModelRefreshesNearExpiryOAuthToken(t *testing.T) {
 		if got := request.Form.Get("refresh_token"); got != "old-refresh-token" {
 			t.Errorf("refresh_token = %q, want old-refresh-token", got)
 		}
-		if got := request.Form.Get("scope"); got != "openid offline_access" {
-			t.Errorf("scope = %q, want OAuth scopes", got)
+		if got := request.Form.Get("scope"); got != "openid" {
+			t.Errorf("scope = %q, want provider refresh scopes", got)
 		}
 		refreshCalls.Add(1)
 		writer.Header().Set("Content-Type", "application/json")

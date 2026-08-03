@@ -57,6 +57,7 @@ func TestImportUpstreamAccountsReadsNestedXIASSOAuthTokens(t *testing.T) {
 			"client_id":         "imported-public-client",
 			"redirect_uri":      "http://127.0.0.1:1455/callback",
 			"scopes":            []any{"openid", "offline_access"},
+			"refresh_scopes":    "openid",
 		},
 	}))
 	if !result.OK || result.Added != 1 {
@@ -98,6 +99,7 @@ func TestImportUpstreamAccountsReadsNestedXIASSOAuthTokens(t *testing.T) {
 		ClientID:         "imported-public-client",
 		RedirectURI:      "http://127.0.0.1:1455/callback",
 		Scopes:           "openid offline_access",
+		RefreshScopes:    "openid",
 	}) {
 		t.Fatalf("OAuth configuration = %#v, want explicitly imported public config", account.OAuth)
 	}
@@ -148,6 +150,68 @@ func TestImportUpstreamAccountsReadsCodexAuthJSONWithoutDefaultOAuthClient(t *te
 	}
 	if account.OAuth != (OAuthConfiguration{}) {
 		t.Fatalf("OAuth config must stay empty when JSON did not provide one: %#v", account.OAuth)
+	}
+}
+
+func TestImportUpstreamAccountsPreservesXIASSOpenAIOAuthMetadata(t *testing.T) {
+	Init(t.TempDir())
+	const (
+		accessToken           = "xiass-openai-access"
+		refreshToken          = "xiass-openai-refresh"
+		publicClientID        = "app_xiass_public_client"
+		chatGPTAccountID      = "chatgpt-account-x"
+		chatGPTUserID         = "chatgpt-user-x"
+		organizationID        = "org-x"
+		planType              = "pro"
+		subscriptionExpiresAt = "2026-12-31T00:00:00Z"
+	)
+
+	result := ImportUpstreamAccounts(importAccountJSON(t, map[string]any{
+		"platform": "openai",
+		"type":     "oauth",
+		"credentials": map[string]any{
+			"access_token":       accessToken,
+			"refresh_token":      refreshToken,
+			"client_id":          publicClientID,
+			"chatgpt_account_id": chatGPTAccountID,
+			"chatgpt_user_id":    chatGPTUserID,
+			// The compact organization alias occurs in several browser/export
+			// shapes and must remain distinct from chatgpt_account_id.
+			"organization":            organizationID,
+			"plan_type":               planType,
+			"subscription_expires_at": subscriptionExpiresAt,
+		},
+	}))
+	if !result.OK || result.Added != 1 {
+		t.Fatalf("import result = %#v, want one imported XIASS OAuth account", result)
+	}
+
+	accounts, err := LoadUpstreamAccounts()
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("load accounts = %#v, %v", accounts, err)
+	}
+	account := accounts[0]
+	for key, want := range map[string]string{
+		"access_token":            accessToken,
+		"refresh_token":           refreshToken,
+		"client_id":               publicClientID,
+		"chatgpt_account_id":      chatGPTAccountID,
+		"chatgpt_user_id":         chatGPTUserID,
+		"organization_id":         organizationID,
+		"plan_type":               planType,
+		"subscription_expires_at": subscriptionExpiresAt,
+	} {
+		if got, _ := account.Credentials[key].(string); got != want {
+			t.Fatalf("credential %s = %q, want %q", key, got, want)
+		}
+	}
+	if got, want := account.OAuth.ClientID, publicClientID; got != want {
+		t.Fatalf("OAuth client ID = %q, want XIASS credential client ID %q", got, want)
+	}
+	identity := account.Identity
+	if identity.ChatGPTAccountID != chatGPTAccountID || identity.ChatGPTUserID != chatGPTUserID ||
+		identity.OrganizationID != organizationID || identity.Plan != planType || identity.SubscriptionExpiresAt != subscriptionExpiresAt {
+		t.Fatalf("identity = %#v, want imported XIASS OpenAI metadata", identity)
 	}
 }
 

@@ -29,34 +29,41 @@ import (
 
 // App holds all Wails-exposed methods.
 type App struct {
-	ctx           context.Context
-	storageDir    string
-	permissions   *permissions.Manager
-	historyMu     sync.RWMutex
-	historyRunMu  sync.Mutex
-	historyStatus HistorySyncStatus
-	launchMu      sync.Mutex
-	updateMu      sync.Mutex
-	oauthMu       sync.Mutex
-	oauthSessions map[string]*pendingOAuthSession
-	exitRequested atomic.Bool
+	ctx            context.Context
+	storageDir     string
+	permissions    *permissions.Manager
+	historyMu      sync.RWMutex
+	historyRunMu   sync.Mutex
+	historyStatus  HistorySyncStatus
+	launchMu       sync.Mutex
+	updateMu       sync.Mutex
+	oauthMu        sync.Mutex
+	oauthSessions  map[string]*pendingOAuthSession
+	oauthResults   map[string]oauthAuthorizationRecord
+	oauthLoopbacks map[string]*oauthLoopbackListener
+	exitRequested  atomic.Bool
 }
 
 // pendingOAuthSession binds a short-lived PKCE session to the account draft
 // entered in the renderer. Secrets never leave this Go-side structure.
 type pendingOAuthSession struct {
-	flow    *oauthflow.Flow
-	account storage.UpstreamAccount
-	state   string
-	expires time.Time
+	flow         *oauthflow.Flow
+	account      storage.UpstreamAccount
+	state        string
+	expires      time.Time
+	completionMu sync.Mutex
 }
 
 type OAuthAuthorizationResult struct {
-	OK               bool   `json:"ok"`
-	Message          string `json:"message"`
-	SessionID        string `json:"sessionId,omitempty"`
-	AuthorizationURL string `json:"authorizationUrl,omitempty"`
-	ExpiresAt        string `json:"expiresAt,omitempty"`
+	OK                       bool   `json:"ok"`
+	Message                  string `json:"message"`
+	SessionID                string `json:"sessionId,omitempty"`
+	AuthorizationURL         string `json:"authorizationUrl,omitempty"`
+	RedirectURI              string `json:"redirectUri,omitempty"`
+	ProfileID                string `json:"profileId,omitempty"`
+	AutomaticCallback        bool   `json:"automaticCallback"`
+	ManualCompletionRequired bool   `json:"manualCompletionRequired"`
+	ExpiresAt                string `json:"expiresAt,omitempty"`
 }
 
 type OAuthCompletionResult struct {
@@ -81,9 +88,11 @@ func newApp() *App {
 	_ = os.Chmod(dir, 0o700)
 	storage.Init(dir)
 	return &App{
-		storageDir:    dir,
-		permissions:   permissions.New(home, dir),
-		oauthSessions: make(map[string]*pendingOAuthSession),
+		storageDir:     dir,
+		permissions:    permissions.New(home, dir),
+		oauthSessions:  make(map[string]*pendingOAuthSession),
+		oauthResults:   make(map[string]oauthAuthorizationRecord),
+		oauthLoopbacks: make(map[string]*oauthLoopbackListener),
 		historyStatus: HistorySyncStatus{
 			State:   "pending",
 			Message: "等待启动时同步历史会话",
@@ -101,6 +110,7 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.stopOAuthLoopbacks()
 	a.stopTray()
 	_ = proxy.Stop()
 }
@@ -157,29 +167,30 @@ type Result struct {
 }
 
 type PatchStatus struct {
-	AgentPatched           bool                `json:"agentPatched"`
-	IDEPatched             bool                `json:"idePatched"`
-	ProxyListening         bool                `json:"proxyListening"`
-	ProxyManaged           bool                `json:"proxyManaged"`
-	ProxyOwned             bool                `json:"proxyOwned"`
-	LastRequestAt          string              `json:"lastRequestAt"`
-	LastRequestPath        string              `json:"lastRequestPath"`
-	LastModelFetchAt       string              `json:"lastModelFetchAt"`
-	LastModelInjectionAt   string              `json:"lastModelInjectionAt"`
-	LastInjectedModelCount int                 `json:"lastInjectedModelCount"`
-	LastInjectedModelNames []string            `json:"lastInjectedModelNames"`
-	LastInjectedModelSlugs []string            `json:"lastInjectedModelSlugs"`
-	LastModelShape         string              `json:"lastModelShape"`
-	LastModelIndexes       string              `json:"lastModelIndexes"`
-	LastModelStatusCode    int                 `json:"lastModelStatusCode"`
-	LastModelEncoding      string              `json:"lastModelEncoding"`
-	LastError              string              `json:"lastError"`
-	AsarPath               string              `json:"asarPath"`
-	LSPath                 string              `json:"lsPath"`
-	IDEExtension           string              `json:"ideExtension"`
-	IDELS                  string              `json:"ideLS"`
-	Log                    string              `json:"log"`
-	Targets                []PatchTargetStatus `json:"targets"`
+	AgentPatched             bool                `json:"agentPatched"`
+	IDEPatched               bool                `json:"idePatched"`
+	ProxyListening           bool                `json:"proxyListening"`
+	ProxyManaged             bool                `json:"proxyManaged"`
+	ProxyOwned               bool                `json:"proxyOwned"`
+	LastRequestAt            string              `json:"lastRequestAt"`
+	LastRequestPath          string              `json:"lastRequestPath"`
+	LastModelFetchAt         string              `json:"lastModelFetchAt"`
+	LastModelInjectionAt     string              `json:"lastModelInjectionAt"`
+	LastInjectedModelCount   int                 `json:"lastInjectedModelCount"`
+	LastInjectedModelNames   []string            `json:"lastInjectedModelNames"`
+	LastInjectedModelSlugs   []string            `json:"lastInjectedModelSlugs"`
+	LastModelShape           string              `json:"lastModelShape"`
+	LastModelIndexes         string              `json:"lastModelIndexes"`
+	LastModelStatusCode      int                 `json:"lastModelStatusCode"`
+	LastModelEncoding        string              `json:"lastModelEncoding"`
+	LastModelRequestCanceled bool                `json:"lastModelRequestCanceled"`
+	LastError                string              `json:"lastError"`
+	AsarPath                 string              `json:"asarPath"`
+	LSPath                   string              `json:"lsPath"`
+	IDEExtension             string              `json:"ideExtension"`
+	IDELS                    string              `json:"ideLS"`
+	Log                      string              `json:"log"`
+	Targets                  []PatchTargetStatus `json:"targets"`
 }
 
 type PatchTargetStatus struct {
@@ -551,15 +562,24 @@ func (a *App) SaveUpstreamAccount(account storage.UpstreamAccount) Result {
 	if strings.EqualFold(strings.TrimSpace(account.Type), "refresh_token") {
 		return Result{OK: false, Message: "Refresh Token / Mobile RT 必须通过“兑换并保存 OAuth 账户”导入，不能作为 API Key 直接保存。"}
 	}
-	if strings.TrimSpace(account.ID) != "" && strings.TrimSpace(account.EffectiveAPIKey()) == "" {
+	if strings.TrimSpace(account.ID) != "" {
 		existing, err := storage.GetUpstreamAccount(account.ID)
-		if err != nil {
+		if err == nil {
+			if strings.TrimSpace(account.EffectiveAPIKey()) == "" {
+				// Leaving the secret blank in an edit means "keep existing". This lets
+				// the frontend avoid ever receiving stored API keys or OAuth JSON.
+				account.APIKey = existing.APIKey
+				account.Credentials = existing.Credentials
+			}
+			// RefreshScopes is provider profile metadata that older renderer forms do
+			// not expose as a field. Preserve it on a normal credential-safe edit so
+			// the next automatic token refresh retains the provider-required scope.
+			if strings.TrimSpace(account.OAuth.RefreshScopes) == "" {
+				account.OAuth.RefreshScopes = existing.OAuth.RefreshScopes
+			}
+		} else if strings.TrimSpace(account.EffectiveAPIKey()) == "" {
 			return Result{OK: false, Message: err.Error()}
 		}
-		// Leaving the secret blank in an edit means "keep existing". This lets
-		// the frontend avoid ever receiving stored API keys or OAuth JSON.
-		account.APIKey = existing.APIKey
-		account.Credentials = existing.Credentials
 	}
 	if err := upstream.ValidateConfig(upstream.ConfigFromAccount(account)); err != nil {
 		return Result{OK: false, Message: err.Error()}
@@ -640,6 +660,7 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 		PublicClientID:   draft.OAuth.ClientID,
 		RedirectURI:      draft.OAuth.RedirectURI,
 		Scopes:           strings.Fields(draft.OAuth.Scopes),
+		RefreshScopes:    strings.Fields(draft.OAuth.RefreshScopes),
 	}
 	flow, err := oauthflow.New(config)
 	if err != nil {
@@ -658,6 +679,7 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 	}
 
 	a.oauthMu.Lock()
+	a.ensureOAuthMapsLocked()
 	a.discardExpiredOAuthSessionsLocked(time.Now())
 	a.oauthSessions[authorization.SessionID] = &pendingOAuthSession{
 		flow: flow, account: draft, state: authorization.State, expires: authorization.ExpiresAt,
@@ -667,9 +689,13 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 		runtime.BrowserOpenURL(a.ctx, authorization.URL)
 	}
 	return OAuthAuthorizationResult{
-		OK: true, Message: "已在浏览器打开授权页；授权后请粘贴完整回调 URL 或授权码。",
-		SessionID: authorization.SessionID, AuthorizationURL: authorization.URL,
-		ExpiresAt: authorization.ExpiresAt.UTC().Format(time.RFC3339),
+		OK:                       true,
+		Message:                  "已在浏览器打开授权页；授权后请粘贴完整回调 URL 或授权码。",
+		SessionID:                authorization.SessionID,
+		AuthorizationURL:         authorization.URL,
+		RedirectURI:              draft.OAuth.RedirectURI,
+		ManualCompletionRequired: true,
+		ExpiresAt:                authorization.ExpiresAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -680,12 +706,34 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 func (a *App) CompleteOAuthAuthorization(sessionID, callback string) OAuthCompletionResult {
 	sessionID = strings.TrimSpace(sessionID)
 	a.oauthMu.Lock()
+	a.ensureOAuthMapsLocked()
 	a.discardExpiredOAuthSessionsLocked(time.Now())
+	if record, found := a.oauthResults[sessionID]; found && record.result.OK {
+		a.oauthMu.Unlock()
+		return record.result
+	}
 	session := a.oauthSessions[sessionID]
 	a.oauthMu.Unlock()
 	if session == nil {
 		return OAuthCompletionResult{Message: "授权会话不存在或已过期，请重新生成登录链接。"}
 	}
+	// A manual fallback and a loopback redirect can arrive at nearly the same
+	// time. Serialising them at the session (not HTTP listener) level lets both
+	// paths safely converge on one persisted account and one completion result.
+	session.completionMu.Lock()
+	defer session.completionMu.Unlock()
+
+	a.oauthMu.Lock()
+	a.discardExpiredOAuthSessionsLocked(time.Now())
+	if record, found := a.oauthResults[sessionID]; found && record.result.OK {
+		a.oauthMu.Unlock()
+		return record.result
+	}
+	if a.oauthSessions[sessionID] != session {
+		a.oauthMu.Unlock()
+		return OAuthCompletionResult{Message: "授权会话不存在或已过期，请重新生成登录链接。"}
+	}
+	a.oauthMu.Unlock()
 
 	parsed, err := oauthflow.ExtractCallback(callback)
 	if err != nil {
@@ -706,19 +754,22 @@ func (a *App) CompleteOAuthAuthorization(sessionID, callback string) OAuthComple
 	if !result.OK {
 		return OAuthCompletionResult{Message: result.Message}
 	}
-	a.oauthMu.Lock()
-	delete(a.oauthSessions, sessionID)
-	a.oauthMu.Unlock()
 	// Fetching the persisted account returns identity claims normalized by the
 	// storage layer. The local ID was assigned before the OAuth session began.
 	stored, err := storage.GetUpstreamAccount(account.ID)
+	completion := OAuthCompletionResult{
+		OK: true, Message: "OAuth 授权已完成，账户已加入本地账户池。", AccountID: account.ID,
+	}
 	if err != nil {
-		return OAuthCompletionResult{OK: true, Message: result.Message, AccountID: account.ID}
+		completion.Message = result.Message
+	} else {
+		completion.Identity = stored.Identity
 	}
-	return OAuthCompletionResult{
-		OK: true, Message: "OAuth 授权已完成，账户已加入本地账户池。",
-		AccountID: stored.ID, Identity: stored.Identity,
-	}
+	a.recordOAuthAuthorizationResult(sessionID, completion)
+	a.oauthMu.Lock()
+	delete(a.oauthSessions, sessionID)
+	a.oauthMu.Unlock()
+	return completion
 }
 
 // ImportOAuthRefreshToken exchanges a user-supplied refresh token with the
@@ -762,6 +813,7 @@ func (a *App) ImportOAuthRefreshToken(draft storage.UpstreamAccount, refreshToke
 		PublicClientID:   draft.OAuth.ClientID,
 		RedirectURI:      draft.OAuth.RedirectURI,
 		Scopes:           strings.Fields(draft.OAuth.Scopes),
+		RefreshScopes:    strings.Fields(draft.OAuth.RefreshScopes),
 	})
 	if err != nil {
 		return OAuthCompletionResult{Message: oauthErrorMessage(err)}
@@ -812,6 +864,7 @@ func (a *App) RefreshUpstreamOAuthAccount(accountID string) Result {
 		PublicClientID:   account.OAuth.ClientID,
 		RedirectURI:      account.OAuth.RedirectURI,
 		Scopes:           strings.Fields(account.OAuth.Scopes),
+		RefreshScopes:    strings.Fields(account.OAuth.RefreshScopes),
 	})
 	if err != nil {
 		return Result{Message: oauthErrorMessage(err)}
@@ -853,12 +906,21 @@ func (a *App) discardExpiredOAuthSessionsLocked(now time.Time) {
 	for sessionID, session := range a.oauthSessions {
 		if session == nil || !now.Before(session.expires) {
 			delete(a.oauthSessions, sessionID)
+			if callback := a.oauthLoopbacks[sessionID]; callback != nil {
+				callback.Close()
+				delete(a.oauthLoopbacks, sessionID)
+			}
+		}
+	}
+	for sessionID, record := range a.oauthResults {
+		if !now.Before(record.expires) {
+			delete(a.oauthResults, sessionID)
 		}
 	}
 }
 
 func applyOAuthToken(account storage.UpstreamAccount, token oauthflow.Token, source string) storage.UpstreamAccount {
-	credentials := make(map[string]any, len(account.Credentials)+6)
+	credentials := make(map[string]any, len(account.Credentials)+7)
 	for key, value := range account.Credentials {
 		credentials[key] = value
 	}
@@ -874,6 +936,12 @@ func applyOAuthToken(account storage.UpstreamAccount, token oauthflow.Token, sou
 	}
 	if token.Scope != "" {
 		credentials["scope"] = token.Scope
+	}
+	// Keep the public OAuth client beside the rotated tokens. This mirrors
+	// XIASS exports and lets a later JSON re-import refresh with the exact
+	// registered client rather than guessing one. It is not a client secret.
+	if clientID := strings.TrimSpace(account.OAuth.ClientID); clientID != "" {
+		credentials["client_id"] = clientID
 	}
 	account.Type = "oauth"
 	account.APIKey = token.AccessToken
@@ -1051,28 +1119,29 @@ func (a *App) GetPatchStatus() PatchStatus {
 		})
 	}
 	return PatchStatus{
-		AgentPatched:           agentPatched,
-		IDEPatched:             idePatched,
-		ProxyListening:         proxy.IsListening(),
-		ProxyManaged:           proxy.IsManagedListener(),
-		ProxyOwned:             proxy.OwnsListener(),
-		LastRequestAt:          diagnostics.LastRequestAt,
-		LastRequestPath:        diagnostics.LastRequestPath,
-		LastModelFetchAt:       diagnostics.LastModelFetchAt,
-		LastModelInjectionAt:   diagnostics.LastModelInjectionAt,
-		LastInjectedModelCount: diagnostics.LastInjectedModelCount,
-		LastInjectedModelNames: diagnostics.LastInjectedModelNames,
-		LastInjectedModelSlugs: diagnostics.LastInjectedModelSlugs,
-		LastModelShape:         diagnostics.LastModelShape,
-		LastModelIndexes:       diagnostics.LastModelIndexes,
-		LastModelStatusCode:    diagnostics.LastModelStatusCode,
-		LastModelEncoding:      diagnostics.LastModelContentEncoding,
-		LastError:              diagnostics.LastError,
-		AsarPath:               s.AsarPath,
-		LSPath:                 s.LSPath,
-		IDEExtension:           s.IDEExtensionPath,
-		IDELS:                  s.IDELSPath,
-		Targets:                targets,
+		AgentPatched:             agentPatched,
+		IDEPatched:               idePatched,
+		ProxyListening:           proxy.IsListening(),
+		ProxyManaged:             proxy.IsManagedListener(),
+		ProxyOwned:               proxy.OwnsListener(),
+		LastRequestAt:            diagnostics.LastRequestAt,
+		LastRequestPath:          diagnostics.LastRequestPath,
+		LastModelFetchAt:         diagnostics.LastModelFetchAt,
+		LastModelInjectionAt:     diagnostics.LastModelInjectionAt,
+		LastInjectedModelCount:   diagnostics.LastInjectedModelCount,
+		LastInjectedModelNames:   diagnostics.LastInjectedModelNames,
+		LastInjectedModelSlugs:   diagnostics.LastInjectedModelSlugs,
+		LastModelShape:           diagnostics.LastModelShape,
+		LastModelIndexes:         diagnostics.LastModelIndexes,
+		LastModelStatusCode:      diagnostics.LastModelStatusCode,
+		LastModelEncoding:        diagnostics.LastModelContentEncoding,
+		LastModelRequestCanceled: diagnostics.LastModelRequestCanceled,
+		LastError:                diagnostics.LastError,
+		AsarPath:                 s.AsarPath,
+		LSPath:                   s.LSPath,
+		IDEExtension:             s.IDEExtensionPath,
+		IDELS:                    s.IDELSPath,
+		Targets:                  targets,
 	}
 }
 

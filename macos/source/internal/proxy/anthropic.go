@@ -88,9 +88,13 @@ func toAnthropicRequestWithMedia(gemini map[string]any, modelName string) (map[s
 			continue
 		}
 		role, _ := cm["role"].(string)
-		if role == "model" {
+		switch strings.ToLower(strings.TrimSpace(role)) {
+		case "model", "assistant":
+			// Gemini calls this role "model", while compatibility shims can
+			// retain the OpenAI spelling "assistant" in restored history.
+			// Both describe prior model output and must retain that meaning.
 			role = "assistant"
-		} else {
+		default:
 			role = "user"
 		}
 
@@ -152,6 +156,14 @@ func toAnthropicRequestWithMedia(gemini map[string]any, modelName string) (map[s
 		})
 	}
 
+	// Some Anthropic-compatible gateways reject a terminal assistant turn
+	// ("assistant prefill"), even though the first-party API historically
+	// accepted it. Antigravity can include an unfinished model turn when it
+	// retries or resumes a generation. It is not a new user instruction, so
+	// dropping only that terminal prefill is safer than inventing a synthetic
+	// "continue" prompt, which can both waste tokens and repeat an answer.
+	// Earlier assistant turns remain intact as conversation context.
+	messages = normalizeAnthropicMessages(messages)
 	out["messages"] = messages
 
 	// Tools
@@ -161,6 +173,50 @@ func toAnthropicRequestWithMedia(gemini map[string]any, modelName string) (map[s
 	}
 
 	return out, nil
+}
+
+// normalizeAnthropicMessages produces an alternating Messages history that is
+// accepted by strict Anthropic-compatible upstreams. In particular, an
+// incomplete terminal assistant prefill is omitted so the request ends with a
+// user turn. This function never changes the content of retained turns.
+func normalizeAnthropicMessages(messages []map[string]any) []map[string]any {
+	normalized := make([]map[string]any, 0, len(messages))
+	for _, message := range messages {
+		role := getString(message, "role")
+		if role != "assistant" {
+			role = "user"
+		}
+		content, _ := message["content"].([]any)
+		if len(content) == 0 {
+			content = []any{map[string]any{"type": "text", "text": " "}}
+		}
+
+		// A strict Messages request must start with a user turn. Context
+		// compaction can leave an orphaned leading assistant turn; it cannot be
+		// represented faithfully in this API, so omit it rather than relabeling
+		// model output as a user instruction.
+		if len(normalized) == 0 && role == "assistant" {
+			continue
+		}
+
+		// Consecutive role entries are valid Gemini history but are rejected by
+		// a number of Anthropic-compatible implementations. Combining their
+		// block arrays preserves order without fabricating any text.
+		if len(normalized) > 0 && getString(normalized[len(normalized)-1], "role") == role {
+			previous, _ := normalized[len(normalized)-1]["content"].([]any)
+			normalized[len(normalized)-1]["content"] = append(previous, content...)
+			continue
+		}
+		normalized = append(normalized, map[string]any{"role": role, "content": content})
+	}
+
+	if len(normalized) > 0 && getString(normalized[len(normalized)-1], "role") == "assistant" {
+		normalized = normalized[:len(normalized)-1]
+	}
+	if len(normalized) == 0 {
+		return []map[string]any{{"role": "user", "content": []any{map[string]any{"type": "text", "text": " "}}}}
+	}
+	return normalized
 }
 
 func appendAnthropicAttachment(blocks *[]any, attachment *geminiAttachment) error {

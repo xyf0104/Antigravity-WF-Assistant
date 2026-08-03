@@ -2,6 +2,7 @@ package oauthflow
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -111,6 +112,63 @@ func TestExchangeCodePostsPKCEFormAndReturnsToken(t *testing.T) {
 	}
 	if want := now.Add(time.Hour); !token.ExpiresAt.Equal(want) {
 		t.Fatalf("expires at = %s, want %s", token.ExpiresAt, want)
+	}
+}
+
+func TestOpenAICodexProfileUsesOfficialHexPKCEVerifier(t *testing.T) {
+	var receivedVerifier string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := request.ParseForm(); err != nil {
+			t.Error(err)
+			return
+		}
+		receivedVerifier = request.Form.Get("code_verifier")
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"access_token":"access-token"}`))
+	}))
+	defer server.Close()
+
+	flow, err := New(Config{
+		AuthorizationURL:   server.URL + "/authorize",
+		TokenURL:           server.URL + "/token",
+		PublicClientID:     "openai-public-client",
+		RedirectURI:        server.URL + "/callback",
+		PKCEVerifierFormat: PKCEVerifierFormatOpenAIHex,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorization, err := flow.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := flow.ExchangeCode(context.Background(), authorization.SessionID, "code", authorization.State); err != nil {
+		t.Fatal(err)
+	}
+	if len(receivedVerifier) != openAIPKCEVerifierBytes*2 {
+		t.Fatalf("OpenAI verifier length = %d, want %d", len(receivedVerifier), openAIPKCEVerifierBytes*2)
+	}
+	decoded, err := hex.DecodeString(receivedVerifier)
+	if err != nil || len(decoded) != openAIPKCEVerifierBytes {
+		t.Fatalf("OpenAI verifier must be 64 random bytes encoded as lowercase hex: %q (%v)", receivedVerifier, err)
+	}
+	if receivedVerifier != strings.ToLower(receivedVerifier) {
+		t.Fatalf("OpenAI verifier must be lowercase hex: %q", receivedVerifier)
+	}
+	parsed, err := url.Parse(authorization.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := parsed.Query().Get("code_challenge"), pkceChallenge(receivedVerifier); got != want {
+		t.Fatalf("OpenAI PKCE challenge = %q, want S256 verifier challenge %q", got, want)
+	}
+}
+
+func TestRejectsUnknownPKCEVerifierFormat(t *testing.T) {
+	config := testConfig("https://oauth.example.test")
+	config.PKCEVerifierFormat = PKCEVerifierFormat("unknown")
+	if _, err := New(config); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("unknown verifier format error = %v, want invalid configuration", err)
 	}
 }
 

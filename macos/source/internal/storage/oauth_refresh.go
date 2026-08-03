@@ -98,6 +98,7 @@ func refreshStoredOAuthAccount(ctx context.Context, accountID string) error {
 		PublicClientID:   account.OAuth.ClientID,
 		RedirectURI:      account.OAuth.RedirectURI,
 		Scopes:           strings.Fields(account.OAuth.Scopes),
+		RefreshScopes:    strings.Fields(account.OAuth.RefreshScopes),
 	})
 	if err != nil {
 		markOAuthRefreshFailure(accountID, err)

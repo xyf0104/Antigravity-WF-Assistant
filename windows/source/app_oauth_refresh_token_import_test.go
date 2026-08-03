@@ -46,6 +46,7 @@ func TestImportOAuthRefreshTokenExchangesAndStoresOAuthAccount(t *testing.T) {
 			ClientID:         "public-client-id",
 			RedirectURI:      tokenServer.URL + "/callback",
 			Scopes:           "openid offline_access",
+			RefreshScopes:    "openid",
 		},
 	}, refreshToken)
 	if !result.OK || result.AccountID == "" {
@@ -63,7 +64,7 @@ func TestImportOAuthRefreshTokenExchangesAndStoresOAuthAccount(t *testing.T) {
 	if got, want := received.Get("client_id"), "public-client-id"; got != want {
 		t.Fatalf("client_id = %q, want %q", got, want)
 	}
-	if got, want := received.Get("scope"), "openid offline_access"; got != want {
+	if got, want := received.Get("scope"), "openid"; got != want {
 		t.Fatalf("scope = %q, want %q", got, want)
 	}
 
@@ -159,5 +160,34 @@ func TestSaveUpstreamAccountRejectsRawRefreshToken(t *testing.T) {
 	})
 	if result.OK || !strings.Contains(result.Message, "兑换") {
 		t.Fatalf("raw refresh token save result = %+v", result)
+	}
+}
+
+func TestSaveUpstreamAccountPreservesProfileRefreshScopesOnRedactedEdit(t *testing.T) {
+	storage.Init(t.TempDir())
+	if err := storage.SaveUpstreamAccount(storage.UpstreamAccount{
+		ID: "profile-refresh-scope", Name: "Profile account", Provider: "openai", Type: "oauth",
+		APIURL: "https://api.example.test", APIKey: "existing-access-token", AuthMode: "bearer", Enabled: true,
+		OAuth: storage.OAuthConfiguration{RefreshScopes: "openid profile email"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := (&App{}).SaveUpstreamAccount(storage.UpstreamAccount{
+		ID: "profile-refresh-scope", Name: "Renamed profile account", Provider: "openai", Type: "oauth",
+		APIURL: "https://api.example.test", AuthMode: "bearer", Enabled: true,
+		// This mimics the redacted renderer payload: it cannot send stored
+		// credentials or the hidden profile refresh-scope setting back.
+		OAuth: storage.OAuthConfiguration{},
+	})
+	if !result.OK {
+		t.Fatalf("redacted account edit = %+v", result)
+	}
+	stored, err := storage.GetUpstreamAccount("profile-refresh-scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored.OAuth.RefreshScopes, "openid profile email"; got != want {
+		t.Fatalf("preserved refresh scopes = %q, want %q", got, want)
 	}
 }
