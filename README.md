@@ -41,8 +41,8 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 
 | 系统 | 推荐下载 | 说明 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.4.5-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
-| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.4.5-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.4.6-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
+| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.4.6-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
 
 发布页仅提供以上两个标准安装包及 `SHA256SUMS.txt`，用于校验文件完整性。
 

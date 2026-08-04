@@ -1,8 +1,8 @@
-# Antigravity WF助手 Windows x64 v1.4.5
+# Antigravity WF助手 Windows x64 v1.4.6
 
 ## 安装
 
-1. 双击 `Antigravity-WF-Assistant-Windows-x64-v1.4.5-Setup.exe`。
+1. 双击 `Antigravity-WF-Assistant-Windows-x64-v1.4.6-Setup.exe`。
 2. 在“选择组件”页按需要勾选“在桌面创建快捷方式”，然后完成安装并从开始菜单或桌面打开“Antigravity WF助手”。
 3. 安装器默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Antigravity WF助手`，安装助手本身不需要管理员权限。
 
@@ -23,6 +23,12 @@
 3. 已有 `auth.json`、OAuth JSON 或 XIASS 风格账户导出时，使用“导入账户 JSON”；Refresh Token / Mobile RT 使用专门的兑换入口，不能当作 API Key 直接保存。
 4. 保存或登录成功后，直接在该账户卡片点击“同步全部模型”。它会读取当前账户的真实模型列表并添加到 Antigravity；与已有模型的协议、上游地址和模型名都一致时，会追加该账户到同一个账户池，不会覆盖其他账户或模型设置。
 5. 每个账户卡的“测试连接”只测试该账户；运行时同一个模型会按优先级、并发与健康状态从已绑定账户中调度，遇到可重试的故障时尝试其他可用账户。
+
+## 模型与图片
+
+- 相同协议、地址与凭据绑定的上游模型会在“模型”页合并为一张卡片，可勾选每个模型是否注入 Antigravity。
+- 自定义上游可在添加窗口直接打开完整测试流程，测试文字或图片模型，不会显示 API Key、认证头或原始响应。
+- 当 Antigravity 请求生成图片时，已启用的同上游图片模型会使用当前文字模型的账户池和凭据执行 `/v1/images/generations`，不会改用 Gemini。
 
 ## 自动检测
 

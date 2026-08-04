@@ -54,6 +54,25 @@ func TestEmptyDisplayNameUsesUpstreamModelName(t *testing.T) {
 	}
 }
 
+func TestLoadEnabledModelsKeepsLegacyModelsAndFiltersExplicitlyDisabledModels(t *testing.T) {
+	Init(t.TempDir())
+	disabled := false
+	if err := SaveModels([]CustomModel{
+		{Name: "models/legacy", ExternalModelName: "legacy"},
+		{Name: "models/disabled", ExternalModelName: "disabled", Enabled: &disabled},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	models, err := LoadEnabledModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].Name != "models/legacy" {
+		t.Fatalf("enabled models = %#v, want only legacy model", models)
+	}
+}
+
 func TestMergeDiscoveredAccountModelsOnlyPoolsEquivalentUpstreams(t *testing.T) {
 	Init(t.TempDir())
 	first := NewDiscoveredModel("openai", "https://api.example.test", "direct-key", "gpt-pool")

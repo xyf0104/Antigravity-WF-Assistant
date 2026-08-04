@@ -189,7 +189,7 @@ func endpointURL(rawURL, leaf string) (string, error) {
 		return "", err
 	}
 	path := strings.TrimRight(parsed.Path, "/")
-	for _, suffix := range []string{"/chat/completions", "/chat/messages", "/responses", "/messages", "/models"} {
+	for _, suffix := range []string{"/chat/completions", "/chat/messages", "/responses", "/messages", "/images/generations", "/models"} {
 		if strings.HasSuffix(path, suffix) {
 			path = strings.TrimSuffix(path, suffix)
 			break
@@ -234,6 +234,25 @@ func ResolveResponsesURL(rawURL string) (string, error) { return endpointURL(raw
 
 func ResolveResponsesURLForConfig(config Config) (string, error) {
 	return endpointURLForConfig(config, "responses")
+}
+
+// ResolveImagesGenerationsURLForConfig resolves OpenAI's dedicated image
+// generation endpoint. A manually entered URL is preserved only when it is
+// already an images endpoint; a saved Chat or Responses endpoint still needs
+// to be converted to its sibling image route. This lets one upstream account
+// serve both a text model and a separate image model without asking users to
+// duplicate its base URL.
+func ResolveImagesGenerationsURLForConfig(config Config) (string, error) {
+	if UsesManualEndpoint(config) {
+		parsed, err := validateBaseURL(config.APIURL)
+		if err != nil {
+			return "", err
+		}
+		if strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/images/generations") {
+			return manualEndpointURL(config.APIURL)
+		}
+	}
+	return endpointURL(config.APIURL, "images/generations")
 }
 
 func ResolveAnthropicMessagesURL(rawURL string) (string, error) {

@@ -40,6 +40,10 @@ jobs:
         working-directory: macos/source/frontend
         run: npm run build
 
+      - name: Run model grouping tests
+        working-directory: macos/source/frontend
+        run: node --test test/modelGroups.test.mjs
+
       - name: Run OAuth status tests
         working-directory: macos/source/frontend
         run: npm run test:oauth
@@ -66,5 +70,5 @@ jobs:
         with:
           name: Antigravity-WF-Assistant-macOS-universal
           path: |
-            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v1.4.5-Installer.pkg
+            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v1.4.6-Installer.pkg
           if-no-files-found: error

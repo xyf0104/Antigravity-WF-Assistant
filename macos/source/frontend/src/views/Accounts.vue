@@ -1469,7 +1469,7 @@ onBeforeUnmount(() => {
           :class="accountSyncMessages[account.id].tone"
           role="status"
         >{{ accountSyncMessages[account.id].message }}</div>
-        <div class="row" style="gap: 6px; margin-top: 12px; justify-content: flex-end">
+        <div class="account-actions">
           <Button variant="filled" size="sm" :loading="syncingAccountID === account.id" :disabled="Boolean(syncingAccountID) && syncingAccountID !== account.id" :title="syncingAccountID && syncingAccountID !== account.id ? '请等待当前账户同步完成' : ''" @click="syncAllAccountModels(account)">同步全部模型</Button>
           <Button variant="tinted" size="sm" @click="openAccountTest(account)">测试连接</Button>
           <Button v-if="account.type === 'oauth'" variant="plain" size="sm" :loading="tokenRefreshBusy === account.id" @click="refreshOAuthToken(account)">刷新令牌</Button>
@@ -1732,6 +1732,8 @@ onBeforeUnmount(() => {
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(286px, 1fr)); gap: 12px; }
 .account-card { background: var(--bg-card); border: 1px solid var(--separator); border-radius: var(--r-lg); padding: 14px; box-shadow: var(--shadow-card); backdrop-filter: blur(16px); }
 .account-card.paused { opacity: .68; }
+.account-actions { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 12px; }
+.account-actions :deep(.btn) { max-width: 100%; min-width: 0; }
 .mono { color: var(--text-tertiary); font-size: 11px; }
 .status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 10px; color: var(--text-tertiary); font-size: 11px; }
 .inset-row > span { color: var(--text-tertiary); font-size: 10px; width: 48px; letter-spacing: .04em; }
@@ -1792,5 +1794,5 @@ select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3p
 .notice-box { color: var(--accent-strong); background: var(--accent-soft); border: 1px solid var(--accent-border); }
 .err-box { color: var(--red); background: rgba(255,69,58,.1); border: 1px solid rgba(255,69,58,.25); }
 .import-text { min-height: 220px; }
-@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr); } .select-row code { display: none; } .page-head { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr); } .select-row code { display: none; } .page-head { align-items: flex-start; flex-direction: column; } .account-actions { justify-content: flex-start; } }
 </style>

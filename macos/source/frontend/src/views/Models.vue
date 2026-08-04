@@ -5,12 +5,15 @@ import Button from "@/components/ui/Button.vue";
 import Field from "@/components/ui/Field.vue";
 import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
+import AccountTestModal from "@/components/accounts/AccountTestModal.vue";
+import { groupModelsByUpstream, modelIsEnabled } from "@/state/modelGroups";
 import {
   state,
   saveModel,
   deleteModel,
   discoverUpstreamModels,
-  testUpstreamModel,
+  testUpstreamModelDetailed,
+  cancelUpstreamAccountTest,
   addDiscoveredModels,
 } from "@/state/appState";
 
@@ -26,14 +29,26 @@ const AUTO_ENDPOINT_SUFFIXES = [
 const editorOpen = ref(false);
 const editorError = ref("");
 const editorNotice = ref("");
-const testSuccess = ref("");
 const saving = ref(false);
 const discovering = ref(false);
-const testing = ref(false);
 const isNew = ref(false);
 const confirmDelete = ref(null);
 const discoveredModels = ref([]);
 const selectedModelIds = ref([]);
+const modelEnableBusy = ref({});
+const groupEnableBusy = ref({});
+const modelActionMessage = ref("");
+const modelActionError = ref("");
+const modelTestOpen = ref(false);
+const modelTestConfig = ref(null);
+const modelTestStatus = ref("idle");
+const modelTestOutputLines = ref([]);
+const modelTestContent = ref("");
+const modelTestError = ref("");
+const modelTestImages = ref([]);
+const modelTestRequestID = ref("");
+let modelTestGeneration = 0;
+let modelTestRequestSerial = 0;
 
 function defaultCapabilities(provider = "openai", modelName = "", apiStyle = "auto") {
   const name = String(modelName).toLowerCase();
@@ -86,6 +101,7 @@ function emptyForm() {
     authMode: "bearer",
     authHeader: "",
     headersText: "{}",
+    enabled: true,
     capabilities: defaultCapabilities(),
   };
 }
@@ -170,6 +186,36 @@ const allDiscoveredSelected = computed(() =>
   discoveredModels.value.length > 0 && selectedModelIds.value.length === discoveredModels.value.length
 );
 const selectedCount = computed(() => selectedModelIds.value.length);
+const modelGroups = computed(() => groupModelsByUpstream(state.models));
+function uniqueTestModels(models) {
+  const seen = new Set();
+  const unique = [];
+  for (const model of models) {
+    const id = String(model?.id || model?.name || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    unique.push({ id, name: String(model?.name || model?.id || "").trim() || id });
+  }
+  return unique;
+}
+const testModalModels = computed(() => {
+  const models = discoveredModels.value.length
+    ? discoveredModels.value
+    : testTarget.value
+      ? [{ id: testTarget.value, name: testTarget.value }]
+      : [];
+  return uniqueTestModels(models);
+});
+const testModalDefaultModelID = computed(() => testTarget.value || testModalModels.value[0]?.id || "");
+const testModalAccount = computed(() => ({
+  // Deliberately omit API key, headers, and endpoint details. AccountTestModal
+  // only needs neutral display metadata; the sensitive config remains local to
+  // the native test call and is never rendered.
+  name: form.value.displayName?.trim() || form.value.externalModelName?.trim() || `${providerLabel(form.value.provider)} 临时上游`,
+  provider: form.value.provider,
+  type: "api_key",
+  enabled: true,
+}));
 const apiURLLabel = computed(() =>
   form.value.endpointMode === "manual" ? "完整 API 地址" : "基础域名 / 基础路径"
 );
@@ -213,6 +259,43 @@ function hostOf(url) {
   } catch {
     return String(url || "").replace(/^https?:\/\//, "").split("/")[0] || "—";
   }
+}
+
+function groupHost(group) {
+  return hostOf(String(group?.apiUrl || "").replace(/^manual:/, ""));
+}
+
+function groupBindingLabel(group) {
+  const accountIDs = new Set();
+  for (const model of group?.models || []) {
+    for (const accountID of Array.isArray(model?.accountIds) ? model.accountIds : []) accountIDs.add(accountID);
+  }
+  return accountIDs.size ? `账户池 ${accountIDs.size} 个` : "直接 API 凭据";
+}
+
+function enabledModelCount(group) {
+  return (group?.models || []).filter(modelIsEnabled).length;
+}
+
+function isGroupEnableBusy(group) {
+  return Boolean(groupEnableBusy.value[group?.key]);
+}
+
+function isModelEnableBusy(model) {
+  return Boolean(modelEnableBusy.value[model?.name]);
+}
+
+function sanitizeModelMessage(value, config = modelTestConfig.value) {
+  let message = String(value?.message || value || "操作失败");
+  const secrets = [
+    config?.apiKey,
+    ...Object.values(config?.headers || {}),
+    form.value.apiKey,
+  ].filter((secret) => typeof secret === "string" && secret.length >= 4);
+  for (const secret of secrets) {
+    message = message.split(secret).join("[已隐藏]");
+  }
+  return message;
 }
 
 // Older releases stored a full inference endpoint even when endpointMode was
@@ -271,6 +354,7 @@ function modelToForm(model) {
     authMode: model.authMode || (model.provider === "anthropic" ? "x_api_key" : "bearer"),
     authHeader: model.authHeader || "",
     headersText: JSON.stringify(model.headers || {}, null, 2),
+    enabled: model.enabled !== false,
     capabilities,
   };
 }
@@ -280,7 +364,6 @@ function openNew() {
   isNew.value = true;
   editorError.value = "";
   editorNotice.value = "默认只需填写 XIASS 域名；如上游要求完整接口地址，可随时切换到“完整路径（手动）”。";
-  testSuccess.value = "";
   discoveredModels.value = [];
   selectedModelIds.value = [];
   editorOpen.value = true;
@@ -294,7 +377,6 @@ function openEdit(model) {
   editorNotice.value = form.value.endpointMode === "auto" && originalURL && form.value.apiUrl !== originalURL
     ? "已将旧版保存的完整接口尾缀收敛为基础地址；智能补全会自动选择正确路径。"
     : "";
-  testSuccess.value = "";
   discoveredModels.value = [];
   selectedModelIds.value = [];
   editorOpen.value = true;
@@ -392,26 +474,25 @@ function validateConnection() {
 async function fetchModels() {
   editorError.value = "";
   editorNotice.value = "";
-  testSuccess.value = "";
   let config;
   try {
     config = validateConnection();
   } catch (error) {
-    editorError.value = error.message;
+    editorError.value = sanitizeModelMessage(error);
     return;
   }
   discovering.value = true;
   try {
     const result = await discoverUpstreamModels(config);
     if (!result?.ok) {
-      editorError.value = result?.message || "无法获取上游模型列表";
+      editorError.value = sanitizeModelMessage(result?.message || "无法获取上游模型列表", config);
       return;
     }
     discoveredModels.value = result.models || [];
     selectedModelIds.value = discoveredModels.value.map((model) => model.id);
     editorNotice.value = result.message || `已发现 ${selectedModelIds.value.length} 个模型，默认已全部选中。`;
   } catch (error) {
-    editorError.value = String(error?.message || error);
+    editorError.value = sanitizeModelMessage(error, config);
   } finally {
     discovering.value = false;
   }
@@ -429,29 +510,156 @@ function toggleAllModels() {
   selectedModelIds.value = allDiscoveredSelected.value ? [] : discoveredModels.value.map((model) => model.id);
 }
 
-async function testSelectedModel() {
+function modelTestSteps(steps, config) {
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .map((step) => ({
+      text: sanitizeModelMessage(step?.text, config),
+      tone: String(step?.tone || "muted"),
+    }))
+    .filter((step) => step.text);
+}
+
+function nextModelTestRequestID() {
+  const nativeID = globalThis.crypto?.randomUUID?.();
+  if (typeof nativeID === "string" && nativeID) return `model-test-${nativeID}`;
+  modelTestRequestSerial += 1;
+  return `model-test-${Date.now().toString(36)}-${modelTestRequestSerial}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function cancelActiveModelTest() {
+  const requestID = modelTestRequestID.value;
+  modelTestRequestID.value = "";
+  if (!requestID) return;
+  void cancelUpstreamAccountTest(requestID).catch(() => {});
+}
+
+function openDetailedModelTest() {
   editorError.value = "";
-  testSuccess.value = "";
   let config;
   try {
     config = validateConnection();
   } catch (error) {
-    editorError.value = error.message;
+    editorError.value = sanitizeModelMessage(error);
     return;
   }
   if (!testTarget.value) {
     editorError.value = "请先获取模型列表并选择一个模型，或填写上游模型名。";
     return;
   }
-  testing.value = true;
+  cancelActiveModelTest();
+  modelTestGeneration += 1;
+  modelTestConfig.value = config;
+  modelTestStatus.value = "idle";
+  modelTestError.value = "";
+  modelTestContent.value = "";
+  modelTestImages.value = [];
+  modelTestOutputLines.value = [{ text: "已准备详细测试；可选择模型与测试提示词。", tone: "info" }];
+  modelTestOpen.value = true;
+}
+
+async function runDetailedModelTest(payload) {
+  const config = modelTestConfig.value;
+  if (!config || !payload?.modelId || modelTestStatus.value === "connecting") return;
+  const generation = ++modelTestGeneration;
+  const requestID = nextModelTestRequestID();
+  modelTestRequestID.value = requestID;
+  modelTestStatus.value = "connecting";
+  modelTestError.value = "";
+  modelTestContent.value = "";
+  modelTestImages.value = [];
+  modelTestOutputLines.value = [{ text: "正在发送详细模型测试请求…", tone: "info" }];
   try {
-    const result = await testUpstreamModel(config, testTarget.value);
-    if (result?.ok) testSuccess.value = `模型可用（HTTP 200）${result?.apiStyle ? ` · ${result.apiStyle}` : ""}`;
-    else editorError.value = result?.message || "模型测试失败";
+    const result = await testUpstreamModelDetailed(config, {
+      requestId: requestID,
+      model: String(payload.modelId || "").trim(),
+      prompt: String(payload.prompt || "hi").trim() || "hi",
+      mode: String(payload.mode || "default"),
+    });
+    if (generation !== modelTestGeneration) return;
+    modelTestOutputLines.value = modelTestSteps(result?.steps, config);
+    modelTestContent.value = sanitizeModelMessage(result?.content || "", config);
+    modelTestImages.value = Array.isArray(result?.images) ? result.images : [];
+    if (result?.ok) {
+      modelTestStatus.value = "success";
+      if (!modelTestOutputLines.value.length) {
+        modelTestOutputLines.value = [{ text: sanitizeModelMessage(result?.message || "模型可用", config), tone: "success" }];
+      }
+      return;
+    }
+    modelTestStatus.value = "error";
+    modelTestError.value = sanitizeModelMessage(result?.message || "模型测试失败", config);
+    if (!modelTestOutputLines.value.length) modelTestOutputLines.value = [{ text: modelTestError.value, tone: "error" }];
   } catch (error) {
-    editorError.value = String(error?.message || error);
+    if (generation !== modelTestGeneration) return;
+    modelTestStatus.value = "error";
+    modelTestError.value = sanitizeModelMessage(error, config);
+    modelTestOutputLines.value = [{ text: modelTestError.value, tone: "error" }];
   } finally {
-    testing.value = false;
+    if (modelTestRequestID.value === requestID) modelTestRequestID.value = "";
+  }
+}
+
+function cancelDetailedModelTest() {
+  modelTestGeneration += 1;
+  cancelActiveModelTest();
+}
+
+function closeDetailedModelTest() {
+  cancelDetailedModelTest();
+  modelTestOpen.value = false;
+  modelTestConfig.value = null;
+}
+
+function previewModelTestImage(image) {
+  const url = typeof image === "string" ? image : String(image?.url || "");
+  if (url) window.open(url, "_blank", "noopener,noreferrer");
+}
+
+async function setModelEnabled(model, enabled, { quiet = false } = {}) {
+  if (!model?.name || modelIsEnabled(model) === enabled || isModelEnableBusy(model)) return true;
+  if (!quiet) {
+    modelActionError.value = "";
+    modelActionMessage.value = "";
+  }
+  modelEnableBusy.value = { ...modelEnableBusy.value, [model.name]: true };
+  try {
+    const result = await saveModel({ ...model, enabled });
+    if (!result?.ok) {
+      modelActionError.value = sanitizeModelMessage(result?.message || "模型状态保存失败");
+      return false;
+    }
+    if (!quiet) modelActionMessage.value = `${model.displayName || model.externalModelName || "模型"} 已${enabled ? "启用" : "停用"}。`;
+    return true;
+  } catch (error) {
+    modelActionError.value = sanitizeModelMessage(error);
+    return false;
+  } finally {
+    const next = { ...modelEnableBusy.value };
+    delete next[model.name];
+    modelEnableBusy.value = next;
+  }
+}
+
+async function setGroupEnabled(group, enabled) {
+  if (!group?.key || isGroupEnableBusy(group)) return;
+  const targets = (group.models || []).filter((model) => modelIsEnabled(model) !== enabled);
+  if (!targets.length) return;
+  modelActionError.value = "";
+  modelActionMessage.value = "";
+  groupEnableBusy.value = { ...groupEnableBusy.value, [group.key]: true };
+  try {
+    let completed = 0;
+    for (const model of targets) {
+      if (await setModelEnabled(model, enabled, { quiet: true })) completed += 1;
+    }
+    if (!modelActionError.value) {
+      modelActionMessage.value = `已${enabled ? "启用" : "停用"}该上游的 ${completed} 个模型。`;
+    }
+  } finally {
+    const next = { ...groupEnableBusy.value };
+    delete next[group.key];
+    groupEnableBusy.value = next;
   }
 }
 
@@ -460,7 +668,7 @@ async function saveManualModel() {
   try {
     config = validateConnection();
   } catch (error) {
-    editorError.value = error.message;
+    editorError.value = sanitizeModelMessage(error);
     return;
   }
   const externalModelName = form.value.externalModelName?.trim();
@@ -474,6 +682,7 @@ async function saveManualModel() {
     externalModelName,
     displayName: form.value.displayName?.trim() || externalModelName,
     name: form.value.name?.trim() || `models/${form.value.provider}-${externalModelName.replace(/[^a-zA-Z0-9.-]+/g, "-")}`,
+    enabled: form.value.enabled !== false,
     capabilities: automaticCapabilities(form.value.provider, externalModelName, form.value.capabilities, form.value.apiStyle),
   };
   delete model.headersText;
@@ -484,10 +693,10 @@ async function saveManualModel() {
     if (result?.ok) {
       editorOpen.value = false;
     } else {
-      editorError.value = result?.message || "保存失败";
+      editorError.value = sanitizeModelMessage(result?.message || "保存失败", config);
     }
   } catch (error) {
-    editorError.value = String(error?.message || error);
+    editorError.value = sanitizeModelMessage(error, config);
   } finally {
     saving.value = false;
   }
@@ -499,7 +708,7 @@ async function addSelectedModels() {
   try {
     config = validateConnection();
   } catch (error) {
-    editorError.value = error.message;
+    editorError.value = sanitizeModelMessage(error);
     return;
   }
   if (!selectedModelIds.value.length) {
@@ -513,10 +722,10 @@ async function addSelectedModels() {
       editorNotice.value = result.message;
       editorOpen.value = false;
     } else {
-      editorError.value = result?.message || "批量添加失败";
+      editorError.value = sanitizeModelMessage(result?.message || "批量添加失败", config);
     }
   } catch (error) {
-    editorError.value = String(error?.message || error);
+    editorError.value = sanitizeModelMessage(error, config);
   } finally {
     saving.value = false;
   }
@@ -525,7 +734,8 @@ async function addSelectedModels() {
 async function handleDelete() {
   const target = confirmDelete.value;
   if (!target) return;
-  await deleteModel(target.name);
+  const result = await deleteModel(target.name);
+  if (!result?.ok) modelActionError.value = sanitizeModelMessage(result?.message || "删除失败");
   confirmDelete.value = null;
 }
 </script>
@@ -547,27 +757,53 @@ async function handleDelete() {
       <Button variant="tinted" style="margin-top: 14px" @click="openNew">开始配置</Button>
     </div>
 
-    <div v-else class="grid">
-      <article v-for="model in state.models" :key="model.name" class="model-card">
-        <div class="row between" style="align-items: flex-start; gap: 10px">
+    <div v-if="modelActionMessage || modelActionError" class="model-action-status" :class="{ error: modelActionError }" role="status">
+      {{ modelActionError || modelActionMessage }}
+    </div>
+
+    <div v-if="state.models.length > 0" class="grid model-groups">
+      <article v-for="group in modelGroups" :key="group.key" class="model-card model-group-card">
+        <div class="row between group-heading">
           <div class="grow col" style="gap: 2px; min-width: 0">
-            <div class="t-headline truncate">{{ model.displayName || model.externalModelName || model.name }}</div>
-            <div class="mono truncate model-id">{{ model.externalModelName }}</div>
+            <div class="t-headline truncate">{{ providerLabel(group.provider) }} 上游</div>
+            <div class="mono truncate model-id">{{ groupHost(group) }} · {{ group.models.length }} 个模型 · {{ groupBindingLabel(group) }}</div>
           </div>
-          <Badge :tone="providerTone(model.provider)" :label="providerLabel(model.provider)" />
+          <Badge :tone="providerTone(group.provider)" :label="providerLabel(group.provider)" />
         </div>
-        <div class="cap-row">
-          <span v-for="label in capabilityLabels(model)" :key="label" class="cap">{{ label }}</span>
-          <span v-if="!capabilityLabels(model).length" class="cap muted">文本</span>
+        <div class="group-toolbar">
+          <span class="group-count">{{ enabledModelCount(group) }}/{{ group.models.length }} 个模型已启用</span>
+          <div class="group-enable-actions">
+            <Button variant="tinted" size="sm" :disabled="isGroupEnableBusy(group)" @click="setGroupEnabled(group, true)">全部启用</Button>
+            <Button variant="plain" size="sm" :disabled="isGroupEnableBusy(group)" @click="setGroupEnabled(group, false)">全部停用</Button>
+          </div>
         </div>
-        <div class="inset-group" style="margin-top: 11px">
-          <div class="inset-row"><span>HOST</span><code class="truncate">{{ hostOf(model.apiUrl) }}</code></div>
-          <div class="inset-row"><span>模式</span><code>{{ model.apiStyle || "兼容" }}</code></div>
-          <div class="inset-row"><span>KEY</span><code class="truncate">{{ maskKey(model.apiKey) }}</code></div>
-        </div>
-        <div class="row" style="gap: 6px; margin-top: 12px; justify-content: flex-end">
-          <Button variant="plain" size="sm" @click="openEdit(model)">编辑</Button>
-          <Button variant="danger" size="sm" @click="confirmDelete = model">删除</Button>
+        <div class="group-model-list">
+          <div v-for="model in group.models" :key="model.name" class="group-model-row" :class="{ disabled: !modelIsEnabled(model) }">
+            <div class="model-row-main">
+              <label class="model-enable-control" :title="modelIsEnabled(model) ? '停用该模型' : '启用该模型'">
+                <input
+                  type="checkbox"
+                  :checked="modelIsEnabled(model)"
+                  :disabled="isModelEnableBusy(model) || isGroupEnableBusy(group)"
+                  @change="setModelEnabled(model, $event.target.checked)"
+                />
+                <span class="model-enable-text">{{ modelIsEnabled(model) ? '启用' : '停用' }}</span>
+              </label>
+              <div class="grow col model-copy" style="gap: 1px; min-width: 0">
+                <div class="t-body truncate">{{ model.displayName || model.externalModelName || model.name }}</div>
+                <div class="mono truncate model-id">{{ model.externalModelName || model.name }}</div>
+              </div>
+              <div class="model-row-actions">
+                <Button variant="plain" size="sm" @click="openEdit(model)">编辑</Button>
+                <Button variant="danger" size="sm" @click="confirmDelete = model">删除</Button>
+              </div>
+            </div>
+            <div class="cap-row model-cap-row">
+              <span v-for="label in capabilityLabels(model)" :key="label" class="cap">{{ label }}</span>
+              <span v-if="!capabilityLabels(model).length" class="cap muted">文本</span>
+              <span class="model-style">{{ model.apiStyle || "兼容" }}</span>
+            </div>
+          </div>
         </div>
       </article>
     </div>
@@ -618,8 +854,8 @@ async function handleDelete() {
             </label>
           </div>
           <div class="test-action-row">
-            <span v-if="testSuccess" class="test-success" role="status">{{ testSuccess }}</span>
-            <Button variant="plain" size="sm" :disabled="!testTarget" :loading="testing" @click="testSelectedModel">测试 {{ testTarget || '模型' }}</Button>
+            <span class="t-caption">测试会打开完整的账号测试流程，可验证文本、图片与生图链路。</span>
+            <Button variant="plain" size="sm" :disabled="!testTarget" @click="openDetailedModelTest">详细测试 {{ testTarget || '模型' }}</Button>
           </div>
         </section>
 
@@ -674,6 +910,22 @@ async function handleDelete() {
       </template>
     </Modal>
 
+    <AccountTestModal
+      :open="modelTestOpen"
+      :account="testModalAccount"
+      :models="testModalModels"
+      :status="modelTestStatus"
+      :output-lines="modelTestOutputLines"
+      :streaming-content="modelTestContent"
+      :error-message="modelTestError"
+      :generated-images="modelTestImages"
+      :default-model-id="testModalDefaultModelID"
+      @test="runDetailedModelTest"
+      @cancel="cancelDetailedModelTest"
+      @close="closeDetailedModelTest"
+      @preview-image="previewModelTestImage"
+    />
+
     <Modal :open="!!confirmDelete" title="确认删除" @close="confirmDelete = null">
       <div class="t-body">确定删除 <strong>{{ confirmDelete?.displayName || confirmDelete?.name }}</strong> 吗？此操作不可撤销。</div>
       <template #footer>
@@ -690,6 +942,27 @@ async function handleDelete() {
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: 12px; }
 .model-card { background: var(--bg-card); border: 1px solid var(--separator); border-radius: var(--r-lg); padding: 14px; box-shadow: var(--shadow-card); backdrop-filter: blur(16px); transition: transform .18s var(--spring), border-color .18s var(--ease); }
 .model-card:hover { transform: translateY(-1px); border-color: var(--separator-strong); }
+.model-group-card { min-width: 0; }
+.group-heading { align-items: flex-start; gap: 10px; }
+.group-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding: 8px 9px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-inset); }
+.group-count { color: var(--text-secondary); font-size: 11px; }
+.group-enable-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.group-model-list { display: flex; flex-direction: column; margin-top: 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); overflow: hidden; background: var(--bg-inset); }
+.group-model-row { min-width: 0; padding: 10px; border-bottom: 1px solid var(--separator); transition: background .16s var(--ease), opacity .16s var(--ease); }
+.group-model-row:last-child { border-bottom: 0; }
+.group-model-row:hover { background: var(--bg-fill); }
+.group-model-row.disabled { opacity: .58; }
+.model-row-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.model-copy { min-width: 0; }
+.model-enable-control { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; color: var(--green); font-size: 10px; cursor: pointer; }
+.model-enable-control input { width: 15px; height: 15px; margin: 0; accent-color: var(--green); }
+.model-enable-control input:disabled { cursor: wait; opacity: .55; }
+.model-enable-text { min-width: 24px; }
+.model-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; flex: 0 0 auto; }
+.model-cap-row { align-items: center; margin-top: 8px; }
+.model-style { margin-left: auto; color: var(--text-tertiary); font: 10px var(--font-num); }
+.model-action-status { padding: 9px 11px; border: 1px solid var(--accent-border); border-radius: var(--r-sm); color: var(--accent-strong); background: var(--accent-soft); font-size: 12px; line-height: 1.4; }
+.model-action-status.error { border-color: rgba(255,69,58,.25); color: var(--red); background: rgba(255,69,58,.1); }
 .model-id { color: var(--text-tertiary); font-size: 11px; }
 .cap-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
 .cap { font-size: 10px; padding: 3px 6px; color: var(--accent-strong); background: var(--accent-soft); border-radius: 999px; }
@@ -722,8 +995,7 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .select-all { grid-template-columns: 16px 1fr; color: var(--text-secondary); background: var(--bg-fill); position: sticky; top: 0; }
 .select-row:last-child { border-bottom: 0; }
 .select-row code { color: var(--text-tertiary); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.test-action-row { display: flex; align-items: center; justify-content: flex-end; gap: 9px; min-height: 30px; }
-.test-success { color: var(--green); font-size: 12px; font-weight: 600; line-height: 1.35; }
+.test-action-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 9px; min-height: 30px; }
 .capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .capability-item { display: flex; gap: 7px; align-items: center; min-height: 30px; padding: 0 8px; font-size: 12px; color: var(--text-secondary); border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
 .capability-item.disabled { color: var(--text-tertiary); opacity: .7; }
@@ -735,5 +1007,5 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .notice-box, .err-box { padding: 10px 11px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.45; }
 .notice-box { color: var(--accent-strong); background: var(--accent-soft); border: 1px solid var(--accent-border); }
 .err-box { color: var(--red); background: rgba(255,69,58,.1); border: 1px solid rgba(255,69,58,.25); }
-@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .capability-grid { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr); } .select-row code { display: none; } }
+@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .capability-grid { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr); } .select-row code { display: none; } .model-row-main { align-items: flex-start; flex-wrap: wrap; } .model-copy { flex: 1 1 calc(100% - 78px); } .model-row-actions { width: 100%; justify-content: flex-end; padding-left: 24px; } .model-style { margin-left: 0; } .test-action-row { align-items: stretch; flex-direction: column; } }
 </style>

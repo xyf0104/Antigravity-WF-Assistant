@@ -24,11 +24,25 @@ func setupAntigravityIntegrationModel(t *testing.T, model storage.CustomModel) {
 	}
 }
 
+func setupAntigravityIntegrationModels(t *testing.T, models ...storage.CustomModel) {
+	t.Helper()
+	dir := t.TempDir()
+	storage.Init(dir)
+	InitTrace(dir)
+	if err := storage.SaveModels(models); err != nil {
+		t.Fatalf("save custom models: %v", err)
+	}
+}
+
 func antigravityRequest(modelID, requestID string, request map[string]any) *http.Request {
+	return antigravityRequestAtPath("/v1internal:streamGenerateContent", modelID, requestID, request)
+}
+
+func antigravityRequestAtPath(path, modelID, requestID string, request map[string]any) *http.Request {
 	payload, _ := json.Marshal(map[string]any{
 		"model": modelID, "requestId": requestID, "request": request,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", bytes.NewReader(payload))
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }
@@ -147,6 +161,152 @@ func TestAntigravityOpenAIImageGenerationUsesResponsesAndReturnsImage(t *testing
 	}
 	if !foundImageGeneration {
 		t.Fatalf("Responses request did not include image_generation: %#v", received)
+	}
+}
+
+func TestAntigravityOpenAIImageGenerationUsesSameUpstreamImageModel(t *testing.T) {
+	var received map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/generations" {
+			t.Fatalf("dedicated image route = %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Fatalf("dedicated image route lost credentials: %q", r.Header.Get("Authorization"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"iVBORw0KGgo=","mime_type":"image/png"}]}`)
+	}))
+	defer upstream.Close()
+
+	textModel := storage.CustomModel{
+		Name: "models/integration-sol", Provider: "openai", APIURL: upstream.URL,
+		APIKey: "test-key", ExternalModelName: "gpt-5.6-sol", APIStyle: "auto",
+	}
+	imageModel := storage.CustomModel{
+		Name: "models/integration-image-2", Provider: "openai", APIURL: upstream.URL,
+		APIKey: "different-image-key-is-not-used", ExternalModelName: "gpt-image-2", APIStyle: "auto",
+	}
+	setupAntigravityIntegrationModels(t, textModel, imageModel)
+	request := textTurn("draw a tiny orange astronaut")
+	request["generationConfig"] = map[string]any{"responseModalities": []any{"TEXT", "IMAGE"}}
+	recorder := httptest.NewRecorder()
+	handleRequest(recorder, antigravityRequest(textModel.Name, "dedicated-image-request", request))
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "inlineData") || !strings.Contains(recorder.Body.String(), "iVBORw0KGgo=") {
+		t.Fatalf("dedicated image response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if received["model"] != "gpt-image-2" || received["prompt"] != "draw a tiny orange astronaut" {
+		t.Fatalf("dedicated image payload = %#v", received)
+	}
+}
+
+func TestNativeImageGenerationUsesLastCustomOpenAIModelForSameTrajectory(t *testing.T) {
+	resetImageGenerationSourcesForTest()
+	t.Cleanup(resetImageGenerationSourcesForTest)
+
+	var imageRequest map[string]any
+	var chatCalls, imageCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			chatCalls.Add(1)
+			writeOpenAIChatStream(w, "planner-ok")
+		case "/v1/images/generations":
+			imageCalls.Add(1)
+			if r.Header.Get("Authorization") != "Bearer sol-key" {
+				t.Fatalf("native image route lost source credentials: %q", r.Header.Get("Authorization"))
+			}
+			if err := json.NewDecoder(r.Body).Decode(&imageRequest); err != nil {
+				t.Fatal(err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"b64_json":"aW1hZ2UtZnJvbS10cmFqZWN0b3J5","mime_type":"image/png"}]}`)
+		default:
+			t.Fatalf("unexpected upstream path %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+
+	sol := storage.CustomModel{
+		Name: "models/sol", Provider: "openai", APIURL: upstream.URL,
+		APIKey: "sol-key", ExternalModelName: "gpt-5.6-sol", APIStyle: "auto",
+	}
+	image := storage.CustomModel{
+		Name: "models/image-2", Provider: "openai", APIURL: upstream.URL,
+		APIKey: "unused-image-key", ExternalModelName: "gpt-image-2", APIStyle: "auto",
+	}
+	setupAntigravityIntegrationModels(t, sol, image)
+
+	trajectoryID := "41701638-bcd6-4314-ad62-5f3ecfc7e9b9"
+	first := httptest.NewRecorder()
+	handleRequest(first, antigravityRequest(sol.Name, "agent/agent-id/1785736368613/"+trajectoryID+"/20", textTurn("plan an illustration")))
+	if first.Code != http.StatusOK || chatCalls.Load() != 1 {
+		t.Fatalf("source agent request = %d, chat calls = %d, body = %s", first.Code, chatCalls.Load(), first.Body.String())
+	}
+
+	second := httptest.NewRecorder()
+	handleRequest(second, antigravityRequestAtPath("/v1internal:generateContent", "gemini-3.1-flash-image", "image_gen/1785736374865/"+trajectoryID+"/21", textTurn("draw a bright orange paper airplane")))
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), "aW1hZ2UtZnJvbS10cmFqZWN0b3J5") {
+		t.Fatalf("native image response = %d %s", second.Code, second.Body.String())
+	}
+	if !strings.HasPrefix(second.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("native image content type = %q, want unary JSON", second.Header().Get("Content-Type"))
+	}
+	var nativeEnvelope map[string]any
+	if err := json.Unmarshal(second.Body.Bytes(), &nativeEnvelope); err != nil {
+		t.Fatalf("native image response is not JSON: %v", err)
+	}
+	response, _ := nativeEnvelope["response"].(map[string]any)
+	candidates, _ := response["candidates"].([]any)
+	if len(candidates) != 1 {
+		t.Fatalf("native image candidates = %#v", nativeEnvelope)
+	}
+	content, _ := candidates[0].(map[string]any)["content"].(map[string]any)
+	parts, _ := content["parts"].([]any)
+	if len(parts) != 1 {
+		t.Fatalf("native image parts = %#v", nativeEnvelope)
+	}
+	inline, _ := parts[0].(map[string]any)["inlineData"].(map[string]any)
+	if inline["data"] != "aW1hZ2UtZnJvbS10cmFqZWN0b3J5" {
+		t.Fatalf("native image inline data = %#v", inline)
+	}
+	if imageCalls.Load() != 1 || chatCalls.Load() != 1 {
+		t.Fatalf("native image route calls: chat=%d image=%d", chatCalls.Load(), imageCalls.Load())
+	}
+	if imageRequest["model"] != "gpt-image-2" || imageRequest["prompt"] != "draw a bright orange paper airplane" {
+		t.Fatalf("native image request = %#v", imageRequest)
+	}
+}
+
+func TestSelectedImageModelUsesImagesEndpointWithoutGenerationConfig(t *testing.T) {
+	var received map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/generations" {
+			t.Fatalf("selected image model path = %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"c2VsZWN0ZWQtaW1hZ2U=","mime_type":"image/png"}]}`)
+	}))
+	defer upstream.Close()
+
+	image := storage.CustomModel{
+		Name: "models/gpt-image-2", Provider: "openai", APIURL: upstream.URL,
+		APIKey: "image-key", ExternalModelName: "gpt-image-2", APIStyle: "auto",
+	}
+	setupAntigravityIntegrationModel(t, image)
+	recorder := httptest.NewRecorder()
+	handleRequest(recorder, antigravityRequest(image.Name, "selected-image-model", textTurn("draw an orange kite")))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "c2VsZWN0ZWQtaW1hZ2U=") {
+		t.Fatalf("selected image model response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if received["model"] != "gpt-image-2" || received["prompt"] != "draw an orange kite" {
+		t.Fatalf("selected image payload = %#v", received)
 	}
 }
 

@@ -193,6 +193,13 @@ export async function testUpstreamModel(config, model) {
   return call("TestUpstreamModel", config, model);
 }
 
+// Detailed temporary-model probe used by the model editor. The native side
+// receives the configuration only for this user-initiated request and returns
+// a redacted, bounded activity log compatible with AccountTestModal.
+export async function testUpstreamModelDetailed(config, request) {
+  return call("TestUpstreamModelDetailed", config, request);
+}
+
 export async function addDiscoveredModels(config, modelIds) {
   const res = await call("AddDiscoveredModels", config, modelIds);
   if (res?.ok) await loadModels();

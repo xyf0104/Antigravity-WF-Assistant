@@ -45,6 +45,10 @@ jobs:
         working-directory: macos/source/frontend
         run: npm run build
 
+      - name: Run model grouping tests
+        working-directory: macos/source/frontend
+        run: node --test test/modelGroups.test.mjs
+
       - name: Run OAuth status tests
         working-directory: macos/source/frontend
         run: npm run test:oauth
@@ -110,6 +114,10 @@ jobs:
         working-directory: windows/source/frontend
         run: npm run build
 
+      - name: Run model grouping tests
+        working-directory: windows/source/frontend
+        run: node --test test/modelGroups.test.mjs
+
       - name: Run OAuth status tests
         working-directory: windows/source/frontend
         run: npm run test:oauth
@@ -173,8 +181,9 @@ jobs:
           body: |
             ## Antigravity WF助手
 
-            - 账户卡可一键同步当前账户的全部可用模型；同一上游的同名模型自动合并为账户池。
-            - 账户池会按优先级、并发和健康状态调度，网络、限流或认证故障时可切换其他已绑定账户。
+            - 修复自定义 OpenAI、Claude 与 Responses 工具调用转换，避免损坏参数触发 Antigravity 重复回复。
+            - 相同上游的模型合并为一个卡片，可逐个启用或停用；账户卡操作会在窄窗口自动换行。
+            - 自定义模型测试复用完整账户测试流程；图片请求优先使用同一上游已启用的图片模型与当前账户池，不会误转至 Gemini。
             - 本版本仅提供 macOS Universal `.pkg`、Windows x64 `.exe` 和校验清单。
 
             请下载与系统匹配的安装包，并在安装前使用 `SHA256SUMS.txt` 核验完整性。

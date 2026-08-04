@@ -475,9 +475,18 @@ func safeAccountTestProvider(config Config) string {
 }
 
 func isAccountTestImageModel(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(model, "gpt-image-") || strings.HasPrefix(model, "dall-e-") ||
-		strings.HasPrefix(model, "image-") || model == "image2" || model == "image-2"
+	model = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(model, "models/")))
+	if model == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"gpt-image", "dall-e", "imagen", "imagegen", "image-gen", "stable-diffusion", "stable_diffusion", "sdxl", "flux", "midjourney",
+	} {
+		if strings.Contains(model, marker) {
+			return true
+		}
+	}
+	return strings.HasPrefix(model, "image-") || model == "image" || model == "image2" || model == "image-2"
 }
 
 func openAIResponsesTestPayload(model, prompt, mode string) map[string]any {

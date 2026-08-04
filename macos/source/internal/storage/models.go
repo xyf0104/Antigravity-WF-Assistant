@@ -167,9 +167,13 @@ type CustomModel struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName"`
 	Description string `json:"description"`
-	Provider    string `json:"provider"` // "openai" | "anthropic" | "grok" | "custom"
-	APIKey      string `json:"apiKey"`
-	APIURL      string `json:"apiUrl"`
+	// Enabled is optional so configurations created before model-level toggles
+	// remain active. A nil value therefore means enabled; only an explicit
+	// false removes the model from Antigravity's injected picker and routing.
+	Enabled  *bool  `json:"enabled,omitempty"`
+	Provider string `json:"provider"` // "openai" | "anthropic" | "grok" | "custom"
+	APIKey   string `json:"apiKey"`
+	APIURL   string `json:"apiUrl"`
 	// EndpointMode is "auto" for a base domain/path that WF expands, or
 	// "manual" to send requests to APIURL exactly as entered by the user.
 	EndpointMode      string `json:"endpointMode,omitempty"`
@@ -193,6 +197,26 @@ type CustomModel struct {
 	// persisted in custom_models.json and can never expose an OAuth token.
 	RuntimeOAuthUpstream    string `json:"-"`
 	RuntimeChatGPTAccountID string `json:"-"`
+}
+
+// IsEnabled treats pre-toggle configurations as enabled. Keeping this
+// migration rule at the storage boundary prevents an upgrade from making all
+// existing custom models disappear from Antigravity.
+func (m CustomModel) IsEnabled() bool {
+	return m.Enabled == nil || *m.Enabled
+}
+
+// EnabledModels returns a stable copy of the models that may be advertised to
+// and selected by Antigravity. Callers rendering management UI should use
+// LoadModels so disabled entries remain visible and can be re-enabled.
+func EnabledModels(models []CustomModel) []CustomModel {
+	active := make([]CustomModel, 0, len(models))
+	for _, model := range models {
+		if model.IsEnabled() {
+			active = append(active, model)
+		}
+	}
+	return active
 }
 
 type modelsStore struct {
@@ -220,6 +244,19 @@ func LoadModels() ([]CustomModel, error) {
 	mu.RLock()
 	defer mu.RUnlock()
 	return loadModelsLocked()
+}
+
+// LoadEnabledModels is intentionally separate from LoadModels: the settings
+// UI needs the complete catalog, whereas the proxy must never inject or route
+// a model the user has unchecked in its upstream card.
+func LoadEnabledModels() ([]CustomModel, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	models, err := loadModelsLocked()
+	if err != nil {
+		return nil, err
+	}
+	return EnabledModels(models), nil
 }
 
 func loadModelsLocked() ([]CustomModel, error) {
@@ -525,9 +562,11 @@ func NewDiscoveredModel(provider, apiURL, apiKey, externalModelName string) Cust
 	if endpointPart == "" {
 		endpointPart = "upstream"
 	}
+	enabled := true
 	return normalizeModelDisplayName(CustomModel{
 		Name:              fmt.Sprintf("models/%s-%s-%s", provider, namePart, endpointPart),
 		DisplayName:       externalModelName,
+		Enabled:           &enabled,
 		Provider:          provider,
 		APIKey:            apiKey,
 		APIURL:            apiURL,

@@ -226,6 +226,31 @@ func TestManualEndpointIsPreservedExactly(t *testing.T) {
 	}
 }
 
+func TestResolveImagesGenerationsURLUsesDedicatedSiblingRoute(t *testing.T) {
+	for name, config := range map[string]Config{
+		"base":          {Provider: "openai", APIURL: "https://gateway.example.com"},
+		"chat endpoint": {Provider: "openai", APIURL: "https://gateway.example.com/v1/chat/completions"},
+		"responses":     {Provider: "openai", APIURL: "https://gateway.example.com/v1/responses", EndpointMode: "manual"},
+	} {
+		got, err := ResolveImagesGenerationsURLForConfig(config)
+		if err != nil {
+			t.Fatalf("%s resolver returned error: %v", name, err)
+		}
+		if want := "https://gateway.example.com/v1/images/generations"; got != want {
+			t.Errorf("%s image endpoint = %q, want %q", name, got, want)
+		}
+	}
+
+	manual := Config{Provider: "openai", APIURL: "https://gateway.example.com/custom/images/generations?tenant=wf", EndpointMode: "manual"}
+	got, err := ResolveImagesGenerationsURLForConfig(manual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != manual.APIURL {
+		t.Fatalf("explicit manual image endpoint = %q, want %q", got, manual.APIURL)
+	}
+}
+
 func TestAnthropicEndpointModes(t *testing.T) {
 	base := Config{Provider: "anthropic", APIURL: "https://api.example.com"}
 

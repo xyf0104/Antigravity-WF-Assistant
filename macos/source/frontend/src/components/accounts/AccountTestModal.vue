@@ -63,12 +63,17 @@ function modelLabel(model) {
   return String(model?.displayName ?? model?.display_name ?? model?.name ?? modelID(model));
 }
 
+function looksLikeImageModel(value) {
+  const model = String(value || "").trim().replace(/^models\//i, "");
+  return /(?:^|[-_/])(?:gpt[-_])?image(?:[-_/]|$)|image[-_]?gen|dall-e|imagen|stable[-_]?diffusion|stable_diffusion|sdxl|flux|midjourney/i.test(model);
+}
+
 const normalizedModels = computed(() => props.models
   .map((model) => ({ id: modelID(model), label: modelLabel(model) }))
   .filter((model) => model.id));
 
 const selectedModel = computed(() => normalizedModels.value.find((model) => model.id === selectedModelId.value));
-const selectedModelLooksLikeImage = computed(() => /(?:^|[-_/])(?:gpt-)?image(?:[-_/]|$)|image[-_]?gen/i.test(selectedModelId.value));
+const selectedModelLooksLikeImage = computed(() => looksLikeImageModel(selectedModelId.value));
 const isOpenAI = computed(() => /openai|codex/i.test(String(props.account?.provider ?? props.account?.platform ?? "")));
 const shouldShowTestMode = computed(() => props.showTestMode === null ? isOpenAI.value : Boolean(props.showTestMode));
 const promptLabel = computed(() => selectedModelLooksLikeImage.value ? "生图提示词" : "测试提示词");
@@ -83,7 +88,7 @@ const terminalLines = computed(() => props.outputLines.map((line) => {
 }));
 
 function normalizePrompt(modelIDValue, currentPrompt) {
-  const imageModel = /(?:^|[-_/])(?:gpt-)?image(?:[-_/]|$)|image[-_]?gen/i.test(modelIDValue);
+  const imageModel = looksLikeImageModel(modelIDValue);
   if (imageModel && (!currentPrompt || currentPrompt === "hi" || currentPrompt === props.defaultPrompt)) return DEFAULT_IMAGE_PROMPT;
   if (!imageModel && currentPrompt === DEFAULT_IMAGE_PROMPT) return props.defaultPrompt || "hi";
   return currentPrompt;

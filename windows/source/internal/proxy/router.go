@@ -761,7 +761,7 @@ func handleFetchAvailableModelsWithClient(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	models, loadErr := storage.LoadModels()
+	models, loadErr := storage.LoadEnabledModels()
 	if loadErr != nil {
 		trace("model-injection-error", map[string]any{"message": fmt.Sprintf("读取自定义模型失败: %v", loadErr)})
 		models = nil
@@ -949,7 +949,7 @@ func addAgentModelIDs(parsed map[string]any, modelIDs []string) {
 
 // findModel returns the custom model matching a model ID or placeholder.
 func findModel(modelID string) *storage.CustomModel {
-	models, _ := storage.LoadModels()
+	models, _ := storage.LoadEnabledModels()
 	for _, m := range models {
 		slug := getModelSlug(m)
 		placeholder := getModelPlaceholder(m)
@@ -992,11 +992,20 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 		requestID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	customModel := findModel(modelID)
+	customMatched := customModel != nil
+	nativeImageSource := false
+	if customModel == nil {
+		if source := imageGenerationSourceForRequest(requestID); source != nil {
+			customModel = source
+			nativeImageSource = true
+		}
+	}
 
 	trace("generation-request", map[string]any{
-		"requestId":     requestID,
-		"model":         modelID,
-		"customMatched": customModel != nil,
+		"requestId":         requestID,
+		"model":             modelID,
+		"customMatched":     customMatched,
+		"nativeImageSource": nativeImageSource,
 	})
 
 	if customModel == nil {
@@ -1008,6 +1017,15 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	geminiReq, _ := req["request"].(map[string]any)
 	if geminiReq == nil {
 		geminiReq = req
+	}
+	if nativeImageSource {
+		// image_gen requests are addressed to Antigravity's internal Gemini
+		// image model. This marker keeps the recovered upstream model on the
+		// dedicated image route even though that payload has no model-specific
+		// generationConfig field.
+		geminiReq["wfNativeImageGeneration"] = true
+	} else {
+		rememberImageGenerationSource(requestID, customModel)
 	}
 	// The IDE can address the same saved custom model through its display name,
 	// slug or placeholder. Guard the canonical saved name so an overlapping
@@ -1048,11 +1066,34 @@ func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.Cus
 		forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false)
 		return
 	}
+	// When the same API exposes a dedicated image model (for example
+	// gpt-image-2), route an explicit image-generation turn directly to
+	// /v1/images/generations. A directly selected image-only model also always
+	// uses this route: it cannot satisfy a Chat Completions request and native
+	// image_gen requests do not include a generationConfig marker.
+	directImageRequest := requestsDirectImageGeneration(geminiReq)
+	directImageModelSelected := isDirectImageModelName(m.ExternalModelName)
+	if directImageRequest || directImageModelSelected {
+		imageModel := directOpenAIImageModel(m)
+		if directImageModelSelected {
+			imageModel = m
+		}
+		if imageModel != nil {
+			forwardOpenAIImagesGeneration(w, incoming, m, imageModel, geminiReq, requestID)
+			return
+		}
+		if directImageModelSelected {
+			http.Error(w, "当前图片模型没有可用的 Images API 配置", http.StatusBadRequest)
+			return
+		}
+	}
 	config := upstream.ConfigFromModel(*m)
 	style := upstream.EffectiveAPIStyle(config)
 	needsResponses := requiresOpenAIResponses(geminiReq)
 	if style == "responses" || (style == "auto" && needsResponses) {
-		if fallback := forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, style == "auto"); !fallback {
+		// A native image turn must never silently downgrade to text Chat
+		// Completions, because the IDE then reports "no image generated".
+		if fallback := forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, style == "auto" && !directImageRequest); !fallback {
 			return
 		}
 	}
@@ -1100,7 +1141,7 @@ func collectRequestedResponsesBuiltinTools(config map[string]any, requested map[
 			if responseFeatureEnabled(value) {
 				requested[responseWebSearchTool] = struct{}{}
 			}
-		case "imagegeneration", "imagegenerationconfig", "imagegen":
+		case "imagegeneration", "imagegenerationconfig", "imagegen", "generateimage", "wfnativeimagegeneration":
 			if responseFeatureEnabled(value) {
 				requested[responseImageGenerationTool] = struct{}{}
 			}
@@ -1123,7 +1164,7 @@ func collectRequestedNativeResponsesTools(raw any, requested map[string]struct{}
 		switch normalisedResponsesFeatureKey(getString(tool, "type")) {
 		case "websearch", "websearchpreview", "websearchretrieval", "googlesearch", "googlesearchretrieval", "urlcontext":
 			requested[responseWebSearchTool] = struct{}{}
-		case "imagegeneration", "imagegen":
+		case "imagegeneration", "imagegen", "generateimage":
 			requested[responseImageGenerationTool] = struct{}{}
 		}
 	}
@@ -1141,7 +1182,7 @@ func explicitResponsesFeatureMap(config map[string]any) bool {
 				return true
 			}
 		case "websearch", "websearchretrieval", "googlesearch", "googlesearchretrieval", "urlcontext",
-			"imagegeneration", "imagegenerationconfig", "imagegen":
+			"imagegeneration", "imagegenerationconfig", "imagegen", "generateimage", "wfnativeimagegeneration":
 			if responseFeatureEnabled(value) {
 				return true
 			}
@@ -1169,7 +1210,7 @@ func normalisedResponsesFeatureKey(key string) string {
 func isNativeResponsesToolType(kind string) bool {
 	switch normalisedResponsesFeatureKey(kind) {
 	case "websearch", "websearchpreview", "websearchretrieval", "googlesearch", "googlesearchretrieval",
-		"urlcontext", "imagegeneration", "imagegen":
+		"urlcontext", "imagegeneration", "imagegen", "generateimage":
 		return true
 	default:
 		return false

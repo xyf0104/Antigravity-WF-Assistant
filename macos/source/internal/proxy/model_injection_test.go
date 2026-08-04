@@ -411,6 +411,44 @@ func TestHandleFetchAvailableModelsForwardsUnusableUpstreamResponsesUntouched(t 
 	}
 }
 
+func TestDisabledModelsAreNotInjectedOrRoutable(t *testing.T) {
+	stateDir := t.TempDir()
+	storage.Init(stateDir)
+	InitTrace(stateDir)
+	disabled := false
+	models := []storage.CustomModel{
+		{Name: "models/enabled", DisplayName: "Enabled", ExternalModelName: "enabled"},
+		{Name: "models/disabled", DisplayName: "Disabled", ExternalModelName: "disabled", Enabled: &disabled},
+	}
+	if err := storage.SaveModels(models); err != nil {
+		t.Fatal(err)
+	}
+	if found := findModel("models/disabled"); found != nil {
+		t.Fatalf("disabled model remained routable: %#v", found)
+	}
+	if found := findModel("models/enabled"); found == nil {
+		t.Fatal("enabled model was not routable")
+	}
+
+	payload := []byte(`{"models":{}}`)
+	client := newModelFetchTestClient(modelFetchRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(payload)),
+			Request:    request,
+		}, nil
+	}))
+	recorder := httptest.NewRecorder()
+	handleFetchAvailableModelsWithClient(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:fetchAvailableModels", nil), client)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "disabled") || !strings.Contains(recorder.Body.String(), "enabled") {
+		t.Fatalf("disabled model leaked into picker: %s", recorder.Body.String())
+	}
+}
+
 func TestJSONShapeRedactsValues(t *testing.T) {
 	shape, err := json.Marshal(jsonShape(map[string]any{
 		"displayName": "secret model name",

@@ -365,10 +365,10 @@ func convertOpenAILineToGemini(line string, state *openAIStreamState) string {
 				continue
 			}
 			arguments, _ := tc["arguments"].(string)
-			var argsMap map[string]any
-			json.Unmarshal([]byte(arguments), &argsMap)
-			if argsMap == nil {
-				argsMap = map[string]any{}
+			argsMap, validArgs := decodeFunctionCallArgs(arguments)
+			if !validArgs {
+				traceDroppedFunctionCall("openai", state.traceID, getString(tc, "id"), name, arguments)
+				continue
 			}
 			functionCall := map[string]any{"name": name, "args": argsMap}
 			if callID, _ := tc["id"].(string); callID != "" {

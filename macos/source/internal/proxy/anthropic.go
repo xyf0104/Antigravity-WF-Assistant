@@ -20,9 +20,10 @@ type anthropicStreamState struct {
 }
 
 type anthropicToolCall struct {
-	name  string
-	id    string
-	input strings.Builder
+	name               string
+	id                 string
+	input              strings.Builder
+	receivedInputDelta bool
 }
 
 type anthropicUsageTotals struct {
@@ -372,7 +373,14 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 				if callID == "" {
 					callID = fmt.Sprintf("toolu_%d_%s", index, name)
 				}
-				state.toolCalls[index] = &anthropicToolCall{name: name, id: callID}
+				call := &anthropicToolCall{name: name, id: callID}
+				// Some Anthropic-compatible gateways put the complete tool input
+				// on content_block_start and omit input_json_delta entirely.
+				// Preserve that object instead of later emitting an empty args map.
+				if initial, ok := marshalFunctionCallArgs(block["input"]); ok {
+					call.input.WriteString(initial)
+				}
+				state.toolCalls[index] = call
 			}
 		}
 
@@ -387,6 +395,14 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 			} else if deltaType == "input_json_delta" {
 				if partial, ok := delta["partial_json"].(string); ok {
 					if call := state.toolCalls[anthropicContentBlockIndex(event)]; call != nil {
+						// An initial input object is a complete snapshot. If the
+						// provider subsequently starts streaming deltas, those
+						// deltas are the authoritative JSON and must replace it,
+						// not be concatenated after "{}".
+						if !call.receivedInputDelta {
+							call.input.Reset()
+							call.receivedInputDelta = true
+						}
 						call.input.WriteString(partial)
 					}
 				}
@@ -396,19 +412,18 @@ func convertAnthropicLineToGemini(line string, state *anthropicStreamState) stri
 	case "content_block_stop":
 		index := anthropicContentBlockIndex(event)
 		if call := state.toolCalls[index]; call != nil && call.name != "" {
-			var args map[string]any
-			json.Unmarshal([]byte(call.input.String()), &args)
-			if args == nil {
-				args = map[string]any{}
+			if args, ok := decodeFunctionCallArgs(call.input.String()); ok {
+				parts = append(parts, map[string]any{
+					"functionCall": map[string]any{
+						"id":   call.id,
+						"name": call.name,
+						"args": args,
+					},
+				})
+				state.unsafeOutput = true
+			} else {
+				traceDroppedFunctionCall("anthropic", state.traceID, call.id, call.name, call.input.String())
 			}
-			parts = append(parts, map[string]any{
-				"functionCall": map[string]any{
-					"id":   call.id,
-					"name": call.name,
-					"args": args,
-				},
-			})
-			state.unsafeOutput = true
 			delete(state.toolCalls, index)
 		}
 

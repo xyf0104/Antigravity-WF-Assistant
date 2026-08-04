@@ -154,3 +154,18 @@ func TestResponsesCompletedOnlyTextIsForwardedOnce(t *testing.T) {
 		t.Fatalf("final response duplicated streamed text: first=%s last=%s", first, last)
 	}
 }
+
+func TestResponsesInvalidFunctionArgumentsAreDropped(t *testing.T) {
+	state := &openAIResponsesStreamState{traceID: "invalid-responses-tool"}
+	convertOpenAIResponsesLineToGemini(`data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_bad","name":"search","arguments":"not-json"}}`, state)
+	out := convertOpenAIResponsesLineToGemini(`data: {"type":"response.function_call_arguments.done","call_id":"call_bad"}`, state)
+	if out != "" {
+		if strings.Contains(out, "functionCall") || state.unsafeOutput {
+			t.Fatalf("invalid Responses tool arguments were emitted: %s", out)
+		}
+	}
+	completed := convertOpenAIResponsesLineToGemini(`data: {"type":"response.completed","response":{"output":[]}}`, state)
+	if completed == "" || !strings.Contains(completed, `"finishReason":"STOP"`) {
+		t.Fatalf("invalid Responses tool stream did not terminate cleanly: %s", completed)
+	}
+}

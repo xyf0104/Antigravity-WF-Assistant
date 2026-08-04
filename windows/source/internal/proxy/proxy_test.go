@@ -451,6 +451,44 @@ func TestHandleFetchAvailableModelsForwardsUnusableUpstreamResponsesUntouched(t 
 	}
 }
 
+func TestDisabledModelsAreNotInjectedOrRoutable(t *testing.T) {
+	stateDir := t.TempDir()
+	storage.Init(stateDir)
+	InitTrace(stateDir)
+	disabled := false
+	models := []storage.CustomModel{
+		{Name: "models/enabled", DisplayName: "Enabled", ExternalModelName: "enabled"},
+		{Name: "models/disabled", DisplayName: "Disabled", ExternalModelName: "disabled", Enabled: &disabled},
+	}
+	if err := storage.SaveModels(models); err != nil {
+		t.Fatal(err)
+	}
+	if found := findModel("models/disabled"); found != nil {
+		t.Fatalf("disabled model remained routable: %#v", found)
+	}
+	if found := findModel("models/enabled"); found == nil {
+		t.Fatal("enabled model was not routable")
+	}
+
+	payload := []byte(`{"models":{}}`)
+	client := newModelFetchTestClient(modelFetchRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(payload)),
+			Request:    request,
+		}, nil
+	}))
+	recorder := httptest.NewRecorder()
+	handleFetchAvailableModelsWithClient(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:fetchAvailableModels", nil), client)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "disabled") || !strings.Contains(recorder.Body.String(), "enabled") {
+		t.Fatalf("disabled model leaked into picker: %s", recorder.Body.String())
+	}
+}
+
 func TestJSONShapeRedactsValues(t *testing.T) {
 	shape, err := json.Marshal(jsonShape(map[string]any{
 		"displayName": "secret model name",
@@ -857,6 +895,51 @@ func TestConvertAnthropicToolUse(t *testing.T) {
 	args := fc["args"].(map[string]any)
 	if args["path"] != "x.go" {
 		t.Errorf("args = %v", args)
+	}
+}
+
+func TestConvertAnthropicToolUseWithInlineInput(t *testing.T) {
+	state := &anthropicStreamState{traceID: "inline-tool"}
+	convertAnthropicLineToGemini(`data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_inline","name":"search","input":{"query":"天气"}}}`, state)
+	out := convertAnthropicLineToGemini(`data: {"type":"content_block_stop"}`, state)
+	if out == "" {
+		t.Fatal("inline tool input was discarded")
+	}
+	response := decodeAntigravityStreamResponse(t, out)
+	parts := response["candidates"].([]any)[0].(map[string]any)["content"].(map[string]any)["parts"].([]any)
+	args := parts[0].(map[string]any)["functionCall"].(map[string]any)["args"].(map[string]any)
+	if args["query"] != "天气" {
+		t.Fatalf("inline tool arguments = %#v", args)
+	}
+}
+
+func TestConvertAnthropicMalformedToolUseDoesNotEmitFunctionCall(t *testing.T) {
+	state := &anthropicStreamState{traceID: "malformed-tool"}
+	convertAnthropicLineToGemini(`data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_bad","name":"search"}}`, state)
+	if out := convertAnthropicLineToGemini(`data: {"type":"content_block_stop"}`, state); out != "" {
+		response := decodeAntigravityStreamResponse(t, out)
+		parts := response["candidates"].([]any)[0].(map[string]any)["content"].(map[string]any)["parts"].([]any)
+		for _, part := range parts {
+			if _, isCall := part.(map[string]any)["functionCall"]; isCall {
+				t.Fatalf("malformed tool call was emitted: %#v", part)
+			}
+		}
+	}
+	stop := convertAnthropicLineToGemini(`data: {"type":"message_stop"}`, state)
+	if stop == "" || !strings.Contains(stop, `"finishReason":"STOP"`) {
+		t.Fatalf("malformed tool stream did not terminate cleanly: %s", stop)
+	}
+}
+
+func TestConvertOpenAIInvalidToolArgumentsDoesNotEmitFunctionCall(t *testing.T) {
+	state := &openAIStreamState{traceID: "invalid-openai-tool"}
+	convertOpenAILineToGemini(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_bad","function":{"name":"search","arguments":"not-json"}}]},"finish_reason":null}]}`, state)
+	out := convertOpenAILineToGemini(`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`, state)
+	if out == "" {
+		t.Fatal("tool finish envelope should still be emitted")
+	}
+	if strings.Contains(out, "functionCall") || state.unsafeOutput {
+		t.Fatalf("invalid OpenAI tool arguments were emitted: %s", out)
 	}
 }
 

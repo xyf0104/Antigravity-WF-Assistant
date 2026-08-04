@@ -632,13 +632,16 @@ func responsesFailureMessage(event map[string]any) string {
 }
 
 func responseToolCallPart(callID string, call *openAIResponsesToolCall, state *openAIResponsesStreamState) any {
-	if call.emitted {
+	if call == nil || call.emitted {
+		return nil
+	}
+	arguments, ok := decodeFunctionCallArgs(call.args.String())
+	if call.name == "" || !ok {
+		traceDroppedFunctionCall("responses", state.traceID, callID, call.name, call.args.String())
 		return nil
 	}
 	call.emitted = true
 	state.unsafeOutput = true
-	arguments := map[string]any{}
-	_ = json.Unmarshal([]byte(call.args.String()), &arguments)
 	return map[string]any{"functionCall": map[string]any{"id": callID, "name": call.name, "args": arguments}}
 }
 

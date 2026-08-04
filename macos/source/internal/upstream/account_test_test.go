@@ -150,6 +150,21 @@ func TestRunAccountTestOpenAIImageReturnsOnlyValidatedPreview(t *testing.T) {
 	}
 }
 
+func TestAccountTestRecognizesSupportedImageModelNames(t *testing.T) {
+	for _, model := range []string{
+		"gpt-image-2", "dall-e-3", "imagen-4", "imagegen-v3", "stable-diffusion-xl", "sdxl-turbo", "flux-pro", "midjourney-v7", "models/image-2",
+	} {
+		if !isAccountTestImageModel(model) {
+			t.Errorf("image model %q was not recognised", model)
+		}
+	}
+	for _, model := range []string{"gpt-5.6-sol", "claude-opus-5", "text-embedding-3-large", ""} {
+		if isAccountTestImageModel(model) {
+			t.Errorf("non-image model %q was misclassified", model)
+		}
+	}
+}
+
 func TestAccountTestResponseRedactsSecretsAndRejectsUnsafeImageURLs(t *testing.T) {
 	result := parseAccountTestResponse([]byte(`{"choices":[{"message":{"content":"Authorization: Bearer super-secret-token-value"}}]}`))
 	if strings.Contains(result.Text, "super-secret-token-value") || !strings.Contains(result.Text, "[已隐藏]") {

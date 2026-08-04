@@ -572,7 +572,7 @@ func handleFetchAvailableModelsWithClient(w http.ResponseWriter, r *http.Request
 		forwardRawModelResponse(w, resp, body)
 		return
 	}
-	models, loadErr := storage.LoadModels()
+	models, loadErr := storage.LoadEnabledModels()
 	if loadErr != nil {
 		trace("model-injection-error", map[string]any{"message": fmt.Sprintf("读取自定义模型失败: %v", loadErr)})
 		models = nil
