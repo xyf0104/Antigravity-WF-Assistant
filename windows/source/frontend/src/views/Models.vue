@@ -8,6 +8,11 @@ import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import AccountTestModal from "@/components/accounts/AccountTestModal.vue";
 import { groupModelsByUpstream, modelIsEnabled } from "@/state/modelGroups";
 import {
+  normalizeReasoningEffort,
+  reasoningEffortLabel,
+  resolveReasoningProfile,
+} from "@/state/reasoningCapabilities";
+import {
   state,
   saveModel,
   deleteModel,
@@ -35,6 +40,8 @@ const isNew = ref(false);
 const confirmDelete = ref(null);
 const discoveredModels = ref([]);
 const selectedModelIds = ref([]);
+const discoveredReasoningEfforts = ref({});
+const discoveredReasoningTouched = ref({});
 const modelEnableBusy = ref({});
 const groupEnableBusy = ref({});
 const modelActionMessage = ref("");
@@ -134,21 +141,15 @@ const anthropicPathOptions = [
   { label: "标准 Messages", value: "standard" },
   { label: "兼容 Chat Messages", value: "compat" },
 ];
-const openAIReasoningOptions = [
-  { label: "自动", value: "auto" },
-  { label: "无", value: "none" },
-  { label: "最小", value: "minimal" },
-  { label: "低", value: "low" },
-  { label: "中", value: "medium" },
-  { label: "高", value: "high" },
-  { label: "超高", value: "xhigh" },
-  { label: "最大", value: "max" },
-];
-const anthropicReasoningOptions = openAIReasoningOptions.filter((option) =>
-  ["auto", "low", "medium", "high"].includes(option.value)
-);
-const reasoningOptions = computed(() =>
-  form.value.provider === "anthropic" ? anthropicReasoningOptions : openAIReasoningOptions
+const formReasoningProfile = computed(() => resolveReasoningProfile({
+  provider: form.value.provider,
+  model: form.value.externalModelName,
+  apiStyle: form.value.apiStyle,
+  capabilities: form.value.capabilities,
+}));
+const reasoningOptions = computed(() => formReasoningProfile.value.options);
+const selectedFormReasoningEffort = computed(() =>
+  normalizeReasoningEffort(form.value.reasoningEffort, formReasoningProfile.value)
 );
 const testTarget = computed(() => selectedModelIds.value[0] || form.value.externalModelName?.trim());
 const selectedAccounts = computed(() => {
@@ -242,8 +243,65 @@ function providerLabel(provider) {
   return provider === "anthropic" ? "Claude" : provider === "grok" ? "Grok" : provider === "openai" ? "OpenAI" : "兼容";
 }
 
-function reasoningLabel(value) {
-  return openAIReasoningOptions.find((option) => option.value === value)?.label || "自动";
+function modelReasoningProfile(model, fallbackProvider = form.value.provider, fallbackAPIStyle = form.value.apiStyle) {
+  return resolveReasoningProfile({
+    ...(model && typeof model === "object" ? model : {}),
+    provider: model?.provider || fallbackProvider,
+    model: model?.externalModelName || model?.external_model_name || model?.id || model?.name || "",
+    apiStyle: model?.apiStyle || fallbackAPIStyle,
+  });
+}
+
+function modelReasoningLabel(model) {
+  const profile = modelReasoningProfile(model, model?.provider, model?.apiStyle);
+  return reasoningEffortLabel(model?.reasoningEffort, profile);
+}
+
+function discoveredModelID(model) {
+  return String(model?.id || model?.externalModelName || model?.name || "")
+    .trim()
+    .replace(/^models\//, "");
+}
+
+function resetDiscoveredModelSelection(models = []) {
+  const list = Array.isArray(models) ? models : [];
+  const efforts = {};
+  for (const model of list) {
+    const id = discoveredModelID(model);
+    if (!id) continue;
+    efforts[id] = normalizeReasoningEffort(model?.reasoningEffort, modelReasoningProfile(model));
+  }
+  discoveredModels.value = list;
+  selectedModelIds.value = list.map(discoveredModelID).filter(Boolean);
+  discoveredReasoningEfforts.value = efforts;
+  discoveredReasoningTouched.value = {};
+}
+
+function discoveredReasoningProfile(model) {
+  return modelReasoningProfile(model);
+}
+
+function discoveredReasoningEffort(model) {
+  const id = discoveredModelID(model);
+  return normalizeReasoningEffort(
+    discoveredReasoningEfforts.value[id],
+    discoveredReasoningProfile(model)
+  );
+}
+
+function setDiscoveredReasoningEffort(model, value) {
+  const id = discoveredModelID(model);
+  if (!id) return;
+  const profile = discoveredReasoningProfile(model);
+  discoveredReasoningEfforts.value = {
+    ...discoveredReasoningEfforts.value,
+    [id]: normalizeReasoningEffort(value, profile),
+  };
+  discoveredReasoningTouched.value = { ...discoveredReasoningTouched.value, [id]: true };
+}
+
+function setFormReasoningEffort(value) {
+  form.value.reasoningEffort = normalizeReasoningEffort(value, formReasoningProfile.value);
 }
 
 function maskKey(key) {
@@ -342,13 +400,12 @@ function capabilityLabels(model) {
 function modelToForm(model) {
   const capabilities = automaticCapabilities(model.provider, model.externalModelName, model.capabilities, model.apiStyle);
   const endpointMode = model.endpointMode || (model.messagePathMode === "manual" ? "manual" : "auto");
-  return {
+  const next = {
     ...emptyForm(),
     ...model,
     apiUrl: endpointMode === "auto" ? normalizeAutoBaseURL(model.apiUrl) : model.apiUrl,
     endpointMode,
     accountIds: Array.isArray(model.accountIds) ? [...model.accountIds] : [],
-    reasoningEffort: model.reasoningEffort || "auto",
     apiStyle: model.apiStyle || (model.provider === "anthropic" ? "messages" : "auto"),
     messagePathMode: model.messagePathMode === "manual" ? "auto" : (model.messagePathMode || "auto"),
     authMode: model.authMode || (model.provider === "anthropic" ? "x_api_key" : "bearer"),
@@ -357,6 +414,11 @@ function modelToForm(model) {
     enabled: model.enabled !== false,
     capabilities,
   };
+  next.reasoningEffort = normalizeReasoningEffort(
+    model.reasoningEffort,
+    modelReasoningProfile({ ...model, ...next }, next.provider, next.apiStyle)
+  );
+  return next;
 }
 
 function openNew() {
@@ -364,8 +426,7 @@ function openNew() {
   isNew.value = true;
   editorError.value = "";
   editorNotice.value = "默认只需填写 XIASS 域名；如上游要求完整接口地址，可随时切换到“完整路径（手动）”。";
-  discoveredModels.value = [];
-  selectedModelIds.value = [];
+  resetDiscoveredModelSelection();
   editorOpen.value = true;
 }
 
@@ -377,8 +438,7 @@ function openEdit(model) {
   editorNotice.value = form.value.endpointMode === "auto" && originalURL && form.value.apiUrl !== originalURL
     ? "已将旧版保存的完整接口尾缀收敛为基础地址；智能补全会自动选择正确路径。"
     : "";
-  discoveredModels.value = [];
-  selectedModelIds.value = [];
+  resetDiscoveredModelSelection();
   editorOpen.value = true;
 }
 
@@ -387,14 +447,20 @@ function onProviderChange(provider) {
   if (provider === "anthropic") {
     form.value.authMode = "x_api_key";
     form.value.apiStyle = "messages";
-    if (!anthropicReasoningOptions.some((option) => option.value === form.value.reasoningEffort)) {
-      form.value.reasoningEffort = "auto";
-    }
   } else if (form.value.authMode === "x_api_key") {
     form.value.authMode = "bearer";
     if (form.value.apiStyle === "messages") form.value.apiStyle = "auto";
   }
   form.value.capabilities = automaticCapabilities(provider, form.value.externalModelName, form.value.capabilities, form.value.apiStyle);
+  form.value.reasoningEffort = normalizeReasoningEffort(
+    form.value.reasoningEffort,
+    resolveReasoningProfile({
+      provider: form.value.provider,
+      model: form.value.externalModelName,
+      apiStyle: form.value.apiStyle,
+      capabilities: form.value.capabilities,
+    })
+  );
 }
 
 function onEndpointModeChange(mode) {
@@ -488,8 +554,7 @@ async function fetchModels() {
       editorError.value = sanitizeModelMessage(result?.message || "无法获取上游模型列表", config);
       return;
     }
-    discoveredModels.value = result.models || [];
-    selectedModelIds.value = discoveredModels.value.map((model) => model.id);
+    resetDiscoveredModelSelection(result.models || []);
     editorNotice.value = result.message || `已发现 ${selectedModelIds.value.length} 个模型，默认已全部选中。`;
   } catch (error) {
     editorError.value = sanitizeModelMessage(error, config);
@@ -507,7 +572,7 @@ function toggleModel(modelID, checked) {
 }
 
 function toggleAllModels() {
-  selectedModelIds.value = allDiscoveredSelected.value ? [] : discoveredModels.value.map((model) => model.id);
+  selectedModelIds.value = allDiscoveredSelected.value ? [] : discoveredModels.value.map(discoveredModelID).filter(Boolean);
 }
 
 function modelTestSteps(steps, config) {
@@ -676,6 +741,10 @@ async function saveManualModel() {
     editorError.value = "请填写上游模型名，或先点击“获取全部模型”。";
     return;
   }
+  form.value.reasoningEffort = normalizeReasoningEffort(
+    form.value.reasoningEffort,
+    formReasoningProfile.value
+  );
   const model = {
     ...form.value,
     ...config,
@@ -702,6 +771,65 @@ async function saveManualModel() {
   }
 }
 
+function accountIDsForConfig(config) {
+  return [...new Set((Array.isArray(config?.accountIds) ? config.accountIds : [])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean))];
+}
+
+function matchesImportedModel(model, config, externalModelName) {
+  const expectedName = String(externalModelName || "").trim().replace(/^models\//, "");
+  const actualName = String(model?.externalModelName || "").trim().replace(/^models\//, "");
+  if (!expectedName || actualName !== expectedName) return false;
+  if (String(model?.provider || "").toLowerCase() !== String(config?.provider || "").toLowerCase()) return false;
+
+  const expectedAccountIDs = accountIDsForConfig(config);
+  if (expectedAccountIDs.length) {
+    const actualAccountIDs = new Set((Array.isArray(model?.accountIds) ? model.accountIds : [])
+      .map((id) => String(id || "").trim()));
+    return expectedAccountIDs.every((id) => actualAccountIDs.has(id));
+  }
+
+  const expectedManual = config?.endpointMode === "manual";
+  const actualManual = model?.endpointMode === "manual" || model?.messagePathMode === "manual";
+  if (expectedManual || actualManual) return String(model?.apiUrl || "").trim() === String(config?.apiUrl || "").trim();
+  return normalizeAutoBaseURL(model?.apiUrl) === normalizeAutoBaseURL(config?.apiUrl);
+}
+
+// AddDiscoveredModels intentionally keeps its native signature small and
+// credential-safe.  The selected per-model effort is therefore persisted in a
+// second local save after the batch import has completed and reloaded models.
+// Only a row the user changed is written, so an "auto" default never erases a
+// reasoning setting on an already configured model from the same upstream.
+async function persistTouchedDiscoveredReasoning(config) {
+  const touchedIDs = selectedModelIds.value.filter((id) => discoveredReasoningTouched.value[id]);
+  if (!touchedIDs.length) return { saved: 0, failures: [] };
+
+  let saved = 0;
+  const failures = [];
+  for (const modelID of touchedIDs) {
+    const discovered = discoveredModels.value.find((model) => discoveredModelID(model) === modelID);
+    const target = state.models.find((model) => matchesImportedModel(model, config, modelID));
+    if (!discovered || !target) {
+      failures.push(`${modelID} 未在本机模型列表中找到`);
+      continue;
+    }
+    const effort = normalizeReasoningEffort(
+      discoveredReasoningEfforts.value[modelID],
+      modelReasoningProfile(target, config.provider, config.apiStyle)
+    );
+    if (normalizeReasoningEffort(target.reasoningEffort, modelReasoningProfile(target)) === effort) continue;
+    try {
+      const result = await saveModel({ ...target, reasoningEffort: effort });
+      if (result?.ok) saved += 1;
+      else failures.push(`${modelID}：${sanitizeModelMessage(result?.message || "保存失败", config)}`);
+    } catch (error) {
+      failures.push(`${modelID}：${sanitizeModelMessage(error, config)}`);
+    }
+  }
+  return { saved, failures };
+}
+
 async function addSelectedModels() {
   editorError.value = "";
   let config;
@@ -719,7 +847,14 @@ async function addSelectedModels() {
   try {
     const result = await addDiscoveredModels(config, selectedModelIds.value);
     if (result?.ok) {
-      editorNotice.value = result.message;
+      const persisted = await persistTouchedDiscoveredReasoning(config);
+      if (persisted.failures.length) {
+        editorError.value = `模型已导入，但思考强度未完全保存：${persisted.failures.join("；")}`;
+        return;
+      }
+      editorNotice.value = persisted.saved
+        ? `${result.message || "模型已导入。"} 已保存 ${persisted.saved} 个模型的思考强度。`
+        : result.message;
       editorOpen.value = false;
     } else {
       editorError.value = sanitizeModelMessage(result?.message || "批量添加失败", config);
@@ -801,7 +936,7 @@ async function handleDelete() {
             <div class="cap-row model-cap-row">
               <span v-for="label in capabilityLabels(model)" :key="label" class="cap">{{ label }}</span>
               <span v-if="!capabilityLabels(model).length" class="cap muted">文本</span>
-              <span class="model-style">{{ model.apiStyle || "兼容" }}</span>
+              <span class="model-style">{{ model.apiStyle || "兼容" }} · {{ modelReasoningLabel(model) }}</span>
             </div>
           </div>
         </div>
@@ -847,10 +982,21 @@ async function handleDelete() {
           </div>
           <div v-if="discoveredModels.length" class="selection-list">
             <label class="select-all"><input type="checkbox" :checked="allDiscoveredSelected" @change="toggleAllModels" /> 全选 {{ discoveredModels.length }} 个模型</label>
-            <label v-for="model in discoveredModels" :key="model.id" class="select-row">
-              <input type="checkbox" :checked="selectedModelIds.includes(model.id)" @change="toggleModel(model.id, $event.target.checked)" />
+            <label v-for="model in discoveredModels" :key="discoveredModelID(model)" class="select-row">
+              <input type="checkbox" :checked="selectedModelIds.includes(discoveredModelID(model))" @change="toggleModel(discoveredModelID(model), $event.target.checked)" />
               <span class="truncate">{{ model.name || model.id }}</span>
               <code>{{ model.id }}</code>
+              <span class="discovery-reasoning" :title="discoveredReasoningProfile(model).note" @click.stop>
+                <span>思考</span>
+                <select
+                  :value="discoveredReasoningEffort(model)"
+                  :disabled="discoveredReasoningProfile(model).options.length <= 1"
+                  @click.stop
+                  @change="setDiscoveredReasoningEffort(model, $event.target.value)"
+                >
+                  <option v-for="option in discoveredReasoningProfile(model).options" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+              </span>
             </label>
           </div>
           <div class="test-action-row">
@@ -893,10 +1039,13 @@ async function handleDelete() {
         </section>
 
         <section class="section">
-          <div class="compact-label">思考强度</div>
-          <div class="reasoning-grid">
-            <button v-for="option in reasoningOptions" :key="option.value" type="button" :class="{ active: form.reasoningEffort === option.value }" @click="form.reasoningEffort = option.value">{{ option.label }}</button>
-          </div>
+          <label class="select-field reasoning-select-field">
+            <span class="t-footnote">思考强度</span>
+            <select :value="selectedFormReasoningEffort" @change="setFormReasoningEffort($event.target.value)">
+              <option v-for="option in reasoningOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <span class="t-caption">{{ formReasoningProfile.note }}</span>
+          </label>
         </section>
 
         <div v-if="editorNotice" class="notice-box">{{ editorNotice }}</div>
@@ -991,21 +1140,24 @@ textarea { width: 100%; min-height: 64px; padding: 9px 10px; resize: vertical; b
 textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
 .discover-box { background: color-mix(in srgb, var(--accent-soft) 28%, var(--bg-card)); }
 .selection-list { max-height: 196px; overflow-y: auto; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
-.select-all, .select-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(90px, .75fr); align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border-bottom: 1px solid var(--separator); font-size: 12px; }
+.select-all, .select-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(90px, .75fr) minmax(128px, .85fr); align-items: center; gap: 8px; min-height: 38px; padding: 0 10px; border-bottom: 1px solid var(--separator); font-size: 12px; }
 .select-all { grid-template-columns: 16px 1fr; color: var(--text-secondary); background: var(--bg-fill); position: sticky; top: 0; }
 .select-row:last-child { border-bottom: 0; }
 .select-row code { color: var(--text-tertiary); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.discovery-reasoning { display: flex; align-items: center; justify-content: flex-end; gap: 5px; min-width: 0; color: var(--text-tertiary); font-size: 10px; }
+.discovery-reasoning select, .reasoning-select-field select { min-width: 0; height: 28px; padding: 0 23px 0 8px; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); color: var(--text-primary); background: var(--bg-card); font: 11px var(--font-num); }
+.discovery-reasoning select:focus, .reasoning-select-field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
+.discovery-reasoning select:disabled { color: var(--text-tertiary); border-color: var(--separator); opacity: .78; cursor: default; }
 .test-action-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 9px; min-height: 30px; }
 .capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .capability-item { display: flex; gap: 7px; align-items: center; min-height: 30px; padding: 0 8px; font-size: 12px; color: var(--text-secondary); border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
 .capability-item.disabled { color: var(--text-tertiary); opacity: .7; }
 .capability-mark { color: var(--green); font-weight: 800; }
 .capability-item.disabled .capability-mark { color: var(--text-tertiary); }
-.reasoning-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
-.reasoning-grid button { height: 30px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); color: var(--text-secondary); font-size: 11px; }
-.reasoning-grid button.active { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); }
+.select-field { display: flex; flex-direction: column; gap: 6px; }
+.reasoning-select-field select { width: min(100%, 260px); height: 34px; font-size: 12px; }
 .notice-box, .err-box { padding: 10px 11px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.45; }
 .notice-box { color: var(--accent-strong); background: var(--accent-soft); border: 1px solid var(--accent-border); }
 .err-box { color: var(--red); background: rgba(255,69,58,.1); border: 1px solid rgba(255,69,58,.25); }
-@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .capability-grid { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr); } .select-row code { display: none; } .model-row-main { align-items: flex-start; flex-wrap: wrap; } .model-copy { flex: 1 1 calc(100% - 78px); } .model-row-actions { width: 100%; justify-content: flex-end; padding-left: 24px; } .model-style { margin-left: 0; } .test-action-row { align-items: stretch; flex-direction: column; } }
+@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .capability-grid { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr) minmax(112px, auto); } .select-row code { display: none; } .model-row-main { align-items: flex-start; flex-wrap: wrap; } .model-copy { flex: 1 1 calc(100% - 78px); } .model-row-actions { width: 100%; justify-content: flex-end; padding-left: 24px; } .model-style { margin-left: 0; } .test-action-row { align-items: stretch; flex-direction: column; } }
 </style>

@@ -24,7 +24,7 @@ import (
 
 const (
 	Repository     = "xyf0104/Antigravity-WF-Assistant"
-	CurrentVersion = "1.4.6"
+	CurrentVersion = "1.4.19"
 	maxAssetBytes  = int64(2 << 30) // installers are normally tens of MB
 	// CheckTimeout keeps a background update check from blocking the UI when a
 	// network, DNS resolver, proxy, or captive portal is unhealthy.
@@ -35,7 +35,11 @@ const (
 	FreshCacheTTL = 10 * time.Minute
 )
 
-var githubLatestReleaseURL = "https://api.github.com/repos/" + Repository + "/releases/latest"
+// githubLatestReleaseURL is deliberately kept as the package's historical
+// test hook. It now points at the releases collection rather than GitHub's
+// /releases/latest endpoint: GitHub defines "latest" by publication time,
+// which can point at an older version after a release is republished.
+var githubLatestReleaseURL = "https://api.github.com/repos/" + Repository + "/releases?per_page=100"
 
 type githubAsset struct {
 	Name               string `json:"name"`
@@ -221,32 +225,64 @@ func DownloadLatestInstaller(ctx context.Context, report func(downloaded, total 
 	}, nil
 }
 
+const releaseCacheFormat = 2
+
 type releaseCache struct {
-	ETag      string        `json:"etag,omitempty"`
-	CheckedAt string        `json:"checkedAt,omitempty"`
-	Release   githubRelease `json:"release"`
+	// Format 2 stores the full GitHub release-list response. Release is kept
+	// solely so version-1 caches can be read as a safe, stale fallback while a
+	// fresh list is fetched. Old ETags belong to /releases/latest and are never
+	// sent to the new /releases endpoint.
+	Format    int             `json:"format,omitempty"`
+	ETag      string          `json:"etag,omitempty"`
+	CheckedAt string          `json:"checkedAt,omitempty"`
+	Releases  []githubRelease `json:"releases,omitempty"`
+	Release   githubRelease   `json:"release,omitempty"`
 }
 
+// latestRelease remains a small compatibility wrapper for callers and tests
+// that used the old helper. Both checking and downloading now resolve their
+// release through the same platform-aware semantic-version selection path.
 func latestRelease(ctx context.Context) (githubRelease, error) {
-	release, _, _, err := fetchLatestRelease(ctx, "")
-	return release, err
+	return latestReleaseForPlatform(ctx, runtime.GOOS)
+}
+
+func latestReleaseForPlatform(ctx context.Context, platform string) (githubRelease, error) {
+	releases, _, _, err := fetchReleaseList(ctx, "")
+	if err != nil {
+		return githubRelease{}, err
+	}
+	return selectHighestStableRelease(releases, platform)
 }
 
 func latestReleaseWithCache(ctx context.Context, cachePath string) (githubRelease, bool, string, string, error) {
+	return latestReleaseWithCacheForPlatform(ctx, cachePath, runtime.GOOS)
+}
+
+func latestReleaseWithCacheForPlatform(ctx context.Context, cachePath, platform string) (githubRelease, bool, string, string, error) {
 	cache, cacheOK := loadReleaseCache(cachePath)
+	cachedReleases, cachedReleasesOK := releaseListFromCache(cache)
+	cacheOK = cacheOK && cachedReleasesOK
 	// A caller cancellation always wins, including when a fresh cache exists.
 	// Otherwise clicking “取消检查” could misleadingly look successful.
 	if err := ctx.Err(); err != nil {
 		return githubRelease{}, false, "", "", err
 	}
-	if cacheOK && isFreshReleaseCache(cache, time.Now()) {
-		return cache.Release, true, "fresh", cache.CheckedAt, nil
+	// A version-1 cache only contains the answer from /releases/latest, so it
+	// cannot safely be considered fresh: it may have hidden a higher semantic
+	// version. It is retained only as an offline fallback until migrated.
+	if cacheOK && !isLegacyReleaseCache(cache) && isFreshReleaseCache(cache, time.Now()) {
+		release, err := selectHighestStableRelease(cachedReleases, platform)
+		if err != nil {
+			return githubRelease{}, false, "", "", err
+		}
+		return release, true, "fresh", cache.CheckedAt, nil
 	}
+
 	etag := ""
-	if cacheOK {
+	if cacheOK && !isLegacyReleaseCache(cache) {
 		etag = cache.ETag
 	}
-	release, receivedETag, notModified, err := fetchLatestRelease(ctx, etag)
+	releases, receivedETag, notModified, err := fetchReleaseList(ctx, etag)
 	if err != nil {
 		// A user explicitly canceled this request. Returning cached data here
 		// would make a cancelled check look as if it had completed normally.
@@ -254,30 +290,43 @@ func latestReleaseWithCache(ctx context.Context, cachePath string) (githubReleas
 			return githubRelease{}, false, "", "", err
 		}
 		if cacheOK {
-			reason := "network"
-			if errors.Is(err, context.DeadlineExceeded) {
-				reason = "timeout"
+			release, cachedErr := selectHighestStableRelease(cachedReleases, platform)
+			if cachedErr == nil {
+				reason := "network"
+				if errors.Is(err, context.DeadlineExceeded) {
+					reason = "timeout"
+				}
+				return release, true, reason, cache.CheckedAt, nil
 			}
-			return cache.Release, true, reason, cache.CheckedAt, nil
 		}
 		return githubRelease{}, false, "", "", err
 	}
 
 	checkedAt := time.Now().UTC().Format(time.RFC3339)
 	if notModified {
-		if !cacheOK {
+		if !cacheOK || isLegacyReleaseCache(cache) {
 			return githubRelease{}, false, "", "", fmt.Errorf("GitHub 返回了缓存状态，但本地更新缓存不可用；请重试")
+		}
+		release, err := selectHighestStableRelease(cachedReleases, platform)
+		if err != nil {
+			return githubRelease{}, false, "", "", err
 		}
 		cache.CheckedAt = checkedAt
 		if receivedETag != "" {
 			cache.ETag = receivedETag
 		}
 		_ = saveReleaseCache(cachePath, cache)
-		return cache.Release, false, "", checkedAt, nil
+		return release, false, "", checkedAt, nil
 	}
 
-	cache = releaseCache{ETag: receivedETag, CheckedAt: checkedAt, Release: release}
+	// Persist the entire list before selecting from it. This makes a later 304
+	// response deterministic and migrates legacy single-release caches.
+	cache = releaseCache{Format: releaseCacheFormat, ETag: receivedETag, CheckedAt: checkedAt, Releases: releases}
 	_ = saveReleaseCache(cachePath, cache)
+	release, err := selectHighestStableRelease(releases, platform)
+	if err != nil {
+		return githubRelease{}, false, "", "", err
+	}
 	return release, false, "", checkedAt, nil
 }
 
@@ -292,13 +341,26 @@ func isFreshReleaseCache(cache releaseCache, now time.Time) bool {
 	return now.Sub(checkedAt) < FreshCacheTTL
 }
 
-// fetchLatestRelease returns notModified for a conditional 304 response. It
-// intentionally wraps context errors so the application can distinguish a
-// user cancellation from the short update-check timeout.
+// fetchLatestRelease is retained for package-level compatibility. New update
+// flows use fetchReleaseList so cached ETag responses still have a release
+// collection from which to resolve the same highest version.
 func fetchLatestRelease(ctx context.Context, etag string) (githubRelease, string, bool, error) {
+	releases, responseETag, notModified, err := fetchReleaseList(ctx, etag)
+	if err != nil || notModified {
+		return githubRelease{}, responseETag, notModified, err
+	}
+	release, err := selectHighestStableRelease(releases, runtime.GOOS)
+	return release, responseETag, false, err
+}
+
+// fetchReleaseList returns the GitHub releases collection, not the
+// publication-time based /releases/latest shortcut. It intentionally wraps
+// context errors so the application can distinguish a user cancellation from
+// the short update-check timeout.
+func fetchReleaseList(ctx context.Context, etag string) ([]githubRelease, string, bool, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, githubLatestReleaseURL, nil)
 	if err != nil {
-		return githubRelease{}, "", false, fmt.Errorf("无法创建更新请求: %w", err)
+		return nil, "", false, fmt.Errorf("无法创建更新请求: %w", err)
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("User-Agent", "Antigravity-WF-Assistant/"+CurrentVersion)
@@ -307,24 +369,24 @@ func fetchLatestRelease(ctx context.Context, etag string) (githubRelease, string
 	}
 	response, err := httpClient().Do(request)
 	if err != nil {
-		return githubRelease{}, "", false, fmt.Errorf("无法连接 GitHub 更新服务: %w", err)
+		return nil, "", false, fmt.Errorf("无法连接 GitHub 更新服务: %w", err)
 	}
 	defer response.Body.Close()
 	responseETag := strings.TrimSpace(response.Header.Get("ETag"))
 	if response.StatusCode == http.StatusNotModified {
-		return githubRelease{}, responseETag, true, nil
+		return nil, responseETag, true, nil
 	}
 	if response.StatusCode != http.StatusOK {
-		return githubRelease{}, "", false, fmt.Errorf("检查更新失败（HTTP %d）", response.StatusCode)
+		return nil, "", false, fmt.Errorf("检查更新失败（HTTP %d）", response.StatusCode)
 	}
-	var release githubRelease
-	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&release); err != nil {
-		return githubRelease{}, "", false, fmt.Errorf("更新信息解析失败: %w", err)
+	var releases []githubRelease
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&releases); err != nil {
+		return nil, "", false, fmt.Errorf("更新信息解析失败: %w", err)
 	}
-	if release.Draft || release.Prerelease {
-		return githubRelease{}, "", false, fmt.Errorf("没有可用的稳定版更新")
+	if len(releases) == 0 {
+		return nil, "", false, fmt.Errorf("没有可用的稳定版更新")
 	}
-	return release, responseETag, false, nil
+	return releases, responseETag, false, nil
 }
 
 func loadReleaseCache(path string) (releaseCache, bool) {
@@ -337,10 +399,80 @@ func loadReleaseCache(path string) (releaseCache, bool) {
 		return releaseCache{}, false
 	}
 	var cache releaseCache
-	if json.Unmarshal(data, &cache) != nil || normalizeVersion(cache.Release.TagName) == "" || cache.Release.Draft || cache.Release.Prerelease {
+	if json.Unmarshal(data, &cache) != nil {
+		return releaseCache{}, false
+	}
+	if len(cache.Releases) > 0 {
+		return cache, true
+	}
+	if _, ok := stableReleaseVersion(cache.Release); !ok {
 		return releaseCache{}, false
 	}
 	return cache, true
+}
+
+func releaseListFromCache(cache releaseCache) ([]githubRelease, bool) {
+	if len(cache.Releases) > 0 {
+		return cache.Releases, true
+	}
+	if _, ok := stableReleaseVersion(cache.Release); ok {
+		return []githubRelease{cache.Release}, true
+	}
+	return nil, false
+}
+
+func isLegacyReleaseCache(cache releaseCache) bool {
+	return len(cache.Releases) == 0
+}
+
+// stableReleaseVersion is intentionally stricter than normalizeVersion. The
+// latter remains permissive for comparing the installed version and a skipped
+// version, whereas release selection must never accidentally promote a draft,
+// prerelease, or a tag such as v1.4.17-rc.1 as a stable installer.
+func stableReleaseVersion(release githubRelease) (string, bool) {
+	if release.Draft || release.Prerelease {
+		return "", false
+	}
+	raw := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(release.TagName), "v"))
+	if raw == "" || strings.ContainsAny(raw, "-+") {
+		return "", false
+	}
+	version := normalizeVersion(raw)
+	parts := strings.Split(version, ".")
+	if version == "" || len(parts) != 3 {
+		return "", false
+	}
+	return version, true
+}
+
+// selectHighestStableRelease applies all release validity rules in one place
+// so checking and downloading can never disagree. GitHub returns releases by
+// publication time, which is deliberately ignored here; semantic version is
+// the primary ordering, with publication time used only as a deterministic
+// tiebreaker for malformed duplicate tags.
+func selectHighestStableRelease(releases []githubRelease, platform string) (githubRelease, error) {
+	var selected githubRelease
+	selectedVersion := ""
+	for _, release := range releases {
+		version, ok := stableReleaseVersion(release)
+		if !ok {
+			continue
+		}
+		if _, err := selectInstaller(release, platform); err != nil {
+			// A release without this platform's installer cannot be offered as
+			// an update even when its version number is the largest one.
+			continue
+		}
+		comparison := compareVersions(version, selectedVersion)
+		if selectedVersion == "" || comparison > 0 || (comparison == 0 && release.PublishedAt > selected.PublishedAt) {
+			selected = release
+			selectedVersion = version
+		}
+	}
+	if selectedVersion == "" {
+		return githubRelease{}, fmt.Errorf("没有适用于当前系统的稳定版更新安装包")
+	}
+	return selected, nil
 }
 
 func saveReleaseCache(path string, cache releaseCache) error {

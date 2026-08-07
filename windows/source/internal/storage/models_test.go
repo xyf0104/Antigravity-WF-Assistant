@@ -93,6 +93,7 @@ func TestMergeDiscoveredAccountModelsOnlyPoolsEquivalentUpstreams(t *testing.T) 
 
 	sameUpstream := NewDiscoveredModel("openai", "https://api.example.test/", "", "gpt-pool")
 	sameUpstream.AccountIDs = []string{"second", "first"}
+	sameUpstream.APIStyle = "responses"
 	merged, err := MergeDiscoveredAccountModels([]CustomModel{sameUpstream})
 	if err != nil || merged.Added != 0 || merged.Bound != 1 || merged.Unchanged != 0 {
 		t.Fatalf("matching upstream merge = %+v, %v", merged, err)
@@ -114,6 +115,87 @@ func TestMergeDiscoveredAccountModelsOnlyPoolsEquivalentUpstreams(t *testing.T) 
 				t.Fatalf("matching model pool = %#v", model.AccountIDs)
 			}
 		}
+	}
+}
+
+func TestMergeDiscoveredAccountModelsSeparatesIncompatibleRouteContracts(t *testing.T) {
+	Init(t.TempDir())
+	base := NewDiscoveredModel("openai", "https://api.example.test", "", "gpt-route-pool")
+	base.APIStyle = "responses"
+	base.AccountIDs = []string{"responses-primary"}
+	if result, err := MergeDiscoveredAccountModels([]CustomModel{base}); err != nil || result.Added != 1 {
+		t.Fatalf("save base route = %+v, %v", result, err)
+	}
+
+	// Each candidate shares the same provider, endpoint, and upstream model ID,
+	// but changes a field that can alter the request route. None may be added to
+	// the base account pool.
+	incompatible := []struct {
+		name    string
+		account string
+		adjust  func(*CustomModel)
+	}{
+		{
+			name: "API style", account: "chat-peer",
+			adjust: func(model *CustomModel) { model.APIStyle = "chat_completions" },
+		},
+		{
+			name: "message path", account: "compat-peer",
+			adjust: func(model *CustomModel) { model.MessagePathMode = "compat" },
+		},
+		{
+			name: "endpoint mode", account: "manual-peer",
+			adjust: func(model *CustomModel) { model.EndpointMode = "manual" },
+		},
+	}
+	for _, test := range incompatible {
+		candidate := NewDiscoveredModel("openai", "https://api.example.test", "", "gpt-route-pool")
+		candidate.APIStyle = "responses"
+		candidate.AccountIDs = []string{test.account}
+		test.adjust(&candidate)
+		result, err := MergeDiscoveredAccountModels([]CustomModel{candidate})
+		if err != nil || result.Added != 1 || result.Bound != 0 {
+			t.Fatalf("%s route merge = %+v, %v", test.name, result, err)
+		}
+	}
+
+	matching := NewDiscoveredModel("openai", "https://api.example.test/", "", "gpt-route-pool")
+	matching.APIStyle = "responses"
+	matching.AccountIDs = []string{"responses-peer"}
+	result, err := MergeDiscoveredAccountModels([]CustomModel{matching})
+	if err != nil || result.Added != 0 || result.Bound != 1 {
+		t.Fatalf("matching route merge = %+v, %v", result, err)
+	}
+
+	models, err := LoadModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 4 {
+		t.Fatalf("model count = %d, want 4 distinct route contracts", len(models))
+	}
+	seenNames := make(map[string]struct{}, len(models))
+	var pooled *CustomModel
+	for index := range models {
+		model := &models[index]
+		if _, exists := seenNames[model.Name]; exists {
+			t.Fatalf("route-separated models reused internal name %q", model.Name)
+		}
+		seenNames[model.Name] = struct{}{}
+		for _, accountID := range model.AccountIDs {
+			if accountID == "responses-primary" {
+				pooled = model
+			}
+		}
+	}
+	if pooled == nil {
+		t.Fatalf("base route model not found in %#v", models)
+	}
+	if pooled.APIStyle != "responses" || pooled.EndpointMode != "auto" || pooled.MessagePathMode != "auto" {
+		t.Fatalf("base route contract was changed: %#v", pooled)
+	}
+	if len(pooled.AccountIDs) != 2 || pooled.AccountIDs[0] != "responses-primary" || pooled.AccountIDs[1] != "responses-peer" {
+		t.Fatalf("matching account was not the only pool addition: %#v", pooled.AccountIDs)
 	}
 }
 

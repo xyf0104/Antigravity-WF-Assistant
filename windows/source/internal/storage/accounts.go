@@ -456,6 +456,44 @@ func (account UpstreamAccount) ToModel(model CustomModel) CustomModel {
 	return model
 }
 
+// accountMatchesModelRequestProtocol is a final safety guard for account
+// pools created by earlier releases. New discovery imports only merge matching
+// route contracts, but an old custom_models.json can still contain account IDs
+// whose API surface no longer matches the model that Antigravity selected.
+//
+// The request body is converted before AcquireAccountForModel runs, so changing
+// provider or API style here would send that already-serialized body to an
+// incompatible upstream endpoint. API URLs, credentials, and endpoint hosts
+// intentionally do not participate in this comparison: different accounts
+// may safely rotate across different gateways when they implement the same
+// request protocol.
+func accountMatchesModelRequestProtocol(account UpstreamAccount, model CustomModel) bool {
+	base := normalizeModelDisplayName(model)
+	// The OpenAI Codex OAuth route is the one intentional cross-surface
+	// exception. forwardOpenAIChat detects it immediately after acquisition and
+	// re-enters the Responses converter before it can send a Chat Completions
+	// body, so treating it as eligible preserves the guarded OAuth migration
+	// path without admitting generic cross-protocol accounts.
+	if account.IsOpenAICodexOAuth() && normalizeAccountProvider(base.Provider) == "openai" {
+		return true
+	}
+	attempt := account.ToModel(base)
+	return normalizeAccountProvider(base.Provider) == normalizeAccountProvider(attempt.Provider) &&
+		effectiveModelRequestAPIStyle(base) == effectiveModelRequestAPIStyle(attempt)
+}
+
+// effectiveModelRequestAPIStyle mirrors the route selection relevant to the
+// body converter without importing internal/upstream (which depends on this
+// storage package). Anthropic always uses the Messages body shape; old or
+// unknown OpenAI-compatible settings retain the legacy Chat Completions
+// fallback through normalizedDiscoveredModelAPIStyle.
+func effectiveModelRequestAPIStyle(model CustomModel) string {
+	if normalizeAccountProvider(model.Provider) == "anthropic" {
+		return "messages"
+	}
+	return normalizedDiscoveredModelAPIStyle(model.APIStyle)
+}
+
 func LoadUpstreamAccounts() ([]UpstreamAccount, error) {
 	accountsMu.RLock()
 	defer accountsMu.RUnlock()
@@ -1066,12 +1104,17 @@ func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (Cu
 		active  int
 	}
 	var candidates []candidate
+	incompatibleProtocol := false
 	accountRun.Lock()
 	for _, account := range accounts {
 		if _, ok := allowed[account.ID]; !ok {
 			continue
 		}
 		if _, skip := excluded[account.ID]; skip || !accountUsable(account, now) {
+			continue
+		}
+		if !accountMatchesModelRequestProtocol(account, model) {
+			incompatibleProtocol = true
 			continue
 		}
 		active := accountRun.active[account.ID]
@@ -1096,6 +1139,9 @@ func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (Cu
 	if len(candidates) == 0 {
 		if hasDirectModelCredential(model) {
 			return model, nil, nil
+		}
+		if incompatibleProtocol {
+			return model, nil, fmt.Errorf("绑定账户与当前模型的请求协议不兼容，请重新同步该账户的模型")
 		}
 		return model, nil, fmt.Errorf("绑定账户当前均不可调度：请检查额度、冷却时间或并发限制")
 	}

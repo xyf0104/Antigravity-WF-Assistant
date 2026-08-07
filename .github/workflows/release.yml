@@ -61,6 +61,10 @@ jobs:
         working-directory: macos/source/frontend
         run: npm run test:update-check
 
+      - name: Run reasoning capability tests
+        working-directory: macos/source/frontend
+        run: node --test test/reasoningCapabilities.test.mjs
+
       - name: Run Go race tests
         run: go test -race ./...
 
@@ -130,6 +134,10 @@ jobs:
         working-directory: windows/source/frontend
         run: npm run test:update-check
 
+      - name: Run reasoning capability tests
+        working-directory: windows/source/frontend
+        run: node --test test/reasoningCapabilities.test.mjs
+
       - name: Run Go race tests
         run: go test -race ./...
 
@@ -181,9 +189,12 @@ jobs:
           body: |
             ## Antigravity WF助手
 
-            - 修复自定义 OpenAI、Claude 与 Responses 工具调用转换，避免损坏参数触发 Antigravity 重复回复。
-            - 相同上游的模型合并为一个卡片，可逐个启用或停用；账户卡操作会在窄窗口自动换行。
-            - 自定义模型测试复用完整账户测试流程；图片请求优先使用同一上游已启用的图片模型与当前账户池，不会误转至 Gemini。
+            基于已验证的 v1.4.6 Stable 源码基线构建。
+
+            - 新增按“模型 + 上游协议”匹配的思考强度选择：GPT-5.6、DeepSeek V4、Claude 系列只展示实际上游允许的等级；未知或不匹配的模型保持自动，避免无效参数。
+            - 手动添加模型、批量获取上游模型、账户池同步模型均可独立保存对应的思考强度；旧配置会安全迁移并在不支持时降级为自动。
+            - 账户池不再混合不同请求协议的账号；历史混合池会跳过不兼容账号并优先使用兼容账号或直连配置，避免请求格式错误。
+            - 更新检查按最高可安装的语义版本选择发布包，不再因 GitHub 的发布时间顺序误报低版本为“最新”。
             - 本版本仅提供 macOS Universal `.pkg`、Windows x64 `.exe` 和校验清单。
 
             请下载与系统匹配的安装包，并在安装前使用 `SHA256SUMS.txt` 核验完整性。

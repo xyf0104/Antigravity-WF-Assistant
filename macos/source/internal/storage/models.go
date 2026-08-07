@@ -178,8 +178,20 @@ type CustomModel struct {
 	// "manual" to send requests to APIURL exactly as entered by the user.
 	EndpointMode      string `json:"endpointMode,omitempty"`
 	ExternalModelName string `json:"externalModelName"`
-	ReasoningEffort   string `json:"reasoningEffort,omitempty"` // "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-	APIStyle          string `json:"apiStyle,omitempty"`        // "auto" | "chat_completions" | "responses" | "messages"
+	// ReasoningEffort is always normalized against the verified profile for
+	// Provider, APIStyle and ExternalModelName before the model is persisted.
+	// "auto" means no provider-specific effort value is sent.
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// ThinkingEnabled is used only by profiles that expose a real thinking
+	// switch (currently DeepSeek V4 and legacy Claude budget thinking). nil
+	// preserves the provider default; false must never be represented by an
+	// unsupported effort value.
+	ThinkingEnabled *bool `json:"thinkingEnabled,omitempty"`
+	// ReasoningBudgetTokens is only meaningful for legacy Claude profiles that
+	// use thinking.type=enabled plus budget_tokens. Modern Claude models use
+	// output_config.effort instead, so this value is cleared for them.
+	ReasoningBudgetTokens int    `json:"reasoningBudgetTokens,omitempty"`
+	APIStyle              string `json:"apiStyle,omitempty"` // "auto" | "chat_completions" | "responses" | "messages"
 	// MessagePathMode controls Anthropic endpoint resolution. auto first uses
 	// the standard /v1/messages route; compat selects /v1/chat/messages for
 	// gateways that expose that legacy-compatible shape; manual preserves the
@@ -386,9 +398,15 @@ func equalModelHeaders(left, right map[string]string) bool {
 // direct credential, and prior account IDs. A sync from one account must never
 // overwrite a model already configured for another account.
 //
-// An equivalent model has the same provider, upstream endpoint, and external
-// model identifier. Manual endpoints remain exact because a trailing slash or
-// query can be meaningful to a user-managed gateway.
+// An equivalent model has the same provider, upstream endpoint, external
+// model identifier, and complete request-shape contract. In particular, two
+// accounts must not share a model pool when their API surface, endpoint mode,
+// or Anthropic message path differ: the router selects and serializes the
+// request before a pooled account is acquired. Mixing those contracts could
+// otherwise send an already-serialized request to the wrong endpoint.
+//
+// Manual endpoints remain exact because a trailing slash or query can be
+// meaningful to a user-managed gateway.
 func MergeDiscoveredAccountModels(candidates []CustomModel) (DiscoveredAccountModelMergeResult, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -456,6 +474,12 @@ func mergeDiscoveredAccountModelsLocked(candidates []CustomModel) (DiscoveredAcc
 		}
 		index := equivalentDiscoveredAccountModelIndex(models, candidate)
 		if index < 0 {
+			// The original discovery name is derived from only provider, endpoint,
+			// and upstream model ID. Once route contracts are deliberately kept
+			// separate, those values can legitimately collide. Give the new model a
+			// stable, route-aware internal name so placeholder allocation and request
+			// routing never collapse two incompatible configurations into one.
+			candidate = uniqueDiscoveredAccountModelName(models, candidate)
 			models = append(models, candidate)
 			result.Added++
 			changed = true
@@ -480,16 +504,40 @@ func mergeDiscoveredAccountModelsLocked(candidates []CustomModel) (DiscoveredAcc
 }
 
 func equivalentDiscoveredAccountModelIndex(models []CustomModel, candidate CustomModel) int {
+	candidate = normalizeModelDisplayName(candidate)
 	for index, existing := range models {
 		existing = normalizeModelDisplayName(existing)
 		if !strings.EqualFold(existing.Provider, candidate.Provider) ||
 			!strings.EqualFold(discoveredExternalModelID(existing.ExternalModelName), discoveredExternalModelID(candidate.ExternalModelName)) ||
-			!sameDiscoveredModelEndpoint(existing, candidate) {
+			!sameDiscoveredModelRouteContract(existing, candidate) {
 			continue
 		}
 		return index
 	}
 	return -1
+}
+
+// sameDiscoveredModelRouteContract reports whether two models can safely
+// share a single account pool without changing the request protocol after the
+// proxy has built the upstream body.
+func sameDiscoveredModelRouteContract(existing, candidate CustomModel) bool {
+	return normalizedDiscoveredModelAPIStyle(existing.APIStyle) == normalizedDiscoveredModelAPIStyle(candidate.APIStyle) &&
+		normalizeEndpointMode(existing.EndpointMode) == normalizeEndpointMode(candidate.EndpointMode) &&
+		normalizeMessagePathMode(existing.MessagePathMode) == normalizeMessagePathMode(candidate.MessagePathMode) &&
+		sameDiscoveredModelEndpoint(existing, candidate)
+}
+
+// normalizedDiscoveredModelAPIStyle mirrors upstream.EffectiveAPIStyle's
+// legacy fallback without importing the upstream package (which depends on
+// storage). An empty/unknown saved style was historically Chat Completions;
+// it must not silently pool with automatic or Responses models.
+func normalizedDiscoveredModelAPIStyle(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "chat_completions", "responses", "messages":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "chat_completions"
+	}
 }
 
 func discoveredExternalModelID(value string) string {
@@ -499,10 +547,42 @@ func discoveredExternalModelID(value string) string {
 func sameDiscoveredModelEndpoint(existing, candidate CustomModel) bool {
 	existingURL := strings.TrimSpace(existing.APIURL)
 	candidateURL := strings.TrimSpace(candidate.APIURL)
-	if existing.EndpointMode == "manual" || candidate.EndpointMode == "manual" {
+	if normalizeEndpointMode(existing.EndpointMode) == "manual" || normalizeEndpointMode(candidate.EndpointMode) == "manual" {
 		return existingURL == candidateURL
 	}
 	return strings.TrimRight(existingURL, "/") == strings.TrimRight(candidateURL, "/")
+}
+
+func uniqueDiscoveredAccountModelName(models []CustomModel, candidate CustomModel) CustomModel {
+	baseName := strings.TrimSpace(candidate.Name)
+	if baseName == "" || !discoveredModelNameInUse(models, baseName) {
+		return candidate
+	}
+
+	routeSuffix := strings.Trim(modelNameUnsafe.ReplaceAllString(strings.ToLower(strings.Join([]string{
+		normalizedDiscoveredModelAPIStyle(candidate.APIStyle),
+		normalizeEndpointMode(candidate.EndpointMode),
+		normalizeMessagePathMode(candidate.MessagePathMode),
+	}, "-")), "-"), "-")
+	if routeSuffix == "" {
+		routeSuffix = "route"
+	}
+	baseName += "-" + routeSuffix
+	name := baseName
+	for suffix := 2; discoveredModelNameInUse(models, name); suffix++ {
+		name = fmt.Sprintf("%s-%d", baseName, suffix)
+	}
+	candidate.Name = name
+	return candidate
+}
+
+func discoveredModelNameInUse(models []CustomModel, name string) bool {
+	for _, model := range models {
+		if strings.EqualFold(strings.TrimSpace(model.Name), name) {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeModelAccountIDs(existing, incoming []string) ([]string, bool) {
@@ -541,7 +621,7 @@ func normalizeModelDisplayName(model CustomModel) CustomModel {
 	model.DisplayName = strings.TrimSpace(model.DisplayName)
 	model.AccountIDs = normalizedAccountIDs(model.AccountIDs)
 	model.Capabilities.SupportedMimeTypes = capabilityMimeTypes(model.Capabilities)
-	return model
+	return NormalizeModelReasoning(model)
 }
 
 var modelNameUnsafe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)

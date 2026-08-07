@@ -56,6 +56,10 @@ jobs:
         working-directory: macos/source/frontend
         run: npm run test:update-check
 
+      - name: Run reasoning capability tests
+        working-directory: macos/source/frontend
+        run: node --test test/reasoningCapabilities.test.mjs
+
       - name: Run Go race tests
         run: go test -race ./...
 
@@ -70,5 +74,5 @@ jobs:
         with:
           name: Antigravity-WF-Assistant-macOS-universal
           path: |
-            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v1.4.6-Installer.pkg
+            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v1.4.19-Installer.pkg
           if-no-files-found: error

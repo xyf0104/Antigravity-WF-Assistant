@@ -8,6 +8,10 @@ import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import AccountTestModal from "@/components/accounts/AccountTestModal.vue";
 import AccountQuotaWindows from "@/components/accounts/AccountQuotaWindows.vue";
 import {
+  normalizeReasoningEffort,
+  resolveReasoningProfile,
+} from "@/state/reasoningCapabilities";
+import {
   addDiscoveredModels,
 	cancelUpstreamAccountTest,
   completeOAuthAuthorization,
@@ -22,6 +26,7 @@ import {
   refreshUpstreamAccountQuota,
   refreshUpstreamOAuthAccount,
   saveUpstreamAccount,
+  saveModel,
   setUpstreamAccountEnabled,
   startOAuthAuthorization,
   startOAuthProviderAuthorization,
@@ -60,6 +65,8 @@ const importNotice = ref("");
 const importText = ref("");
 const discoveredModels = ref([]);
 const selectedModelIds = ref([]);
+const discoveredReasoningEfforts = ref({});
+const discoveredReasoningTouched = ref({});
 const accountTestOpen = ref(false);
 const accountTestAccount = ref(null);
 const accountTestModels = ref([]);
@@ -407,6 +414,48 @@ function accountToForm(account) {
   };
 }
 
+function discoveredModelID(model) {
+  return readText(model?.id ?? model?.externalModelName ?? model?.name).replace(/^models\//, "");
+}
+
+function discoveredReasoningProfile(model) {
+  return resolveReasoningProfile({
+    ...(model && typeof model === "object" ? model : {}),
+    provider: form.value.provider,
+    model: discoveredModelID(model),
+    apiStyle: form.value.apiStyle,
+  });
+}
+
+function resetDiscoveredModelSelection(models = []) {
+  const list = Array.isArray(models) ? models : [];
+  const efforts = {};
+  for (const model of list) {
+    const id = discoveredModelID(model);
+    if (!id) continue;
+    efforts[id] = normalizeReasoningEffort(model?.reasoningEffort, discoveredReasoningProfile(model));
+  }
+  discoveredModels.value = list;
+  selectedModelIds.value = list.map(discoveredModelID).filter(Boolean);
+  discoveredReasoningEfforts.value = efforts;
+  discoveredReasoningTouched.value = {};
+}
+
+function discoveredReasoningEffort(model) {
+  const id = discoveredModelID(model);
+  return normalizeReasoningEffort(discoveredReasoningEfforts.value[id], discoveredReasoningProfile(model));
+}
+
+function setDiscoveredReasoningEffort(model, value) {
+  const id = discoveredModelID(model);
+  if (!id) return;
+  discoveredReasoningEfforts.value = {
+    ...discoveredReasoningEfforts.value,
+    [id]: normalizeReasoningEffort(value, discoveredReasoningProfile(model)),
+  };
+  discoveredReasoningTouched.value = { ...discoveredReasoningTouched.value, [id]: true };
+}
+
 function clearOAuthStatusPolling(sessionID = "") {
   // A late completion from an older browser tab must not stop a newer login.
   if (sessionID && oauthStatusPollSessionID && oauthStatusPollSessionID !== sessionID) return;
@@ -514,8 +563,7 @@ async function openNew() {
 	if (form.value.endpointMode === "auto") form.value.apiUrl = smartBaseAPIURL(form.value.apiUrl);
   editorError.value = "";
   editorNotice.value = "地址默认只需填写域名。保存后可获取模型并默认全选导入；完整接口地址可随时切换为手动模式。";
-  discoveredModels.value = [];
-  selectedModelIds.value = [];
+  resetDiscoveredModelSelection();
 	selectedOAuthProfileID.value = "";
 	oauthAdvancedOpen.value = false;
 	oauthCredentialSwitchOpen.value = false;
@@ -528,8 +576,7 @@ function openEdit(account) {
   form.value = accountToForm(account);
   editorError.value = "";
   editorNotice.value = "为保护已保存的凭据，令牌栏不会回显；留空保存将保留原有凭据。";
-  discoveredModels.value = [];
-  selectedModelIds.value = [];
+  resetDiscoveredModelSelection();
 	selectedOAuthProfileID.value = "";
 	oauthAdvancedOpen.value = false;
 	oauthCredentialSwitchOpen.value = false;
@@ -1286,8 +1333,7 @@ async function discoverModels() {
       editorError.value = result?.message || "无法获取上游模型列表";
       return;
     }
-    discoveredModels.value = result.models || [];
-    selectedModelIds.value = discoveredModels.value.map((model) => model.id);
+    resetDiscoveredModelSelection(result.models || []);
     editorNotice.value = result.message || `已发现 ${selectedModelIds.value.length} 个模型，默认已全选。`;
   } catch (error) {
     editorError.value = String(error?.message || error);
@@ -1315,12 +1361,54 @@ function openEditorAccountTest() {
 }
 
 function toggleAllModels() {
-  selectedModelIds.value = allSelected.value ? [] : discoveredModels.value.map((model) => model.id);
+  selectedModelIds.value = allSelected.value ? [] : discoveredModels.value.map(discoveredModelID).filter(Boolean);
 }
 
 function toggleModel(id, checked) {
   if (checked && !selectedModelIds.value.includes(id)) selectedModelIds.value.push(id);
   if (!checked) selectedModelIds.value = selectedModelIds.value.filter((value) => value !== id);
+}
+
+// Account discovery uses the same per-model profile resolver as the Models
+// page. AddDiscoveredModels remains a compact native binding, so only a row
+// the user actually changed is saved again with its selected effort after the
+// account-bound batch import completes. This preserves existing settings for
+// the same model in a shared account pool.
+async function persistTouchedDiscoveredReasoning() {
+  const accountID = readText(form.value.id);
+  const touchedIDs = selectedModelIds.value.filter((id) => discoveredReasoningTouched.value[id]);
+  if (!accountID || !touchedIDs.length) return { saved: 0, failures: [] };
+
+  let saved = 0;
+  const failures = [];
+  for (const modelID of touchedIDs) {
+    const discovered = discoveredModels.value.find((model) => discoveredModelID(model) === modelID);
+    const target = state.models.find((model) =>
+      readText(model?.externalModelName).replace(/^models\//, "") === modelID
+      && Array.isArray(model?.accountIds)
+      && model.accountIds.map(readText).includes(accountID)
+    );
+    if (!discovered || !target) {
+      failures.push(`${modelID} 未在账户绑定的模型列表中找到`);
+      continue;
+    }
+    const profile = resolveReasoningProfile({
+      ...target,
+      provider: target.provider || form.value.provider,
+      model: target.externalModelName,
+      apiStyle: target.apiStyle || form.value.apiStyle,
+    });
+    const effort = normalizeReasoningEffort(discoveredReasoningEfforts.value[modelID], profile);
+    if (normalizeReasoningEffort(target.reasoningEffort, profile) === effort) continue;
+    try {
+      const result = await saveModel({ ...target, reasoningEffort: effort });
+      if (result?.ok) saved += 1;
+      else failures.push(`${modelID}：${readText(result?.message) || "保存失败"}`);
+    } catch (error) {
+      failures.push(`${modelID}：${readText(error?.message) || "保存失败"}`);
+    }
+  }
+  return { saved, failures };
 }
 
 async function addSelectedModels() {
@@ -1329,7 +1417,16 @@ async function addSelectedModels() {
   editorError.value = "";
   try {
     const result = await addDiscoveredModels({ accountId: form.value.id }, selectedModelIds.value);
-    if (result?.ok) editorNotice.value = result.message;
+    if (result?.ok) {
+      const persisted = await persistTouchedDiscoveredReasoning();
+      if (persisted.failures.length) {
+        editorError.value = `模型已添加，但思考强度未完全保存：${persisted.failures.join("；")}`;
+        return;
+      }
+      editorNotice.value = persisted.saved
+        ? `${result.message || "模型已添加。"} 已保存 ${persisted.saved} 个模型的思考强度。`
+        : result.message;
+    }
     else editorError.value = result?.message || "模型导入失败";
   } catch (error) {
     editorError.value = String(error?.message || error);
@@ -1660,10 +1757,21 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="discoveredModels.length" class="selection-list">
             <label class="select-all"><input type="checkbox" :checked="allSelected" @change="toggleAllModels" /> 全选 {{ discoveredModels.length }} 个模型</label>
-            <label v-for="model in discoveredModels" :key="model.id" class="select-row">
-              <input type="checkbox" :checked="selectedModelIds.includes(model.id)" @change="toggleModel(model.id, $event.target.checked)" />
+            <label v-for="model in discoveredModels" :key="discoveredModelID(model)" class="select-row">
+              <input type="checkbox" :checked="selectedModelIds.includes(discoveredModelID(model))" @change="toggleModel(discoveredModelID(model), $event.target.checked)" />
               <span class="truncate">{{ model.name || model.id }}</span>
               <code>{{ model.id }}</code>
+              <span class="discovery-reasoning" :title="discoveredReasoningProfile(model).note" @click.stop>
+                <span>思考</span>
+                <select
+                  :value="discoveredReasoningEffort(model)"
+                  :disabled="discoveredReasoningProfile(model).options.length <= 1"
+                  @click.stop
+                  @change="setDiscoveredReasoningEffort(model, $event.target.value)"
+                >
+                  <option v-for="option in discoveredReasoningProfile(model).options" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+              </span>
             </label>
           </div>
           <div class="row" style="justify-content: flex-end; gap: 7px">
@@ -1786,13 +1894,16 @@ textarea { min-height: 66px; padding: 9px 10px; resize: vertical; font: 12px var
 select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .enabled-check { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 12px; }
 .selection-list { max-height: 196px; overflow-y: auto; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
-.select-all, .select-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(90px, .75fr); align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border-bottom: 1px solid var(--separator); font-size: 12px; }
+.select-all, .select-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(90px, .75fr) minmax(128px, .85fr); align-items: center; gap: 8px; min-height: 38px; padding: 0 10px; border-bottom: 1px solid var(--separator); font-size: 12px; }
 .select-all { grid-template-columns: 16px 1fr; color: var(--text-secondary); background: var(--bg-fill); position: sticky; top: 0; }
 .select-row:last-child { border-bottom: 0; }
 .select-row code { color: var(--text-tertiary); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.discovery-reasoning { display: flex; align-items: center; justify-content: flex-end; gap: 5px; min-width: 0; color: var(--text-tertiary); font-size: 10px; }
+.discovery-reasoning select { width: auto; min-width: 0; height: 28px; padding: 0 23px 0 8px; color: var(--text-primary); background: var(--bg-card); font: 11px var(--font-num); }
+.discovery-reasoning select:disabled { color: var(--text-tertiary); border-color: var(--separator); opacity: .78; cursor: default; }
 .notice-box, .err-box { padding: 10px 11px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.45; }
 .notice-box { color: var(--accent-strong); background: var(--accent-soft); border: 1px solid var(--accent-border); }
 .err-box { color: var(--red); background: rgba(255,69,58,.1); border: 1px solid rgba(255,69,58,.25); }
 .import-text { min-height: 220px; }
-@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr); } .select-row code { display: none; } .page-head { align-items: flex-start; flex-direction: column; } .account-actions { justify-content: flex-start; } }
+@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr) minmax(112px, auto); } .select-row code { display: none; } .page-head { align-items: flex-start; flex-direction: column; } .account-actions { justify-content: flex-start; } }
 </style>

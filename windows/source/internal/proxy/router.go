@@ -1268,10 +1268,7 @@ func forwardOpenAIChatLegacy(w http.ResponseWriter, incoming *http.Request, m *s
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if m.ReasoningEffort != "" && m.ReasoningEffort != "auto" {
-		openAIReq["reasoning_effort"] = m.ReasoningEffort
-		delete(openAIReq, "temperature")
-	}
+	applyOpenAIChatReasoning(openAIReq, m)
 	openAIReq["stream"] = true
 	openAIReq["stream_options"] = map[string]any{"include_usage": true}
 	cache := applyOpenAIPromptCaching(openAIReq, m, geminiReq)
@@ -1365,10 +1362,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if m.ReasoningEffort != "" && m.ReasoningEffort != "auto" {
-		baseRequest["reasoning_effort"] = m.ReasoningEffort
-		delete(baseRequest, "temperature")
-	}
+	applyOpenAIChatReasoning(baseRequest, m)
 	baseRequest["stream"] = true
 	baseRequest["stream_options"] = map[string]any{"include_usage": true}
 	cache := applyOpenAIPromptCaching(baseRequest, m, geminiReq)
@@ -1529,10 +1523,7 @@ func forwardOpenAIResponsesLegacy(w http.ResponseWriter, incoming *http.Request,
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return false
 	}
-	if effort := responseReasoningEffort(m.ReasoningEffort); effort != "" {
-		requestBody["reasoning"] = map[string]any{"effort": effort}
-		delete(requestBody, "temperature")
-	}
+	applyOpenAIResponsesReasoning(requestBody, m)
 	apiURL, err := upstream.ResolveResponsesURLForConfig(upstream.ConfigFromModel(*m))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1598,10 +1589,7 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return false
 	}
-	if effort := responseReasoningEffort(m.ReasoningEffort); effort != "" {
-		baseRequest["reasoning"] = map[string]any{"effort": effort}
-		delete(baseRequest, "temperature")
-	}
+	applyOpenAIResponsesReasoning(baseRequest, m)
 	policy := currentStreamRecoveryPolicy()
 	writer := newDownstreamSSEWriter(w)
 	client := &http.Client{Timeout: upstreamStreamTimeout}
@@ -1799,13 +1787,7 @@ func forwardAnthropicLegacy(w http.ResponseWriter, incoming *http.Request, m *st
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if budget := reasoningBudget(m.ReasoningEffort); budget > 0 {
-		anthReq["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
-		delete(anthReq, "temperature")
-		if maxTokens, ok := numberAsInt(anthReq["max_tokens"]); !ok || maxTokens <= budget {
-			anthReq["max_tokens"] = budget + 8192
-		}
-	}
+	applyAnthropicReasoning(anthReq, m)
 	breakpointCount := applyAnthropicPromptCachingForModel(anthReq, m)
 	cacheEnabled := breakpointCount > 0
 
@@ -1899,13 +1881,7 @@ func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if budget := reasoningBudget(m.ReasoningEffort); budget > 0 {
-		baseRequest["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
-		delete(baseRequest, "temperature")
-		if maxTokens, ok := numberAsInt(baseRequest["max_tokens"]); !ok || maxTokens <= budget {
-			baseRequest["max_tokens"] = budget + 8192
-		}
-	}
+	applyAnthropicReasoning(baseRequest, m)
 	breakpointCount := applyAnthropicPromptCachingForModel(baseRequest, m)
 	cacheEnabled := breakpointCount > 0
 
@@ -2051,19 +2027,6 @@ attemptLoop:
 			writeUncertainUpstreamFailure(writer, "anthropic", requestID, lastModelVersion, lastResponseID, reconnects, outcome.unsafeOutput, "上游流未正常完成："+reason)
 			return
 		}
-	}
-}
-
-func reasoningBudget(effort string) int {
-	switch effort {
-	case "low":
-		return 1024
-	case "medium":
-		return 4096
-	case "high":
-		return 8192
-	default:
-		return 0
 	}
 }
 
