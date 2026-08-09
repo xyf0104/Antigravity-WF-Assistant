@@ -22,6 +22,12 @@ import (
 
 var windowsOperationMu sync.Mutex
 
+// windowsASARPostReplaceHook is deliberately nil in production. Windows-only
+// regression tests use it to force a validation failure after app.asar has
+// been replaced, proving that a migration rolls back to the user's immediate
+// pre-upgrade state rather than to the canonical clean backup.
+var windowsASARPostReplaceHook func()
+
 func runWindows(action string) (message string, err error) {
 	windowsOperationMu.Lock()
 	defer windowsOperationMu.Unlock()
@@ -207,15 +213,38 @@ func applyWindowsTarget(target windowsTarget) (message string, err error) {
 		languagePlan.path = target.language
 		plans = append(plans, languagePlan)
 	}
+	for _, rendererPath := range windowsImagePreviewRendererPaths(target) {
+		if rendererPath == target.main {
+			// prepareWindowsMainPatch already covers out/main.js. The other
+			// renderer bundles receive a narrowly scoped compatibility plan.
+			continue
+		}
+		rendererSource, err := windowsPatchSource(rendererPath)
+		if err != nil {
+			return "", err
+		}
+		rendererPlan, err := prepareWindowsImagePreviewPatch(rendererSource)
+		if err != nil {
+			return "", err
+		}
+		rendererPlan.path = rendererPath
+		plans = append(plans, rendererPlan)
+	}
 	if !windowsPlansChanged(plans) {
 		return fmt.Sprintf("%s 补丁已处于激活状态，无需重复应用。", target.name), nil
 	}
 	if err := saveWindowsPlanBackups(plans); err != nil {
 		return "", fmt.Errorf("创建补丁备份失败: %w", err)
 	}
+	rollbackSnapshots, snapshotErr := windowsRollbackSnapshots(plans)
+	if snapshotErr != nil {
+		return "", fmt.Errorf("创建事务回滚快照失败: %w", snapshotErr)
+	}
 	defer func() {
 		if err != nil {
-			_ = rollbackWindowsPlans(plans)
+			if rollbackErr := restoreWindowsRollbackSnapshots(rollbackSnapshots); rollbackErr != nil {
+				err = fmt.Errorf("%w；回滚到操作前状态失败: %v", err, rollbackErr)
+			}
 		}
 	}()
 	if err = writeWindowsPlans(plans); err != nil {
@@ -239,10 +268,13 @@ func applyWindowsASARTarget(target windowsTarget) (message string, err error) {
 	if err != nil {
 		return "", err
 	}
-	asarChanged := !windowsASARPatched(target.asar) || asarSource != target.asar
+	// Rebuild the archive only when its own endpoint or packed renderer needs
+	// work. Unpacked renderer entries are patched as separate files so their
+	// ASAR manifest semantics remain unchanged.
+	asarChanged := !windowsASARPatched(target.asar) || asarSource != target.asar || imagePreviewASARArchiveNeedsPatch(target.asar)
 	var candidate string
 	if asarChanged {
-		candidate, err = prepareWindowsASARCandidate(asarSource)
+		candidate, err = prepareWindowsASARCandidate(asarSource, target.asar)
 		if err != nil {
 			return "", err
 		}
@@ -259,7 +291,20 @@ func applyWindowsASARTarget(target windowsTarget) (message string, err error) {
 	if languagePlan != nil {
 		languagePlan.path = target.language
 	}
-	if !asarChanged && (languagePlan == nil || !languagePlan.changed) {
+	previewPlans := make([]*windowsPatchPlan, 0)
+	for _, rendererPath := range windowsASARUnpackedImagePreviewRendererPaths(target) {
+		rendererSource, sourceErr := windowsPatchSource(rendererPath)
+		if sourceErr != nil {
+			return "", sourceErr
+		}
+		plan, planErr := prepareWindowsImagePreviewPatch(rendererSource)
+		if planErr != nil {
+			return "", planErr
+		}
+		plan.path = rendererPath
+		previewPlans = append(previewPlans, plan)
+	}
+	if !asarChanged && (languagePlan == nil || !languagePlan.changed) && !windowsPlansChanged(previewPlans) {
 		return fmt.Sprintf("%s 补丁已处于激活状态，无需重复应用。", target.name), nil
 	}
 	if asarChanged {
@@ -267,33 +312,39 @@ func applyWindowsASARTarget(target windowsTarget) (message string, err error) {
 			return "", fmt.Errorf("创建 app.asar 备份失败: %w", err)
 		}
 	}
+	plans := append([]*windowsPatchPlan{}, previewPlans...)
 	if languagePlan != nil {
-		if err = saveWindowsPlanBackups([]*windowsPatchPlan{languagePlan}); err != nil {
-			return "", fmt.Errorf("创建 Language Server 备份失败: %w", err)
-		}
+		plans = append(plans, languagePlan)
 	}
-	wroteASAR := false
+	if err = saveWindowsPlanBackups(plans); err != nil {
+		return "", fmt.Errorf("创建补丁备份失败: %w", err)
+	}
+	rollbackExtraPaths := make([]string, 0, 1)
+	if asarChanged {
+		rollbackExtraPaths = append(rollbackExtraPaths, target.asar)
+	}
+	rollbackSnapshots, snapshotErr := windowsRollbackSnapshots(plans, rollbackExtraPaths...)
+	if snapshotErr != nil {
+		return "", fmt.Errorf("创建事务回滚快照失败: %w", snapshotErr)
+	}
 	defer func() {
 		if err == nil {
 			return
 		}
-		if languagePlan != nil {
-			_ = rollbackWindowsPlans([]*windowsPatchPlan{languagePlan})
-		}
-		if wroteASAR {
-			_ = restoreWindowsFile(target.asar)
+		if rollbackErr := restoreWindowsRollbackSnapshots(rollbackSnapshots); rollbackErr != nil {
+			err = fmt.Errorf("%w；回滚到操作前状态失败: %v", err, rollbackErr)
 		}
 	}()
-	if languagePlan != nil {
-		if err = writeWindowsPlans([]*windowsPatchPlan{languagePlan}); err != nil {
-			return "", err
-		}
+	if err = writeWindowsPlans(plans); err != nil {
+		return "", err
 	}
 	if asarChanged {
 		if err = windowsReplaceFile(candidate, target.asar); err != nil {
 			return "", fmt.Errorf("替换 app.asar 失败: %w", err)
 		}
-		wroteASAR = true
+		if windowsASARPostReplaceHook != nil {
+			windowsASARPostReplaceHook()
+		}
 	}
 	if _, _, _, patched := windowsTargetPatchState(target); !patched {
 		return "", fmt.Errorf("写入后的 Windows app.asar 补丁未通过完整校验")
@@ -313,8 +364,14 @@ func windowsPatchSource(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !windowsContainsKnownPatch(data) || windowsExistingFile(windowsBackupPath(path)) != "" {
+	if !windowsContainsKnownPatch(data) {
 		return path, nil
+	}
+	if backup := windowsExistingFile(windowsBackupPath(path)); backup != "" {
+		// Re-apply every migrated patch from the clean canonical backup. This
+		// keeps “恢复原始文件” byte-for-byte original instead of rotating a
+		// previous helper patch into the canonical restore point.
+		return backup, nil
 	}
 	for _, candidate := range windowsLegacyBackupPaths(path) {
 		if windowsExistingFile(candidate) != "" {
@@ -331,6 +388,63 @@ func windowsPlansChanged(plans []*windowsPatchPlan) bool {
 		}
 	}
 	return false
+}
+
+// windowsRollbackSnapshots captures the actual active files immediately
+// before an apply operation starts writing. Patch plans may be prepared from a
+// canonical clean backup during a v2/v3 migration, so plan.original is not a
+// safe transaction rollback source: it can be S0 while the user's pre-upgrade
+// installation is S1. The canonical backup remains solely for the explicit
+// "恢复原始文件" operation.
+func windowsRollbackSnapshots(plans []*windowsPatchPlan, extraPaths ...string) ([]windowsRollbackSnapshot, error) {
+	paths := append([]string(nil), extraPaths...)
+	for _, plan := range plans {
+		if plan != nil && plan.changed {
+			paths = append(paths, plan.path)
+		}
+	}
+	seen := make(map[string]bool, len(paths))
+	snapshots := make([]windowsRollbackSnapshot, 0, len(paths))
+	for _, path := range paths {
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("读取 %s: %w", path, err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("检查 %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%s 不是常规文件", path)
+		}
+		snapshots = append(snapshots, windowsRollbackSnapshot{
+			path: path, data: data, mode: info.Mode(),
+		})
+	}
+	return snapshots, nil
+}
+
+type windowsRollbackSnapshot struct {
+	path string
+	data []byte
+	mode os.FileMode
+}
+
+func restoreWindowsRollbackSnapshots(snapshots []windowsRollbackSnapshot) error {
+	// Restore in reverse write order. The files are independent today, but the
+	// ordering keeps the helper correct if a future target introduces a loader
+	// that observes a companion file while app.asar is being restored.
+	for index := len(snapshots) - 1; index >= 0; index-- {
+		snapshot := snapshots[index]
+		if err := windowsWriteFileAtomic(snapshot.path, snapshot.data, snapshot.mode); err != nil {
+			return fmt.Errorf("恢复 %s: %w", snapshot.path, err)
+		}
+	}
+	return nil
 }
 
 func saveWindowsPlanBackups(plans []*windowsPatchPlan) error {
@@ -387,26 +501,20 @@ func writeWindowsPlans(plans []*windowsPatchPlan) error {
 	return nil
 }
 
-func rollbackWindowsPlans(plans []*windowsPatchPlan) error {
-	for _, plan := range plans {
-		if plan != nil && plan.changed {
-			if err := windowsWriteFileAtomic(plan.path, plan.original, plan.mode); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func restoreWindowsTargets(targets []windowsTarget) (string, error) {
 	stopWindowsProducts(targets)
 	var messages []string
 	for _, target := range targets {
 		restored := 0
-		for _, path := range []string{target.main, target.extensionEntry, target.asar, target.language} {
-			if path == "" {
+		paths := []string{target.main, target.extensionEntry, target.asar, target.language}
+		paths = append(paths, windowsImagePreviewRendererPaths(target)...)
+		paths = append(paths, windowsASARUnpackedImagePreviewRendererPaths(target)...)
+		seen := map[string]bool{}
+		for _, path := range paths {
+			if path == "" || seen[path] {
 				continue
 			}
+			seen[path] = true
 			ok, err := restoreWindowsFileIfAvailable(path)
 			if err != nil {
 				return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复失败: %w", target.name, err)

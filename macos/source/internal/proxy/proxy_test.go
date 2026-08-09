@@ -669,6 +669,9 @@ func TestBuildFakeModelEntry(t *testing.T) {
 	if entry["recommended"] != true {
 		t.Error("should be recommended so it surfaces in menu")
 	}
+	if entry["requiresImageOutputOutsideFunctionResponses"] != true {
+		t.Errorf("image-capable model must request media output outside function responses: %#v", entry)
+	}
 }
 
 func TestReasoningBudget(t *testing.T) {

@@ -87,6 +87,84 @@ func TestDarwinPatchApplyStatusAndRestore(t *testing.T) {
 	}
 }
 
+func TestDarwinUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
+	appPath := filepath.Join(t.TempDir(), "Antigravity.app")
+	appRoot := filepath.Join(appPath, "Contents", "Resources", "app")
+	mainPath := filepath.Join(appRoot, "out", "main.js")
+	extensionEntry := filepath.Join(appRoot, "extensions", "antigravity", "dist", "extension.js")
+	languagePath := filepath.Join(appRoot, "extensions", "antigravity", "bin", "language_server_macos_x64")
+	for _, path := range append([]string{mainPath, extensionEntry, languagePath}, imagePreviewRendererPaths(appRoot)...) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Create all known renderer files before obtaining the target-specific
+	// paths. The main bundle also carries the ordinary endpoint/auth patch.
+	originals := map[string][]byte{
+		mainPath:       []byte(`"use strict";const endpoint="` + productionEndpoint + `";` + authEligibilityOriginal + imagePreviewOriginalRendererFixture()),
+		extensionEntry: []byte("/*! For license information please see extension.js.LICENSE.txt */\nconst endpoint=await service.getCloudCodeUrl();"),
+		languagePath:   []byte("binary\x00" + sandboxEndpoint + "\x00tail"),
+	}
+	for index, relative := range imagePreviewRendererRelativePaths[1:] {
+		path := filepath.Join(appRoot, filepath.FromSlash(relative))
+		if index == 0 {
+			originals[path] = []byte(imagePreviewOriginalRendererFixture())
+		} else {
+			// A future renderer must not prevent the standard endpoint patch
+			// or cause a broad rewrite of an unknown bundle.
+			originals[path] = []byte(`const futureRenderer={generatedMedia:"different-shape"};`)
+		}
+	}
+	for path, data := range originals {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mode := os.FileMode(0o644)
+		if path == languagePath {
+			mode = 0o755
+		}
+		if err := os.WriteFile(path, data, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Setenv("ANTIGRAVITY_APP_PATH", appPath)
+	t.Setenv("ANTIGRAVITY_APP_PATHS", "")
+	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	targets := locateDarwinInstallations()
+	if len(targets) != 1 || targets[0].kind != "ide" {
+		t.Fatalf("unexpected target: %+v", targets)
+	}
+	if _, err := applyDarwinPatch(targets[0]); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range imagePreviewRendererPaths(appRoot) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		knownRenderer := path == mainPath || strings.Contains(filepath.ToSlash(path), "/jetskiAgent/main.js")
+		if knownRenderer && !bytes.Contains(data, []byte(imagePreviewPatchMarker)) {
+			t.Fatalf("renderer was not patched: %s", path)
+		}
+		if !knownRenderer && bytes.Contains(data, []byte(imagePreviewPatchMarker)) {
+			t.Fatalf("unknown renderer was unexpectedly rewritten: %s", path)
+		}
+		if knownRenderer {
+			if _, err := os.Stat(backupPath(path)); err != nil {
+				t.Fatalf("renderer backup is missing for %s: %v", path, err)
+			}
+		}
+	}
+	if _, err := restoreDarwinPatch(targets[0]); err != nil {
+		t.Fatal(err)
+	}
+	for path, original := range originals {
+		assertFileEquals(t, path, original)
+	}
+}
+
 func TestDarwinCodesignRoundTrip(t *testing.T) {
 	if _, err := exec.LookPath("clang"); err != nil {
 		t.Skip("clang is unavailable")
@@ -267,7 +345,10 @@ func TestDarwinASARApplyStatusAndRestore(t *testing.T) {
 	originalMain := []byte("\"use strict\";\nconst endpoint=\"" + productionEndpoint + "\";")
 	originalLauncher := []byte("args.push('--cloud_code_endpoint','" + productionEndpoint + "')")
 	if err := fixture.write(asarPath, map[string][]byte{
-		"dist/main.js": originalMain, "dist/languageServer.js": originalLauncher,
+		"dist/main.js":               originalMain,
+		"dist/languageServer.js":     originalLauncher,
+		"out/jetskiAgent/main.js":    []byte(imagePreviewOriginalRendererFixture()),
+		"dist/unrelated-renderer.js": []byte(imagePreviewOriginalRendererFixture()),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +372,14 @@ func TestDarwinASARApplyStatusAndRestore(t *testing.T) {
 	if !darwinASARPatched(asarPath) {
 		t.Fatal("patched ASAR was not detected")
 	}
+	patchedArchive, err := readASAR(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewData, err := patchedArchive.readFile("out/jetskiAgent/main.js")
+	if err != nil || !bytes.Contains(previewData, []byte(imagePreviewPatchMarker)) {
+		t.Fatalf("ASAR image-preview renderer was not patched: %v", err)
+	}
 	if _, _, _, patched := darwinTargetPatchState(targets[0]); !patched {
 		t.Fatal("ASAR target was not fully patched")
 	}
@@ -302,6 +391,263 @@ func TestDarwinASARApplyStatusAndRestore(t *testing.T) {
 	if !bytes.Equal(restoredASAR, originalASAR) || !bytes.Equal(restoredLanguage, originalLanguage) {
 		t.Fatal("ASAR installation was not restored byte-for-byte")
 	}
+}
+
+// TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint covers the
+// upgrade path used by installations that received the earlier v3 renderer
+// fallback. The canonical backup must remain the original, clean app.asar:
+// otherwise Restore would put the old (and Windows-path-broken) v3 patch back
+// into the application instead of the vendor file.
+func TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint(t *testing.T) {
+	root := t.TempDir()
+	appPath := filepath.Join(root, "Antigravity 2.0.app")
+	resources := filepath.Join(appPath, "Contents", "Resources")
+	asarPath := filepath.Join(resources, "app.asar")
+	languagePath := filepath.Join(resources, "bin", "language_server_macos_x64")
+	if err := os.MkdirAll(filepath.Dir(languagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanArchive := &asarArchive{root: &asarNode{Files: map[string]*asarNode{}}}
+	if err := cleanArchive.write(asarPath, map[string][]byte{
+		"dist/main.js":               []byte(`"use strict";const endpoint="` + productionEndpoint + `";`),
+		"dist/languageServer.js":     []byte(`const endpoint="` + productionEndpoint + `";`),
+		"out/jetskiAgent/main.js":    []byte(imagePreviewOriginalRendererFixture()),
+		"dist/unrelated-renderer.js": []byte(`const untouched=true;`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleanASAR, err := os.ReadFile(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(languagePath, []byte("binary\x00"+binarySandboxProxyEndpoint+"\x00tail"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	// S0: canonical clean restore point from the first helper application.
+	if err := writeBackup(asarPath, cleanASAR); err != nil {
+		t.Fatal(err)
+	}
+
+	// S1: emulate the old helper's fully endpoint-patched ASAR with its v3
+	// image renderer. The app must appear otherwise patched so the upgrade path
+	// is forced to use the canonical S0 backup as the candidate source.
+	legacyArchive, err := readASAR(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(resources, "legacy.app.asar")
+	if err := legacyArchive.write(legacyPath, map[string][]byte{
+		"dist/main.js":            []byte(`"use strict";` + "\n// " + darwinASARMarker + `\nconst endpoint="` + textProxyEndpoint + `";`),
+		"dist/languageServer.js":  []byte(`const endpoint="` + baseProxyEndpoint + `";`),
+		"out/jetskiAgent/main.js": []byte(imagePreviewV3RendererFixture()),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(legacyPath, asarPath); err != nil {
+		t.Fatal(err)
+	}
+	if !darwinASARPatched(asarPath) || !imagePreviewASARArchiveNeedsPatch(asarPath) {
+		t.Fatal("legacy v3 ASAR fixture was not recognized as an upgrade candidate")
+	}
+	assertFileEquals(t, backupPath(asarPath), cleanASAR)
+
+	target := darwinTargets{
+		app: appPath, name: "Antigravity 2.0", kind: "agent", asar: asarPath, language: languagePath,
+	}
+	if _, err := applyDarwinPatch(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, patched := darwinTargetPatchState(target); !patched {
+		t.Fatal("v4-migrated ASAR target was not reported as fully patched")
+	}
+	// The previous v3 archive must never replace S0 while applying an upgrade.
+	assertFileEquals(t, backupPath(asarPath), cleanASAR)
+	upgraded, err := readASAR(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := upgraded.readFile("out/jetskiAgent/main.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(renderer, []byte(imagePreviewPatchMarker)) || bytes.Contains(renderer, []byte(imagePreviewPatchV3Marker)) {
+		t.Fatalf("v3 renderer was not upgraded to v4: %s", renderer)
+	}
+
+	if _, err := restoreDarwinPatch(target); err != nil {
+		t.Fatal(err)
+	}
+	assertFileEquals(t, asarPath, cleanASAR)
+}
+
+// TestDarwinASARImagePreviewUpgradeRollbackKeepsActiveArchive protects the
+// other half of an upgrade: if a late step fails after app.asar has already
+// been replaced, the transaction must restore the pre-upgrade v3 archive (S1)
+// while retaining the clean canonical restore point (S0).
+func TestDarwinASARImagePreviewUpgradeRollbackKeepsActiveArchive(t *testing.T) {
+	root := t.TempDir()
+	appPath := filepath.Join(root, "Antigravity 2.0.app")
+	resources := filepath.Join(appPath, "Contents", "Resources")
+	asarPath := filepath.Join(resources, "app.asar")
+	languagePath := filepath.Join(resources, "bin", "language_server_macos_x64")
+	if err := os.MkdirAll(filepath.Dir(languagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanArchive := &asarArchive{root: &asarNode{Files: map[string]*asarNode{}}}
+	if err := cleanArchive.write(asarPath, map[string][]byte{
+		"dist/main.js":            []byte(`"use strict";const endpoint="` + productionEndpoint + `";`),
+		"dist/languageServer.js":  []byte(`const endpoint="` + productionEndpoint + `";`),
+		"out/jetskiAgent/main.js": []byte(imagePreviewOriginalRendererFixture()),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleanASAR, err := os.ReadFile(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	if err := writeBackup(asarPath, cleanASAR); err != nil {
+		t.Fatal(err)
+	}
+	clean, err := readASAR(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(resources, "legacy.app.asar")
+	if err := clean.write(legacyPath, map[string][]byte{
+		"dist/main.js":            []byte(`"use strict";` + "\n// " + darwinASARMarker + `\nconst endpoint="` + textProxyEndpoint + `";`),
+		"dist/languageServer.js":  []byte(`const endpoint="` + baseProxyEndpoint + `";`),
+		"out/jetskiAgent/main.js": []byte(imagePreviewV3RendererFixture()),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(legacyPath, asarPath); err != nil {
+		t.Fatal(err)
+	}
+	legacyASAR, err := os.ReadFile(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalLanguage := []byte("binary\x00" + sandboxEndpoint + "\x00tail")
+	if err := os.WriteFile(languagePath, originalLanguage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	previousSigner := signDarwinLanguageServer
+	signDarwinLanguageServer = func(string) error {
+		return fmt.Errorf("synthetic post-ASAR signing failure")
+	}
+	t.Cleanup(func() { signDarwinLanguageServer = previousSigner })
+
+	target := darwinTargets{
+		app: appPath, name: "Antigravity 2.0", kind: "agent", asar: asarPath, language: languagePath,
+	}
+	if _, err := applyDarwinPatch(target); err == nil || !strings.Contains(err.Error(), "synthetic post-ASAR signing failure") {
+		t.Fatalf("expected injected post-ASAR failure, got %v", err)
+	}
+	assertFileEquals(t, asarPath, legacyASAR)
+	assertFileEquals(t, backupPath(asarPath), cleanASAR)
+	assertFileEquals(t, languagePath, originalLanguage)
+}
+
+// TestDarwinASARUnpackedImagePreviewPatchApplyAndRestore verifies the package
+// layout used when a known renderer is declared `unpacked` in app.asar. It is
+// deliberately an end-to-end apply/status/restore test: archive.write must
+// preserve the manifest node, the external renderer must receive v4, and both
+// files must return byte-for-byte to their initial state.
+func TestDarwinASARUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
+	root := t.TempDir()
+	appPath := filepath.Join(root, "Antigravity 2.0.app")
+	resources := filepath.Join(appPath, "Contents", "Resources")
+	asarPath := filepath.Join(resources, "app.asar")
+	languagePath := filepath.Join(resources, "bin", "language_server_macos_x64")
+	externalRendererPath := filepath.Join(asarPath+".unpacked", "dist", "jetskiAgent", "main.js")
+	if err := os.MkdirAll(filepath.Dir(languagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(externalRendererPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the archive with the renderer explicitly marked unpacked. Supplying
+	// only the packed files to write() keeps the external entry out of the ASAR
+	// payload, as a real Electron package does.
+	fixture := &asarArchive{root: &asarNode{Files: map[string]*asarNode{
+		"dist": {Files: map[string]*asarNode{
+			"jetskiAgent": {Files: map[string]*asarNode{
+				"main.js": {Unpacked: true},
+			}},
+		}},
+	}}}
+	if err := fixture.write(asarPath, map[string][]byte{
+		"dist/main.js":           []byte(`"use strict";const endpoint="` + productionEndpoint + `";`),
+		"dist/languageServer.js": []byte(`const endpoint="` + productionEndpoint + `";`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	originalASAR, err := os.ReadFile(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalRenderer := []byte(imagePreviewOriginalRendererFixture())
+	if err := os.WriteFile(externalRendererPath, originalRenderer, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalLanguage := []byte("binary\x00" + sandboxEndpoint + "\x00tail")
+	if err := os.WriteFile(languagePath, originalLanguage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	target := darwinTargets{
+		app: appPath, name: "Antigravity 2.0", kind: "agent", asar: asarPath, language: languagePath,
+	}
+	if _, err := applyDarwinPatch(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, patched := darwinTargetPatchState(target); !patched {
+		t.Fatal("ASAR target with unpacked image renderer was not reported as fully patched")
+	}
+	status := buildDarwinStatus([]darwinTargets{target})
+	if status.AgentPatched == nil || !*status.AgentPatched || len(status.Targets) != 1 || !status.Targets[0].Patched {
+		t.Fatalf("unpacked renderer patch state was not reflected in status: %+v", status)
+	}
+
+	archive, err := readASAR(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := archive.node("dist/jetskiAgent/main.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.Unpacked || node.Size != nil {
+		t.Fatalf("renderer manifest changed from unpacked to packed: %+v", node)
+	}
+	patchedRenderer, err := os.ReadFile(externalRendererPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(patchedRenderer, []byte(imagePreviewPatchMarker)) || bytes.Contains(patchedRenderer, []byte(imagePreviewPatchV3Marker)) {
+		t.Fatalf("external unpacked renderer did not receive v4: %s", patchedRenderer)
+	}
+	assertFileEquals(t, backupPath(asarPath), originalASAR)
+	assertFileEquals(t, backupPath(externalRendererPath), originalRenderer)
+
+	if _, err := restoreDarwinPatch(target); err != nil {
+		t.Fatal(err)
+	}
+	assertFileEquals(t, asarPath, originalASAR)
+	assertFileEquals(t, externalRendererPath, originalRenderer)
+	assertFileEquals(t, languagePath, originalLanguage)
 }
 
 func TestMergeDarwinHistoryBacksUpAndNeverOverwrites(t *testing.T) {

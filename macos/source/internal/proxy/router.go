@@ -173,7 +173,14 @@ func buildFakeModelEntry(m storage.CustomModel, placeholder string) map[string]a
 		"supportsThinking":             capabilities.SupportsThinking,
 		"supportsWebSearch":            capabilities.SupportsWebSearch,
 		"supportsImageGeneration":      capabilities.SupportsImageGeneration,
-		"supportedMimeTypes":           mimeTypes,
+		// Newer Antigravity language servers use this ModelDetails capability
+		// when they turn a native image-generation result into chat media. The
+		// value must stay coupled to the real, proxy-supported image capability:
+		// declaring it for an ordinary text model makes the IDE offer a tool that
+		// cannot produce an attachment, while omitting it can leave a valid image
+		// result visible only to the tool runner instead of the conversation.
+		"requiresImageOutputOutsideFunctionResponses": capabilities.SupportsImageGeneration,
+		"supportedMimeTypes":                          mimeTypes,
 	}
 	// The exact field names are version-dependent in Antigravity. Keep the
 	// canonical fields above, and provide these aliases for IDE builds that use

@@ -99,18 +99,28 @@ func TestWindowsMainPatchUsesLocalCredentialsAndSharedHistory(t *testing.T) {
 	}
 }
 
+func TestWindowsKnownPatchDetectionIncludesImagePreviewMarkers(t *testing.T) {
+	for _, marker := range []string{imagePreviewPatchV2Marker, imagePreviewPatchMarker} {
+		if !windowsContainsKnownPatch([]byte("/*" + marker + "*/")) {
+			t.Fatalf("known image-preview marker was not protected by backup detection: %s", marker)
+		}
+	}
+}
+
 func TestWindowsASARLauncherPatchDoesNotRequireBinaryEndpoint(t *testing.T) {
 	root := &asarNode{Files: map[string]*asarNode{}}
 	fixture := &asarArchive{root: root}
 	path := filepath.Join(t.TempDir(), "app.asar")
 	if err := fixture.write(path, map[string][]byte{
-		"package.json":           []byte(`{"version":"2.0.0"}`),
-		"dist/main.js":           []byte(`"use strict";` + authEligibilityOriginal),
-		"dist/languageServer.js": []byte(`const args=["--cloud_code_endpoint","` + windowsProductionEndpoint + `"]`),
+		"package.json":               []byte(`{"version":"2.0.0"}`),
+		"dist/main.js":               []byte(`"use strict";` + authEligibilityOriginal),
+		"dist/languageServer.js":     []byte(`const args=["--cloud_code_endpoint","` + windowsProductionEndpoint + `"]`),
+		"out/jetskiAgent/main.js":    []byte(imagePreviewOriginalRendererFixture()),
+		"dist/unrelated-renderer.js": []byte(imagePreviewOriginalRendererFixture()),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := prepareWindowsASARCandidate(path)
+	candidate, err := prepareWindowsASARCandidate(path, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,5 +139,9 @@ func TestWindowsASARLauncherPatchDoesNotRequireBinaryEndpoint(t *testing.T) {
 	}
 	if !bytes.Contains(main, []byte(authEligibilityPatched)) || bytes.Contains(main, []byte(authEligibilityOriginal)) {
 		t.Fatal("local credential eligibility branch was not patched")
+	}
+	preview, err := archive.readFile("out/jetskiAgent/main.js")
+	if err != nil || !bytes.Contains(preview, []byte(imagePreviewPatchMarker)) {
+		t.Fatalf("ASAR image-preview renderer was not patched: %v", err)
 	}
 }

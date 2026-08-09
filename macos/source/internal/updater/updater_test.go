@@ -17,12 +17,12 @@ import (
 )
 
 const testReleaseJSON = `[{
-  "tag_name":"v1.4.20",
-  "html_url":"https://example.test/releases/v1.4.20",
+  "tag_name":"v1.4.21",
+  "html_url":"https://example.test/releases/v1.4.21",
   "published_at":"2026-08-04T00:00:00Z",
   "assets":[
-    {"name":"Antigravity-WF-Assistant-macOS-universal-v1.4.20-Installer.pkg","browser_download_url":"https://example.test/macos.pkg","size":123},
-    {"name":"Antigravity-WF-Assistant-Windows-x64-v1.4.20-Setup.exe","browser_download_url":"https://example.test/windows.exe","size":456}
+    {"name":"Antigravity-WF-Assistant-macOS-universal-v1.4.21-Installer.pkg","browser_download_url":"https://example.test/macos.pkg","size":123},
+    {"name":"Antigravity-WF-Assistant-Windows-x64-v1.4.21-Setup.exe","browser_download_url":"https://example.test/windows.exe","size":456}
   ]
 }]`
 
@@ -76,10 +76,10 @@ func TestSelectHighestStableReleaseUsesSemanticVersionAndPlatformAsset(t *testin
 	releases := []githubRelease{
 		// This is newer by publication time but intentionally lower by version.
 		testRelease("1.4.6", "2026-08-07T00:00:00Z", "darwin", "windows"),
-		testRelease("1.4.20", "2026-08-01T00:00:00Z", "darwin", "windows"),
+		testRelease("1.4.21", "2026-08-01T00:00:00Z", "darwin", "windows"),
 		// The highest tag is not an update for macOS because its release lacks
-		// the matching installer; it must not hide v1.4.20.
-		testRelease("1.4.21", "2026-08-06T00:00:00Z", "windows"),
+		// the matching installer; it must not hide v1.4.21.
+		testRelease("1.4.22", "2026-08-06T00:00:00Z", "windows"),
 		{TagName: "v1.4.99", Prerelease: true, Assets: []githubAsset{testInstallerAsset("1.4.99", "darwin")}},
 		{TagName: "v1.4.98-rc.1", Assets: []githubAsset{testInstallerAsset("1.4.98", "darwin")}},
 	}
@@ -88,23 +88,23 @@ func TestSelectHighestStableReleaseUsesSemanticVersionAndPlatformAsset(t *testin
 	if err != nil {
 		t.Fatalf("select macOS release: %v", err)
 	}
-	if got := normalizeVersion(macRelease.TagName); got != "1.4.20" {
-		t.Fatalf("macOS selected %s, want 1.4.20", got)
+	if got := normalizeVersion(macRelease.TagName); got != "1.4.21" {
+		t.Fatalf("macOS selected %s, want 1.4.21", got)
 	}
 
 	windowsRelease, err := selectHighestStableRelease(releases, "windows")
 	if err != nil {
 		t.Fatalf("select Windows release: %v", err)
 	}
-	if got := normalizeVersion(windowsRelease.TagName); got != "1.4.21" {
-		t.Fatalf("Windows selected %s, want 1.4.21", got)
+	if got := normalizeVersion(windowsRelease.TagName); got != "1.4.22" {
+		t.Fatalf("Windows selected %s, want 1.4.22", got)
 	}
 }
 
 func TestCheckWithCacheUsesHighestSemanticVersionRatherThanPublicationTime(t *testing.T) {
 	releases := []githubRelease{
 		testRelease("1.4.6", "2026-08-07T00:00:00Z", "darwin", "windows"),
-		testRelease("1.4.20", "2026-08-01T00:00:00Z", "darwin", "windows"),
+		testRelease("1.4.21", "2026-08-01T00:00:00Z", "darwin", "windows"),
 	}
 	useLatestReleaseServer(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -115,8 +115,8 @@ func TestCheckWithCacheUsesHighestSemanticVersionRatherThanPublicationTime(t *te
 	if err != nil {
 		t.Fatalf("check update: %v", err)
 	}
-	if info.LatestVersion != "1.4.20" || !info.Available {
-		t.Fatalf("check info = %#v, want available v1.4.20", info)
+	if info.LatestVersion != "1.4.21" || !info.Available {
+		t.Fatalf("check info = %#v, want available v1.4.21", info)
 	}
 }
 
@@ -148,7 +148,7 @@ func TestCheckWithCacheMigratesLegacySingleReleaseCache(t *testing.T) {
 	}
 	releases := []githubRelease{
 		legacy.Release,
-		testRelease("1.4.20", "2026-08-01T00:00:00Z", "darwin", "windows"),
+		testRelease("1.4.21", "2026-08-01T00:00:00Z", "darwin", "windows"),
 	}
 	requests := 0
 	useLatestReleaseServer(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -164,7 +164,7 @@ func TestCheckWithCacheMigratesLegacySingleReleaseCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate legacy cache: %v", err)
 	}
-	if requests != 1 || info.LatestVersion != "1.4.20" || !info.Available {
+	if requests != 1 || info.LatestVersion != "1.4.21" || !info.Available {
 		t.Fatalf("legacy migration result = requests:%d info:%#v", requests, info)
 	}
 	migrated, ok := loadReleaseCache(cachePath)
@@ -177,18 +177,18 @@ func TestDownloadLatestInstallerUsesSameHighestSemanticRelease(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		t.Skipf("installer selection is only defined for desktop targets, got %s", runtime.GOOS)
 	}
-	installer := []byte("verified v1.4.20 installer")
+	installer := []byte("verified v1.4.21 installer")
 	sum := sha256.Sum256(installer)
 	checksum := hex.EncodeToString(sum[:])
 	platform := runtime.GOOS
 	oldInstaller := testInstallerAsset("1.4.6", platform)
-	newInstaller := testInstallerAsset("1.4.20", platform)
+	newInstaller := testInstallerAsset("1.4.21", platform)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/":
 			oldInstaller.BrowserDownloadURL = server.URL + "/v146.installer"
-				newInstaller.BrowserDownloadURL = server.URL + "/v120.installer"
+			newInstaller.BrowserDownloadURL = server.URL + "/v121.installer"
 			oldInstaller.Size = 1
 			newInstaller.Size = int64(len(installer))
 			releases := []githubRelease{
@@ -201,18 +201,18 @@ func TestDownloadLatestInstallerUsesSameHighestSemanticRelease(t *testing.T) {
 					},
 				},
 				{
-					TagName:     "v1.4.20",
+					TagName:     "v1.4.21",
 					PublishedAt: "2026-08-01T00:00:00Z",
 					Assets: []githubAsset{
 						newInstaller,
-						{Name: "SHA256SUMS.txt", BrowserDownloadURL: server.URL + "/v120.sha", Size: 1},
+						{Name: "SHA256SUMS.txt", BrowserDownloadURL: server.URL + "/v121.sha", Size: 1},
 					},
 				},
 			}
 			_, _ = writer.Write(marshalReleaseList(t, releases))
-		case "/v120.sha":
+		case "/v121.sha":
 			_, _ = fmt.Fprintf(writer, "%s  %s\n", checksum, newInstaller.Name)
-		case "/v120.installer":
+		case "/v121.installer":
 			_, _ = writer.Write(installer)
 		case "/v146.installer", "/v146.sha":
 			t.Fatalf("download attempted lower publication-time release %s", request.URL.Path)
@@ -232,7 +232,7 @@ func TestDownloadLatestInstallerUsesSameHighestSemanticRelease(t *testing.T) {
 		t.Fatalf("download highest release: %v", err)
 	}
 	defer os.Remove(path)
-	if info.LatestVersion != "1.4.20" || info.AssetName != newInstaller.Name {
+	if info.LatestVersion != "1.4.21" || info.AssetName != newInstaller.Name {
 		t.Fatalf("download info = %#v", info)
 	}
 	data, err := os.ReadFile(path)
@@ -266,14 +266,14 @@ func TestCheckWithCacheUsesETagAnd304(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first check: %v", err)
 	}
-	if !first.Available || first.Cached || first.LatestVersion != "1.4.20" || first.CheckedAt == "" {
+	if !first.Available || first.Cached || first.LatestVersion != "1.4.21" || first.CheckedAt == "" {
 		t.Fatalf("first check info = %#v", first)
 	}
 	second, err := CheckWithCache(context.Background(), "", cachePath)
 	if err != nil {
 		t.Fatalf("fresh cache check: %v", err)
 	}
-	if !second.Available || !second.Cached || second.CacheReason != "fresh" || second.LatestVersion != "1.4.20" || second.CheckedAt == "" {
+	if !second.Available || !second.Cached || second.CacheReason != "fresh" || second.LatestVersion != "1.4.21" || second.CheckedAt == "" {
 		t.Fatalf("fresh cache info = %#v", second)
 	}
 	if requests != 1 {
@@ -285,7 +285,7 @@ func TestCheckWithCacheUsesETagAnd304(t *testing.T) {
 	if err != nil {
 		t.Fatalf("conditional check: %v", err)
 	}
-	if !third.Available || third.Cached || third.LatestVersion != "1.4.20" || third.CheckedAt == "" {
+	if !third.Available || third.Cached || third.LatestVersion != "1.4.21" || third.CheckedAt == "" {
 		t.Fatalf("conditional check info = %#v", third)
 	}
 	if requests != 2 {
@@ -326,7 +326,7 @@ func TestCheckWithCacheFallsBackAfterServerFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fallback check: %v", err)
 	}
-	if !info.Cached || info.CacheReason != "network" || !info.Available || info.LatestVersion != "1.4.20" {
+	if !info.Cached || info.CacheReason != "network" || !info.Available || info.LatestVersion != "1.4.21" {
 		t.Fatalf("fallback info = %#v", info)
 	}
 }
@@ -354,7 +354,7 @@ func TestCheckWithCacheMarksTimeoutFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("timeout fallback: %v", err)
 	}
-	if !info.Cached || info.CacheReason != "timeout" || info.LatestVersion != "1.4.20" {
+	if !info.Cached || info.CacheReason != "timeout" || info.LatestVersion != "1.4.21" {
 		t.Fatalf("timeout fallback info = %#v", info)
 	}
 }

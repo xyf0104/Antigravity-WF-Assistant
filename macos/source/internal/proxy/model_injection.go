@@ -27,6 +27,10 @@ var modelIDIndexKeys = map[string]bool{
 	"availableModelIds":   true,
 	"allowedModelIds":     true,
 	"allowlistedModelIds": true,
+	// Present in newer FetchAvailableModels responses. It is not a generic
+	// picker index: only models that really support image generation belong in
+	// it. Older Antigravity versions omit this field and continue unchanged.
+	"imageGenerationModelIds": true,
 }
 
 type modelResponseRoot struct {
@@ -195,14 +199,19 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 	slugAssignments := allocateModelSlugs(models, collectUsedModelIDs(roots))
 	assignments := allocateModelPlaceholders(models, official)
 	slugs := make([]string, 0, len(models))
+	imageGenerationSlugs := make([]string, 0, len(models))
 	for _, model := range models {
 		key := modelPlaceholderKey(model)
 		if assignments[key] == "" || slugAssignments[key] == "" {
 			continue
 		}
-		slugs = append(slugs, slugAssignments[key])
+		slug := slugAssignments[key]
+		slugs = append(slugs, slug)
+		if storage.EffectiveCapabilities(model).SupportsImageGeneration {
+			imageGenerationSlugs = append(imageGenerationSlugs, slug)
+		}
 		summary.customNames = append(summary.customNames, modelDisplayName(model))
-		summary.customSlugs = append(summary.customSlugs, slugAssignments[key])
+		summary.customSlugs = append(summary.customSlugs, slug)
 	}
 	summary.customCount = len(slugs)
 
@@ -288,7 +297,7 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 		indexedRoots = append(indexedRoots, target)
 	}
 	for _, root := range indexedRoots {
-		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs)...)
+		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs, imageGenerationSlugs)...)
 	}
 	summary.indexPaths = uniqueStrings(summary.indexPaths)
 	return summary
@@ -307,7 +316,7 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-func addModelIndexes(parsed map[string]any, rootPath string, modelIDs []string) []string {
+func addModelIndexes(parsed map[string]any, rootPath string, modelIDs, imageGenerationModelIDs []string) []string {
 	if len(modelIDs) == 0 {
 		return nil
 	}
@@ -333,7 +342,14 @@ func addModelIndexes(parsed map[string]any, rootPath string, modelIDs []string) 
 		if !exists {
 			continue
 		}
-		if updated, changed := prependModelIDs(value, modelIDs); changed {
+		ids := modelIDs
+		if key == "imageGenerationModelIds" {
+			ids = imageGenerationModelIDs
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if updated, changed := prependModelIDs(value, ids); changed {
 			parsed[key] = updated
 			paths = append(paths, modelPath(rootPath, key))
 		}

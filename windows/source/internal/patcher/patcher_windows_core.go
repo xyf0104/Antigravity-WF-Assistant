@@ -90,13 +90,21 @@ func windowsLanguagePatchState(path string) (patched, hasEmbeddedEndpoint bool) 
 
 func windowsTargetPatchState(target windowsTarget) (main, extension, language, fully bool) {
 	language, _ = windowsLanguagePatchState(target.language)
+	imagePreviewPatched := !windowsImagePreviewNeedsPatch(target)
 	if target.kind == "agent" {
 		main = windowsASARPatched(target.asar)
-		return main, true, language, main && language
+		return main, true, language, main && language && imagePreviewPatched
 	}
 	main = windowsMainPatched(target.main)
 	extension = target.extensionEntry == "" || windowsExtensionPatched(target.extensionEntry)
-	return main, extension, language, main && extension && language
+	return main, extension, language, main && extension && language && imagePreviewPatched
+}
+
+func windowsImagePreviewNeedsPatch(target windowsTarget) bool {
+	if target.kind == "agent" {
+		return imagePreviewASARNeedsPatch(target.asar)
+	}
+	return imagePreviewRenderersNeedPatch(windowsImagePreviewRendererPaths(target))
 }
 
 func windowsMainPatched(path string) bool {
@@ -253,9 +261,41 @@ func prepareWindowsMainPatch(path string) (*windowsPatchPlan, error) {
 	if !strings.Contains(source, windowsMainMarker) {
 		source = addWindowsSourceMarker(source, windowsMainMarker)
 	}
+	if updated, result := patchImagePreviewRenderer(source); result.Changed {
+		source = updated
+	}
 	updated := []byte(source)
 	return &windowsPatchPlan{
 		path: path, original: data, updated: updated, mode: info.Mode(), changed: !bytes.Equal(data, updated),
+	}, nil
+}
+
+func windowsImagePreviewRendererPaths(target windowsTarget) []string {
+	if target.kind != "ide" || target.root == "" {
+		return nil
+	}
+	return imagePreviewRendererPaths(filepath.Join(target.root, "resources", "app"))
+}
+
+func windowsASARUnpackedImagePreviewRendererPaths(target windowsTarget) []string {
+	if target.kind != "agent" || target.asar == "" {
+		return nil
+	}
+	return imagePreviewASARUnpackedRendererPathsForPath(target.asar)
+}
+
+func prepareWindowsImagePreviewPatch(path string) (*windowsPatchPlan, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取图片预览渲染器 %s 失败: %w", path, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	updated, result := patchImagePreviewRenderer(string(data))
+	return &windowsPatchPlan{
+		path: path, original: data, updated: []byte(updated), mode: info.Mode(), changed: result.Changed,
 	}, nil
 }
 
@@ -297,8 +337,8 @@ func addWindowsSourceMarker(source, marker string) string {
 	return line + "\n" + source
 }
 
-func prepareWindowsASARCandidate(path string) (string, error) {
-	archive, err := readASAR(path)
+func prepareWindowsASARCandidate(sourcePath, destinationPath string) (string, error) {
+	archive, err := readASAR(sourcePath)
 	if err != nil {
 		return "", err
 	}
@@ -315,11 +355,16 @@ func prepareWindowsASARCandidate(path string) (string, error) {
 	if !strings.Contains(mainSource, windowsASARMarker) {
 		mainSource = addWindowsSourceMarker(mainSource, windowsASARMarker)
 	}
+	if updated, result := patchImagePreviewRenderer(mainSource); result.Changed {
+		mainSource = updated
+	}
 	launcherSource := patchWindowsCloudCodeSource(string(launcherData))
 	if !windowsLauncherHasProxyEndpoint(launcherSource) {
 		return "", fmt.Errorf("app.asar 中的 cloud_code_endpoint 结构已变化")
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-byok-windows-asar-*")
+	// A clean backup may live on another volume. Create the candidate beside
+	// the destination so replacement remains an atomic same-volume operation.
+	temp, err := os.CreateTemp(filepath.Dir(destinationPath), ".antigravity-byok-windows-asar-*")
 	if err != nil {
 		return "", err
 	}
@@ -328,9 +373,11 @@ func prepareWindowsASARCandidate(path string) (string, error) {
 		return "", err
 	}
 	_ = os.Remove(candidate)
-	if err := archive.write(candidate, map[string][]byte{
+	replacements := map[string][]byte{
 		"dist/main.js": []byte(mainSource), "dist/languageServer.js": []byte(launcherSource),
-	}); err != nil {
+	}
+	patchImagePreviewASARRenderers(archive, replacements)
+	if err := archive.write(candidate, replacements); err != nil {
 		return "", err
 	}
 	if !windowsASARPatched(candidate) {
@@ -346,6 +393,7 @@ func windowsContainsKnownPatch(data []byte) bool {
 		windowsBinarySandboxEndpoint, authEligibilityPatched,
 		windowsExtensionMarker, windowsMainMarker, windowsASARMarker,
 		windowsLegacyASARMarker, windowsLegacyExtensionMarker, windowsLegacyMainMarker,
+		imagePreviewPatchMarker, imagePreviewPatchV3Marker, imagePreviewPatchV2Marker,
 	}
 	for _, marker := range markers {
 		if bytes.Contains(data, []byte(marker)) {

@@ -34,6 +34,12 @@ var darwinCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.get
 var darwinExtensionDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.getInstance\(\)\.appDataDirectoryName`)
 var darwinMainDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.ideName`)
 
+// signDarwinLanguageServer is kept as a narrow seam for transaction tests.
+// Production always calls signPatchedDarwinLanguageServer; tests can induce a
+// post-ASAR-write failure without depending on the host machine's codesign
+// implementation or certificate configuration.
+var signDarwinLanguageServer = signPatchedDarwinLanguageServer
+
 const darwinSharedDataArgument = `"--app_data_dir","antigravity"`
 
 type darwinTargets struct {
@@ -189,13 +195,28 @@ func darwinTargetPatchState(target darwinTargets) (main, extension, language, fu
 		[][]byte{[]byte(productionEndpoint), []byte(sandboxEndpoint)},
 		[][]byte{[]byte(binaryProxyEndpoint), []byte(binarySandboxProxyEndpoint)},
 	)
+	imagePreviewPatched := !darwinImagePreviewNeedsPatch(target)
 	if target.kind == "agent" {
 		main = darwinASARPatched(target.asar)
-		return main, true, language, main && language
+		return main, true, language, main && language && imagePreviewPatched
 	}
 	main = darwinMainPatched(target.main)
 	extension = target.extensionEntry == "" || darwinExtensionPatched(target.extensionEntry)
-	return main, extension, language, main && extension && language
+	return main, extension, language, main && extension && language && imagePreviewPatched
+}
+
+func darwinImagePreviewNeedsPatch(target darwinTargets) bool {
+	if target.kind == "agent" {
+		return imagePreviewASARNeedsPatch(target.asar)
+	}
+	return imagePreviewRenderersNeedPatch(darwinImagePreviewRendererPaths(target))
+}
+
+func darwinASARUnpackedImagePreviewRendererPaths(target darwinTargets) []string {
+	if target.kind != "agent" || target.asar == "" {
+		return nil
+	}
+	return imagePreviewASARUnpackedRendererPathsForPath(target.asar)
 }
 
 func darwinMainPatched(path string) bool {
@@ -326,6 +347,18 @@ func applyDarwinPatch(targets darwinTargets) (string, error) {
 		}
 		plans = append(plans, extensionPlan)
 	}
+	for _, rendererPath := range darwinImagePreviewRendererPaths(targets) {
+		if rendererPath == targets.main {
+			// The endpoint plan above already applied the image-preview fallback
+			// to out/main.js when the known renderer shape was present.
+			continue
+		}
+		rendererPlan, err := prepareDarwinImagePreviewPatch(rendererPath)
+		if err != nil {
+			return "", err
+		}
+		plans = append(plans, rendererPlan)
+	}
 	changed := false
 	for _, plan := range plans {
 		changed = changed || plan.changed
@@ -348,7 +381,7 @@ func applyDarwinPatch(targets darwinTargets) (string, error) {
 		return "", err
 	}
 	if languagePlan.changed {
-		if err := signPatchedDarwinLanguageServer(targets.language); err != nil {
+		if err := signDarwinLanguageServer(targets.language); err != nil {
 			_ = rollbackPatchPlans(plans)
 			return "", fmt.Errorf("补丁已自动回滚，macOS 语言服务器签名失败: %w", err)
 		}
@@ -375,10 +408,35 @@ func prepareDarwinMainPatch(path string) (*patchPlan, error) {
 	source := string(plan.updated)
 	if darwinMainDataPattern.MatchString(source) {
 		source = darwinMainDataPattern.ReplaceAllString(source, darwinSharedDataArgument)
-		plan.updated = []byte(source)
-		plan.changed = true
 	}
+	if updated, result := patchImagePreviewRenderer(source); result.Changed {
+		source = updated
+	}
+	plan.updated = []byte(source)
+	plan.changed = !bytes.Equal(plan.original, plan.updated)
 	return plan, nil
+}
+
+func darwinImagePreviewRendererPaths(target darwinTargets) []string {
+	if target.kind != "ide" || target.app == "" {
+		return nil
+	}
+	return imagePreviewRendererPaths(filepath.Join(target.app, "Contents", "Resources", "app"))
+}
+
+func prepareDarwinImagePreviewPatch(path string) (*patchPlan, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取图片预览渲染器 %s 失败: %w", path, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	updated, result := patchImagePreviewRenderer(string(data))
+	return &patchPlan{
+		path: path, original: data, updated: []byte(updated), mode: info.Mode(), changed: result.Changed,
+	}, nil
 }
 
 func applyDarwinPatches(targets []darwinTargets, onlyIDE bool) (string, error) {
@@ -628,41 +686,95 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 	if err != nil {
 		return "", err
 	}
-	asarChanged := !darwinASARPatched(target.asar)
-	if !asarChanged && !languagePlan.changed {
+	asarWasPatched := darwinASARPatched(target.asar)
+	// Rebuild app.asar only for endpoint or packed-renderer changes. Renderer
+	// files declared as unpacked live beside the archive and must not be folded
+	// into its manifest during an image-preview upgrade.
+	asarChanged := !asarWasPatched || imagePreviewASARArchiveNeedsPatch(target.asar)
+	previewPlans := make([]*patchPlan, 0)
+	for _, rendererPath := range darwinASARUnpackedImagePreviewRendererPaths(target) {
+		plan, planErr := prepareDarwinImagePreviewPatch(rendererPath)
+		if planErr != nil {
+			return "", planErr
+		}
+		previewPlans = append(previewPlans, plan)
+	}
+	if !asarChanged && !languagePlan.changed && !patchPlansChanged(previewPlans) {
 		return fmt.Sprintf("%s 补丁已处于激活状态，无需重复应用。", target.name), nil
 	}
-	if !asarChanged {
+	if asarWasPatched {
 		if _, statErr := os.Stat(backupPath(target.asar)); statErr != nil {
 			return "", fmt.Errorf("app.asar 已打补丁但缺少原始备份: %s", backupPath(target.asar))
 		}
 	}
 
 	var candidate string
+	var rollbackASAR string
+	var rollbackASARMode os.FileMode
 	if asarChanged {
-		candidate, err = prepareDarwinASARCandidate(target.asar)
+		// Keep a per-operation snapshot of the active archive.  During a v3 ->
+		// v4 migration the canonical backup intentionally remains the clean
+		// vendor archive, while the active archive still contains the previous
+		// helper patch.  A late failure (for example code-signing the language
+		// server) must restore that active pre-upgrade state, not silently turn
+		// the application into an unpatched install.
+		activeInfo, statErr := os.Stat(target.asar)
+		if statErr != nil {
+			return "", statErr
+		}
+		rollbackFile, createErr := os.CreateTemp(filepath.Dir(target.asar), ".antigravity-wf-asar-rollback-*")
+		if createErr != nil {
+			return "", createErr
+		}
+		rollbackASAR = rollbackFile.Name()
+		if closeErr := rollbackFile.Close(); closeErr != nil {
+			return "", closeErr
+		}
+		if removeErr := os.Remove(rollbackASAR); removeErr != nil && !os.IsNotExist(removeErr) {
+			return "", removeErr
+		}
+		if copyErr := copyFileAtomic(target.asar, rollbackASAR, activeInfo.Mode()); copyErr != nil {
+			return "", fmt.Errorf("创建 app.asar 事务回滚副本失败: %w", copyErr)
+		}
+		rollbackASARMode = activeInfo.Mode()
+		defer os.Remove(rollbackASAR)
+
+		candidateSource := target.asar
+		if asarWasPatched {
+			// Preserve the canonical clean backup while rebuilding the archive.
+			// Calling writeFileBackup on a previous helper patch would rotate the
+			// clean restore point into a historical file and break Restore.
+			candidateSource = backupPath(target.asar)
+		}
+		candidate, err = prepareDarwinASARCandidate(candidateSource, target.asar)
 		if err != nil {
 			return "", err
 		}
 		defer os.Remove(candidate)
-		if err = writeFileBackup(target.asar); err != nil {
-			return "", fmt.Errorf("创建 app.asar 备份失败: %w", err)
+		if !asarWasPatched {
+			if err = writeFileBackup(target.asar); err != nil {
+				return "", fmt.Errorf("创建 app.asar 备份失败: %w", err)
+			}
 		}
 	}
-	if err = saveApplyBackups([]*patchPlan{languagePlan}, nil); err != nil {
-		return "", fmt.Errorf("创建 Language Server 备份失败: %w", err)
+	plans := append([]*patchPlan{}, previewPlans...)
+	plans = append(plans, languagePlan)
+	if err = saveApplyBackups(plans, nil); err != nil {
+		return "", fmt.Errorf("创建补丁备份失败: %w", err)
 	}
 	wroteASAR := false
 	defer func() {
 		if err == nil {
 			return
 		}
-		_ = rollbackPatchPlans([]*patchPlan{languagePlan})
+		_ = rollbackPatchPlans(plans)
 		if wroteASAR {
-			_ = copyFileAtomic(backupPath(target.asar), target.asar, 0o644)
+			if rollbackErr := copyFileAtomic(rollbackASAR, target.asar, rollbackASARMode); rollbackErr != nil {
+				err = fmt.Errorf("%w；app.asar 事务回滚失败: %v", err, rollbackErr)
+			}
 		}
 	}()
-	if err = writePatchPlans([]*patchPlan{languagePlan}); err != nil {
+	if err = writePatchPlans(plans); err != nil {
 		return "", err
 	}
 	if asarChanged {
@@ -679,18 +791,18 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 		wroteASAR = true
 	}
 	if languagePlan.changed {
-		if err = signPatchedDarwinLanguageServer(target.language); err != nil {
+		if err = signDarwinLanguageServer(target.language); err != nil {
 			return "", fmt.Errorf("macOS 语言服务器签名失败: %w", err)
 		}
 	}
-	if !darwinASARPatched(target.asar) {
-		return "", fmt.Errorf("写入后的 app.asar 未通过补丁校验")
+	if _, _, _, patched := darwinTargetPatchState(target); !patched {
+		return "", fmt.Errorf("写入后的 app.asar 补丁未通过完整校验")
 	}
 	return fmt.Sprintf("%s 补丁应用成功。\n应用: %s\nASAR: %s\n语言服务器: %s", target.name, target.app, target.asar, target.language), nil
 }
 
-func prepareDarwinASARCandidate(path string) (string, error) {
-	archive, err := readASAR(path)
+func prepareDarwinASARCandidate(sourcePath, destinationPath string) (string, error) {
+	archive, err := readASAR(sourcePath)
 	if err != nil {
 		return "", err
 	}
@@ -711,13 +823,19 @@ func prepareDarwinASARCandidate(path string) (string, error) {
 	}
 	mainSource = strings.ReplaceAll(mainSource, productionEndpoint, textProxyEndpoint)
 	mainSource = strings.ReplaceAll(mainSource, authEligibilityOriginal, authEligibilityPatched)
+	if updated, result := patchImagePreviewRenderer(mainSource); result.Changed {
+		mainSource = updated
+	}
 	launcherSource := string(launcherData)
 	if strings.Contains(launcherSource, productionEndpoint) {
 		launcherSource = strings.ReplaceAll(launcherSource, productionEndpoint, baseProxyEndpoint)
 	} else if !strings.Contains(launcherSource, baseProxyEndpoint) {
 		return "", fmt.Errorf("app.asar 中的 cloud_code_endpoint 结构已变化")
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-byok-asar-*")
+	// A clean backup can live in the home directory while the application is in
+	// /Applications. Build beside the destination to retain same-volume rename
+	// semantics when applying the candidate.
+	temp, err := os.CreateTemp(filepath.Dir(destinationPath), ".antigravity-byok-asar-*")
 	if err != nil {
 		return "", err
 	}
@@ -726,9 +844,11 @@ func prepareDarwinASARCandidate(path string) (string, error) {
 		return "", err
 	}
 	_ = os.Remove(candidate)
-	if err := archive.write(candidate, map[string][]byte{
+	replacements := map[string][]byte{
 		"dist/main.js": []byte(mainSource), "dist/languageServer.js": []byte(launcherSource),
-	}); err != nil {
+	}
+	patchImagePreviewASARRenderers(archive, replacements)
+	if err := archive.write(candidate, replacements); err != nil {
 		return "", err
 	}
 	if !darwinASARPatched(candidate) {
@@ -768,6 +888,15 @@ func preparePatch(path string, replacements []byteReplacement) (*patchPlan, erro
 	return &patchPlan{path: path, original: data, updated: updated, mode: info.Mode(), changed: changed}, nil
 }
 
+func patchPlansChanged(plans []*patchPlan) bool {
+	for _, plan := range plans {
+		if plan != nil && plan.changed {
+			return true
+		}
+	}
+	return false
+}
+
 func saveApplyBackups(plans []*patchPlan, signingPaths []string) error {
 	for _, plan := range plans {
 		if plan.changed {
@@ -800,6 +929,7 @@ func containsKnownDarwinPatch(data []byte) bool {
 		[]byte(baseProxyEndpoint), []byte(textProxyEndpoint), []byte(binaryProxyEndpoint),
 		[]byte(binarySandboxProxyEndpoint), []byte(authEligibilityPatched),
 		[]byte(darwinExtensionMarker), []byte(darwinASARMarker),
+		[]byte(imagePreviewPatchMarker), []byte(imagePreviewPatchV3Marker), []byte(imagePreviewPatchV2Marker),
 	} {
 		if bytes.Contains(data, marker) {
 			return true
@@ -833,12 +963,16 @@ func rollbackPatchPlans(plans []*patchPlan) error {
 
 func restoreDarwinPatch(targets darwinTargets) (string, error) {
 	paths := []string{targets.main, targets.extensionEntry, targets.asar, targets.language}
+	paths = append(paths, darwinImagePreviewRendererPaths(targets)...)
+	paths = append(paths, darwinASARUnpackedImagePreviewRendererPaths(targets)...)
 
 	restored := 0
+	seen := map[string]bool{}
 	for _, path := range paths {
-		if path == "" {
+		if path == "" || seen[path] {
 			continue
 		}
+		seen[path] = true
 		backup := backupPath(path)
 		if _, err := os.Stat(backup); os.IsNotExist(err) {
 			continue
@@ -864,7 +998,7 @@ func restoreDarwinPatch(targets darwinTargets) (string, error) {
 		}
 	}
 	for _, path := range paths {
-		if path != "" {
+		if path != "" && seen[path] {
 			_ = os.Remove(backupPath(path))
 		}
 	}

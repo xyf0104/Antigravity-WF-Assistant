@@ -209,7 +209,14 @@ func buildFakeModelEntry(m storage.CustomModel, placeholder string) map[string]a
 		"supportsThinking":             capabilities.SupportsThinking,
 		"supportsWebSearch":            capabilities.SupportsWebSearch,
 		"supportsImageGeneration":      capabilities.SupportsImageGeneration,
-		"supportedMimeTypes":           mimeTypes,
+		// Newer Antigravity language servers use this ModelDetails capability
+		// when they turn a native image-generation result into chat media.  The
+		// value must stay coupled to the real, proxy-supported image capability:
+		// declaring it for an ordinary text model makes the IDE offer a tool that
+		// cannot produce an attachment, while omitting it can leave a valid image
+		// result visible only to the tool runner instead of the conversation.
+		"requiresImageOutputOutsideFunctionResponses": capabilities.SupportsImageGeneration,
+		"supportedMimeTypes":                          mimeTypes,
 	}
 	// The exact field names are version-dependent in Antigravity. Keep the
 	// canonical fields above, and provide these aliases for IDE builds that use
@@ -227,6 +234,10 @@ var modelIDIndexKeys = map[string]bool{
 	"availableModelIds":   true,
 	"allowedModelIds":     true,
 	"allowlistedModelIds": true,
+	// Present in newer FetchAvailableModels responses. It is not a generic
+	// picker index: only models that really support image generation belong in
+	// it. Older Antigravity versions omit this field and continue unchanged.
+	"imageGenerationModelIds": true,
 }
 
 type modelResponseRoot struct {
@@ -365,15 +376,20 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 	slugAssignments := allocateModelSlugs(models, usedModelIDs)
 	assignments := allocateModelPlaceholders(models, official)
 	slugs := make([]string, 0, len(models))
+	imageGenerationSlugs := make([]string, 0, len(models))
 
 	for _, model := range models {
 		key := modelPlaceholderKey(model)
 		if assignments[key] == "" || slugAssignments[key] == "" {
 			continue
 		}
-		slugs = append(slugs, slugAssignments[key])
+		slug := slugAssignments[key]
+		slugs = append(slugs, slug)
+		if storage.EffectiveCapabilities(model).SupportsImageGeneration {
+			imageGenerationSlugs = append(imageGenerationSlugs, slug)
+		}
 		summary.customNames = append(summary.customNames, modelDisplayName(model))
-		summary.customSlugs = append(summary.customSlugs, slugAssignments[key])
+		summary.customSlugs = append(summary.customSlugs, slug)
 	}
 	summary.customCount = len(slugs)
 
@@ -459,7 +475,7 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 	}
 
 	for _, root := range indexedRoots {
-		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs)...)
+		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs, imageGenerationSlugs)...)
 	}
 	summary.indexPaths = uniqueStrings(summary.indexPaths)
 	return summary
@@ -478,7 +494,7 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-func addModelIndexes(parsed map[string]any, rootPath string, modelIDs []string) []string {
+func addModelIndexes(parsed map[string]any, rootPath string, modelIDs, imageGenerationModelIDs []string) []string {
 	if len(modelIDs) == 0 {
 		return nil
 	}
@@ -504,7 +520,14 @@ func addModelIndexes(parsed map[string]any, rootPath string, modelIDs []string) 
 		if !exists {
 			continue
 		}
-		updated, changed := prependModelIDs(value, modelIDs)
+		ids := modelIDs
+		if key == "imageGenerationModelIds" {
+			ids = imageGenerationModelIDs
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		updated, changed := prependModelIDs(value, ids)
 		if changed {
 			parsed[key] = updated
 			paths = append(paths, modelPath(rootPath, key))

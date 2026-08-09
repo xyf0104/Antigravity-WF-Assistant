@@ -241,6 +241,81 @@ func TestInjectCustomModelsSupportsNestedResponseIndexesAndSlugCollisions(t *tes
 	}
 }
 
+func TestInjectCustomModelsAddsOnlyImageCapableModelsToImageGenerationIndex(t *testing.T) {
+	imageModel := storage.CustomModel{
+		Name: "models/image", DisplayName: "Image model", ExternalModelName: "gpt-image-2",
+		Provider: "openai", APIStyle: "responses",
+		Capabilities: storage.ModelCapabilities{
+			Configured: true, SupportsImages: true, SupportsFiles: true,
+			SupportsToolCalls: true, SupportsImageGeneration: true,
+		},
+	}
+	textModel := storage.CustomModel{
+		Name: "models/text", DisplayName: "Text model", ExternalModelName: "gpt-text",
+		Provider: "openai", APIStyle: "chat_completions",
+		Capabilities: storage.ModelCapabilities{
+			Configured: true, SupportsImages: true, SupportsFiles: true, SupportsToolCalls: true,
+		},
+	}
+	parsed := map[string]any{
+		"models": map[string]any{
+			"native-image": map[string]any{"model": "MODEL_PLACEHOLDER_M1"},
+		},
+		"agentModelSorts": []any{map[string]any{
+			"groups": []any{map[string]any{"modelIds": []any{"native-image"}}},
+		}},
+		"imageGenerationModelIds": []any{"native-image"},
+	}
+
+	summary := injectCustomModels(parsed, []storage.CustomModel{imageModel, textModel})
+	if err := validateModelInjection(parsed, []storage.CustomModel{imageModel, textModel}, summary); err != nil {
+		t.Fatal(err)
+	}
+
+	imageSlug := getModelSlug(imageModel)
+	textSlug := getModelSlug(textModel)
+	imageIDs := parsed["imageGenerationModelIds"].([]any)
+	if len(imageIDs) != 2 || imageIDs[0] != imageSlug || imageIDs[1] != "native-image" {
+		t.Fatalf("image-generation index = %#v, want only %q plus native model", imageIDs, imageSlug)
+	}
+	for _, id := range imageIDs {
+		if id == textSlug {
+			t.Fatalf("text-only model leaked into image-generation index: %#v", imageIDs)
+		}
+	}
+
+	models := parsed["models"].(map[string]any)
+	if models[imageSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != true {
+		t.Fatalf("image model is missing image-output presentation capability: %#v", models[imageSlug])
+	}
+	if models[textSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != false {
+		t.Fatalf("text model must not claim an image-output presentation capability: %#v", models[textSlug])
+	}
+	imageIndexDiagnosed := false
+	for _, path := range summary.indexPaths {
+		if path == "imageGenerationModelIds" {
+			imageIndexDiagnosed = true
+			break
+		}
+	}
+	if !imageIndexDiagnosed {
+		t.Fatalf("image-generation index update was not diagnosed: %#v", summary.indexPaths)
+	}
+}
+
+func TestInjectCustomModelsDoesNotCreateUnknownImageGenerationIndex(t *testing.T) {
+	model := storage.CustomModel{
+		Name: "models/image", DisplayName: "Image model", ExternalModelName: "gpt-image-2",
+		Provider: "openai", APIStyle: "responses",
+		Capabilities: storage.ModelCapabilities{Configured: true, SupportsImageGeneration: true},
+	}
+	parsed := map[string]any{"models": map[string]any{}}
+	injectCustomModels(parsed, []storage.CustomModel{model})
+	if _, exists := parsed["imageGenerationModelIds"]; exists {
+		t.Fatalf("older model response unexpectedly gained an image-generation index: %#v", parsed)
+	}
+}
+
 func TestValidateModelInjectionRejectsMissingPickerIndex(t *testing.T) {
 	models := []storage.CustomModel{{Name: "models/test", DisplayName: "Test", ExternalModelName: "test"}}
 	parsed := map[string]any{"models": map[string]any{}}
@@ -276,6 +351,7 @@ func TestHandleFetchAvailableModelsInjectsIntoCompressedJSONWithoutChangingNativ
 				"displayName": "Native",
 				"groups":      []any{map[string]any{"modelIds": []any{"native-gemini"}}},
 			}},
+			"imageGenerationModelIds": []any{"native-gemini"},
 		},
 	})
 	if err != nil {
@@ -339,6 +415,9 @@ func TestHandleFetchAvailableModelsInjectsIntoCompressedJSONWithoutChangingNativ
 	if injected["supportsImages"] != true || injected["supportsAudio"] != false || injected["supportsVideo"] != false || injected["supportsToolCalls"] != true {
 		t.Fatalf("custom model capability declaration is incomplete: %#v", injected)
 	}
+	if injected["requiresImageOutputOutsideFunctionResponses"] != true {
+		t.Fatalf("image-capable model is missing image-output presentation capability: %#v", injected)
+	}
 	nativeAfter := entries[1].(map[string]any)
 	if nativeAfter["displayName"] != "Native Gemini" || nativeAfter["nativeCapability"].(map[string]any)["keep"] != true {
 		t.Fatalf("native model was modified: %#v", nativeAfter)
@@ -346,6 +425,10 @@ func TestHandleFetchAvailableModelsInjectsIntoCompressedJSONWithoutChangingNativ
 	ids := root["agentModelSorts"].([]any)[0].(map[string]any)["groups"].([]any)[0].(map[string]any)["modelIds"].([]any)
 	if len(ids) != 2 || ids[0] != "custom-gpt-wf" || ids[1] != "native-gemini" {
 		t.Fatalf("picker indexes = %#v", ids)
+	}
+	imageIDs := root["imageGenerationModelIds"].([]any)
+	if len(imageIDs) != 2 || imageIDs[0] != "custom-gpt-wf" || imageIDs[1] != "native-gemini" {
+		t.Fatalf("image-generation indexes = %#v", imageIDs)
 	}
 
 	diagnostics := GetDiagnostics()
