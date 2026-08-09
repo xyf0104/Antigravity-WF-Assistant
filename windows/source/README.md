@@ -13,11 +13,12 @@ cd frontend
 npm ci
 npm run build
 cd ..
+$version = (Get-Content VERSION -Raw).Trim()
 go test ./...
 go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build `
-  -platform windows/amd64 -trimpath -o "Antigravity WF助手-v1.4.24.exe"
+  -platform windows/amd64 -trimpath -o "Antigravity WF助手-v$version.exe"
 cd build\windows
-makensis installer.nsi
+& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 "/DAPP_VERSION=$version" installer.nsi
 ```
 
 主程序和安装器位于 `build\bin\`。运行数据继续保存在 `%USERPROFILE%\.antigravity-byok\`，旧目录名是为了无损兼容已有模型、凭据和补丁备份，请勿删除或改名。

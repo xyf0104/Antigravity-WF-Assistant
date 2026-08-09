@@ -32,10 +32,11 @@ const (
 )
 
 var (
-	serverMu   sync.Mutex
-	srv        *http.Server
-	activePort int
-	stopping   bool
+	serverMu    sync.Mutex
+	srv         *http.Server
+	srvListener net.Listener
+	activePort  int
+	stopping    bool
 )
 
 // Start binds the persisted local endpoint. New installations prefer 50999;
@@ -127,15 +128,17 @@ func Start(storageDir string) error {
 func startServerLocked(mux *http.ServeMux, ln net.Listener, port int) {
 	server := &http.Server{Handler: mux}
 	srv = server
+	srvListener = ln
 	activePort = port
 	go func() {
 		log.Printf("[wf] 本地代理已启动")
-		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			log.Printf("[wf] 本地代理服务器错误: %v", err)
 		}
 		serverMu.Lock()
 		if srv == server {
 			srv = nil
+			srvListener = nil
 			activePort = 0
 		}
 		serverMu.Unlock()
@@ -181,7 +184,9 @@ func Stop() error {
 		return nil
 	}
 	server := srv
+	listener := srvListener
 	srv = nil
+	srvListener = nil
 	// Do not keep an old in-memory endpoint after the listener has begun to
 	// close. CurrentPort will safely resolve the persisted endpoint instead.
 	activePort = 0
@@ -191,6 +196,17 @@ func Stop() error {
 	ctx, cancel := context.WithTimeout(context.Background(), proxyShutdownGracePeriod)
 	err := server.Shutdown(ctx)
 	cancel()
+	// http.Server only begins tracking a listener from inside Serve. Start
+	// launches Serve asynchronously, so a fast Stop can otherwise call
+	// Shutdown before that registration occurs. Close the raw listener we own
+	// after Shutdown has marked the server as stopping: this closes the
+	// pre-registration window without making a normal Shutdown report
+	// net.ErrClosed for a listener it was already tracking.
+	if listener != nil {
+		if closeErr := listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			log.Printf("[wf] 关闭本地代理监听器时出现异常: %v", closeErr)
+		}
+	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		// Shutdown timed out or failed while a handler was still running. Close
 		// forcefully releases active sockets; it intentionally does not wait for

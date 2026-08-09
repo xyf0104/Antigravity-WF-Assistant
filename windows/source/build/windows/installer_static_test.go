@@ -48,6 +48,7 @@ func TestVersionedArtifactsDeriveFromBuildVersion(t *testing.T) {
 
 	for _, required := range []string{
 		"!ifndef APP_VERSION",
+		`!error "APP_VERSION is required. Run makensis with /DAPP_VERSION=<VERSION>."`,
 		`!define APP_SOURCE_EXE "Antigravity WF助手-v${APP_VERSION}.exe"`,
 		`!define APP_SETUP_EXE "Antigravity-WF-Assistant-Windows-x64-v${APP_VERSION}-Setup.exe"`,
 		`OutFile "..\bin\${APP_SETUP_EXE}"`,
@@ -56,6 +57,15 @@ func TestVersionedArtifactsDeriveFromBuildVersion(t *testing.T) {
 		if !strings.Contains(contents, required) {
 			t.Fatalf("installer versioning no longer derives from APP_VERSION: missing %q", required)
 		}
+	}
+	guardStart := strings.Index(contents, "!ifndef APP_VERSION")
+	guardEnd := strings.Index(contents[guardStart:], "!endif")
+	if guardEnd < 0 {
+		t.Fatal("APP_VERSION guard has no closing !endif")
+	}
+	versionGuard := contents[guardStart : guardStart+guardEnd+len("!endif")]
+	if strings.Contains(versionGuard, "!define APP_VERSION") {
+		t.Fatal("installer must not silently fall back to any checked-in APP_VERSION")
 	}
 }
 

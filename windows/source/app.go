@@ -418,10 +418,11 @@ func (a *App) InstallLatestUpdate() Result {
 		return Result{OK: false, Message: "无法启动更新安装程序：" + err.Error()}
 	}
 	a.emitUpdateProgress(UpdateProgress{Phase: "launching", Percent: 100, Message: "安装程序已启动，助手将退出并释放端口"})
-	go func() {
-		time.Sleep(800 * time.Millisecond)
-		a.requestQuit()
-	}()
+	// LaunchInstaller has successfully created the installer process. Exit as
+	// soon as the launch is confirmed instead of waiting an arbitrary interval:
+	// on a busy Windows machine NSIS can otherwise try to replace this running
+	// executable before the delayed quit has released it.
+	go a.requestQuit()
 	return Result{OK: true, Message: "安装程序已启动；完成系统安装后请重新打开 Antigravity WF助手。"}
 }
 

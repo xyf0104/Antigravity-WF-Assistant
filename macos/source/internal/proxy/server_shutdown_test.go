@@ -104,6 +104,43 @@ func TestStopBoundsAnActiveHandler(t *testing.T) {
 	}
 }
 
+// TestStopClosesListenerBeforeServeRegisters covers the startup/shutdown race
+// that is most visible on Windows under -race. Start publishes its listener
+// before the Serve goroutine gets a chance to register it with http.Server;
+// Shutdown alone cannot close that not-yet-registered listener. Stop must
+// release the raw listener so a staged proxy endpoint can be rebound
+// immediately after a completed stop.
+func TestStopClosesListenerBeforeServeRegisters(t *testing.T) {
+	prepareProxyRuntimeTest(t)
+	port := findFreeFiveDigitPort(t)
+	listener, err := net.Listen("tcp", loopbackAddress(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	serverMu.Lock()
+	srv = &http.Server{Handler: http.NewServeMux()}
+	srvListener = listener
+	activePort = port
+	stopping = false
+	serverMu.Unlock()
+
+	if err := Stop(); err != nil {
+		t.Fatalf("stop unregistered listener: %v", err)
+	}
+
+	// Intentionally do not wait: the production caller may restart directly
+	// after Stop returns, and this bind must not race the old raw listener.
+	rebound, err := net.Listen("tcp", loopbackAddress(port))
+	if err != nil {
+		t.Fatalf("stopped listener still owns %d: %v", port, err)
+	}
+	if err := rebound.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func waitForProxyStopping(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

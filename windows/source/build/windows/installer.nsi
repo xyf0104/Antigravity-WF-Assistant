@@ -9,11 +9,11 @@ SetCompressor /SOLID lzma
 ; Keep the installed executable name stable while packaging a versioned build
 ; artifact. This lets local and CI builds coexist without overwriting a
 ; previous executable before NSIS has produced a verified installer.
-; CI passes APP_VERSION from VERSION. Defaults keep direct local NSIS builds
-; reproducible for the checked-in release without making future tags depend on
-; a second hand-edited output filename.
+; Every build must pass APP_VERSION from the source-root VERSION file.  A
+; silent fallback here could package a future executable under an old Setup
+; filename and metadata, so fail the local build rather than guessing.
 !ifndef APP_VERSION
-!define APP_VERSION "1.4.24"
+!error "APP_VERSION is required. Run makensis with /DAPP_VERSION=<VERSION>."
 !endif
 !ifndef APP_SOURCE_EXE
 !define APP_SOURCE_EXE "Antigravity WF助手-v${APP_VERSION}.exe"

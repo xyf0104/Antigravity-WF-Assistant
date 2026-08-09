@@ -460,10 +460,10 @@ func (a *App) InstallLatestUpdate() Result {
 		return Result{OK: false, Message: "无法启动更新安装程序：" + err.Error()}
 	}
 	a.emitUpdateProgress(UpdateProgress{Phase: "launching", Percent: 100, Message: "安装程序已启动，助手将退出并释放端口"})
-	go func() {
-		time.Sleep(800 * time.Millisecond)
-		a.requestQuit()
-	}()
+	// LaunchInstaller has successfully handed the verified PKG to the system.
+	// Quit immediately once that handoff succeeds; a fixed delay can leave the
+	// currently installed bundle running when Installer begins its replacement.
+	go a.requestQuit()
 	return Result{OK: true, Message: "安装程序已启动；完成系统安装后请重新打开 Antigravity WF助手。"}
 }
 
