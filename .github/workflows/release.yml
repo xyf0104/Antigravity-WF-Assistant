@@ -111,12 +111,15 @@ jobs:
           $version = (Get-Content VERSION -Raw).Trim()
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must use numeric MAJOR.MINOR.PATCH form, got: $version" }
           if ("${{ github.ref_name }}" -ne "v$version") { throw "Tag and VERSION differ" }
-          $frontend = Get-Content frontend/package.json -Raw | ConvertFrom-Json
-          $lockfile = Get-Content frontend/package-lock.json -Raw | ConvertFrom-Json
-          $wails = Get-Content wails.json -Raw | ConvertFrom-Json
-          if ($frontend.version -ne $version) { throw "frontend package version differs from VERSION" }
-          if ($lockfile.version -ne $version) { throw "frontend lockfile version differs from VERSION" }
-          if ($wails.info.productVersion -ne $version) { throw "Wails product version differs from VERSION" }
+          # npm lockfiles use packages[""] for the root package. PowerShell's
+          # default PSCustomObject parser rejects that empty property name, so
+          # parse all version metadata as hashtables and access explicit keys.
+          $frontend = Get-Content frontend/package.json -Raw | ConvertFrom-Json -AsHashtable
+          $lockfile = Get-Content frontend/package-lock.json -Raw | ConvertFrom-Json -AsHashtable
+          $wails = Get-Content wails.json -Raw | ConvertFrom-Json -AsHashtable
+          if ($frontend['version'] -ne $version) { throw "frontend package version differs from VERSION" }
+          if ($lockfile['version'] -ne $version) { throw "frontend lockfile version differs from VERSION" }
+          if ($wails['info']['productVersion'] -ne $version) { throw "Wails product version differs from VERSION" }
           $updaterNeedle = 'CurrentVersion = "' + $version + '"'
           if (-not (Get-Content internal/updater/updater.go -Raw).Contains($updaterNeedle)) { throw "updater version differs from VERSION" }
           if (-not (Get-Content frontend/src/App.vue -Raw).Contains("v$version")) { throw "visible application version differs from VERSION" }
