@@ -1,7 +1,7 @@
 {
   "name": "antigravity-wf-assistant-frontend",
   "private": true,
-  "version": "1.4.20",
+  "version": "1.4.24",
   "type": "module",
   "scripts": {
     "dev": "vite",

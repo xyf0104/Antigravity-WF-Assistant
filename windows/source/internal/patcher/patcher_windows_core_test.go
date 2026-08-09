@@ -49,6 +49,59 @@ func TestWindowsLanguageServerEmbeddedEndpointsArePatched(t *testing.T) {
 	}
 }
 
+func TestWindowsDynamicProxyEndpointPatchesTextBinaryAndState(t *testing.T) {
+	restoreEndpoint := setPatchProxyPortForTest(51042)
+	t.Cleanup(restoreEndpoint)
+	endpoint := currentPatchProxyEndpoint()
+	if endpoint.Port != 51042 {
+		t.Fatalf("dynamic endpoint port = %d", endpoint.Port)
+	}
+
+	languagePath := filepath.Join(t.TempDir(), "language_server.exe")
+	originalLanguage := []byte("prefix " + windowsProductionEndpoint + " middle " + windowsSandboxEndpoint + " suffix")
+	if err := os.WriteFile(languagePath, originalLanguage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	languagePlan, embedded, err := prepareWindowsLanguagePatch(languagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !embedded || len(languagePlan.updated) != len(originalLanguage) {
+		t.Fatalf("dynamic binary patch must be embedded and length-preserving: embedded=%t %d!=%d", embedded, len(languagePlan.updated), len(originalLanguage))
+	}
+	if !bytes.Contains(languagePlan.updated, []byte(endpoint.Binary)) || !bytes.Contains(languagePlan.updated, []byte(endpoint.BinarySandbox)) {
+		t.Fatalf("dynamic binary endpoint missing: %q", languagePlan.updated)
+	}
+	if err := os.WriteFile(languagePath, languagePlan.updated, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if patched, hasEmbedded := windowsLanguagePatchState(languagePath); !patched || !hasEmbedded {
+		t.Fatalf("dynamic language state = patched:%t embedded:%t", patched, hasEmbedded)
+	}
+
+	mainPath := filepath.Join(t.TempDir(), "main.js")
+	mainSource := `"use strict";const u=` + windowsIDECloudCodeSetting + `;` + authEligibilityOriginal
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mainPlan, err := prepareWindowsMainPatch(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(mainPlan.updated, []byte(endpoint.Base)) || bytes.Contains(mainPlan.updated, []byte(windowsBaseProxyEndpoint)) {
+		t.Fatalf("text patch did not use the selected endpoint: %s", mainPlan.updated)
+	}
+	if err := os.WriteFile(mainPath, mainPlan.updated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !windowsMainPatched(mainPath) {
+		t.Fatal("dynamic text patch was not recognized as patched")
+	}
+	if !windowsContainsKnownPatch([]byte(endpoint.Base + "/v1internal/xxxxx")) {
+		t.Fatal("dynamic legacy endpoint was not protected as an existing helper patch")
+	}
+}
+
 func TestWindowsExtensionPatchHandlesNestedAndOptionalCloudCodeCalls(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "extension.js")
 	source := "/*! For license information please see extension.js.LICENSE.txt */\n" +
@@ -99,10 +152,17 @@ func TestWindowsMainPatchUsesLocalCredentialsAndSharedHistory(t *testing.T) {
 	}
 }
 
-func TestWindowsKnownPatchDetectionIncludesImagePreviewMarkers(t *testing.T) {
-	for _, marker := range []string{imagePreviewPatchV2Marker, imagePreviewPatchMarker} {
+func TestWindowsKnownPatchDetectionIncludesEveryReleasedImageMarker(t *testing.T) {
+	for _, marker := range []string{
+		imagePreviewPatchV2Marker, imagePreviewPatchV3Marker,
+		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
+		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
+		imagePreviewPatchMarker,
+		imageGenerationUIPatchV1Marker, imageGenerationUIPatchV2Marker,
+		imageGenerationUIPatchMarker,
+	} {
 		if !windowsContainsKnownPatch([]byte("/*" + marker + "*/")) {
-			t.Fatalf("known image-preview marker was not protected by backup detection: %s", marker)
+			t.Fatalf("known image marker was not protected by backup detection: %s", marker)
 		}
 	}
 }

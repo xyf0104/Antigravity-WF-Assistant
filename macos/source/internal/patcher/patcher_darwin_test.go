@@ -87,6 +87,124 @@ func TestDarwinPatchApplyStatusAndRestore(t *testing.T) {
 	}
 }
 
+func TestDarwinDynamicProxyEndpointPatchesTextBinaryAndState(t *testing.T) {
+	restoreEndpoint := setPatchProxyPortForTest(51042)
+	t.Cleanup(restoreEndpoint)
+	endpoint := currentPatchProxyEndpoint()
+
+	mainPath := filepath.Join(t.TempDir(), "main.js")
+	mainOriginal := []byte(`"use strict";const endpoint="` + productionEndpoint + `";` + authEligibilityOriginal)
+	if err := os.WriteFile(mainPath, mainOriginal, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mainPlan, err := prepareDarwinMainPatch(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(mainPlan.updated, []byte(endpoint.Text)) || bytes.Contains(mainPlan.updated, []byte(textProxyEndpoint)) {
+		t.Fatalf("dynamic main endpoint missing: %s", mainPlan.updated)
+	}
+	if err := os.WriteFile(mainPath, mainPlan.updated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !darwinMainPatched(mainPath) {
+		t.Fatal("dynamic main patch was not recognized as patched")
+	}
+
+	languagePath := filepath.Join(t.TempDir(), "language_server_macos_x64")
+	languageOriginal := []byte("binary\x00" + sandboxEndpoint + "\x00tail")
+	if err := os.WriteFile(languagePath, languageOriginal, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	languagePlan, err := preparePatch(languagePath, []byteReplacement{
+		{old: []byte(productionEndpoint), new: []byte(endpoint.Binary)},
+		{old: []byte(sandboxEndpoint), new: []byte(endpoint.BinarySandbox)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(languagePlan.updated) != len(languageOriginal) {
+		t.Fatalf("dynamic Language Server patch changed byte length: %d != %d", len(languagePlan.updated), len(languageOriginal))
+	}
+	if !bytes.Contains(languagePlan.updated, []byte(endpoint.BinarySandbox)) {
+		t.Fatalf("dynamic Language Server endpoint missing: %q", languagePlan.updated)
+	}
+	if !containsKnownDarwinPatch([]byte(endpoint.Base + "/v1internal/xxxxx")) {
+		t.Fatal("dynamic legacy endpoint was not protected as an existing helper patch")
+	}
+}
+
+func TestDarwinPortMigrationRebuildsEveryEndpointFromCleanBackup(t *testing.T) {
+	restoreEndpoint := setPatchProxyPortForTest(51042)
+	t.Cleanup(restoreEndpoint)
+	endpoint := currentPatchProxyEndpoint()
+	appPath := filepath.Join(t.TempDir(), "Antigravity IDE.app")
+	mainPath := filepath.Join(appPath, "Contents", "Resources", "app", "out", "main.js")
+	extensionPath := filepath.Join(appPath, "Contents", "Resources", "app", "extensions", "antigravity", "dist", "extension.js")
+	languagePath := filepath.Join(appPath, "Contents", "Resources", "app", "extensions", "antigravity", "bin", "language_server_macos_x64")
+	for _, path := range []string{mainPath, extensionPath, languagePath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleanMain := []byte(`"use strict";const endpoint="` + productionEndpoint + `";` + authEligibilityOriginal)
+	cleanExtension := []byte(`const endpoint=await service.getCloudCodeUrl();`)
+	cleanLanguage := []byte("binary\x00" + sandboxEndpoint + "\x00tail")
+	if err := os.WriteFile(mainPath, cleanMain, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extensionPath, cleanExtension, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(languagePath, cleanLanguage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	for _, path := range []string{mainPath, extensionPath, languagePath} {
+		if err := writeFileBackup(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Emulate P: a previously valid helper install whose endpoint is no longer
+	// available. The migration must use the clean backup rather than rotating P
+	// into the restore point while moving it to Q.
+	legacyMain := []byte(`"use strict";` + "\n// " + darwinExtensionMarker + `
+const endpoint="` + textProxyEndpoint + `";` + authEligibilityPatched)
+	legacyExtension := []byte("// " + darwinExtensionMarker + "\nconst endpoint=\"" + baseProxyEndpoint + "\";")
+	legacyLanguage := []byte("binary\x00" + binarySandboxProxyEndpoint + "\x00tail")
+	if err := os.WriteFile(mainPath, legacyMain, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extensionPath, legacyExtension, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(languagePath, legacyLanguage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := darwinTargets{app: appPath, name: "Antigravity IDE", kind: "ide", main: mainPath, extensionEntry: extensionPath, language: languagePath}
+	if _, err := applyDarwinPatch(target); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		path string
+		want string
+	}{
+		{mainPath, endpoint.Text},
+		{extensionPath, endpoint.Base},
+		{languagePath, endpoint.BinarySandbox},
+	} {
+		data, err := os.ReadFile(check.path)
+		if err != nil || !bytes.Contains(data, []byte(check.want)) {
+			t.Fatalf("%s did not migrate to selected endpoint %q: %v", check.path, check.want, err)
+		}
+	}
+	assertFileEquals(t, backupPath(mainPath), cleanMain)
+	assertFileEquals(t, backupPath(extensionPath), cleanExtension)
+	assertFileEquals(t, backupPath(languagePath), cleanLanguage)
+}
+
 func TestDarwinUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
 	appPath := filepath.Join(t.TempDir(), "Antigravity.app")
 	appRoot := filepath.Join(appPath, "Contents", "Resources", "app")
@@ -323,6 +441,62 @@ func TestFinishingPartialPatchPreservesCleanRestorePoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFileEquals(t, backupPath(sourcePath), clean)
+}
+
+func TestDarwinKnownPatchDetectionIncludesEveryReleasedImageMarker(t *testing.T) {
+	for _, marker := range []string{
+		imagePreviewPatchV2Marker, imagePreviewPatchV3Marker,
+		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
+		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
+		imagePreviewPatchMarker,
+		imageGenerationUIPatchV1Marker, imageGenerationUIPatchV2Marker,
+		imageGenerationUIPatchMarker,
+	} {
+		if !containsKnownDarwinPatch([]byte("/*" + marker + "*/")) {
+			t.Fatalf("known image marker was not protected by backup detection: %s", marker)
+		}
+	}
+}
+
+func TestDarwinLegacyImageMarkerPreservesCleanRestorePoint(t *testing.T) {
+	markers := []string{
+		imagePreviewPatchV2Marker, imagePreviewPatchV3Marker,
+		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
+		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
+		imagePreviewPatchMarker,
+		imageGenerationUIPatchV1Marker, imageGenerationUIPatchV2Marker,
+		imageGenerationUIPatchMarker,
+	}
+	for _, marker := range markers {
+		t.Run(marker, func(t *testing.T) {
+			t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+			sourcePath := filepath.Join(t.TempDir(), "renderer.js")
+			clean := []byte("clean renderer source")
+			legacy := []byte("/*" + marker + "*/ legacy renderer source")
+			if err := writeBackup(sourcePath, clean); err != nil {
+				t.Fatal(err)
+			}
+			plan := &patchPlan{path: sourcePath, original: legacy, updated: append([]byte(nil), legacy...), mode: 0o644, changed: true}
+			if err := saveApplyBackups([]*patchPlan{plan}, nil); err != nil {
+				t.Fatal(err)
+			}
+			assertFileEquals(t, backupPath(sourcePath), clean)
+		})
+	}
+}
+
+func TestDarwinLegacyImageMarkerWithoutBackupFailsSafely(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	sourcePath := filepath.Join(t.TempDir(), "renderer.js")
+	legacy := []byte("/*" + imagePreviewPatchV6Marker + "*/ legacy renderer source")
+	plan := &patchPlan{path: sourcePath, original: legacy, updated: append([]byte(nil), legacy...), mode: 0o644, changed: true}
+	err := saveApplyBackups([]*patchPlan{plan}, nil)
+	if err == nil || !strings.Contains(err.Error(), "缺少原始备份") {
+		t.Fatalf("legacy renderer without a canonical backup should fail safely, got %v", err)
+	}
+	if _, statErr := os.Stat(backupPath(sourcePath)); !os.IsNotExist(statErr) {
+		t.Fatalf("legacy renderer should not be saved as a clean backup: %v", statErr)
+	}
 }
 
 func TestDarwinExplicitPathNeverFallsBack(t *testing.T) {

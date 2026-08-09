@@ -29,23 +29,67 @@ const (
 	modelPlaceholderCount = 151
 )
 
+// Model-list injection and generation routing share these assignments.  They
+// must change together: Antigravity may send a placeholder enum while older
+// UI state still uses the corresponding slug.  A failed compatibility probe
+// must therefore never replace either half of the currently active mapping.
 var (
-	placeholderMu         sync.RWMutex
-	allocatedPlaceholders = map[string]string{}
-	slugMu                sync.RWMutex
-	allocatedSlugs        = map[string]string{}
+	modelAssignmentsMu          sync.RWMutex
+	modelInjectionTransactionMu sync.Mutex
+	allocatedPlaceholders       = map[string]string{}
+	allocatedSlugs              = map[string]string{}
 )
+
+type modelRouteAssignments struct {
+	placeholders map[string]string
+	slugs        map[string]string
+}
+
+func copyModelRouteAssignmentMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return map[string]string{}
+	}
+	copy := make(map[string]string, len(source))
+	for key, value := range source {
+		copy[key] = value
+	}
+	return copy
+}
+
+// commitModelRouteAssignments publishes a fully validated model-list mapping
+// in one critical section.  Callers must not invoke it for an unknown or
+// partially injected response.
+func commitModelRouteAssignments(assignments modelRouteAssignments) {
+	if assignments.placeholders == nil || assignments.slugs == nil {
+		return
+	}
+	modelAssignmentsMu.Lock()
+	allocatedPlaceholders = copyModelRouteAssignmentMap(assignments.placeholders)
+	allocatedSlugs = copyModelRouteAssignmentMap(assignments.slugs)
+	modelAssignmentsMu.Unlock()
+}
+
+func snapshotModelRouteAssignments() modelRouteAssignments {
+	modelAssignmentsMu.RLock()
+	defer modelAssignmentsMu.RUnlock()
+	return modelRouteAssignments{
+		placeholders: copyModelRouteAssignmentMap(allocatedPlaceholders),
+		slugs:        copyModelRouteAssignmentMap(allocatedSlugs),
+	}
+}
+
+// replaceModelRouteAssignmentsForTest isolates package-level routing state for
+// regression tests.  It is deliberately not used by production code.
+func replaceModelRouteAssignmentsForTest(assignments modelRouteAssignments) func() {
+	previous := snapshotModelRouteAssignments()
+	commitModelRouteAssignments(assignments)
+	return func() { commitModelRouteAssignments(previous) }
+}
 
 // getModelSlug returns a stable routing slug for a model.
 func getModelSlug(m storage.CustomModel) string {
-	key := modelPlaceholderKey(m)
-	slugMu.RLock()
-	slug := allocatedSlugs[key]
-	slugMu.RUnlock()
-	if slug != "" {
-		return slug
-	}
-	return baseModelSlug(m)
+	slug, _ := modelRouteFor(m, snapshotModelRouteAssignments())
+	return slug
 }
 
 func baseModelSlug(m storage.CustomModel) string {
@@ -95,21 +139,41 @@ func modelPlaceholderHash(m storage.CustomModel) uint32 {
 // model-list injection, with a valid deterministic fallback for unit-level
 // conversion calls.
 func getModelPlaceholder(m storage.CustomModel) string {
+	_, placeholder := modelRouteFor(m, snapshotModelRouteAssignments())
+	return placeholder
+}
+
+// modelRouteFor resolves both identifiers from one assignment snapshot. A
+// routing decision must never combine a slug from one injected picker with a
+// placeholder from a later picker refresh.
+func modelRouteFor(m storage.CustomModel, assignments modelRouteAssignments) (slug, placeholder string) {
 	key := modelPlaceholderKey(m)
-	placeholderMu.RLock()
-	placeholder := allocatedPlaceholders[key]
-	placeholderMu.RUnlock()
-	if placeholder != "" {
-		return placeholder
+	slug = assignments.slugs[key]
+	if slug == "" {
+		slug = baseModelSlug(m)
 	}
-	return fmt.Sprintf("MODEL_PLACEHOLDER_M%d", modelPlaceholderHash(m)%modelPlaceholderCount)
+	placeholder = assignments.placeholders[key]
+	if placeholder == "" {
+		placeholder = fmt.Sprintf("MODEL_PLACEHOLDER_M%d", modelPlaceholderHash(m)%modelPlaceholderCount)
+	}
+	return slug, placeholder
 }
 
 // allocateModelPlaceholders selects valid enum values that do not collide with
-// models already present in Google's response. Assignments are kept in memory
-// so subsequent generation requests can be routed back to the matching BYOK
-// model.
+// models already present in Google's response.  It is intentionally pure:
+// assignments are published only after the complete injected response has
+// passed picker validation.
 func allocateModelPlaceholders(models []storage.CustomModel, officialModels map[string]any) map[string]string {
+	assignments, _ := allocateModelPlaceholdersWithExisting(models, officialModels, modelRouteAssignments{})
+	return assignments
+}
+
+// allocateModelPlaceholdersWithExisting preserves the live enum mapping for
+// models that can still coexist with the current native response. Reassigning
+// an already visible placeholder would make a stale picker select a different
+// upstream model. If Google's newest response claims that enum instead, the
+// caller must fail closed rather than silently pick another one.
+func allocateModelPlaceholdersWithExisting(models []storage.CustomModel, officialModels map[string]any, existing modelRouteAssignments) (map[string]string, error) {
 	used := make(map[string]struct{})
 	for _, raw := range officialModels {
 		entry, ok := raw.(map[string]any)
@@ -128,22 +192,48 @@ func allocateModelPlaceholders(models []storage.CustomModel, officialModels map[
 
 	assignments := make(map[string]string, len(ordered))
 	for _, model := range ordered {
+		key := modelPlaceholderKey(model)
+		placeholder := existing.placeholders[key]
+		if placeholder == "" {
+			continue
+		}
+		if !isSupportedModelPlaceholder(placeholder) {
+			return nil, fmt.Errorf("已激活模型 %s 使用了无效占位符 %s", key, placeholder)
+		}
+		if _, collision := used[placeholder]; collision {
+			return nil, fmt.Errorf("原生模型响应与已激活模型 %s 的占位符冲突", key)
+		}
+		assignments[key] = placeholder
+		used[placeholder] = struct{}{}
+	}
+
+	for _, model := range ordered {
+		key := modelPlaceholderKey(model)
+		if assignments[key] != "" {
+			continue
+		}
 		start := int(modelPlaceholderHash(model) % modelPlaceholderCount)
 		for offset := 0; offset < modelPlaceholderCount; offset++ {
 			candidate := fmt.Sprintf("MODEL_PLACEHOLDER_M%d", (start+offset)%modelPlaceholderCount)
 			if _, exists := used[candidate]; exists {
 				continue
 			}
-			assignments[modelPlaceholderKey(model)] = candidate
+			assignments[key] = candidate
 			used[candidate] = struct{}{}
 			break
 		}
 	}
 
-	placeholderMu.Lock()
-	allocatedPlaceholders = assignments
-	placeholderMu.Unlock()
-	return assignments
+	return assignments, nil
+}
+
+func isSupportedModelPlaceholder(value string) bool {
+	const prefix = "MODEL_PLACEHOLDER_M"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	index, err := strconv.Atoi(strings.TrimPrefix(value, prefix))
+	return err == nil && index >= 0 && index < modelPlaceholderCount
 }
 
 // buildFakeModelEntry builds the JSON entry injected into the model list.
@@ -355,9 +445,9 @@ func addAgentModelID(parsed *map[string]any, modelID string) {
 // findModel returns the custom model matching a model ID or placeholder.
 func findModel(modelID string) *storage.CustomModel {
 	models, _ := storage.LoadEnabledModels()
+	assignments := snapshotModelRouteAssignments()
 	for _, m := range models {
-		slug := getModelSlug(m)
-		placeholder := getModelPlaceholder(m)
+		slug, placeholder := modelRouteFor(m, assignments)
 		if modelID == m.Name || modelID == m.ExternalModelName ||
 			modelID == slug || modelID == "models/"+slug || modelID == placeholder ||
 			modelID == "models/"+placeholder ||
@@ -367,6 +457,26 @@ func findModel(modelID string) *storage.CustomModel {
 		}
 	}
 	return nil
+}
+
+// resolveGenerationModel keeps an image source only for the internal image
+// subrequest that follows a compatible custom-model turn. A normal native
+// agent turn is an explicit model switch for that trajectory, so it clears a
+// previously remembered custom source before being passed through to Gemini.
+func resolveGenerationModel(modelID, requestID string) (customModel *storage.CustomModel, customMatched, nativeImageSource bool) {
+	customModel = findModel(modelID)
+	customMatched = customModel != nil
+	if customMatched {
+		return customModel, true, false
+	}
+	if isNativeImageGenerationRequestID(requestID) {
+		if source := imageGenerationSourceForRequest(requestID); source != nil {
+			return source, false, true
+		}
+		return nil, false, false
+	}
+	forgetImageGenerationSource(requestID)
+	return nil, false, false
 }
 
 // handleGenerate routes a streamGenerateContent request. cleanPath is the
@@ -396,15 +506,7 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	if requestID == "" {
 		requestID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
-	customModel := findModel(modelID)
-	customMatched := customModel != nil
-	nativeImageSource := false
-	if customModel == nil {
-		if source := imageGenerationSourceForRequest(requestID); source != nil {
-			customModel = source
-			nativeImageSource = true
-		}
-	}
+	customModel, customMatched, nativeImageSource := resolveGenerationModel(modelID, requestID)
 
 	trace("generation-request", map[string]any{
 		"requestId":         requestID,

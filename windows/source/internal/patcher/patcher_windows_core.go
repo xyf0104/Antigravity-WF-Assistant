@@ -38,6 +38,10 @@ var windowsCloudCodeFlagPattern = regexp.MustCompile(`["']--(?:cloud_code_endpoi
 var windowsExtensionDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.getInstance\(\)\.appDataDirectoryName`)
 var windowsMainDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.ideName`)
 
+// This distinguishes a helper-generated fixed-width Language Server endpoint
+// from a vendor URL even after the selected fallback port changes.
+var windowsManagedBinaryEndpointPattern = regexp.MustCompile(`http://127\.0\.0\.1:[1-9][0-9]{4}/v1internal/`)
+
 // windowsTarget describes both the packaged Agent/2.x layout and the unpacked
 // IDE layout. Keeping the shape independent from discovery makes the patch
 // algorithms independently testable before the executable is shipped.
@@ -80,8 +84,9 @@ func windowsLanguagePatchState(path string) (patched, hasEmbeddedEndpoint bool) 
 	if err != nil {
 		return false, false
 	}
+	endpoint := currentPatchProxyEndpoint()
 	hasOriginal := windowsCloudCodeURLPattern.Find(data) != nil
-	hasPatched := bytes.Contains(data, []byte(windowsBaseProxyEndpoint+"/v1internal/"))
+	hasPatched := bytes.Contains(data, []byte(endpoint.Base+"/v1internal/"))
 	if !hasOriginal && !hasPatched {
 		return true, false
 	}
@@ -113,7 +118,7 @@ func windowsMainPatched(path string) bool {
 		return false
 	}
 	source := string(data)
-	endpointPatched := strings.Contains(source, windowsBaseProxyEndpoint) &&
+	endpointPatched := strings.Contains(source, currentPatchProxyEndpoint().Base) &&
 		!windowsCloudCodeURLPattern.MatchString(source) &&
 		!windowsCloudCodeSettingPattern.MatchString(source)
 	return endpointPatched && strings.Contains(source, windowsMainMarker) &&
@@ -157,6 +162,7 @@ func windowsASARPatched(path string) bool {
 }
 
 func windowsLauncherHasProxyEndpoint(source string) bool {
+	endpoint := currentPatchProxyEndpoint()
 	flagLocations := windowsCloudCodeFlagPattern.FindAllStringIndex(source, -1)
 	if len(flagLocations) == 0 {
 		return false
@@ -170,7 +176,7 @@ func windowsLauncherHasProxyEndpoint(source string) bool {
 		if end > len(source) {
 			end = len(source)
 		}
-		if strings.Contains(source[start:end], windowsBaseProxyEndpoint) {
+		if strings.Contains(source[start:end], endpoint.Base) {
 			return true
 		}
 	}
@@ -178,20 +184,22 @@ func windowsLauncherHasProxyEndpoint(source string) bool {
 }
 
 func patchWindowsCloudCodeSource(source string) string {
-	source = windowsCloudCodeURLPattern.ReplaceAllString(source, windowsBaseProxyEndpoint)
-	source = windowsCloudCodeSettingPattern.ReplaceAllString(source, `"`+windowsBaseProxyEndpoint+`"`)
-	source = windowsFlexibleCloudCodeCallPattern.ReplaceAllString(source, `"`+windowsBaseProxyEndpoint+`"`)
+	endpoint := currentPatchProxyEndpoint()
+	source = windowsCloudCodeURLPattern.ReplaceAllString(source, endpoint.Base)
+	source = windowsCloudCodeSettingPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
+	source = windowsFlexibleCloudCodeCallPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
 	return source
 }
 
 func windowsBinaryEndpointFor(original string) (string, error) {
+	endpoint := currentPatchProxyEndpoint()
 	switch original {
 	case windowsProductionEndpoint:
-		return windowsBinaryProxyEndpoint, nil
+		return endpoint.Binary, nil
 	case windowsSandboxEndpoint:
-		return windowsBinarySandboxEndpoint, nil
+		return endpoint.BinarySandbox, nil
 	}
-	prefix := windowsBaseProxyEndpoint + "/v1internal/"
+	prefix := endpoint.Base + "/v1internal/"
 	if len(prefix) > len(original) {
 		return "", fmt.Errorf("Language Server 地址过短，无法安全替换: %s", original)
 	}
@@ -233,7 +241,7 @@ func prepareWindowsLanguagePatch(path string) (*windowsPatchPlan, bool, error) {
 			changed = true
 		}
 	}
-	if bytes.Contains(updated, []byte(windowsBaseProxyEndpoint+"/v1internal/")) {
+	if bytes.Contains(updated, []byte(currentPatchProxyEndpoint().Base+"/v1internal/")) {
 		embedded = true
 	}
 	return &windowsPatchPlan{
@@ -255,7 +263,7 @@ func prepareWindowsMainPatch(path string) (*windowsPatchPlan, error) {
 	if windowsMainDataPattern.MatchString(source) {
 		source = windowsMainDataPattern.ReplaceAllString(source, windowsSharedDataArgument)
 	}
-	if !strings.Contains(source, windowsBaseProxyEndpoint) {
+	if !strings.Contains(source, currentPatchProxyEndpoint().Base) {
 		return nil, fmt.Errorf("%s 中未找到受支持的 Cloud Code URL 设置", path)
 	}
 	if !strings.Contains(source, windowsMainMarker) {
@@ -388,12 +396,24 @@ func prepareWindowsASARCandidate(sourcePath, destinationPath string) (string, er
 }
 
 func windowsContainsKnownPatch(data []byte) bool {
+	if windowsManagedBinaryEndpointPattern.Match(data) {
+		return true
+	}
 	markers := []string{
 		windowsBaseProxyEndpoint, windowsTextProxyEndpoint, windowsBinaryProxyEndpoint,
 		windowsBinarySandboxEndpoint, authEligibilityPatched,
 		windowsExtensionMarker, windowsMainMarker, windowsASARMarker,
 		windowsLegacyASARMarker, windowsLegacyExtensionMarker, windowsLegacyMainMarker,
-		imagePreviewPatchMarker, imagePreviewPatchV3Marker, imagePreviewPatchV2Marker,
+		// A renderer fallback is an application modification too.  Keep every
+		// released revision here: when an older helper marker is overlooked,
+		// windowsPatchSource can mistake the already-patched renderer for a
+		// vendor file and overwrite the canonical restore point.
+		imagePreviewPatchV2Marker, imagePreviewPatchV3Marker,
+		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
+		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
+		imagePreviewPatchMarker,
+		imageGenerationUIPatchV1Marker, imageGenerationUIPatchV2Marker,
+		imageGenerationUIPatchMarker,
 	}
 	for _, marker := range markers {
 		if bytes.Contains(data, []byte(marker)) {

@@ -61,6 +61,7 @@ func toOpenAIResponsesRequest(gemini map[string]any, modelName string, model *st
 
 	var input []any
 	contents, _ := gemini["contents"].([]any)
+	toolCallsByID := newToolCallAssociation()
 	for _, rawContent := range contents {
 		content, ok := rawContent.(map[string]any)
 		if !ok {
@@ -100,6 +101,8 @@ func toOpenAIResponsesRequest(gemini map[string]any, modelName string, model *st
 				callID := getString(functionCall, "id", "callId", "call_id")
 				if callID == "" {
 					callID = "call_" + name
+				} else if role == "assistant" {
+					toolCallsByID.rememberAssistantCall(name, callID)
 				}
 				items = append(items, map[string]any{
 					"type": "function_call", "call_id": callID, "name": name, "arguments": string(arguments),
@@ -109,10 +112,7 @@ func toOpenAIResponsesRequest(gemini map[string]any, modelName string, model *st
 			if functionResponse, ok := part["functionResponse"].(map[string]any); ok {
 				name, _ := functionResponse["name"].(string)
 				output, _ := json.Marshal(functionResponse["response"])
-				callID := getString(functionResponse, "id", "callId", "call_id")
-				if callID == "" {
-					callID = "call_" + name
-				}
+				callID := toolCallsByID.resolveResponseID(name, getString(functionResponse, "id", "callId", "call_id"), "call_"+name)
 				items = append(items, map[string]any{
 					"type": "function_call_output", "call_id": callID, "output": string(output),
 				})

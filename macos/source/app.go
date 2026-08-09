@@ -124,9 +124,8 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) shutdown(ctx context.Context) {
-	a.stopOAuthLoopbacks()
+	a.releaseExitResources()
 	a.stopTray()
-	_ = proxy.Stop()
 }
 
 // beforeClose handles application-level quit requests such as Cmd+Q and the
@@ -159,7 +158,7 @@ func (a *App) requestQuit() {
 	if a.ctx == nil || a.exitRequested.Swap(true) {
 		return
 	}
-	_ = proxy.Stop()
+	a.releaseExitResources()
 	a.stopTray()
 	a.quitNativeApplication()
 	go func() {
@@ -171,6 +170,16 @@ func (a *App) requestQuit() {
 			os.Exit(0)
 		}
 	}()
+}
+
+// releaseExitResources closes every locally owned listener before a native
+// quit is requested. The watchdog in requestQuit deliberately has an
+// os.Exit fallback for a stuck platform event loop, which bypasses Wails'
+// OnShutdown hook; keeping this cleanup here therefore makes explicit quits
+// safe on that fallback path as well.
+func (a *App) releaseExitResources() {
+	a.stopOAuthLoopbacks()
+	_ = proxy.Stop()
 }
 
 // ─── Result types ─────────────────────────────────────────────────────────────
@@ -186,6 +195,7 @@ type PatchStatus struct {
 	ProxyListening           bool                `json:"proxyListening"`
 	ProxyManaged             bool                `json:"proxyManaged"`
 	ProxyOwned               bool                `json:"proxyOwned"`
+	ProxyRepatchRequired     bool                `json:"proxyRepatchRequired"`
 	LastRequestAt            string              `json:"lastRequestAt"`
 	LastRequestPath          string              `json:"lastRequestPath"`
 	LastModelFetchAt         string              `json:"lastModelFetchAt"`
@@ -272,7 +282,7 @@ func (a *App) StartProxy() Result {
 	if err := proxy.Start(a.storageDir); err != nil {
 		return Result{OK: false, Message: err.Error()}
 	}
-	return Result{OK: true, Message: fmt.Sprintf("代理已启动，监听 127.0.0.1:%d", proxy.ProxyPort)}
+	return Result{OK: true, Message: "本地代理已启动"}
 }
 
 func (a *App) StopProxy() Result {
@@ -1427,6 +1437,7 @@ func (a *App) GetPatchStatus() PatchStatus {
 	diagnostics := proxy.GetDiagnostics()
 	agentPatched := s.AgentPatched != nil && *s.AgentPatched
 	idePatched := s.IDEPatched != nil && *s.IDEPatched
+	proxyRepatchRequired := currentProxyRepatchRequired()
 	targets := make([]PatchTargetStatus, 0, len(s.Targets))
 	for _, target := range s.Targets {
 		running := false
@@ -1446,6 +1457,7 @@ func (a *App) GetPatchStatus() PatchStatus {
 		ProxyListening:           proxy.IsListening(),
 		ProxyManaged:             proxy.IsManagedListener(),
 		ProxyOwned:               proxy.OwnsListener(),
+		ProxyRepatchRequired:     proxyRepatchRequired,
 		LastRequestAt:            diagnostics.LastRequestAt,
 		LastRequestPath:          diagnostics.LastRequestPath,
 		LastModelFetchAt:         diagnostics.LastModelFetchAt,
@@ -1465,6 +1477,41 @@ func (a *App) GetPatchStatus() PatchStatus {
 		IDELS:                    s.IDELSPath,
 		Targets:                  targets,
 	}
+}
+
+func currentProxyRepatchRequired() bool {
+	pending, err := storage.HasStagedProxyRuntimePort()
+	return err == nil && pending
+}
+
+// ensureProxyReadyForAntigravityLaunch starts (or verifies) the local helper
+// before an Antigravity process is launched. A patched installation must
+// never be opened while its endpoint is unavailable, nor while a staged port
+// migration still needs every installation to be rewritten by ApplyPatch.
+//
+// The second staged-state check is intentional: Start can discover that the
+// committed port is occupied and safely select a fallback port. In that case,
+// launching now would leave existing patched targets pointing at the old
+// endpoint.
+func (a *App) ensureProxyReadyForAntigravityLaunch() error {
+	if pending, err := storage.HasStagedProxyRuntimePort(); err != nil {
+		return fmt.Errorf("无法确认本地代理端口切换状态；为避免 Antigravity 连接到错误代理，本次启动已停止: %w", err)
+	} else if pending {
+		return errors.New("本地代理已安全选择新的连接方式，但 Antigravity 仍可能指向旧连接。请先点击“应用全部补丁”，完成后再启动")
+	}
+
+	if err := proxy.Start(a.storageDir); err != nil {
+		return fmt.Errorf("本地代理启动失败，未启动 Antigravity: %w", err)
+	}
+	if pending, err := storage.HasStagedProxyRuntimePort(); err != nil {
+		return fmt.Errorf("无法确认本地代理端口切换状态；为避免 Antigravity 连接到错误代理，本次启动已停止: %w", err)
+	} else if pending {
+		return errors.New("本地代理连接正在安全调整中。请先点击“应用全部补丁”，完成后再启动 Antigravity")
+	}
+	if !proxy.IsManagedListener() {
+		return errors.New("本地代理未通过健康检查，未启动 Antigravity。请稍后重试或重新打开 WF 助手")
+	}
+	return nil
 }
 
 // LaunchOrRestartAntigravity starts a detected installation, or performs a
@@ -1489,6 +1536,9 @@ func (a *App) LaunchOrRestartAntigravity(appPath string) Result {
 	}
 	if !launcher.Supported() {
 		return Result{OK: false, Message: "当前平台暂不支持安全启动与重启。"}
+	}
+	if err := a.ensureProxyReadyForAntigravityLaunch(); err != nil {
+		return Result{OK: false, Message: err.Error()}
 	}
 
 	running, err := launcher.IsRunning(selected)
@@ -1521,23 +1571,42 @@ func (a *App) LaunchOrRestartAntigravity(appPath string) Result {
 }
 
 func (a *App) ApplyPatch() Result {
+	// Resolve and bind the endpoint before writing any Antigravity file. The
+	// patcher reads the same persisted non-secret runtime state, so a fallback
+	// selected after a 50999 collision is never written as a dead endpoint.
+	if err := proxy.Start(a.storageDir); err != nil {
+		return Result{OK: false, Message: fmt.Sprintf("本地代理启动失败，未写入补丁：%s", err)}
+	}
 	out, err := patcher.Run("apply")
 	if err != nil {
 		return Result{OK: false, Message: fmt.Sprintf("%s\n%s", err.Error(), out)}
 	}
-	if err := proxy.Start(a.storageDir); err != nil {
-		return Result{OK: false, Message: fmt.Sprintf("补丁已写入，但代理启动失败：%s\n%s", err.Error(), out)}
+	if err := proxy.CommitSelectedPort(); err != nil {
+		return Result{OK: false, Message: fmt.Sprintf("补丁已写入，但本地代理端口切换尚未安全确认：%s。请保持助手运行并重新执行“应用全部补丁”。", err)}
 	}
 	return Result{OK: true, Message: out}
 }
 
 func (a *App) ApplyIDEPatch() Result {
+	if pending, err := storage.HasStagedProxyRuntimePort(); err != nil {
+		return Result{OK: false, Message: "无法确认本地代理端口切换状态；为保护所有已补丁的 Antigravity，本次仅 IDE 补丁已停止：" + err.Error()}
+	} else if pending {
+		return Result{OK: false, Message: "本地代理连接正在安全调整中。请使用“应用全部补丁”，避免其他 Antigravity 安装仍指向旧连接。"}
+	}
+	if err := proxy.Start(a.storageDir); err != nil {
+		return Result{OK: false, Message: fmt.Sprintf("本地代理启动失败，未写入 IDE 补丁：%s", err)}
+	}
+	if pending, err := storage.HasStagedProxyRuntimePort(); err != nil {
+		return Result{OK: false, Message: "无法确认本地代理端口切换状态；为保护所有已补丁的 Antigravity，本次仅 IDE 补丁已停止：" + err.Error()}
+	} else if pending {
+		return Result{OK: false, Message: "本地代理连接正在安全调整中。请使用“应用全部补丁”，避免其他 Antigravity 安装仍指向旧连接。"}
+	}
 	out, err := patcher.Run("apply-ide")
 	if err != nil {
 		return Result{OK: false, Message: fmt.Sprintf("%s\n%s", err.Error(), out)}
 	}
-	if err := proxy.Start(a.storageDir); err != nil {
-		return Result{OK: false, Message: fmt.Sprintf("IDE 补丁已写入，但代理启动失败：%s\n%s", err.Error(), out)}
+	if err := proxy.CommitSelectedPort(); err != nil {
+		return Result{OK: false, Message: fmt.Sprintf("IDE 补丁已写入，但本地代理端口切换尚未安全确认：%s。请保持助手运行并重新执行“仅 IDE 补丁”。", err)}
 	}
 	return Result{OK: true, Message: out}
 }

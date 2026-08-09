@@ -14,12 +14,17 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"antigravity-byok/internal/storage"
 )
 
 const (
 	productionEndpoint = "https://daily-cloudcode-pa.googleapis.com"
 	sandboxEndpoint    = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+	publicEndpoint     = "https://cloudcode-pa.googleapis.com"
+	autopushEndpoint   = "https://autopush-cloudcode-pa.sandbox.googleapis.com"
 
 	baseProxyEndpoint          = "http://127.0.0.1:50999"
 	textProxyEndpoint          = "http://127.0.0.1:50999/v1internal/antigravity-byok"
@@ -34,11 +39,27 @@ var darwinCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.get
 var darwinExtensionDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.getInstance\(\)\.appDataDirectoryName`)
 var darwinMainDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.ideName`)
 
+// Language Server binaries in newer Antigravity releases may use a different
+// Cloud Code hostname. Keep this bounded to Google's cloudcode-pa hosts; an
+// arbitrary URL in a binary must never be rewritten as a local proxy.
+var darwinCloudCodeURLPattern = regexp.MustCompile(`https://[A-Za-z0-9.-]*cloudcode-pa(?:\.sandbox)?\.googleapis\.com`)
+
+// A Language Server binary contains this helper-only fixed-width path after a
+// patch. It remains recognizable even when the selected fallback port changes.
+var darwinManagedBinaryEndpointPattern = regexp.MustCompile(`http://127\.0\.0\.1:[1-9][0-9]{4}/v1internal/`)
+
 // signDarwinLanguageServer is kept as a narrow seam for transaction tests.
 // Production always calls signPatchedDarwinLanguageServer; tests can induce a
 // post-ASAR-write failure without depending on the host machine's codesign
 // implementation or certificate configuration.
 var signDarwinLanguageServer = signPatchedDarwinLanguageServer
+
+// darwinOperationMu serializes all mutations coordinated by runDarwin. Wails
+// bindings can be invoked concurrently (for example, a double-click on Apply
+// while startup history recovery is still running); without this guard two
+// operations could prepare and replace the same app/ASAR/backup files from
+// different snapshots. Windows already protects its equivalent entry point.
+var darwinOperationMu sync.Mutex
 
 const darwinSharedDataArgument = `"--app_data_dir","antigravity"`
 
@@ -67,13 +88,68 @@ type patchPlan struct {
 	changed  bool
 }
 
+// darwinPatchSnapshot captures the bytes actually active immediately before a
+// write. A migration may prepare a plan from the canonical clean backup, so
+// patchPlan.original is not always the safe rollback source.
+type darwinPatchSnapshot struct {
+	path string
+	data []byte
+	mode os.FileMode
+}
+
+func snapshotDarwinPatchTargets(plans []*patchPlan) ([]darwinPatchSnapshot, error) {
+	snapshots := make([]darwinPatchSnapshot, 0, len(plans))
+	seen := make(map[string]bool, len(plans))
+	for _, plan := range plans {
+		if plan == nil || !plan.changed || plan.path == "" || seen[plan.path] {
+			continue
+		}
+		seen[plan.path] = true
+		data, err := os.ReadFile(plan.path)
+		if err != nil {
+			return nil, fmt.Errorf("读取事务回滚文件 %s: %w", plan.path, err)
+		}
+		info, err := os.Stat(plan.path)
+		if err != nil {
+			return nil, fmt.Errorf("检查事务回滚文件 %s: %w", plan.path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("事务回滚路径不是常规文件: %s", plan.path)
+		}
+		snapshots = append(snapshots, darwinPatchSnapshot{path: plan.path, data: data, mode: info.Mode()})
+	}
+	return snapshots, nil
+}
+
+func restoreDarwinPatchSnapshots(snapshots []darwinPatchSnapshot) error {
+	for index := len(snapshots) - 1; index >= 0; index-- {
+		snapshot := snapshots[index]
+		if err := writeFileAtomic(snapshot.path, snapshot.data, snapshot.mode); err != nil {
+			return fmt.Errorf("恢复 %s: %w", snapshot.path, err)
+		}
+	}
+	return nil
+}
+
 func runDarwin(action string) (string, error) {
+	darwinOperationMu.Lock()
+	defer darwinOperationMu.Unlock()
+
 	if action == "sync-history" {
 		summary, err := syncDarwinHistory()
 		if err != nil {
 			return "", err
 		}
 		return summary.message(), nil
+	}
+	// Restore only consumes canonical backups; it must remain available even
+	// when a hand-edited runtime port state is corrupt.
+	if action == "status" {
+		_ = refreshPatchProxyEndpoint()
+	} else if action != "restore" {
+		if err := refreshPatchProxyEndpoint(); err != nil {
+			return "", err
+		}
 	}
 
 	targets := locateDarwinInstallations()
@@ -136,6 +212,9 @@ func darwinStatusAll(targets []darwinTargets) string {
 }
 
 func getDarwinStatus() Status {
+	// Status remains available even if a hand-edited runtime state is invalid;
+	// apply will surface that error and refuse to write an inconsistent patch.
+	_ = refreshPatchProxyEndpoint()
 	return buildDarwinStatus(locateDarwinInstallations())
 }
 
@@ -190,11 +269,20 @@ func buildDarwinStatus(targets []darwinTargets) Status {
 }
 
 func darwinTargetPatchState(target darwinTargets) (main, extension, language, fully bool) {
-	language = fileHasPatch(
-		target.language,
-		[][]byte{[]byte(productionEndpoint), []byte(sandboxEndpoint)},
-		[][]byte{[]byte(binaryProxyEndpoint), []byte(binarySandboxProxyEndpoint)},
-	)
+	// Some current Agent/IDE layouts receive the endpoint entirely from a
+	// verified JavaScript launcher and do not ship a standalone binary. Treat
+	// that absence as a valid, explicitly degraded path; a present binary still
+	// has to pass the fixed-width endpoint verification below.
+	if target.language == "" {
+		switch target.kind {
+		case "agent":
+			language = darwinASARHasSupportedEntrypoints(target.asar)
+		case "ide":
+			language = target.extensionEntry != ""
+		}
+	} else {
+		language, _ = darwinLanguagePatchState(target.language)
+	}
 	imagePreviewPatched := !darwinImagePreviewNeedsPatch(target)
 	if target.kind == "agent" {
 		main = darwinASARPatched(target.asar)
@@ -220,10 +308,11 @@ func darwinASARUnpackedImagePreviewRendererPaths(target darwinTargets) []string 
 }
 
 func darwinMainPatched(path string) bool {
+	endpoint := currentPatchProxyEndpoint()
 	if !fileHasPatch(
 		path,
 		[][]byte{[]byte(productionEndpoint), []byte(authEligibilityOriginal)},
-		[][]byte{[]byte(textProxyEndpoint), []byte(authEligibilityPatched)},
+		[][]byte{[]byte(endpoint.Text), []byte(authEligibilityPatched)},
 	) {
 		return false
 	}
@@ -242,8 +331,9 @@ func darwinExtensionPatched(path string) bool {
 		return false
 	}
 	source := string(data)
+	endpoint := currentPatchProxyEndpoint()
 	return strings.Contains(source, darwinExtensionMarker) &&
-		strings.Contains(source, baseProxyEndpoint) && !darwinCloudCodeCallPattern.MatchString(source) &&
+		strings.Contains(source, endpoint.Base) && !darwinCloudCodeCallPattern.MatchString(source) &&
 		!darwinExtensionDataPattern.MatchString(source) &&
 		(strings.Contains(source, darwinSharedDataArgument) || !strings.Contains(source, "--app_data_dir"))
 }
@@ -261,8 +351,25 @@ func darwinASARPatched(path string) bool {
 		return false
 	}
 	main, err := archive.readFile("dist/main.js")
-	return err == nil && bytes.Contains(launcher, []byte(baseProxyEndpoint)) &&
-		!bytes.Contains(launcher, []byte(productionEndpoint)) && bytes.Contains(main, []byte(darwinASARMarker))
+	return err == nil && bytes.Contains(launcher, []byte(currentPatchProxyEndpoint().Base)) &&
+		!darwinCloudCodeURLPattern.Match(launcher) && bytes.Contains(main, []byte(darwinASARMarker))
+}
+
+func darwinASARContainsKnownPatch(path string) bool {
+	if path == "" {
+		return false
+	}
+	archive, err := readASAR(path)
+	if err != nil {
+		return false
+	}
+	for _, name := range []string{"dist/main.js", "dist/languageServer.js"} {
+		data, readErr := archive.readFile(name)
+		if readErr == nil && containsKnownDarwinPatch(data) {
+			return true
+		}
+	}
+	return false
 }
 
 func boolPointer(value bool) *bool { return &value }
@@ -307,7 +414,11 @@ func fileHasPatch(path string, originals, patched [][]byte) bool {
 }
 
 func proxyPortListening() bool {
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:50999", 400*time.Millisecond)
+	port, err := storage.LoadProxyRuntimePort()
+	if err != nil {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 400*time.Millisecond)
 	if err != nil {
 		return false
 	}
@@ -315,9 +426,43 @@ func proxyPortListening() bool {
 	return true
 }
 
-func applyDarwinPatch(targets darwinTargets) (string, error) {
-	if targets.app == "" || targets.language == "" {
-		return "", fmt.Errorf("%s 安装不完整，缺少应用目录或 language_server", targets.name)
+// darwinPatchSource selects the clean canonical source for an endpoint
+// migration. A fallback-port change must never use a previously patched file
+// as the new canonical backup, otherwise Restore would stop restoring vendor
+// bytes. The source is only redirected when a known helper marker is present.
+func darwinPatchSource(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if !containsKnownDarwinPatch(data) || containsCurrentDarwinProxyEndpoint(data) {
+		return path, nil
+	}
+	backup := backupPath(path)
+	if info, statErr := os.Stat(backup); statErr == nil && info.Mode().IsRegular() {
+		return backup, nil
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return "", fmt.Errorf("检查 %s 的原始备份失败: %w", path, statErr)
+	}
+	return "", fmt.Errorf("%s 已带有旧版助手补丁但缺少原始备份；请重新安装该 Antigravity 后再补丁", path)
+}
+
+func containsCurrentDarwinProxyEndpoint(data []byte) bool {
+	endpoint := currentPatchProxyEndpoint()
+	for _, value := range []string{endpoint.Base, endpoint.Text, endpoint.Binary, endpoint.BinarySandbox} {
+		if bytes.Contains(data, []byte(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyDarwinPatch(targets darwinTargets) (message string, err error) {
+	if targets.app == "" {
+		return "", fmt.Errorf("%s 安装不完整，缺少应用目录", targets.name)
 	}
 	if targets.kind == "agent" {
 		return applyDarwinASARPatch(targets)
@@ -325,26 +470,46 @@ func applyDarwinPatch(targets darwinTargets) (string, error) {
 	if targets.main == "" {
 		return "", fmt.Errorf("%s 中未找到主进程脚本", targets.app)
 	}
-	mainPlan, err := prepareDarwinMainPatch(targets.main)
+	if targets.language == "" && targets.extensionEntry == "" {
+		return "", fmt.Errorf("%s 缺少可验证的扩展入口和 language_server；为避免写入未知版本，未应用补丁", targets.name)
+	}
+	mainSource, err := darwinPatchSource(targets.main)
 	if err != nil {
 		return "", err
 	}
+	mainPlan, err := prepareDarwinMainPatch(mainSource)
+	if err != nil {
+		return "", err
+	}
+	mainPlan.path = targets.main
 	authRecognized := bytes.Contains(mainPlan.original, []byte(authEligibilityOriginal)) ||
 		bytes.Contains(mainPlan.original, []byte(authEligibilityPatched))
-	languagePlan, err := preparePatch(targets.language, []byteReplacement{
-		{old: []byte(productionEndpoint), new: []byte(binaryProxyEndpoint)},
-		{old: []byte(sandboxEndpoint), new: []byte(binarySandboxProxyEndpoint)},
-	})
-	if err != nil {
-		return "", err
-	}
-
-	plans := []*patchPlan{mainPlan, languagePlan}
-	if targets.extensionEntry != "" {
-		extensionPlan, err := prepareDarwinExtensionPatch(targets.extensionEntry)
+	plans := []*patchPlan{mainPlan}
+	var languagePlan *patchPlan
+	if targets.language != "" {
+		languageSource, languageSourceErr := darwinPatchSource(targets.language)
+		if languageSourceErr != nil {
+			return "", languageSourceErr
+		}
+		languagePlan, _, err = prepareDarwinLanguagePatch(languageSource)
 		if err != nil {
 			return "", err
 		}
+		languagePlan.path = targets.language
+		plans = append(plans, languagePlan)
+	}
+
+	var extensionPlan *patchPlan
+	if targets.extensionEntry != "" {
+		extensionSource, sourceErr := darwinPatchSource(targets.extensionEntry)
+		if sourceErr != nil {
+			return "", sourceErr
+		}
+		extensionPlan, err = prepareDarwinExtensionPatch(extensionSource)
+		if err != nil {
+			return "", err
+		}
+		extensionPlan.path = targets.extensionEntry
 		plans = append(plans, extensionPlan)
 	}
 	for _, rendererPath := range darwinImagePreviewRendererPaths(targets) {
@@ -367,7 +532,7 @@ func applyDarwinPatch(targets darwinTargets) (string, error) {
 		return fmt.Sprintf("%s 补丁已处于激活状态，无需重复应用。", targets.name), nil
 	}
 	if darwinMainDataPattern.Match(mainPlan.original) ||
-		(len(plans) > 2 && darwinExtensionDataPattern.Match(plans[2].original)) {
+		(extensionPlan != nil && darwinExtensionDataPattern.Match(extensionPlan.original)) {
 		if err := mergeDarwinHistory(); err != nil {
 			return "", fmt.Errorf("合并历史会话失败: %w", err)
 		}
@@ -376,30 +541,55 @@ func applyDarwinPatch(targets darwinTargets) (string, error) {
 	if err := saveApplyBackups(plans, nil); err != nil {
 		return "", fmt.Errorf("创建补丁备份失败: %w", err)
 	}
-	if err := writePatchPlans(plans); err != nil {
-		_ = rollbackPatchPlans(plans)
+	snapshots, snapshotErr := snapshotDarwinPatchTargets(plans)
+	if snapshotErr != nil {
+		return "", fmt.Errorf("创建补丁事务回滚副本失败: %w", snapshotErr)
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if rollbackErr := restoreDarwinPatchSnapshots(snapshots); rollbackErr != nil {
+			err = fmt.Errorf("%w；补丁事务回滚失败: %v", err, rollbackErr)
+		}
+	}()
+	if err = writePatchPlans(plans); err != nil {
 		return "", err
 	}
-	if languagePlan.changed {
-		if err := signDarwinLanguageServer(targets.language); err != nil {
-			_ = rollbackPatchPlans(plans)
+	if languagePlan != nil && languagePlan.changed {
+		if err = signDarwinLanguageServer(targets.language); err != nil {
 			return "", fmt.Errorf("补丁已自动回滚，macOS 语言服务器签名失败: %w", err)
 		}
 	}
 
-	warning := ""
+	warnings := make([]string, 0, 2)
 	if !authRecognized {
-		warning = "\n提示：此版本未匹配旧版登录资格分支，已保留其原生本地凭据登录逻辑。"
+		warnings = append(warnings, "提示：此版本未匹配旧版登录资格分支，已保留其原生本地凭据登录逻辑。")
+	}
+	if targets.language == "" {
+		warnings = append(warnings, "提示：该版本没有独立 Language Server，已通过受验证入口脚本传递代理地址。")
+	}
+	warning := ""
+	if len(warnings) > 0 {
+		warning = "\n" + strings.Join(warnings, "\n")
 	}
 	return fmt.Sprintf(
 		"%s 补丁应用成功。\n应用: %s\n主进程: %s\n扩展: %s\n语言服务器: %s%s",
-		targets.name, targets.app, targets.main, targets.extensionEntry, targets.language, warning,
+		targets.name, targets.app, targets.main, targets.extensionEntry, darwinOptionalPath(targets.language), warning,
 	), nil
 }
 
+func darwinOptionalPath(path string) string {
+	if strings.TrimSpace(path) != "" {
+		return path
+	}
+	return "未发现（入口脚本已验证）"
+}
+
 func prepareDarwinMainPatch(path string) (*patchPlan, error) {
+	endpoint := currentPatchProxyEndpoint()
 	plan, err := preparePatch(path, []byteReplacement{
-		{old: []byte(productionEndpoint), new: []byte(textProxyEndpoint)},
+		{old: []byte(productionEndpoint), new: []byte(endpoint.Text)},
 		{old: []byte(authEligibilityOriginal), new: []byte(authEligibilityPatched)},
 	})
 	if err != nil {
@@ -469,16 +659,17 @@ func prepareDarwinExtensionPatch(path string) (*patchPlan, error) {
 		return nil, err
 	}
 	source := string(data)
+	endpoint := currentPatchProxyEndpoint()
 	if darwinExtensionPatched(path) {
 		return &patchPlan{path: path, original: data, updated: data, mode: info.Mode()}, nil
 	}
 	count := len(darwinCloudCodeCallPattern.FindAllStringIndex(source, -1))
-	endpointAlreadyPatched := count == 0 && strings.Contains(source, baseProxyEndpoint)
+	endpointAlreadyPatched := count == 0 && strings.Contains(source, endpoint.Base)
 	if count == 0 && !endpointAlreadyPatched {
 		return nil, fmt.Errorf("%s 中未找到受支持的 getCloudCodeUrl 调用", path)
 	}
 	if count > 0 {
-		source = darwinCloudCodeCallPattern.ReplaceAllString(source, `"`+baseProxyEndpoint+`"`)
+		source = darwinCloudCodeCallPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
 	}
 	if darwinExtensionDataPattern.MatchString(source) {
 		source = darwinExtensionDataPattern.ReplaceAllString(source, darwinSharedDataArgument)
@@ -679,14 +870,20 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 	if target.asar == "" {
 		return "", fmt.Errorf("%s 中未找到 app.asar", target.app)
 	}
-	languagePlan, err := preparePatch(target.language, []byteReplacement{
-		{old: []byte(productionEndpoint), new: []byte(binaryProxyEndpoint)},
-		{old: []byte(sandboxEndpoint), new: []byte(binarySandboxProxyEndpoint)},
-	})
-	if err != nil {
-		return "", err
+	var languagePlan *patchPlan
+	if target.language != "" {
+		languageSource, languageSourceErr := darwinPatchSource(target.language)
+		if languageSourceErr != nil {
+			return "", languageSourceErr
+		}
+		languagePlan, _, err = prepareDarwinLanguagePatch(languageSource)
+		if err != nil {
+			return "", err
+		}
+		languagePlan.path = target.language
 	}
 	asarWasPatched := darwinASARPatched(target.asar)
+	asarHadKnownPatch := darwinASARContainsKnownPatch(target.asar)
 	// Rebuild app.asar only for endpoint or packed-renderer changes. Renderer
 	// files declared as unpacked live beside the archive and must not be folded
 	// into its manifest during an image-preview upgrade.
@@ -699,10 +896,10 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 		}
 		previewPlans = append(previewPlans, plan)
 	}
-	if !asarChanged && !languagePlan.changed && !patchPlansChanged(previewPlans) {
+	if !asarChanged && (languagePlan == nil || !languagePlan.changed) && !patchPlansChanged(previewPlans) {
 		return fmt.Sprintf("%s 补丁已处于激活状态，无需重复应用。", target.name), nil
 	}
-	if asarWasPatched {
+	if asarHadKnownPatch {
 		if _, statErr := os.Stat(backupPath(target.asar)); statErr != nil {
 			return "", fmt.Errorf("app.asar 已打补丁但缺少原始备份: %s", backupPath(target.asar))
 		}
@@ -740,7 +937,7 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 		defer os.Remove(rollbackASAR)
 
 		candidateSource := target.asar
-		if asarWasPatched {
+		if asarHadKnownPatch {
 			// Preserve the canonical clean backup while rebuilding the archive.
 			// Calling writeFileBackup on a previous helper patch would rotate the
 			// clean restore point into a historical file and break Restore.
@@ -751,23 +948,31 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 			return "", err
 		}
 		defer os.Remove(candidate)
-		if !asarWasPatched {
+		if !asarHadKnownPatch {
 			if err = writeFileBackup(target.asar); err != nil {
 				return "", fmt.Errorf("创建 app.asar 备份失败: %w", err)
 			}
 		}
 	}
 	plans := append([]*patchPlan{}, previewPlans...)
-	plans = append(plans, languagePlan)
+	if languagePlan != nil {
+		plans = append(plans, languagePlan)
+	}
 	if err = saveApplyBackups(plans, nil); err != nil {
 		return "", fmt.Errorf("创建补丁备份失败: %w", err)
+	}
+	planSnapshots, snapshotErr := snapshotDarwinPatchTargets(plans)
+	if snapshotErr != nil {
+		return "", fmt.Errorf("创建补丁事务回滚副本失败: %w", snapshotErr)
 	}
 	wroteASAR := false
 	defer func() {
 		if err == nil {
 			return
 		}
-		_ = rollbackPatchPlans(plans)
+		if rollbackErr := restoreDarwinPatchSnapshots(planSnapshots); rollbackErr != nil {
+			err = fmt.Errorf("%w；补丁事务回滚失败: %v", err, rollbackErr)
+		}
 		if wroteASAR {
 			if rollbackErr := copyFileAtomic(rollbackASAR, target.asar, rollbackASARMode); rollbackErr != nil {
 				err = fmt.Errorf("%w；app.asar 事务回滚失败: %v", err, rollbackErr)
@@ -790,7 +995,7 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 		}
 		wroteASAR = true
 	}
-	if languagePlan.changed {
+	if languagePlan != nil && languagePlan.changed {
 		if err = signDarwinLanguageServer(target.language); err != nil {
 			return "", fmt.Errorf("macOS 语言服务器签名失败: %w", err)
 		}
@@ -798,7 +1003,11 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 	if _, _, _, patched := darwinTargetPatchState(target); !patched {
 		return "", fmt.Errorf("写入后的 app.asar 补丁未通过完整校验")
 	}
-	return fmt.Sprintf("%s 补丁应用成功。\n应用: %s\nASAR: %s\n语言服务器: %s", target.name, target.app, target.asar, target.language), nil
+	warning := ""
+	if target.language == "" {
+		warning = "\n提示：该版本没有独立 Language Server，已通过 app.asar 中受验证的启动脚本传递代理地址。"
+	}
+	return fmt.Sprintf("%s 补丁应用成功。\n应用: %s\nASAR: %s\n语言服务器: %s%s", target.name, target.app, target.asar, darwinOptionalPath(target.language), warning), nil
 }
 
 func prepareDarwinASARCandidate(sourcePath, destinationPath string) (string, error) {
@@ -814,6 +1023,7 @@ func prepareDarwinASARCandidate(sourcePath, destinationPath string) (string, err
 	if err != nil {
 		return "", err
 	}
+	endpoint := currentPatchProxyEndpoint()
 	mainSource := string(mainData)
 	if !strings.Contains(mainSource, darwinASARMarker) {
 		if !strings.HasPrefix(mainSource, `"use strict";`) {
@@ -821,15 +1031,15 @@ func prepareDarwinASARCandidate(sourcePath, destinationPath string) (string, err
 		}
 		mainSource = strings.Replace(mainSource, `"use strict";`, `"use strict";`+"\n// "+darwinASARMarker, 1)
 	}
-	mainSource = strings.ReplaceAll(mainSource, productionEndpoint, textProxyEndpoint)
+	mainSource = strings.ReplaceAll(mainSource, productionEndpoint, endpoint.Text)
 	mainSource = strings.ReplaceAll(mainSource, authEligibilityOriginal, authEligibilityPatched)
 	if updated, result := patchImagePreviewRenderer(mainSource); result.Changed {
 		mainSource = updated
 	}
 	launcherSource := string(launcherData)
-	if strings.Contains(launcherSource, productionEndpoint) {
-		launcherSource = strings.ReplaceAll(launcherSource, productionEndpoint, baseProxyEndpoint)
-	} else if !strings.Contains(launcherSource, baseProxyEndpoint) {
+	if darwinCloudCodeURLPattern.MatchString(launcherSource) {
+		launcherSource = darwinCloudCodeURLPattern.ReplaceAllString(launcherSource, endpoint.Base)
+	} else if !strings.Contains(launcherSource, endpoint.Base) {
 		return "", fmt.Errorf("app.asar 中的 cloud_code_endpoint 结构已变化")
 	}
 	// A clean backup can live in the home directory while the application is in
@@ -888,6 +1098,96 @@ func preparePatch(path string, replacements []byteReplacement) (*patchPlan, erro
 	return &patchPlan{path: path, original: data, updated: updated, mode: info.Mode(), changed: changed}, nil
 }
 
+// darwinLanguagePatchState treats a Language Server that no longer embeds a
+// Cloud Code URL as valid: current releases can receive the endpoint from a
+// verified JavaScript launcher. When an embedded URL exists, it must either be
+// a supported Google cloudcode-pa host or this helper's fixed-size local path.
+func darwinLanguagePatchState(path string) (patched, hasEmbeddedEndpoint bool) {
+	if path == "" {
+		return true, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	hasOriginal := darwinCloudCodeURLPattern.Find(data) != nil
+	endpoint := currentPatchProxyEndpoint()
+	hasPatched := bytes.Contains(data, []byte(endpoint.Base+"/v1internal/"))
+	hasManaged := darwinManagedBinaryEndpointPattern.Match(data)
+	if !hasOriginal && !hasManaged {
+		return true, false
+	}
+	return !hasOriginal && hasPatched, true
+}
+
+// darwinBinaryEndpointFor produces a byte-for-byte replacement for one
+// supported Cloud Code URL. The standard production/sandbox values retain
+// their readable legacy route; other supported hostnames receive an opaque
+// filler segment that the local proxy strips before routing. Fixed length is
+// mandatory for a Mach-O Language Server binary.
+func darwinBinaryEndpointFor(original string) (string, error) {
+	endpoint := currentPatchProxyEndpoint()
+	switch original {
+	case productionEndpoint:
+		return endpoint.Binary, nil
+	case sandboxEndpoint:
+		return endpoint.BinarySandbox, nil
+	}
+	prefix := endpoint.Base + "/v1internal/"
+	if len(prefix) > len(original) {
+		return "", fmt.Errorf("Language Server 地址过短，无法安全替换: %s", original)
+	}
+	return prefix + strings.Repeat("x", len(original)-len(prefix)), nil
+}
+
+// prepareDarwinLanguagePatch updates only explicit Google cloudcode-pa URLs
+// in a standalone Language Server binary. It intentionally leaves all other
+// URLs untouched, preserving unknown vendor/network structures. A binary with
+// no embedded Cloud Code endpoint is also valid: its verified launcher owns
+// endpoint delivery, so no byte rewrite is needed.
+func prepareDarwinLanguagePatch(path string) (*patchPlan, bool, error) {
+	if path == "" {
+		return nil, false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("读取 %s 失败: %w", path, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, false, err
+	}
+	updated := append([]byte(nil), data...)
+	changed, embedded := false, false
+	seen := make(map[string]bool)
+	for _, match := range darwinCloudCodeURLPattern.FindAll(data, -1) {
+		original := string(match)
+		if seen[original] {
+			continue
+		}
+		seen[original] = true
+		replacement, replacementErr := darwinBinaryEndpointFor(original)
+		if replacementErr != nil {
+			return nil, false, replacementErr
+		}
+		oldValue, newValue := []byte(original), []byte(replacement)
+		if len(oldValue) != len(newValue) {
+			return nil, false, fmt.Errorf("Language Server 补丁长度不一致: %d != %d", len(oldValue), len(newValue))
+		}
+		if bytes.Contains(updated, oldValue) {
+			embedded = true
+			updated = bytes.ReplaceAll(updated, oldValue, newValue)
+			changed = true
+		}
+	}
+	if bytes.Contains(updated, []byte(currentPatchProxyEndpoint().Base+"/v1internal/")) {
+		embedded = true
+	}
+	return &patchPlan{
+		path: path, original: data, updated: updated, mode: info.Mode(), changed: changed,
+	}, embedded, nil
+}
+
 func patchPlansChanged(plans []*patchPlan) bool {
 	for _, plan := range plans {
 		if plan != nil && plan.changed {
@@ -902,9 +1202,18 @@ func saveApplyBackups(plans []*patchPlan, signingPaths []string) error {
 		if plan.changed {
 			backupWriter := writeCurrentBackup
 			if containsKnownDarwinPatch(plan.original) {
-				// A previous BYOK version may already have patched one part of the
-				// file. Preserve the older clean restore point while completing the
-				// remaining changes (for example, app_data_dir migration).
+				// A previous helper version may already have patched one part of
+				// the file.  Never make that patched source the canonical restore
+				// point: retain the verified clean backup while completing the
+				// migration.  If it is absent, stop before writing anything; a
+				// reinstall is safer than making "Restore original files" restore
+				// an old patch.
+				if _, err := os.Stat(backupPath(plan.path)); err != nil {
+					if os.IsNotExist(err) {
+						return fmt.Errorf("%s 已带有旧版助手补丁但缺少原始备份；请重新安装该 Antigravity 后再补丁", plan.path)
+					}
+					return fmt.Errorf("检查 %s 的原始备份失败: %w", plan.path, err)
+				}
 				backupWriter = writeBackup
 			}
 			if err := backupWriter(plan.path, plan.original); err != nil {
@@ -925,11 +1234,21 @@ func saveApplyBackups(plans []*patchPlan, signingPaths []string) error {
 }
 
 func containsKnownDarwinPatch(data []byte) bool {
+	if darwinManagedBinaryEndpointPattern.Match(data) {
+		return true
+	}
 	for _, marker := range [][]byte{
 		[]byte(baseProxyEndpoint), []byte(textProxyEndpoint), []byte(binaryProxyEndpoint),
 		[]byte(binarySandboxProxyEndpoint), []byte(authEligibilityPatched),
 		[]byte(darwinExtensionMarker), []byte(darwinASARMarker),
-		[]byte(imagePreviewPatchMarker), []byte(imagePreviewPatchV3Marker), []byte(imagePreviewPatchV2Marker),
+		// Every released fallback/UI marker represents an already-modified
+		// renderer.  Do not classify any of them as a fresh Antigravity file.
+		[]byte(imagePreviewPatchV2Marker), []byte(imagePreviewPatchV3Marker),
+		[]byte(imagePreviewPatchV4Marker), []byte(imagePreviewPatchV5Marker),
+		[]byte(imagePreviewPatchV6Marker), []byte(imagePreviewPatchV7Marker),
+		[]byte(imagePreviewPatchMarker),
+		[]byte(imageGenerationUIPatchV1Marker), []byte(imageGenerationUIPatchV2Marker),
+		[]byte(imageGenerationUIPatchMarker),
 	} {
 		if bytes.Contains(data, marker) {
 			return true

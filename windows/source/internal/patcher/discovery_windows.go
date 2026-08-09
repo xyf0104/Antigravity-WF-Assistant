@@ -3,13 +3,19 @@
 package patcher
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+
+	winapi "golang.org/x/sys/windows"
 )
+
+const windowsShellDiscoveryTimeout = 2 * time.Second
 
 func locateWindowsInstallations() []windowsTarget {
 	candidates, explicit := windowsInstallCandidates()
@@ -74,36 +80,87 @@ func windowsInstallCandidates() ([]string, bool) {
 			filepath.Join(base, "Programs", "antigravity"),
 			filepath.Join(base, "Programs", "Antigravity"),
 			filepath.Join(base, "Programs", "Antigravity IDE"),
+			filepath.Join(base, "Programs", "Antigravity 2"),
+			filepath.Join(base, "Programs", "Antigravity 2.0"),
+			filepath.Join(base, "Programs", "Antigravity Agent"),
+			filepath.Join(base, "Programs", "Google Antigravity"),
+			filepath.Join(base, "Programs", "Google Antigravity IDE"),
 			filepath.Join(base, "antigravity"),
 			filepath.Join(base, "Antigravity"),
 			filepath.Join(base, "Antigravity IDE"),
+			filepath.Join(base, "Antigravity 2"),
+			filepath.Join(base, "Antigravity 2.0"),
+			filepath.Join(base, "Antigravity Agent"),
+			filepath.Join(base, "Google Antigravity"),
+			filepath.Join(base, "Google Antigravity IDE"),
 		)
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		add(
 			filepath.Join(home, "AppData", "Local", "Programs", "antigravity"),
 			filepath.Join(home, "AppData", "Local", "Programs", "Antigravity IDE"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Antigravity 2"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Antigravity 2.0"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Antigravity Agent"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Google Antigravity"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Google Antigravity IDE"),
 			filepath.Join(home, "Applications", "Antigravity"),
 		)
 	}
 
 	// Cover portable/custom installations such as D:\Antigravity without
-	// recursively scanning entire disks.
-	for drive := 'C'; drive <= 'Z'; drive++ {
-		root := fmt.Sprintf("%c:\\", drive)
-		if info, err := os.Stat(root); err != nil || !info.IsDir() {
-			continue
-		}
+	// recursively scanning entire disks.  Only enumerate mounted fixed drives:
+	// probing every C:..Z: can block on disconnected network mappings or empty
+	// removable media and used to make the desktop dashboard appear frozen.
+	for _, root := range windowsFixedDriveRoots() {
 		for _, relative := range []string{
-			"Antigravity", "Antigravity IDE", "Apps\\Antigravity", "Apps\\Antigravity IDE",
-			"Programs\\Antigravity", "Programs\\Antigravity IDE",
-			"Program Files\\Antigravity", "Program Files\\Antigravity IDE",
+			"Antigravity", "Antigravity IDE", "Antigravity 2", "Antigravity 2.0", "Antigravity Agent",
+			"Google Antigravity", "Google Antigravity IDE",
+			"Apps\\Antigravity", "Apps\\Antigravity IDE", "Apps\\Antigravity 2.0",
+			"Programs\\Antigravity", "Programs\\Antigravity IDE", "Programs\\Antigravity 2.0",
+			"Program Files\\Antigravity", "Program Files\\Antigravity IDE", "Program Files\\Antigravity 2.0",
 		} {
 			add(filepath.Join(root, relative))
 		}
 	}
 	add(windowsShellDiscoveredPaths()...)
 	return candidates, false
+}
+
+// windowsFixedDriveRoots returns only currently mounted local fixed volumes.
+// Explicit environment paths, registry locations and live process paths can
+// still point to a removable or UNC install; they are intentionally not lost.
+// The heuristic scan itself must not touch those potentially blocking paths.
+func windowsFixedDriveRoots() []string {
+	mask, err := winapi.GetLogicalDrives()
+	if err != nil {
+		return nil
+	}
+	return windowsDriveRootsForMask(mask, func(root string) uint32 {
+		wide, conversionErr := winapi.UTF16PtrFromString(root)
+		if conversionErr != nil {
+			return winapi.DRIVE_UNKNOWN
+		}
+		return winapi.GetDriveType(wide)
+	})
+}
+
+// windowsDriveRootsForMask is kept independent from the Win32 API so the
+// safety rule (never probe absent/removable/remote letters) has a Windows CI
+// regression test without relying on a particular runner's drives.
+func windowsDriveRootsForMask(mask uint32, driveType func(string) uint32) []string {
+	roots := make([]string, 0)
+	for index := 0; index < 26; index++ {
+		if mask&(uint32(1)<<uint(index)) == 0 {
+			continue
+		}
+		root := fmt.Sprintf("%c:\\", 'A'+rune(index))
+		if driveType(root) != winapi.DRIVE_FIXED {
+			continue
+		}
+		roots = append(roots, root)
+	}
+	return roots
 }
 
 func windowsShellDiscoveredPaths() []string {
@@ -117,15 +174,21 @@ func windowsShellDiscoveredPaths() []string {
 	const script = `[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); $r=@(); ` +
 		`Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.Name -like '*antigravity*.exe'} | ForEach-Object {$r += $_.ExecutablePath}; ` +
 		`$u=@('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'); ` +
-		`Get-ItemProperty $u -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -like '*Antigravity*'} | ForEach-Object {$r += $_.InstallLocation; $r += $_.DisplayIcon}; ` +
+		`Get-ItemProperty $u -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -like '*Antigravity*'} | ForEach-Object {$r += $_.InstallLocation; $r += $_.DisplayIcon; $r += $_.UninstallString; $r += $_.QuietUninstallString}; ` +
 		`$r | Where-Object {$_} | Sort-Object -Unique`
-	cmd := exec.Command(path, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	ctx, cancel := context.WithTimeout(context.Background(), windowsShellDiscoveryTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	configureCommand(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
-	var paths []string
+	return windowsShellDiscoveryPaths(output)
+}
+
+func windowsShellDiscoveryPaths(output []byte) []string {
+	paths := make([]string, 0)
 	for _, line := range strings.Split(strings.ReplaceAll(string(output), "\r", ""), "\n") {
 		if value := strings.TrimSpace(line); value != "" {
 			paths = append(paths, value)
@@ -135,13 +198,23 @@ func windowsShellDiscoveredPaths() []string {
 }
 
 func normalizeWindowsInstallRoot(value string) string {
-	value = strings.Trim(strings.TrimSpace(value), `"`)
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
 	}
-	if index := strings.LastIndex(strings.ToLower(value), ".exe,"); index >= 0 {
-		value = value[:index+4]
+	// DisplayIcon commonly stores a value like
+	// `"C:\\Program Files\\Antigravity\\Antigravity.exe",0`.  The prior
+	// `.exe,` truncation kept the leading quote, making os.Stat look for a
+	// directory literally named `"C:` and miss a valid installation.  The same
+	// parser also handles UninstallString's optional command-line arguments.
+	if index := strings.LastIndex(strings.ToLower(value), ".exe"); index >= 0 {
+		suffix := strings.TrimLeft(value[index+4:], " \t")
+		if suffix == "" || strings.HasPrefix(suffix, `"`) || strings.HasPrefix(suffix, ",") ||
+			strings.HasPrefix(suffix, "-") || strings.HasPrefix(suffix, "/") {
+			value = value[:index+4]
+		}
 	}
+	value = strings.Trim(strings.TrimSpace(value), `"`)
 	value = filepath.Clean(value)
 	lower := strings.ToLower(value)
 	separator := string(os.PathSeparator)

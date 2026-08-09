@@ -83,6 +83,7 @@ func toAnthropicRequestWithMedia(gemini map[string]any, modelName string) (map[s
 	// Messages
 	var messages []map[string]any
 	contents, _ := gemini["contents"].([]any)
+	toolCallsByID := newToolCallAssociation()
 	for _, c := range contents {
 		cm, ok := c.(map[string]any)
 		if !ok {
@@ -125,6 +126,8 @@ func toAnthropicRequestWithMedia(gemini map[string]any, modelName string) (map[s
 				callID := getString(fc, "id", "callId", "call_id")
 				if callID == "" {
 					callID = "toolu_" + name
+				} else if role == "assistant" {
+					toolCallsByID.rememberAssistantCall(name, callID)
 				}
 				blocks = append(blocks, map[string]any{
 					"type":  "tool_use",
@@ -135,10 +138,7 @@ func toAnthropicRequestWithMedia(gemini map[string]any, modelName string) (map[s
 			} else if fr, ok := pm["functionResponse"].(map[string]any); ok {
 				name, _ := fr["name"].(string)
 				respJSON, _ := json.Marshal(fr["response"])
-				callID := getString(fr, "id", "callId", "call_id")
-				if callID == "" {
-					callID = "toolu_" + name
-				}
+				callID := toolCallsByID.resolveResponseID(name, getString(fr, "id", "callId", "call_id"), "toolu_"+name)
 				blocks = append(blocks, map[string]any{
 					"type":        "tool_result",
 					"tool_use_id": callID,

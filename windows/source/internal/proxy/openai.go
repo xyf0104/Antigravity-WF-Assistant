@@ -79,6 +79,7 @@ func toOpenAIRequestWithMedia(gemini map[string]any, modelName string) (map[stri
 	}
 
 	contents, _ := gemini["contents"].([]any)
+	toolCallsByID := newToolCallAssociation()
 	for _, c := range contents {
 		cm, ok := c.(map[string]any)
 		if !ok {
@@ -126,6 +127,8 @@ func toOpenAIRequestWithMedia(gemini map[string]any, modelName string) (map[stri
 				callID := getString(fc, "id", "callId", "call_id")
 				if callID == "" {
 					callID = "call_" + name
+				} else if role == "assistant" {
+					toolCallsByID.rememberAssistantCall(name, callID)
 				}
 				toolCalls = append(toolCalls, map[string]any{
 					"type": "function",
@@ -138,10 +141,7 @@ func toOpenAIRequestWithMedia(gemini map[string]any, modelName string) (map[stri
 			} else if fr, ok := pm["functionResponse"].(map[string]any); ok {
 				name, _ := fr["name"].(string)
 				resp, _ := json.Marshal(fr["response"])
-				callID := getString(fr, "id", "callId", "call_id")
-				if callID == "" {
-					callID = "call_" + name
-				}
+				callID := toolCallsByID.resolveResponseID(name, getString(fr, "id", "callId", "call_id"), "call_"+name)
 				toolResponses = append(toolResponses, map[string]any{
 					"role":         "tool",
 					"tool_call_id": callID,

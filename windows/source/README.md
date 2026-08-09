@@ -15,7 +15,7 @@ npm run build
 cd ..
 go test ./...
 go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build `
-  -platform windows/amd64 -trimpath -o "Antigravity WF助手-v1.4.20.exe"
+  -platform windows/amd64 -trimpath -o "Antigravity WF助手-v1.4.24.exe"
 cd build\windows
 makensis installer.nsi
 ```

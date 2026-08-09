@@ -893,6 +893,8 @@ func TestCleanPatchedPath(t *testing.T) {
 		"/v1internal/byokxxx/v1internal/cascadeNuxes":                   "/v1internal/cascadeNuxes",
 		"/v1internal/byokxxx-sandbox/v1internal:fetchAvailableModels":   "/v1internal:fetchAvailableModels",
 		"/v1internal/byokxxx-sandbox/v1internal/cascadeNuxes":           "/v1internal/cascadeNuxes",
+		"/v1internal/xxxxxxxxxxxx/v1internal:fetchAvailableModels":      "/v1internal:fetchAvailableModels",
+		"/v1internal/xxxxxxxxxxxx/not-an-antigravity-api":               "/v1internal/xxxxxxxxxxxx/not-an-antigravity-api",
 		"/v1internal:retrieveUserQuota":                                 "/v1internal:retrieveUserQuota",
 	}
 	for input, want := range cases {

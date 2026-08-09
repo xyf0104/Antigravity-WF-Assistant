@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,24 +12,56 @@ import (
 	"sync"
 	"time"
 
+	"antigravity-byok/internal/proxyendpoint"
 	"antigravity-byok/internal/storage"
 )
 
-const ProxyPort = 50999
+const (
+	// ProxyPort is kept as a source-compatible name for integrations built
+	// against older releases. Runtime traffic must use CurrentPort instead.
+	ProxyPort = proxyendpoint.DefaultPort
 
-var (
-	serverMu sync.Mutex
-	srv      *http.Server
+	// Fallback ports must remain five digits because Language Server endpoint
+	// strings are patched in-place without changing binary length.
+	fallbackProxyPortStart = 51000
+
+	// A local proxy can have an active upstream/SSE request while the user
+	// exits the desktop app. Shutdown must never leave the tray/menu action
+	// waiting forever for that request to return.
+	proxyShutdownGracePeriod = 2 * time.Second
 )
 
-// Start starts the proxy server on ProxyPort.
-// If the port is already in use, it logs and skips (another instance is running).
+var (
+	serverMu   sync.Mutex
+	srv        *http.Server
+	activePort int
+	stopping   bool
+)
+
+// Start binds the persisted local endpoint. New installations prefer 50999;
+// if another process owns it, a free five-digit loopback port is selected and
+// persisted only after its listener is acquired. That guarantees future patch
+// operations and restarts use the same endpoint.
 func Start(storageDir string) error {
 	serverMu.Lock()
 	defer serverMu.Unlock()
 
 	if srv != nil {
 		return nil // already running
+	}
+	if stopping {
+		return fmt.Errorf("本地代理正在停止，请稍后重试")
+	}
+	// Do not let a stale in-memory value from a stopped server override the
+	// persisted endpoint selected for this launch.
+	activePort = 0
+	configuredPort, err := storage.LoadCommittedProxyRuntimePort()
+	if err != nil {
+		return fmt.Errorf("读取本地代理运行状态失败；为避免已补丁的 Antigravity 指向错误端口，未启动代理: %w", err)
+	}
+	pending, err := storage.HasStagedProxyRuntimePort()
+	if err != nil {
+		return fmt.Errorf("读取未完成的本地代理端口切换失败；为避免 Antigravity 指向错误端口，未启动代理: %w", err)
 	}
 
 	InitTrace(storageDir)
@@ -40,53 +73,194 @@ func Start(storageDir string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleRequest)
-
-	// Test if port is available
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", ProxyPort))
-	if err != nil {
-		if IsManagedListener() {
-			log.Printf("[wf] 代理端口 %d 已由另一个 WF助手实例监听", ProxyPort)
-			return nil
+	if pending {
+		// A previous ApplyPatch may have written the staged Q immediately
+		// before a crash or an atomic state-commit error. Never silently
+		// return to P here: files can already target Q. Keep Q live and let
+		// the explicit Apply operation finish/verify the transaction.
+		stagedPort, stagedErr := storage.LoadProxyRuntimePort()
+		if stagedErr != nil {
+			return fmt.Errorf("读取暂存的本地代理端口失败: %w", stagedErr)
 		}
-		return fmt.Errorf("代理端口 %d 已被其他进程占用；请关闭 Antigravity 和旧版助手后重试", ProxyPort)
+		ln, listenErr := net.Listen("tcp", loopbackAddress(stagedPort))
+		if listenErr != nil {
+			if isManagedListenerAt(stagedPort) {
+				activePort = stagedPort
+				log.Printf("[wf] 已复用未完成端口切换所需的本地代理")
+				return nil
+			}
+			return fmt.Errorf("检测到未完成的本地代理端口切换；为避免已补丁的 Antigravity 断连，未改用旧连接。请保持助手运行并重新应用补丁")
+		}
+		startServerLocked(mux, ln, stagedPort)
+		return nil
 	}
 
-	srv = &http.Server{
-		Handler: mux,
-	}
-
-	go func() {
-		log.Printf("[byok] 代理运行在 http://127.0.0.1:%d", ProxyPort)
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("[byok] 代理服务器错误: %v", err)
+	for index, port := range proxyPortCandidates(configuredPort) {
+		ln, listenErr := net.Listen("tcp", loopbackAddress(port))
+		if listenErr != nil {
+			// Only the committed endpoint may be reused. A managed listener on
+			// an arbitrary fallback port can belong to another configuration, so
+			// selecting it would silently route this user's models elsewhere.
+			if index == 0 && isManagedListenerAt(port) {
+				activePort = port
+				log.Printf("[wf] 已复用另一个当前 WF助手实例的本地代理")
+				return nil
+			}
+			continue
 		}
-		serverMu.Lock()
-		srv = nil
-		serverMu.Unlock()
-	}()
-
-	trace("proxy-started", map[string]any{"port": ProxyPort})
-	return nil
+		if port != configuredPort {
+			// Do not commit Q yet. Existing Antigravity resources may still
+			// point to P, and committing Q here would make them fail after the
+			// next restart. ApplyPatch promotes Q only after it has rewritten
+			// every selected target successfully.
+			if stageErr := storage.StageProxyRuntimePort(port); stageErr != nil {
+				_ = ln.Close()
+				return fmt.Errorf("已找到可用本地代理端口，但暂存端口切换失败: %w", stageErr)
+			}
+		}
+		startServerLocked(mux, ln, port)
+		return nil
+	}
+	return fmt.Errorf("未找到可用的五位本地代理端口；请关闭占用本地端口的程序后重试")
 }
 
-// Stop gracefully shuts down the proxy server.
+func startServerLocked(mux *http.ServeMux, ln net.Listener, port int) {
+	server := &http.Server{Handler: mux}
+	srv = server
+	activePort = port
+	go func() {
+		log.Printf("[wf] 本地代理已启动")
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("[wf] 本地代理服务器错误: %v", err)
+		}
+		serverMu.Lock()
+		if srv == server {
+			srv = nil
+			activePort = 0
+		}
+		serverMu.Unlock()
+	}()
+	trace("proxy-started", map[string]any{"port": port})
+}
+
+func proxyPortCandidates(preferred int) []int {
+	if !proxyendpoint.IsSupportedPort(preferred) {
+		preferred = proxyendpoint.DefaultPort
+	}
+	candidates := make([]int, 0, proxyendpoint.MaxPort-fallbackProxyPortStart+2)
+	candidates = append(candidates, preferred)
+	for port := fallbackProxyPortStart; port <= proxyendpoint.MaxPort; port++ {
+		if port != preferred {
+			candidates = append(candidates, port)
+		}
+	}
+	return candidates
+}
+
+func loopbackAddress(port int) string {
+	return fmt.Sprintf("127.0.0.1:%d", port)
+}
+
+// Stop shuts the proxy down without holding serverMu while http.Server waits
+// for requests. A handler can legitimately call CurrentPort/other helpers;
+// holding the mutex here would deadlock shutdown. Long-lived SSE/upstream
+// streams get a small grace period, then Close releases their connections so
+// quitting the desktop app always releases the local endpoint.
 func Stop() error {
 	serverMu.Lock()
-	defer serverMu.Unlock()
+	if stopping {
+		serverMu.Unlock()
+		return nil
+	}
 	if srv == nil {
-		if IsListening() {
-			return fmt.Errorf("端口 %d 的监听器不属于当前 WF助手实例，无法从这里停止", ProxyPort)
+		port := currentPortLocked()
+		serverMu.Unlock()
+		if isListeningAt(port) && !isManagedListenerAt(port) {
+			return fmt.Errorf("本地代理监听器不属于当前 WF助手实例，无法从这里停止")
 		}
 		return nil
 	}
-	err := srv.Shutdown(context.Background())
+	server := srv
 	srv = nil
+	// Do not keep an old in-memory endpoint after the listener has begun to
+	// close. CurrentPort will safely resolve the persisted endpoint instead.
+	activePort = 0
+	stopping = true
+	serverMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), proxyShutdownGracePeriod)
+	err := server.Shutdown(ctx)
+	cancel()
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		// Shutdown timed out or failed while a handler was still running. Close
+		// forcefully releases active sockets; it intentionally does not wait for
+		// an upstream request that may never finish.
+		closeErr := server.Close()
+		serverMu.Lock()
+		stopping = false
+		serverMu.Unlock()
+		if closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+			return fmt.Errorf("本地代理未能在限定时间内停止，且强制关闭失败: %w", closeErr)
+		}
+		// From the desktop user's perspective the endpoint is now released;
+		// retain the timeout only in the local diagnostic log instead of
+		// reporting a false failed-exit result.
+		log.Printf("[wf] 本地代理有活动请求，已在等待后强制关闭: %v", err)
+		return nil
+	}
+
+	serverMu.Lock()
+	stopping = false
+	serverMu.Unlock()
+	return nil
+}
+
+// CurrentPort returns the active or persisted endpoint port. It is intentionally
+// an internal runtime detail and is not shown in the normal desktop UI.
+func CurrentPort() int {
+	serverMu.Lock()
+	defer serverMu.Unlock()
+	return currentPortLocked()
+}
+
+func currentPortLocked() int {
+	if proxyendpoint.IsSupportedPort(activePort) {
+		return activePort
+	}
+	port, err := storage.LoadProxyRuntimePort()
+	if err == nil && proxyendpoint.IsSupportedPort(port) {
+		return port
+	}
+	return proxyendpoint.DefaultPort
+}
+
+// CommitSelectedPort promotes a staged fallback only after the caller has
+// finished an explicit successful ApplyPatch transaction. It never rewrites
+// Antigravity files itself and never commits a port different from the one the
+// running proxy is actually serving.
+func CommitSelectedPort() error {
+	serverMu.Lock()
+	port := currentPortLocked()
+	serverMu.Unlock()
+	effectivePort, err := storage.LoadProxyRuntimePort()
+	if err != nil {
+		return fmt.Errorf("读取本地代理运行状态失败: %w", err)
+	}
+	if effectivePort != port {
+		return fmt.Errorf("本地代理端口状态已变化；为避免写入不一致配置，未提交端口切换")
+	}
+	_, err = storage.CommitStagedProxyRuntimePort()
 	return err
 }
 
-// IsListening returns true if the proxy port is currently accepting connections.
+// IsListening returns true if the selected proxy endpoint is currently
+// accepting connections.
 func IsListening() bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", ProxyPort), 400e6)
+	return isListeningAt(CurrentPort())
+}
+
+func isListeningAt(port int) bool {
+	conn, err := net.DialTimeout("tcp", loopbackAddress(port), 400*time.Millisecond)
 	if err != nil {
 		return false
 	}
@@ -95,8 +269,12 @@ func IsListening() bool {
 }
 
 func IsManagedListener() bool {
+	return isManagedListenerAt(CurrentPort())
+}
+
+func isManagedListenerAt(port int) bool {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/_antigravity-byok/health", ProxyPort))
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/_antigravity-byok/health", port))
 	if err != nil {
 		return false
 	}

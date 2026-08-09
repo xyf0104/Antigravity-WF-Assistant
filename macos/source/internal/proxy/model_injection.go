@@ -39,17 +39,25 @@ type modelResponseRoot struct {
 }
 
 type modelInjectionSummary struct {
-	officialCount  int
-	customCount    int
-	customNames    []string
-	customSlugs    []string
-	containers     []string
-	indexPaths     []string
-	officialSample any
-	customSample   any
+	officialCount    int
+	customCount      int
+	customNames      []string
+	customSlugs      []string
+	containers       []string
+	indexPaths       []string
+	unsupportedShape bool
+	officialSample   any
+	customSample     any
+	assignments      modelRouteAssignments
+	assignmentErr    error
 }
 
 func allocateModelSlugs(models []storage.CustomModel, usedModelIDs map[string]struct{}) map[string]string {
+	assignments, _ := allocateModelSlugsWithExisting(models, usedModelIDs, modelRouteAssignments{})
+	return assignments
+}
+
+func allocateModelSlugsWithExisting(models []storage.CustomModel, usedModelIDs map[string]struct{}, existing modelRouteAssignments) (map[string]string, error) {
 	used := make(map[string]struct{}, len(usedModelIDs)+len(models))
 	for id := range usedModelIDs {
 		id = strings.TrimPrefix(id, "models/")
@@ -63,6 +71,22 @@ func allocateModelSlugs(models []storage.CustomModel, usedModelIDs map[string]st
 	})
 	assignments := make(map[string]string, len(ordered))
 	for _, model := range ordered {
+		key := modelPlaceholderKey(model)
+		slug := existing.slugs[key]
+		if slug == "" {
+			continue
+		}
+		if _, collision := used[slug]; collision {
+			return nil, fmt.Errorf("原生模型响应与已激活模型 %s 的模型标识冲突", key)
+		}
+		assignments[key] = slug
+		used[slug] = struct{}{}
+	}
+	for _, model := range ordered {
+		key := modelPlaceholderKey(model)
+		if assignments[key] != "" {
+			continue
+		}
 		base := baseModelSlug(model)
 		candidate := base
 		for suffix := 2; ; suffix++ {
@@ -71,13 +95,10 @@ func allocateModelSlugs(models []storage.CustomModel, usedModelIDs map[string]st
 			}
 			candidate = fmt.Sprintf("%s-%d", base, suffix)
 		}
-		assignments[modelPlaceholderKey(model)] = candidate
+		assignments[key] = candidate
 		used[candidate] = struct{}{}
 	}
-	slugMu.Lock()
-	allocatedSlugs = assignments
-	slugMu.Unlock()
-	return assignments
+	return assignments, nil
 }
 
 func modelDisplayName(m storage.CustomModel) string {
@@ -195,9 +216,39 @@ func arrayHasInjectedModel(entries []any, slug, placeholder string) bool {
 func injectCustomModels(parsed map[string]any, models []storage.CustomModel) modelInjectionSummary {
 	summary := modelInjectionSummary{}
 	roots := collectModelResponseRoots(parsed)
+	if len(models) == 0 {
+		return summary
+	}
+	// Validate the response shape before touching the process-wide slug and
+	// placeholder assignments used by request routing. An unknown JSON payload
+	// must be a complete no-op: a failed compatibility probe must not change
+	// how an already-open Antigravity picker routes its selected model.
+	hasSupportedContainer := false
+	for _, root := range roots {
+		for _, key := range modelContainerKeys {
+			switch root.value[key].(type) {
+			case map[string]any, []any:
+				hasSupportedContainer = true
+			}
+		}
+	}
+	if !hasSupportedContainer {
+		summary.unsupportedShape = true
+		return summary
+	}
 	official := collectOfficialModelEntries(roots)
-	slugAssignments := allocateModelSlugs(models, collectUsedModelIDs(roots))
-	assignments := allocateModelPlaceholders(models, official)
+	existingAssignments := snapshotModelRouteAssignments()
+	slugAssignments, slugErr := allocateModelSlugsWithExisting(models, collectUsedModelIDs(roots), existingAssignments)
+	if slugErr != nil {
+		summary.assignmentErr = slugErr
+		return summary
+	}
+	assignments, placeholderErr := allocateModelPlaceholdersWithExisting(models, official, existingAssignments)
+	if placeholderErr != nil {
+		summary.assignmentErr = placeholderErr
+		return summary
+	}
+	summary.assignments = modelRouteAssignments{placeholders: assignments, slugs: slugAssignments}
 	slugs := make([]string, 0, len(models))
 	imageGenerationSlugs := make([]string, 0, len(models))
 	for _, model := range models {
@@ -277,24 +328,14 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 			indexedRoots = append(indexedRoots, root)
 		}
 	}
-	if len(summary.containers) == 0 && len(models) > 0 {
-		target := roots[len(roots)-1]
-		container := make(map[string]any, len(models))
-		for _, model := range models {
-			key := modelPlaceholderKey(model)
-			placeholder, slug := assignments[key], slugAssignments[key]
-			if placeholder == "" || slug == "" {
-				continue
-			}
-			entry := buildFakeModelEntry(model, placeholder)
-			container[slug] = entry
-			if summary.customSample == nil {
-				summary.customSample = entry
-			}
-		}
-		target.value["models"] = container
-		summary.containers = append(summary.containers, modelPath(target.path, "models")+":created-map")
-		indexedRoots = append(indexedRoots, target)
+	if len(summary.containers) == 0 {
+		// Do not invent a models/agentModelSorts schema for an unknown successful
+		// response. A future Antigravity release may use a different payload that
+		// happens to be JSON; adding guessed fields can make its Language Server
+		// reject or silently reinterpret the response. The caller records the
+		// explicit compatibility diagnostic and forwards the original shape.
+		summary.unsupportedShape = true
+		return summary
 	}
 	for _, root := range indexedRoots {
 		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs, imageGenerationSlugs)...)
@@ -321,22 +362,28 @@ func addModelIndexes(parsed map[string]any, rootPath string, modelIDs, imageGene
 		return nil
 	}
 	var paths []string
-	agentPresent := false
 	for _, key := range modelSortKeys {
-		_, exists := parsed[key]
-		if key == "agentModelSorts" {
-			agentPresent = exists
-		}
+		raw, exists := parsed[key]
 		if !exists {
 			continue
 		}
-		parsed[key] = addModelSortIDs(parsed[key], modelIDs)
+		updated, changed := addModelSortIDs(raw, modelIDs)
+		if !changed {
+			// A field with a familiar name is not enough evidence that this
+			// Language Server uses the legacy sorter schema. Leave an unknown
+			// value untouched; validation will fail the detached candidate rather
+			// than returning a payload with a guessed replacement type.
+			continue
+		}
+		parsed[key] = updated
 		paths = append(paths, modelPath(rootPath, key)+".groups[].modelIds")
 	}
-	if !agentPresent {
-		parsed["agentModelSorts"] = addModelSortIDs(nil, modelIDs)
-		paths = append(paths, modelPath(rootPath, "agentModelSorts")+".groups[].modelIds")
-	}
+	// Do not invent agentModelSorts for a response that merely happens to have a
+	// models-shaped container. The picker index is consumed by the Language
+	// Server/renderer rather than by this HTTP endpoint alone, and an unknown
+	// version may use a different proto field or visibility gate. Validation
+	// below will reject the candidate when no known, existing index receives the
+	// model IDs, so the caller forwards the exact native response unchanged.
 	for key := range modelIDIndexKeys {
 		value, exists := parsed[key]
 		if !exists {
@@ -357,39 +404,42 @@ func addModelIndexes(parsed map[string]any, rootPath string, modelIDs, imageGene
 	return paths
 }
 
-func addModelSortIDs(raw any, modelIDs []string) []any {
-	sorts, _ := raw.([]any)
+func addModelSortIDs(raw any, modelIDs []string) (any, bool) {
+	sorts, ok := raw.([]any)
+	if !ok {
+		return raw, false
+	}
 	inserted := false
 	for sortIndex, rawSort := range sorts {
 		sortEntry, ok := rawSort.(map[string]any)
 		if !ok {
 			continue
 		}
-		groups, _ := sortEntry["groups"].([]any)
+		groups, ok := sortEntry["groups"].([]any)
+		if !ok {
+			continue
+		}
+		groupsChanged := false
 		for groupIndex, rawGroup := range groups {
 			group, ok := rawGroup.(map[string]any)
 			if !ok {
 				continue
 			}
-			ids, _ := group["modelIds"].([]any)
+			ids, ok := group["modelIds"].([]any)
+			if !ok {
+				continue
+			}
 			group["modelIds"] = prependUniqueModelIDs(ids, modelIDs)
 			groups[groupIndex] = group
+			groupsChanged = true
 			inserted = true
 		}
-		sortEntry["groups"] = groups
-		sorts[sortIndex] = sortEntry
-	}
-	if !inserted {
-		ids := make([]any, len(modelIDs))
-		for index, modelID := range modelIDs {
-			ids[index] = modelID
+		if groupsChanged {
+			sortEntry["groups"] = groups
+			sorts[sortIndex] = sortEntry
 		}
-		sorts = append([]any{map[string]any{
-			"displayName": "Custom",
-			"groups":      []any{map[string]any{"modelIds": ids}},
-		}}, sorts...)
 	}
-	return sorts
+	return sorts, inserted
 }
 
 func prependUniqueModelIDs(existing []any, modelIDs []string) []any {
@@ -450,13 +500,23 @@ func validateModelInjection(parsed map[string]any, models []storage.CustomModel,
 	if len(models) == 0 {
 		return nil
 	}
+	if summary.unsupportedShape {
+		return fmt.Errorf("上游模型响应不包含已支持的模型容器（models、availableModels 或 available_models）；为避免破坏未知 Antigravity 协议，未注入自定义模型")
+	}
+	if summary.assignmentErr != nil {
+		return fmt.Errorf("为保持已打开模型选择器的路由一致性，未注入自定义模型: %w", summary.assignmentErr)
+	}
 	if summary.customCount != len(models) {
 		return fmt.Errorf("只为 %d/%d 个自定义模型分配了有效标识", summary.customCount, len(models))
 	}
 	roots := collectModelResponseRoots(parsed)
 	for _, model := range models {
-		slug := getModelSlug(model)
-		placeholder := getModelPlaceholder(model)
+		key := modelPlaceholderKey(model)
+		slug := summary.assignments.slugs[key]
+		placeholder := summary.assignments.placeholders[key]
+		if slug == "" || placeholder == "" {
+			return fmt.Errorf("注入后缺少 %s 的本次模型路由标识", key)
+		}
 		if !responseContainsModel(roots, slug, placeholder) {
 			return fmt.Errorf("注入后未在模型容器中找到 %s", slug)
 		}
@@ -593,18 +653,61 @@ func handleFetchAvailableModelsWithClient(w http.ResponseWriter, r *http.Request
 		trace("model-injection-error", map[string]any{"message": fmt.Sprintf("读取自定义模型失败: %v", loadErr)})
 		models = nil
 	}
-	summary := injectCustomModels(parsed, models)
-	validationErr := validateModelInjection(parsed, models, summary)
+
+	// Serialize snapshot -> allocation -> validation -> commit. Two concurrent
+	// fetches must not calculate candidate mappings from the same old snapshot
+	// and then publish them in a different order from the picker responses they
+	// return to Antigravity.
+	modelInjectionTransactionMu.Lock()
+	// Build and validate the candidate on a detached JSON tree. The original
+	// decoded response remains the exact fail-closed fallback, while the global
+	// routing assignments remain untouched until the candidate is proven safe.
+	candidate, cloneErr := cloneModelResponse(parsed)
+	var summary modelInjectionSummary
+	var validationErr error
+	var out []byte
+	var marshalErr error
+	if cloneErr == nil {
+		summary = injectCustomModels(candidate, models)
+		validationErr = validateModelInjection(candidate, models, summary)
+		if validationErr == nil {
+			out, marshalErr = json.Marshal(candidate)
+			if marshalErr == nil && len(models) > 0 {
+				commitModelRouteAssignments(summary.assignments)
+			}
+		}
+	}
+	modelInjectionTransactionMu.Unlock()
+
+	if cloneErr != nil {
+		trace("model-injection-error", map[string]any{
+			"message": fmt.Sprintf("无法创建模型注入候选副本: %v", cloneErr),
+		})
+		copyDecodedModelHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(decoded)
+		return
+	}
 	if validationErr != nil {
 		trace("model-injection-error", map[string]any{"configuredCount": len(models), "customCount": summary.customCount, "containers": summary.containers, "indexPaths": summary.indexPaths, "message": validationErr.Error()})
 	}
-	if err := saveModelStructureSnapshot(parsed, summary, resp.StatusCode, encoding, validationErr); err != nil {
+	if err := saveModelStructureSnapshot(candidate, summary, resp.StatusCode, encoding, validationErr); err != nil {
 		trace("model-snapshot-error", map[string]any{"message": err.Error()})
 	}
-	out, err := json.Marshal(parsed)
-	if err != nil {
-		trace("model-response-error", map[string]any{"statusCode": resp.StatusCode, "encoding": encoding, "message": err.Error()})
-		http.Error(w, err.Error(), http.StatusBadGateway)
+	if validationErr != nil {
+		// A failed post-injection validation means the proxy cannot prove that
+		// this Language Server will accept the altered picker schema. Never
+		// hand it a partially injected response: that can leave the IDE with a
+		// model map and indexes that disagree, which is worse than safely
+		// showing only the native models for this compatibility probe.
+		copyDecodedModelHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(decoded)
+		return
+	}
+	if marshalErr != nil {
+		trace("model-response-error", map[string]any{"statusCode": resp.StatusCode, "encoding": encoding, "message": marshalErr.Error()})
+		http.Error(w, marshalErr.Error(), http.StatusBadGateway)
 		return
 	}
 	copyDecodedModelHeaders(w.Header(), resp.Header)
@@ -616,6 +719,18 @@ func handleFetchAvailableModelsWithClient(w http.ResponseWriter, r *http.Request
 	if validationErr == nil && loadErr == nil {
 		trace("models-injected", map[string]any{"officialCount": summary.officialCount, "customCount": summary.customCount, "customNames": summary.customNames, "customSlugs": summary.customSlugs, "containers": summary.containers, "indexPaths": summary.indexPaths})
 	}
+}
+
+func cloneModelResponse(parsed map[string]any) (map[string]any, error) {
+	encoded, err := json.Marshal(parsed)
+	if err != nil {
+		return nil, err
+	}
+	var clone map[string]any
+	if err := json.Unmarshal(encoded, &clone); err != nil {
+		return nil, err
+	}
+	return clone, nil
 }
 
 func decodeModelResponse(body []byte, encoding string) ([]byte, error) {

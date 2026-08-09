@@ -130,7 +130,7 @@ export const statusTone = computed(() => {
 
 export const statusLabel = computed(() => {
   if (!state.patch.proxyListening) return "代理未运行";
-	if (!state.patch.proxyManaged) return "端口被旧版或其他程序占用";
+	if (!state.patch.proxyManaged) return "本地代理由其他程序占用";
 	if (state.patch.targets?.length) {
 		const patched = state.patch.targets.filter((target) => target.patched).length;
 		if (patched === state.patch.targets.length) return "全部安装已激活";

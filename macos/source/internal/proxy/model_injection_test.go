@@ -51,9 +51,11 @@ func TestInjectCustomModelsKeepsWrappedNativeShapeAndPickerIndexes(t *testing.T)
 	root := parsed["response"].(map[string]any)
 	entries := root["models"].([]any)
 	found := false
+	modelSlug := summary.assignments.slugs[modelPlaceholderKey(model)]
+	modelPlaceholder := summary.assignments.placeholders[modelPlaceholderKey(model)]
 	for _, raw := range entries {
 		entry, _ := raw.(map[string]any)
-		if entry["name"] == "models/"+getModelSlug(model) {
+		if entry["name"] == "models/"+modelSlug {
 			found = true
 			if entry["displayName"] != "gpt-custom" || entry["supportsImages"] != true || entry["supportsAudio"] != false || entry["supportsVideo"] != false || entry["supportsWebSearch"] != true {
 				t.Fatalf("injected capability/name fields are incomplete: %#v", entry)
@@ -63,7 +65,7 @@ func TestInjectCustomModelsKeepsWrappedNativeShapeAndPickerIndexes(t *testing.T)
 	if !found {
 		t.Fatalf("custom model was not injected into wrapped array: %#v", entries)
 	}
-	if !responseIndexesModel(collectModelResponseRoots(parsed), getModelSlug(model), getModelPlaceholder(model)) {
+	if !responseIndexesModel(collectModelResponseRoots(parsed), modelSlug, modelPlaceholder) {
 		t.Fatal("custom model was not added to a picker index")
 	}
 }
@@ -168,6 +170,9 @@ func TestInjectCustomModelsSupportsArrayAndAlternateContainer(t *testing.T) {
 		"availableModels": []any{map[string]any{
 			"name": "models/official", "displayName": "Official",
 		}},
+		"agentModelSorts": []any{map[string]any{"groups": []any{
+			map[string]any{"modelIds": []any{"official"}},
+		}}},
 	}
 
 	summary := injectCustomModels(parsed, models)
@@ -184,8 +189,8 @@ func TestInjectCustomModelsSupportsArrayAndAlternateContainer(t *testing.T) {
 	}
 	sorts := parsed["agentModelSorts"].([]any)
 	ids := sorts[0].(map[string]any)["groups"].([]any)[0].(map[string]any)["modelIds"].([]any)
-	if len(ids) != 1 || ids[0] != "custom-claude-test" {
-		t.Fatalf("custom sort was not created: %v", ids)
+	if len(ids) != 2 || ids[0] != "custom-claude-test" || ids[1] != "official" {
+		t.Fatalf("custom sort was not updated: %v", ids)
 	}
 }
 
@@ -272,8 +277,8 @@ func TestInjectCustomModelsAddsOnlyImageCapableModelsToImageGenerationIndex(t *t
 		t.Fatal(err)
 	}
 
-	imageSlug := getModelSlug(imageModel)
-	textSlug := getModelSlug(textModel)
+	imageSlug := summary.assignments.slugs[modelPlaceholderKey(imageModel)]
+	textSlug := summary.assignments.slugs[modelPlaceholderKey(textModel)]
 	imageIDs := parsed["imageGenerationModelIds"].([]any)
 	if len(imageIDs) != 2 || imageIDs[0] != imageSlug || imageIDs[1] != "native-image" {
 		t.Fatalf("image-generation index = %#v, want only %q plus native model", imageIDs, imageSlug)
@@ -320,7 +325,9 @@ func TestValidateModelInjectionRejectsMissingPickerIndex(t *testing.T) {
 	models := []storage.CustomModel{{Name: "models/test", DisplayName: "Test", ExternalModelName: "test"}}
 	parsed := map[string]any{"models": map[string]any{}}
 	summary := injectCustomModels(parsed, models)
-	delete(parsed, "agentModelSorts")
+	if _, exists := parsed["agentModelSorts"]; exists {
+		t.Fatalf("injection invented agentModelSorts for an unknown picker protocol: %#v", parsed)
+	}
 	if err := validateModelInjection(parsed, models, summary); err == nil {
 		t.Fatal("expected validation failure for model without a picker index")
 	}
@@ -513,7 +520,7 @@ func TestDisabledModelsAreNotInjectedOrRoutable(t *testing.T) {
 		t.Fatal("enabled model was not routable")
 	}
 
-	payload := []byte(`{"models":{}}`)
+	payload := []byte(`{"models":{},"agentModelSorts":[{"groups":[{"modelIds":[]}]}]}`)
 	client := newModelFetchTestClient(modelFetchRoundTripper(func(request *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,

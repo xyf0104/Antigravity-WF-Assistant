@@ -52,6 +52,21 @@ func TestApplyAndDisablePreservesExistingGrants(t *testing.T) {
 	}
 }
 
+func TestEnableCreatesMissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config", "config.json")
+	m := NewWithPaths(configPath, filepath.Join(dir, "state.json"), configPath+".backup")
+	if _, err := m.Apply(Settings{Enabled: true, Mode: "all"}); err != nil {
+		t.Fatal(err)
+	}
+	config := readTestConfig(t, configPath)
+	settings := config["userSettings"].(map[string]any)
+	allow := stringSlice(settings["globalPermissionGrants"].(map[string]any)["allow"])
+	if settings["autoExecutionPolicy"] != eagerPolicy || !contains(allow, "command(*)") {
+		t.Fatalf("missing created permission settings: %#v", settings)
+	}
+}
+
 func TestSwitchModesOnlyReplacesManagedRules(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")

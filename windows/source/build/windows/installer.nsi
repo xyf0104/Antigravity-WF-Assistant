@@ -9,20 +9,30 @@ SetCompressor /SOLID lzma
 ; Keep the installed executable name stable while packaging a versioned build
 ; artifact. This lets local and CI builds coexist without overwriting a
 ; previous executable before NSIS has produced a verified installer.
-!define APP_SOURCE_EXE "Antigravity WF助手-v1.4.20.exe"
-!define APP_VERSION "1.4.20"
+; CI passes APP_VERSION from VERSION. Defaults keep direct local NSIS builds
+; reproducible for the checked-in release without making future tags depend on
+; a second hand-edited output filename.
+!ifndef APP_VERSION
+!define APP_VERSION "1.4.24"
+!endif
+!ifndef APP_SOURCE_EXE
+!define APP_SOURCE_EXE "Antigravity WF助手-v${APP_VERSION}.exe"
+!endif
+!ifndef APP_SETUP_EXE
+!define APP_SETUP_EXE "Antigravity-WF-Assistant-Windows-x64-v${APP_VERSION}-Setup.exe"
+!endif
 !define APP_PUBLISHER "WF"
 !define APP_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityWFAssistant"
 
 Name "${APP_NAME}"
-OutFile "..\bin\Antigravity-WF-Assistant-Windows-x64-v1.4.20-Setup.exe"
+OutFile "..\bin\${APP_SETUP_EXE}"
 InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
 InstallDirRegKey HKCU "${APP_UNINSTALL_KEY}" "InstallLocation"
 RequestExecutionLevel user
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "1.4.20.0"
+VIProductVersion "${APP_VERSION}.0"
 VIAddVersionKey /LANG=2052 "ProductName" "${APP_NAME}"
 VIAddVersionKey /LANG=2052 "FileDescription" "${APP_NAME} 安装程序"
 VIAddVersionKey /LANG=2052 "CompanyName" "${APP_PUBLISHER}"
@@ -58,9 +68,10 @@ Section "安装 ${APP_NAME}" MainSection
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk" "$INSTDIR\卸载 ${APP_NAME}.exe"
 
-  ; The optional shortcut section below records whether this installer created
-  ; the desktop link, so uninstall does not touch a user-created link.
-  DeleteRegValue HKCU "${APP_UNINSTALL_KEY}" "DesktopShortcut"
+  ; The optional shortcut section records whether this installer created the
+  ; desktop link, so uninstall does not touch a user-created link. Preserve
+  ; that marker on an upgrade when the optional section is left unchecked:
+  ; the existing link remains valid and must still be removed on uninstall.
   WriteRegStr HKCU "${APP_UNINSTALL_KEY}" "DisplayName" "${APP_NAME}"
   WriteRegStr HKCU "${APP_UNINSTALL_KEY}" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKCU "${APP_UNINSTALL_KEY}" "Publisher" "${APP_PUBLISHER}"

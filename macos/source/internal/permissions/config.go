@@ -190,6 +190,14 @@ func normalizeRules(rules []string) []string {
 
 func (m *Manager) loadConfig() (map[string]any, []byte, error) {
 	raw, err := os.ReadFile(m.configPath)
+	// A freshly installed Antigravity instance may not create its settings file
+	// until it has been opened once. Applying the optional auto-approval patch
+	// must therefore create a minimal config rather than failing on a new Mac.
+	// This mirrors the Windows implementation and keeps the feature independent
+	// of first-launch ordering.
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]any{}, []byte("{}\n"), nil
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("读取 Antigravity 配置失败：%w", err)
 	}
@@ -224,7 +232,7 @@ func (m *Manager) ensureBackup(raw []byte) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.WriteFile(m.backupPath, raw, 0o600); err != nil {
+	if err := atomicWrite(m.backupPath, raw, 0o600); err != nil {
 		return fmt.Errorf("创建 Antigravity 配置备份失败：%w", err)
 	}
 	return nil
@@ -235,8 +243,7 @@ func (m *Manager) writeConfig(root map[string]any, original []byte) error {
 	if err != nil {
 		return err
 	}
-	encoded = append(encoded, '\n')
-	if err := atomicWrite(m.configPath, encoded, 0o600); err != nil {
+	if err := atomicWrite(m.configPath, append(encoded, '\n'), 0o600); err != nil {
 		_ = os.WriteFile(m.configPath, original, 0o600)
 		return fmt.Errorf("写入 Antigravity 配置失败：%w", err)
 	}
@@ -252,7 +259,7 @@ func (m *Manager) writeState(state managedState) error {
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-byok-*")
@@ -262,15 +269,15 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

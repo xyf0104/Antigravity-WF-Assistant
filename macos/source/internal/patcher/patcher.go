@@ -30,6 +30,7 @@ type TargetStatus struct {
 	Kind               string
 	Version            string
 	AppPath            string
+	ExecutablePath     string
 	MainPath           string
 	ASARPath           string
 	ExtensionPath      string

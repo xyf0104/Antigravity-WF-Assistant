@@ -1,16 +1,16 @@
-# Antigravity WF助手 macOS v1.4.20
+# Antigravity WF助手 macOS v1.4.24
 
 ## 安装
 
-1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.4.20-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
-2. 首次打开如果 macOS 显示开发者提示，请在 Finder 中右键 App，选择“打开”。
+1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.4.24-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
+2. 当前发布包未使用 Apple Developer ID 签名或公证。若 macOS 阻止打开安装包，请在 Finder 中按住 Control 点按该 `.pkg` 后选择“打开”，或在“系统设置 → 隐私与安全性”中确认继续；安装完成后首次打开 App 遇到相同提示时也按此方式处理。安装前请先用发布页的 `SHA256SUMS.txt` 核验下载文件。
 
 App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时不需要 Python、Node.js 或外置补丁脚本。
 
 ## 首次使用
 
 1. 打开 WF助手，本地代理会自动启动，并自动合并旧版 Antigravity 历史会话。
-2. 进入“模型”，添加 OpenAI 兼容或 Anthropic 上游模型。“显示名称”留空时，自动使用上游模型名。
+2. 进入“账户池”，添加 API Key、导入账户 JSON，或完成 OAuth 登录；保存成功后，直接在该账户卡片点击“同步全部模型”。“模型”页用于手动添加或精细调整单个模型。
 3. 回到“总览”，确认已自动识别 Antigravity IDE 或 Antigravity 2.x。
 4. 点击“应用全部补丁”。如果 Antigravity 位于受保护的 `/Applications` 目录，macOS 可能要求管理员授权。
 5. 使用“Antigravity 快捷启动”按钮启动或重启对应安装。
@@ -28,6 +28,7 @@ App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时�
 - 相同协议、地址与凭据绑定的上游模型会在“模型”页合并为一张卡片，可勾选每个模型是否注入 Antigravity。
 - 自定义上游可在添加窗口直接打开完整测试流程，测试文字或图片模型，不会显示 API Key、认证头或原始响应。
 - 当 Antigravity 请求生成图片时，已启用的同上游图片模型会使用当前文字模型的账户池和凭据执行 `/v1/images/generations`，不会改用 Gemini。
+- 图片生成结果会在已识别的 Antigravity renderer 中默认展开并显示实际的图片模型标题；同一会话从自定义图片模型切回原生 Gemini 后，后续原生图片请求不会继续复用先前的自定义图片来源。
 
 ## 启动与重启保护
 
@@ -41,7 +42,11 @@ App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时�
 - 右上角可选“浅色”、“深色”或“跟随系统”。
 - 模型、凭据、统计和备份继续保存在 `~/.antigravity-byok/`，这个旧目录名为兼容现有数据而保留。
 - 历史会话使用 `~/.gemini/antigravity/`；合并时只补充缺失文件，不覆盖现有会话。
-- 点击窗口左上角关闭按钮时，主窗口会最小化到 Dock；代理与历史同步继续运行，顶部菜单栏的 WF 图标也会保留。点击顶部图标可打开“打开主界面 / 退出 Antigravity WF助手”菜单；Dock 右键或顶部菜单栏选择“退出”都会先释放 `127.0.0.1:50999`。
+- 点击窗口左上角关闭按钮时，主窗口会最小化到 Dock；代理与历史同步继续运行，顶部菜单栏的 WF 图标也会保留。点击顶部图标可打开“打开主界面 / 退出 Antigravity WF助手”菜单；Dock 右键或顶部菜单栏选择“退出”都会先释放本地代理。
+
+## 兼容说明
+
+助手会扫描常见应用位置和正在运行的 Antigravity。renderer 图片预览补丁仅修改已识别的 JavaScript 结构，并保留原始文件备份、失败回滚与“恢复原始文件”流程；未知或结构变化的 Antigravity 版本会被安全跳过，不应手动套用其他版本的 renderer 文件。
 
 ## 提醒
 

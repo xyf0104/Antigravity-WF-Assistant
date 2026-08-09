@@ -22,7 +22,14 @@ jobs:
       - name: Verify release version
         shell: bash
         run: |
-          test "${GITHUB_REF_NAME#v}" = "$(tr -d '\r\n' < VERSION)"
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          test "${GITHUB_REF_NAME#v}" = "$version"
+          grep -Fq "\"version\": \"$version\"" frontend/package.json
+          grep -Fq "\"version\": \"$version\"" frontend/package-lock.json
+          grep -Fq "\"productVersion\": \"$version\"" wails.json
+          grep -Fq "CurrentVersion = \"$version\"" internal/updater/updater.go
+          grep -Fq "v$version" frontend/src/App.vue
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -68,6 +75,9 @@ jobs:
       - name: Run Go race tests
         run: go test -race ./...
 
+      - name: Run Go vet
+        run: go vet ./...
+
       - name: Build Universal App
         run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform darwin/universal -trimpath -o "Antigravity WF助手"
 
@@ -96,6 +106,15 @@ jobs:
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
           if ("${{ github.ref_name }}" -ne "v$version") { throw "Tag and VERSION differ" }
+          $frontend = Get-Content frontend/package.json -Raw | ConvertFrom-Json
+          $lockfile = Get-Content frontend/package-lock.json -Raw | ConvertFrom-Json
+          $wails = Get-Content wails.json -Raw | ConvertFrom-Json
+          if ($frontend.version -ne $version) { throw "frontend package version differs from VERSION" }
+          if ($lockfile.version -ne $version) { throw "frontend lockfile version differs from VERSION" }
+          if ($wails.info.productVersion -ne $version) { throw "Wails product version differs from VERSION" }
+          $updaterNeedle = 'CurrentVersion = "' + $version + '"'
+          if (-not (Get-Content internal/updater/updater.go -Raw).Contains($updaterNeedle)) { throw "updater version differs from VERSION" }
+          if (-not (Get-Content frontend/src/App.vue -Raw).Contains("v$version")) { throw "visible application version differs from VERSION" }
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -141,15 +160,24 @@ jobs:
       - name: Run Go race tests
         run: go test -race ./...
 
+      - name: Run Go vet
+        run: go vet ./...
+
       - name: Build Windows x64
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手-${{ github.ref_name }}.exe"
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手-v$version.exe"
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
 
       - name: Build NSIS installer
         working-directory: windows/source/build/windows
-        run: '& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 installer.nsi'
+        shell: pwsh
+        run: |
+          $version = (Get-Content ../../VERSION -Raw).Trim()
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 "/DAPP_VERSION=$version" installer.nsi
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
@@ -189,10 +217,10 @@ jobs:
           body: |
             ## Antigravity WF助手
 
-            - 自定义图片模型会正确声明图片输出能力，并在支持该字段的 Antigravity 版本中进入图片模型索引。
-            - 图片预览兼容补丁仅匹配已验证的 Antigravity 1.23.2 渲染器结构，兼容 `generatedMedia`、`generatedImage`、`inlineData`、Base64 和本地 `file://` 图片 URI。
-            - Windows 的中文用户目录和 macOS 本地图片路径都经过实际 URI 归一化验证；已知旧版预览补丁可安全升级，未知客户端结构不会被改写。
-            - 更新后的助手会把缺少图片预览兼容补丁的旧安装显示为“待补丁”，点击“应用全部补丁”即可补齐；原始文件备份和恢复流程保持可用。
+            - 自定义图片模型与原生 Gemini 图片请求会按当前会话轨迹正确分流；切回原生 Gemini 后，不会继续复用之前的自定义图片来源。
+            - 图片预览兼容补丁支持 `generatedMedia`、`generatedImage`、`inlineData`、Base64 和本地图片 URI；图片完成后默认展开，并显示实际模型标题。
+            - 已识别的旧版图片预览补丁可安全升级，原始文件备份、失败回滚和“恢复原始文件”流程保持可用。
+            - renderer 补丁采用严格结构匹配。未知或已经变化的 Antigravity renderer 会被安全跳过，不会进行全局 JavaScript 替换；这不是对所有未来版本的兼容承诺。
             - 本版本仅提供 macOS Universal `.pkg`、Windows x64 `.exe` 和校验清单。
 
             请下载与系统匹配的安装包，并在安装前使用 `SHA256SUMS.txt` 核验完整性。

@@ -101,8 +101,8 @@ onUnmounted(() => {
         <button
           class="exit-trigger"
           type="button"
-          title="退出助手并释放本地代理端口"
-          aria-label="退出助手并释放本地代理端口"
+          title="退出助手"
+          aria-label="退出助手"
           style="--wails-draggable: no-drag"
           @click="exitDialogOpen = true"
         >
@@ -110,7 +110,7 @@ onUnmounted(() => {
             <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
           </svg>
         </button>
-        <span class="version-pill">v1.4.20</span>
+        <span class="version-pill">v1.4.24</span>
       </div>
     </aside>
 
@@ -143,10 +143,10 @@ onUnmounted(() => {
     </section>
 
     <Modal :open="exitDialogOpen" title="退出助手？" @close="exitDialogOpen = false">
-      <p class="exit-copy">退出后会停止本地代理并释放 127.0.0.1:50999。点击窗口叉号只会最小化到 Dock/任务栏；也可从系统菜单栏或托盘图标退出。</p>
+      <p class="exit-copy">退出后会停止本地代理。点击窗口叉号只会最小化到 Dock/任务栏；也可从系统菜单栏或托盘图标退出。</p>
       <template #footer>
         <Button variant="plain" @click="exitDialogOpen = false">取消</Button>
-        <Button variant="danger" @click="quitAssistant">退出并释放端口</Button>
+        <Button variant="danger" @click="quitAssistant">退出助手</Button>
       </template>
     </Modal>
   </div>

@@ -71,6 +71,21 @@ func imageGenerationSourceForRequest(requestID string) *storage.CustomModel {
 	return &model
 }
 
+// forgetImageGenerationSource removes only the in-memory source associated
+// with a trajectory. A native agent request means the user switched away from
+// a custom image-capable model, so a later native image_gen request must not
+// inherit the old upstream route.
+func forgetImageGenerationSource(requestID string) {
+	trajectoryID := antigravityImageGenerationTrajectory(requestID)
+	if trajectoryID == "" {
+		return
+	}
+	imageGenerationSources.Lock()
+	pruneImageGenerationSourcesLocked(time.Now())
+	delete(imageGenerationSources.byTrajectory, trajectoryID)
+	imageGenerationSources.Unlock()
+}
+
 func isNativeImageGenerationRequestID(requestID string) bool {
 	parts := strings.Split(strings.Trim(strings.TrimSpace(requestID), "/"), "/")
 	if len(parts) < 4 {

@@ -25,7 +25,40 @@ func imagePreviewV3RendererFixture() string {
 	return `prefix;/*antigravity-wf:image-preview-fallback:v3*/a=e.generatedMedia||e.generatedImage,i;a?.uri?(i=n?.(a.uri),i=(i&&typeof i.getState==="function"?i.getState():i||void 0)):a?.payload?.case==="inlineData"&&(i=a?YI(a):void 0),!i&&a?.base64Data&&(i="data:"+(a.mimeType||"image/png")+";base64,"+(typeof a.base64Data==="string"?a.base64Data:btoa(Array.from(a.base64Data).map(i=>String.fromCharCode(i)).join("")))),!i&&a?.uri&&typeof a.uri==="string"&&a.uri.startsWith("file://")&&(i=decodeURIComponent(a.uri.replace(/^file:\/\//,"")));let s=Ia(t)&&!i;suffix`
 }
 
-func TestPatchImagePreviewRendererAddsV4Fallback(t *testing.T) {
+// imagePreviewV4RendererFixture is the v4 expression shipped in v1.4.20.
+// Its resolver branch retains any truthy value, including Promise.resolve(),
+// which React later stringifies into an unusable image source.
+func imagePreviewV4RendererFixture() string {
+	return `prefix;/*antigravity-wf:image-preview-fallback:v4*/a=e.generatedMedia||e.generatedImage,i;a?.uri?(i=n?.(a.uri),i=(i&&typeof i.getState==="function"?i.getState():i||void 0)):a?.payload?.case==="inlineData"&&(i=a?YI(a):void 0),!i&&a?.base64Data&&(i="data:"+(a.mimeType||"image/png")+";base64,"+(typeof a.base64Data==="string"?a.base64Data:btoa(Array.from(a.base64Data).map(i=>String.fromCharCode(i)).join("")))),!i&&a?.uri&&typeof a.uri==="string"&&a.uri.startsWith("file://")&&(i=((u)=>{let p=u.replace(/^file:\/\/\/([A-Za-z]:\/)/,"$1");p===u&&(p=u.startsWith("file:///")?u.slice(7):u.replace(/^file:\/\//,"//"));try{return decodeURIComponent(p)}catch{return p}})(a.uri));let s=Ia(t)&&!i;suffix`
+}
+
+func imagePreviewV5RendererFixture() string {
+	fixture := strings.Replace(imagePreviewV4RendererFixture(), imagePreviewPatchV4Marker, imagePreviewPatchV5Marker, 1)
+	return strings.Replace(fixture,
+		`i=(i&&typeof i.getState==="function"?i.getState():i||void 0)`,
+		`i=(i&&typeof i.getState==="function"?i.getState():i),i=typeof i==="string"?i:void 0`,
+		1,
+	)
+}
+
+func imageGenerationUIRendererFixture() string {
+	return `const bt=initial=>[initial,()=>{}],Le=callback=>callback,Ga=status=>status==="loading",F=(component,props)=>({component,props}),io=()=>{},Lma=()=>{};let Oma,Yma,Pma,rBe,Mma;Oma={"gemini-3.1-flash-image":{displayName:"Gemini 3.1 Flash Image",isNewModel:!0},"gemini-3-pro-image":{displayName:"Gemini 3 Pro Image",isNewModel:!1},"gemini-2.5-flash-image":{displayName:"Gemini 2.5 Flash Image",isNewModel:!1}},Yma=({step:e,status:t})=>{let r=!!e.generatedImage?.uri,n=e.modelName?Oma[e.modelName]:void 0,a=n?.displayName||"Gemini",i=n?.isNewModel??!1;return F("div",{className:"flex items-center gap-1",children:[i&&F("span",{className:"text-xs bg-gray-500/20 rounded px-1 py-px",children:"New"}),F("span",{children:Ga(t)?` + "`Generating with ${a} \\u{1F34C}`" + `:r?` + "`Generated with ${a} \\u{1F34C}`" + `:` + "`Generate with ${a} \\u{1F34C}`" + `})]})},Pma=({step:e,status:t,error:r})=>F(io,{loading:Ga(t),title:F(Yma,{step:e,status:t}),supplementaryView:r?null:F(Lma,{step:e,status:t}),cta:null}),rBe=({renderInfo:e,fallback:t})=>null,Mma=({args:e,status:t,loading:r})=>{let{renderers:n}={},a=n?.markdown,[i,s]=bt(!1),o=Le(()=>{s(b=>!b)},[]);return F(io,{loading:r,status:t,title:null,supplementaryView:null,cta:null,isExpanded:i,onToggle:o,hasSupplementaryView:!1})};`
+}
+
+// imageGenerationUIWithMediaRendererFixture is the title component emitted by
+// the real macOS Antigravity 1.23.2 renderer. It must remain separate from the
+// simpler generatedImage fixture above: matching its four media aliases as if
+// they were interchangeable would risk changing unrelated future code.
+func imageGenerationUIWithMediaRendererFixture() string {
+	return strings.Replace(
+		imageGenerationUIRendererFixture(),
+		`let r=!!e.generatedImage?.uri,`,
+		`let r=!!(e.generatedMedia?.uri||e.generatedMedia?.payload?.value?.length||e.generatedImage?.uri||e.generatedImage?.base64Data),`,
+		1,
+	)
+}
+
+func TestPatchImagePreviewRendererAddsV7Fallback(t *testing.T) {
 	updated, result := patchImagePreviewRenderer(imagePreviewOriginalRendererFixture())
 	if !result.Recognized || !result.Changed {
 		t.Fatalf("unmodified 1.23.2 renderer was not patched: %#v", result)
@@ -37,18 +70,249 @@ func TestPatchImagePreviewRendererAddsV4Fallback(t *testing.T) {
 		`.base64Data`,
 		`startsWith("file://")`,
 		`e.generatedImage&&e.generatedImage!==a`,
-		`u.replace(/^file:\/\/\/([A-Za-z]:\/)/,"$1")`,
-		`catch{return p}`,
+		`typeof i==="string"`,
+		`vscode-file://vscode-app`,
+		`encodeURI(v)`,
 	} {
 		if !strings.Contains(updated, required) {
-			t.Fatalf("v4 renderer is missing %q: %s", required, updated)
+			t.Fatalf("v7 renderer is missing %q: %s", required, updated)
 		}
 	}
 	second, secondResult := patchImagePreviewRenderer(updated)
 	if !secondResult.Recognized || secondResult.Changed || second != updated {
-		t.Fatalf("v4 renderer must be idempotent: result=%#v", secondResult)
+		t.Fatalf("v7 renderer must be idempotent: result=%#v", secondResult)
 	}
 	assertImagePreviewJavaScriptSyntax(t, updated)
+}
+
+func TestPatchImageGenerationUIRendererUsesActualModelAndStartsExpanded(t *testing.T) {
+	updated, result := patchImagePreviewRenderer(imageGenerationUIRendererFixture())
+	if !result.Recognized || !result.Changed {
+		t.Fatalf("known image-generation UI renderer was not patched: %#v", result)
+	}
+	for _, required := range []string{
+		imageGenerationUIPatchMarker,
+		`/^gpt-image-(\d+)$/i.exec(modelName||"")`,
+		`isExpanded:$wfImageExpanded`,
+		`onToggle:$wfToggleImageExpanded`,
+		`hasSupplementaryView:!r`,
+		`${$wfIsGeminiImage?" \u{1F34C}":""}`,
+		"`Generating image`",
+		`/^gemini[-_](.+)$/i`,
+	} {
+		if !strings.Contains(updated, required) {
+			t.Fatalf("patched image-generation UI is missing %q: %s", required, updated)
+		}
+	}
+	second, secondResult := patchImagePreviewRenderer(updated)
+	if !secondResult.Recognized || secondResult.Changed || second != updated {
+		t.Fatalf("patched image-generation UI must be idempotent: result=%#v", secondResult)
+	}
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable; image-generation UI runtime check skipped")
+	}
+	path := filepath.Join(t.TempDir(), "image-generation-ui.js")
+	source := updated + `
+const gptTitle=Yma({step:{modelName:"gpt-image-2"},status:"done"}).props.children[1].props.children;
+const geminiTitle=Yma({step:{modelName:"gemini-3.1-flash-image"},status:"done"}).props.children[1].props.children;
+const genericGeminiTitle=Yma({step:{modelName:"gemini-3.6-flash"},status:"done"}).props.children[1].props.children;
+const unknownTitle=Yma({step:{modelName:"image-alpha"},status:"done"}).props.children[1].props.children;
+const loadingTitle=Yma({step:{},status:"loading"}).props.children[1].props.children;
+const panel=Pma({step:{},status:"done"}).props;
+process.stdout.write(JSON.stringify({gptTitle,geminiTitle,genericGeminiTitle,unknownTitle,loadingTitle,expanded:panel.isExpanded,hasToggle:typeof panel.onToggle==="function",hasSupplementaryView:panel.hasSupplementaryView}));`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
+		t.Fatalf("patched image-generation UI failed node --check: %s: %v", output, err)
+	}
+	output, err := exec.Command(node, path).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		GPTTitle             string `json:"gptTitle"`
+		GeminiTitle          string `json:"geminiTitle"`
+		GenericGeminiTitle   string `json:"genericGeminiTitle"`
+		UnknownTitle         string `json:"unknownTitle"`
+		LoadingTitle         string `json:"loadingTitle"`
+		Expanded             bool   `json:"expanded"`
+		HasToggle            bool   `json:"hasToggle"`
+		HasSupplementaryView bool   `json:"hasSupplementaryView"`
+	}
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("patched image-generation UI did not return JSON %q: %v", output, err)
+	}
+	if got.GPTTitle != "Generate with GPT Image 2" || got.GeminiTitle != "Generate with Gemini 3.1 Flash Image \U0001F34C" || got.GenericGeminiTitle != "Generate with Gemini 3.6 Flash \U0001F34C" || got.UnknownTitle != "Generate with image-alpha" || got.LoadingTitle != "Generating image" || !got.Expanded || !got.HasToggle || !got.HasSupplementaryView {
+		t.Fatalf("unexpected patched image-generation UI state: %#v", got)
+	}
+}
+
+func TestPatchImageGenerationUIWithMediaRendererUsesActualModelAndStartsExpanded(t *testing.T) {
+	original := imageGenerationUIWithMediaRendererFixture()
+	titleMatches := findImageGenerationTitleRendererMatches(original)
+	if len(titleMatches) != 1 {
+		t.Fatalf("expected exactly one strict macOS title match, got %#v", titleMatches)
+	}
+	if got := titleMatches[0]; got.component != "Yma" || got.step != "e" || got.status != "t" || got.resolvedModel != "n" || got.displayName != "a" || got.isNewModel != "i" {
+		t.Fatalf("unexpected macOS title match metadata: %#v", got)
+	}
+
+	updated, result := patchImagePreviewRenderer(original)
+	if !result.Recognized || !result.Changed || !strings.Contains(updated, imageGenerationUIPatchMarker) {
+		t.Fatalf("known macOS image-generation UI renderer was not patched: %#v", result)
+	}
+	second, secondResult := patchImagePreviewRenderer(updated)
+	if !secondResult.Recognized || secondResult.Changed || second != updated {
+		t.Fatalf("patched macOS image-generation UI must be idempotent: result=%#v", secondResult)
+	}
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable; macOS image-generation UI runtime check skipped")
+	}
+	path := filepath.Join(t.TempDir(), "image-generation-ui-macos.js")
+	source := updated + `
+const generatedMediaTitle=Yma({step:{modelName:"gpt-image-2",generatedMedia:{payload:{value:"image-bytes"}}},status:"done"}).props.children[1].props.children;
+const generatedImageTitle=Yma({step:{modelName:"gpt-image-2",generatedImage:{base64Data:"image-bytes"}},status:"done"}).props.children[1].props.children;
+const genericGeminiTitle=Yma({step:{modelName:"gemini-3.6-flash"},status:"done"}).props.children[1].props.children;
+const loadingTitle=Yma({step:{},status:"loading"}).props.children[1].props.children;
+const panel=Pma({step:{},status:"done"}).props;
+process.stdout.write(JSON.stringify({generatedMediaTitle,generatedImageTitle,genericGeminiTitle,loadingTitle,expanded:panel.isExpanded,hasToggle:typeof panel.onToggle==="function",hasSupplementaryView:panel.hasSupplementaryView}));`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
+		t.Fatalf("patched macOS image-generation UI failed node --check: %s: %v", output, err)
+	}
+	output, err := exec.Command(node, path).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		GeneratedMediaTitle  string `json:"generatedMediaTitle"`
+		GeneratedImageTitle  string `json:"generatedImageTitle"`
+		GenericGeminiTitle   string `json:"genericGeminiTitle"`
+		LoadingTitle         string `json:"loadingTitle"`
+		Expanded             bool   `json:"expanded"`
+		HasToggle            bool   `json:"hasToggle"`
+		HasSupplementaryView bool   `json:"hasSupplementaryView"`
+	}
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("patched macOS image-generation UI did not return JSON %q: %v", output, err)
+	}
+	if got.GeneratedMediaTitle != "Generated with GPT Image 2" || got.GeneratedImageTitle != "Generated with GPT Image 2" || got.GenericGeminiTitle != "Generate with Gemini 3.6 Flash \U0001F34C" || got.LoadingTitle != "Generating image" || !got.Expanded || !got.HasToggle || !got.HasSupplementaryView {
+		t.Fatalf("unexpected patched macOS image-generation UI state: %#v", got)
+	}
+}
+
+func TestPatchImageGenerationUIWithMediaRendererRejectsMixedAliases(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		replace string
+		with    string
+	}{
+		{
+			name:    "generated image source belongs to another step",
+			replace: `e.generatedImage?.base64Data`,
+			with:    `other.generatedImage?.base64Data`,
+		},
+		{
+			name:    "display name belongs to another resolved model",
+			replace: `a=n?.displayName`,
+			with:    `a=other?.displayName`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := strings.Replace(imageGenerationUIWithMediaRendererFixture(), test.replace, test.with, 1)
+			if matches := findImageGenerationTitleRendererMatches(original); len(matches) != 0 {
+				t.Fatalf("mixed aliases must not produce a patchable title match: %#v", matches)
+			}
+			updated, result := patchImagePreviewRenderer(original)
+			if result.Recognized || result.Changed || updated != original {
+				t.Fatalf("mixed aliases must remain untouched: result=%#v", result)
+			}
+		})
+	}
+}
+
+func TestPatchImageGenerationUIRendererMigratesV2MarkerAndRemainsIdempotent(t *testing.T) {
+	current, result := patchImagePreviewRenderer(imageGenerationUIRendererFixture())
+	if !result.Changed {
+		t.Fatal("fixture was not patched to the current UI version")
+	}
+	legacy := strings.Replace(current, imageGenerationUIPatchMarker, imageGenerationUIPatchV2Marker, 1)
+	updated, result := patchImagePreviewRenderer(legacy)
+	if !result.Recognized || !result.Changed || strings.Contains(updated, imageGenerationUIPatchV2Marker) || strings.Count(updated, imageGenerationUIPatchMarker) != 1 {
+		t.Fatalf("v2 marker did not migrate to exactly one v3 marker: result=%#v source=%s", result, updated)
+	}
+	if second, secondResult := patchImagePreviewRenderer(updated); !secondResult.Recognized || secondResult.Changed || second != updated {
+		t.Fatalf("migrated v3 UI renderer was not idempotent: result=%#v", secondResult)
+	}
+}
+
+func TestPatchImageGenerationUIRendererPatchesUnfinishedComponentBesideV3(t *testing.T) {
+	patched, result := patchImagePreviewRenderer(imageGenerationUIRendererFixture())
+	if !result.Changed {
+		t.Fatal("first fixture was not patched to v3")
+	}
+	// A renderer bundle can contain multiple image result components. A v3
+	// marker on the first must not cause us to early-return and leave the second
+	// native component collapsed/default-Gemini.
+	source := patched + `;/* another renderer component */;` + imageGenerationUIRendererFixture()
+	updated, result := patchImagePreviewRenderer(source)
+	if !result.Recognized || !result.Changed || strings.Count(updated, imageGenerationUIPatchMarker) != 2 {
+		t.Fatalf("unfinished sibling component was not patched beside v3: result=%#v source=%s", result, updated)
+	}
+	if second, secondResult := patchImagePreviewRenderer(updated); !secondResult.Recognized || secondResult.Changed || second != updated {
+		t.Fatalf("multi-component v3 renderer was not idempotent: result=%#v", secondResult)
+	}
+}
+
+func imageGenerationUIV1RendererFixture(t *testing.T) string {
+	t.Helper()
+	patched, result := patchImagePreviewRenderer(imageGenerationUIRendererFixture())
+	if !result.Changed {
+		t.Fatal("fixture was not patched to the current UI version")
+	}
+	legacy := strings.Replace(patched, imageGenerationUIPatchMarker, imageGenerationUIPatchV1Marker, 1)
+	legacy = strings.Replace(legacy,
+		imageGenerationModelLabel("e", "n", "a"),
+		`a=n?.displayName||(e.modelName?.replace(/^gpt-image-(\d+)$/i,"GPT Image $1"))||e.modelName||"Image generator"`,
+		1,
+	)
+	legacy = strings.Replace(legacy,
+		`,i=n?.isNewModel??!1,$wfIsGeminiImage=!!n||/^gemini[-_]/i.test(e.modelName||"");return `,
+		`,i=n?.isNewModel??!1;return `,
+		1,
+	)
+	legacy = strings.Replace(legacy,
+		`F("span",{children:Ga(t)&&!e.modelName?`+"`Generating image`:"+`Ga(t)?`,
+		`F("span",{children:Ga(t)?`,
+		1,
+	)
+	legacy = strings.ReplaceAll(legacy, `${$wfIsGeminiImage?" \u{1F34C}":""}`, `${n?" \u{1F34C}":""}`)
+	return legacy
+}
+
+func TestPatchImagePreviewRendererUpgradesV7AndV1UIToV3(t *testing.T) {
+	preview, result := patchImagePreviewRenderer(imagePreviewOriginalRendererFixture())
+	if !result.Changed {
+		t.Fatal("preview fixture was not patched to the current fallback")
+	}
+	legacy := strings.Replace(preview, imagePreviewPatchMarker, imagePreviewPatchV7Marker, 1) + imageGenerationUIV1RendererFixture(t)
+	updated, result := patchImagePreviewRenderer(legacy)
+	if !result.Recognized || !result.Changed {
+		t.Fatalf("v7/v1 renderer was not upgraded: %#v", result)
+	}
+	if strings.Contains(updated, imagePreviewPatchV7Marker) || strings.Contains(updated, imageGenerationUIPatchV1Marker) || !strings.Contains(updated, imagePreviewPatchMarker) || !strings.Contains(updated, imageGenerationUIPatchMarker) || !strings.Contains(updated, "`Generating image`") {
+		t.Fatalf("v7/v1 renderer did not receive the full v8/v3 upgrade: %s", updated)
+	}
+	if _, result := patchImagePreviewRenderer(updated); !result.Recognized || result.Changed {
+		t.Fatalf("v8/v3 renderer was not idempotent: %#v", result)
+	}
 }
 
 func TestPatchImagePreviewRendererUpgradesV2(t *testing.T) {
@@ -57,7 +321,7 @@ func TestPatchImagePreviewRendererUpgradesV2(t *testing.T) {
 		t.Fatalf("v2 renderer was not upgraded: %#v", result)
 	}
 	if strings.Contains(updated, imagePreviewPatchV2Marker) || !strings.Contains(updated, imagePreviewPatchMarker) || !strings.Contains(updated, `startsWith("file://")`) {
-		t.Fatalf("v2 upgrade did not produce the full v4 fallback: %s", updated)
+		t.Fatalf("v2 upgrade did not produce the full v6 fallback: %s", updated)
 	}
 	assertImagePreviewJavaScriptSyntax(t, updated)
 }
@@ -67,11 +331,39 @@ func TestPatchImagePreviewRendererUpgradesRealV3(t *testing.T) {
 	if !result.Recognized || !result.Changed {
 		t.Fatalf("real v3 renderer was not upgraded: %#v", result)
 	}
-	if strings.Contains(updated, imagePreviewPatchV3Marker) || !strings.Contains(updated, imagePreviewPatchMarker) || !strings.Contains(updated, `u.replace(/^file:\/\/\/([A-Za-z]:\/)/,"$1")`) {
-		t.Fatalf("v3 upgrade did not produce the Windows-safe v4 fallback: %s", updated)
+	if strings.Contains(updated, imagePreviewPatchV3Marker) || !strings.Contains(updated, imagePreviewPatchMarker) || !strings.Contains(updated, `typeof i==="string"`) {
+		t.Fatalf("v3 upgrade did not produce the browser-safe v6 fallback: %s", updated)
 	}
 	if _, result := patchImagePreviewRenderer(updated); !result.Recognized || result.Changed {
-		t.Fatalf("migrated v4 renderer was not idempotent: %#v", result)
+		t.Fatalf("migrated v6 renderer was not idempotent: %#v", result)
+	}
+	assertImagePreviewJavaScriptSyntax(t, updated)
+}
+
+func TestPatchImagePreviewRendererUpgradesRealV4(t *testing.T) {
+	updated, result := patchImagePreviewRenderer(imagePreviewV4RendererFixture())
+	if !result.Recognized || !result.Changed {
+		t.Fatalf("real v4 renderer was not upgraded: %#v", result)
+	}
+	if strings.Contains(updated, imagePreviewPatchV4Marker) || !strings.Contains(updated, imagePreviewPatchMarker) || !strings.Contains(updated, `typeof i==="string"`) {
+		t.Fatalf("v4 upgrade did not produce the browser-safe v6 fallback: %s", updated)
+	}
+	if _, result := patchImagePreviewRenderer(updated); !result.Recognized || result.Changed {
+		t.Fatalf("migrated v6 renderer was not idempotent: %#v", result)
+	}
+	assertImagePreviewJavaScriptSyntax(t, updated)
+}
+
+func TestPatchImagePreviewRendererUpgradesRealV5(t *testing.T) {
+	updated, result := patchImagePreviewRenderer(imagePreviewV5RendererFixture())
+	if !result.Recognized || !result.Changed {
+		t.Fatalf("real v5 renderer was not upgraded: %#v", result)
+	}
+	if strings.Contains(updated, imagePreviewPatchV5Marker) || !strings.Contains(updated, imagePreviewPatchMarker) || !strings.Contains(updated, `vscode-file://vscode-app`) {
+		t.Fatalf("v5 upgrade did not produce the browser-safe v6 fallback: %s", updated)
+	}
+	if _, result := patchImagePreviewRenderer(updated); !result.Recognized || result.Changed {
+		t.Fatalf("migrated v6 renderer was not idempotent: %#v", result)
 	}
 	assertImagePreviewJavaScriptSyntax(t, updated)
 }
@@ -83,7 +375,7 @@ func TestPatchImagePreviewRendererPatchesEveryKnownOccurrence(t *testing.T) {
 		t.Fatalf("all known renderer occurrences must be patched: result=%#v source=%s", result, updated)
 	}
 	if _, result := patchImagePreviewRenderer(updated); !result.Recognized || result.Changed {
-		t.Fatalf("multi-renderer v4 source was not idempotent: %#v", result)
+		t.Fatalf("multi-renderer v6 source was not idempotent: %#v", result)
 	}
 }
 
@@ -107,7 +399,7 @@ func TestPatchImagePreviewRendererUpgradesOptionalInstalledRenderers(t *testing.
 				t.Fatal(err)
 			}
 			updated, result := patchImagePreviewRenderer(string(original))
-			if !result.Recognized || !result.Changed || strings.Contains(updated, imagePreviewPatchV3Marker) || !strings.Contains(updated, imagePreviewPatchMarker) {
+			if !result.Recognized || !result.Changed || strings.Contains(updated, imagePreviewPatchV3Marker) || strings.Contains(updated, imagePreviewPatchV6Marker) || !strings.Contains(updated, imagePreviewPatchMarker) || !strings.Contains(updated, imageGenerationUIPatchMarker) {
 				t.Fatalf("installed renderer was not safely migrated: %#v", result)
 			}
 			candidate := filepath.Join(t.TempDir(), filepath.Base(rendererPath))
@@ -132,10 +424,10 @@ func TestImagePreviewV4FallbackNormalizesWindowsAndMacFileURIs(t *testing.T) {
 		uri  string
 		want string
 	}{
-		{name: "windows drive", uri: "file:///C:/Users/%E6%97%A0%E9%A3%8E/image.png", want: "C:/Users/无风/image.png"},
-		{name: "mac absolute path", uri: "file:///Users/wufeng/image.png", want: "/Users/wufeng/image.png"},
-		{name: "literal percent remains renderable", uri: "file:///C:/Users/100%/image.png", want: "C:/Users/100%/image.png"},
-		{name: "windows UNC path", uri: "file://server/share/My%20Image.png", want: "//server/share/My Image.png"},
+		{name: "windows drive", uri: "file:///C:/Users/%E6%97%A0%E9%A3%8E/image.png", want: "vscode-file://vscode-app/C:/Users/%E6%97%A0%E9%A3%8E/image.png"},
+		{name: "mac absolute path", uri: "file:///Users/wufeng/image.png", want: "vscode-file://vscode-app/Users/wufeng/image.png"},
+		{name: "literal percent remains renderable", uri: "file:///C:/Users/100%/image.png", want: "vscode-file://vscode-app/C:/Users/100%25/image.png"},
+		{name: "windows UNC path", uri: "file://server/share/My%20Image.png", want: "vscode-file://server/share/My%20Image.png"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "preview-uri.js")
@@ -185,7 +477,7 @@ func TestPatchedImagePreviewRendererResolvesAllSupportedSourcesAtRuntime(t *test
 			name:     "generatedImage file URI with Windows Chinese user directory",
 			step:     `{generatedImage:{uri:"file:///C:/Users/%E6%97%A0%E9%A3%8E/image.png"}}`,
 			resolver: `()=>undefined`,
-			want:     "C:/Users/无风/image.png",
+			want:     "vscode-file://vscode-app/C:/Users/%E6%97%A0%E9%A3%8E/image.png",
 		},
 		{
 			name:     "generatedMedia payload inline data",
@@ -215,7 +507,13 @@ func TestPatchedImagePreviewRendererResolvesAllSupportedSourcesAtRuntime(t *test
 			name:     "generatedImage is tried after metadata-only generatedMedia",
 			step:     `{generatedMedia:{mimeType:"image/png"},generatedImage:{uri:"file:///C:/Users/%E6%97%A0%E9%A3%8E/image.png"}}`,
 			resolver: `()=>undefined`,
-			want:     "C:/Users/无风/image.png",
+			want:     "vscode-file://vscode-app/C:/Users/%E6%97%A0%E9%A3%8E/image.png",
+		},
+		{
+			name:     "file URI falls back after no-op artifact resolver Promise",
+			step:     `{generatedImage:{uri:"file:///C:/Users/%E6%97%A0%E9%A3%8E/image.png"}}`,
+			resolver: `()=>Promise.resolve(undefined)`,
+			want:     "vscode-file://vscode-app/C:/Users/%E6%97%A0%E9%A3%8E/image.png",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

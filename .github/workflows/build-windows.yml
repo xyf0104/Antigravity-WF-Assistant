@@ -63,20 +63,29 @@ jobs:
       - name: Run Go race tests
         run: go test -race ./...
 
+      - name: Run Go vet
+        run: go vet ./...
+
       - name: Build Windows x64
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手-v1.4.20.exe"
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手-v$version.exe"
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
 
       - name: Build NSIS installer
         working-directory: windows/source/build/windows
-        run: '& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 installer.nsi'
+        shell: pwsh
+        run: |
+          $version = (Get-Content ../../VERSION -Raw).Trim()
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 "/DAPP_VERSION=$version" installer.nsi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Antigravity-WF-Assistant-Windows-x64
           path: |
-            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.4.20-Setup.exe
+            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v*-Setup.exe
           if-no-files-found: error

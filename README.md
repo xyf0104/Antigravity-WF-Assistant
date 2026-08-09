@@ -41,8 +41,8 @@ Antigravity WF助手在本机运行代理服务，使 Antigravity 可以使用�
 
 | 系统 | 推荐下载 | 说明 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.4.20-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
-| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.4.20-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.4.24-Installer.pkg` | 标准安装器，兼容 Apple Silicon 与 Intel |
+| Windows 10/11 x64 | `Antigravity-WF-Assistant-Windows-x64-v1.4.24-Setup.exe` | 标准安装器，可选择创建桌面快捷方式 |
 
 发布页仅提供以上两个标准安装包及 `SHA256SUMS.txt`，用于校验文件完整性。
 
@@ -76,7 +76,11 @@ macOS 会检查 `/Applications`、`~/Applications`、当前运行中的应用和
 - `ANTIGRAVITY_APP_PATH`：单个路径
 - `ANTIGRAVITY_APP_PATHS`：多个路径（macOS 使用冒号分隔，Windows 使用分号分隔）
 
-本地代理仅监听 `127.0.0.1:50999`。模型配置、凭据引用和备份保存在本机；请勿上传 API Key、Cookie、Token、运行日志或模型配置文件。
+本地代理只监听本机回环地址，不会向局域网或互联网暴露模型接口。模型配置、凭据引用和备份保存在本机；请勿上传 API Key、Cookie、Token、运行日志或模型配置文件。
+
+## Antigravity 兼容范围
+
+助手会扫描常见安装位置并对已识别的 Antigravity renderer 结构应用可恢复补丁。图片预览补丁采用严格结构匹配：已验证的结构会升级，未知或已变化的 renderer 会被安全跳过，而不会进行全局字符串替换或强制改写。遇到未识别版本时，请保留原始文件备份并等待对应兼容更新；不要手工复制其他版本的 renderer 文件。
 
 ## 许可证与声明
 

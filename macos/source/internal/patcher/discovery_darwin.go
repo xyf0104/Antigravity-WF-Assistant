@@ -3,6 +3,8 @@
 package patcher
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,12 +12,28 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
-var runningAppPattern = regexp.MustCompile(`(?i)(/[^\n]*?antigravity[^\n]*?\.app)/Contents/`)
+const darwinDiscoveryCommandTimeout = 2 * time.Second
+
+// Keep the process expression deliberately narrow: the captured bundle must
+// itself have an Antigravity/Agent Window-looking name.  A parent directory
+// named "Antigravity" must never make an unrelated Electron app a patch
+// candidate.
+var runningAppPattern = regexp.MustCompile(`(?i)(/[^\n]*?(?:antigravity|agent[^\n/]*window)[^\n/]*\.app)/Contents/`)
 
 func locateDarwinInstallations() []darwinTargets {
 	candidates, explicit := darwinAppCandidates()
+	return selectDarwinInstallations(candidates, explicit, trustedDarwinInstallLocation)
+}
+
+// selectDarwinInstallations separates candidate gathering from structural
+// selection.  It is intentionally conservative: only user-supplied explicit
+// paths may bypass the normal trusted-location/identity gates.  Process and
+// Spotlight discoveries remain ordinary discoveries, so a stray copy cannot
+// cause a standard installation to be patched as well.
+func selectDarwinInstallations(candidates []string, explicit map[string]bool, isTrusted func(string) bool) []darwinTargets {
 	seen := map[string]bool{}
 	var targets []darwinTargets
 	var deferredCustomLocations []string
@@ -25,8 +43,11 @@ func locateDarwinInstallations() []darwinTargets {
 			continue
 		}
 		seen[candidate] = true
-		if !explicit[candidate] && !trustedDarwinInstallLocation(candidate) {
+		if !explicit[candidate] && !isTrusted(candidate) {
 			deferredCustomLocations = append(deferredCustomLocations, candidate)
+			continue
+		}
+		if !explicit[candidate] && !darwinTrustedCandidateHasExpectedIdentity(candidate) {
 			continue
 		}
 		if target, ok := inspectDarwinApp(candidate); ok {
@@ -38,8 +59,7 @@ func locateDarwinInstallations() []darwinTargets {
 	// Antigravity bundle from a custom location.
 	if len(targets) == 0 {
 		for _, candidate := range deferredCustomLocations {
-			identifier := strings.ToLower(darwinBundleValue(candidate, "CFBundleIdentifier"))
-			if !strings.Contains(identifier, "antigravity") {
+			if !darwinBundleIdentifierIsAntigravity(candidate) {
 				continue
 			}
 			if target, ok := inspectDarwinApp(candidate); ok {
@@ -84,24 +104,24 @@ func darwinAppCandidates() ([]string, map[string]bool) {
 		roots = append(roots, filepath.Join(home, "Applications"))
 	}
 	for _, root := range roots {
-		matches, _ := filepath.Glob(filepath.Join(root, "*[Aa]ntigravity*.app"))
-		candidates = append(candidates, matches...)
-		matches, _ = filepath.Glob(filepath.Join(root, "*[Aa]gent*[Ww]indow*.app"))
-		candidates = append(candidates, matches...)
+		candidates = append(candidates, darwinApplicationsInRoot(root)...)
 	}
 
-	if output, err := exec.Command("ps", "-axo", "command=").Output(); err == nil {
+	if output, err := darwinDiscoveryOutput("ps", "-axo", "command="); err == nil {
 		for _, match := range runningAppPattern.FindAllStringSubmatch(string(output), -1) {
 			if len(match) > 1 {
 				path := normalizeAppBundlePath(match[1])
-				candidates = append(candidates, path)
-				explicit[path] = true
+				if path != "" {
+					// A process path is useful discovery evidence, not an explicit
+					// user instruction.  Keep the same safety gates as Spotlight.
+					candidates = append(candidates, path)
+				}
 			}
 		}
 	}
 	if path, err := exec.LookPath("mdfind"); err == nil {
-		query := `kMDItemContentType == "com.apple.application-bundle"c && kMDItemFSName == "*Antigravity*.app"c`
-		if output, err := exec.Command(path, query).Output(); err == nil {
+		query := `(kMDItemContentType == "com.apple.application-bundle"c) && (kMDItemFSName == "*Antigravity*.app"c || kMDItemFSName == "*Agent*Window*.app"c)`
+		if output, err := darwinDiscoveryOutput(path, query); err == nil {
 			for _, line := range strings.Split(string(output), "\n") {
 				if line = strings.TrimSpace(line); line != "" {
 					candidates = append(candidates, line)
@@ -112,8 +132,51 @@ func darwinAppCandidates() ([]string, map[string]bool) {
 	return candidates, explicit
 }
 
+// darwinApplicationsInRoot performs only a one-level directory read.  It
+// avoids brittle Glob case patterns (which miss names such as
+// "Google ANTIGRAVITY.app" on case-sensitive volumes) without recursively
+// scanning a user's disk.
+func darwinApplicationsInRoot(root string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	paths := make([]string, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() || !darwinAppNameLooksLikeAntigravity(entry.Name()) {
+			continue
+		}
+		paths = append(paths, filepath.Join(root, entry.Name()))
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func darwinAppNameLooksLikeAntigravity(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if !strings.HasSuffix(lower, ".app") {
+		return false
+	}
+	return strings.Contains(lower, "antigravity") ||
+		(strings.Contains(lower, "agent") && strings.Contains(lower, "window"))
+}
+
+func darwinBundleIdentifierIsAntigravity(path string) bool {
+	return strings.Contains(strings.ToLower(darwinBundleValue(path, "CFBundleIdentifier")), "antigravity")
+}
+
+func darwinTrustedCandidateHasExpectedIdentity(path string) bool {
+	return darwinAppNameLooksLikeAntigravity(filepath.Base(path)) || darwinBundleIdentifierIsAntigravity(path)
+}
+
+func darwinDiscoveryOutput(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), darwinDiscoveryCommandTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
 func normalizeAppBundlePath(path string) string {
-	path = strings.TrimSpace(path)
+	path = strings.Trim(strings.TrimSpace(path), `"`)
 	if path == "" {
 		return ""
 	}
@@ -159,13 +222,23 @@ func inspectDarwinApp(appPath string) (darwinTargets, bool) {
 	resources := filepath.Join(appPath, "Contents", "Resources")
 	unpacked := filepath.Join(resources, "app")
 	mainPath := existingFile(filepath.Join(unpacked, "out", "main.js"))
-	extensionDir := filepath.Join(unpacked, "extensions", "antigravity")
-	extensionEntry := existingFile(filepath.Join(extensionDir, "dist", "extension.js"))
+	extensionRoot := filepath.Join(unpacked, "extensions", "antigravity")
+	extensionEntry := existingFile(filepath.Join(extensionRoot, "dist", "extension.js"))
+	// A few unpacked releases ship the Language Server under the extension
+	// directory but no independently patchable extension.js.  Do not clear
+	// extensionRoot before checking bin/, otherwise the lookup accidentally
+	// falls back to a relative "bin" in the helper's current directory and
+	// incorrectly reports a supported installation as missing.
+	languagePath := locateDarwinLanguageServer(filepath.Join(extensionRoot, "bin"))
+	extensionDir := extensionRoot
 	if extensionEntry == "" {
 		extensionDir = ""
 	}
-	languagePath := locateDarwinLanguageServer(filepath.Join(extensionDir, "bin"))
-	if mainPath != "" && languagePath != "" {
+	// Newer IDE releases can move the Language Server into an Electron entry
+	// script.  An unpacked IDE remains a supported target without a separate
+	// binary only when its independently patchable extension entry is present;
+	// applyDarwinPatch still verifies both source shapes before writing.
+	if mainPath != "" && (extensionEntry != "" || languagePath != "") {
 		return darwinTargets{
 			app: appPath, name: strings.TrimSuffix(filepath.Base(appPath), filepath.Ext(appPath)),
 			kind: "ide", version: darwinBundleValue(appPath, "CFBundleShortVersionString"),
@@ -182,7 +255,12 @@ func inspectDarwinApp(appPath string) (darwinTargets, bool) {
 			break
 		}
 	}
-	if languagePath == "" {
+	// A packaged Agent may carry the whole launch path in app.asar.  Only
+	// accept the no-binary variant when both known entries are present and the
+	// launcher contains a vendor/current helper endpoint that the ASAR patcher
+	// can prove it knows how to replace.  Unknown archives are deliberately not
+	// surfaced as patch targets.
+	if languagePath == "" && !darwinASARHasSupportedEntrypoints(asarPath) {
 		return darwinTargets{}, false
 	}
 	return darwinTargets{
@@ -192,9 +270,44 @@ func inspectDarwinApp(appPath string) (darwinTargets, bool) {
 	}, true
 }
 
+// darwinASARHasSupportedEntrypoints is a discovery-time safety gate for the
+// packaged Agent layout that no longer ships a standalone language_server.
+// It mirrors prepareDarwinASARCandidate's two required entries without
+// attempting a write: main.js must be the known CommonJS/managed entry and
+// languageServer.js must still expose either the vendor endpoint or a
+// previously managed local endpoint.  This prevents a broad "any app.asar"
+// fallback while allowing a verified entry-script-only release to be patched.
+func darwinASARHasSupportedEntrypoints(asarPath string) bool {
+	archive, err := readASAR(asarPath)
+	if err != nil {
+		return false
+	}
+	main, err := archive.readFile("dist/main.js")
+	if err != nil {
+		return false
+	}
+	launcher, err := archive.readFile("dist/languageServer.js")
+	if err != nil {
+		return false
+	}
+	managedMain := bytes.Contains(main, []byte(darwinASARMarker))
+	if !managedMain && !bytes.HasPrefix(main, []byte(`"use strict";`)) {
+		return false
+	}
+	endpoint := currentPatchProxyEndpoint()
+	if darwinCloudCodeURLPattern.Match(launcher) || bytes.Contains(launcher, []byte(endpoint.Base)) {
+		return true
+	}
+	// A previously managed archive may use a staged fallback port that is no
+	// longer the process-local endpoint. It is safe to migrate only because the
+	// main entry carries our explicit marker and apply will rebuild from its
+	// canonical vendor backup.
+	return managedMain && bytes.Contains(launcher, []byte("http://127.0.0.1:"))
+}
+
 func darwinBundleValue(appPath, key string) string {
 	plist := filepath.Join(appPath, "Contents", "Info.plist")
-	if output, err := exec.Command("/usr/bin/plutil", "-extract", key, "raw", "-o", "-", plist).Output(); err == nil {
+	if output, err := darwinDiscoveryOutput("/usr/bin/plutil", "-extract", key, "raw", "-o", "-", plist); err == nil {
 		return strings.TrimSpace(string(output))
 	}
 	return ""

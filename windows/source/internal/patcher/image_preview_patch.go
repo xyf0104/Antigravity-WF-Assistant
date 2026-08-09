@@ -16,8 +16,31 @@ import (
 // Keep this marker versioned. v3 was shipped by an earlier helper build, but
 // its Windows file URI conversion leaves a leading slash before drive letters
 // ("/C:/...") and therefore cannot render the affected Chinese-home-directory
-// paths. v4 is the first complete, migratable version.
-const imagePreviewPatchMarker = "antigravity-wf:image-preview-fallback:v4"
+// paths. v6 additionally maps local file URIs to the VS Code browser-resource
+// scheme allowed by the workbench CSP. v7 also corrects the matching native
+// image-tool UI: it exposes the actual image model and opens the image result
+// by default without changing the upstream media payload. v8 makes the
+// in-progress title neutral until a real model is present and preserves
+// generic Gemini model names such as gemini-3.6-flash.
+const imagePreviewPatchMarker = "antigravity-wf:image-preview-fallback:v8"
+
+const imagePreviewPatchV7Marker = "antigravity-wf:image-preview-fallback:v7"
+
+const imagePreviewPatchV6Marker = "antigravity-wf:image-preview-fallback:v6"
+
+// UI v3 adds a strict matcher for the macOS 1.23.2 title component and keeps
+// scanning a bundle even when another image component was already patched.
+// That avoids silently leaving a second renderer component at its stock,
+// collapsed/default-Gemini behaviour.
+const imageGenerationUIPatchMarker = "antigravity-wf:image-generation-ui:v3"
+
+const imageGenerationUIPatchV2Marker = "antigravity-wf:image-generation-ui:v2"
+
+const imageGenerationUIPatchV1Marker = "antigravity-wf:image-generation-ui:v1"
+
+const imagePreviewPatchV5Marker = "antigravity-wf:image-preview-fallback:v5"
+
+const imagePreviewPatchV4Marker = "antigravity-wf:image-preview-fallback:v4"
 
 const imagePreviewPatchV3Marker = "antigravity-wf:image-preview-fallback:v3"
 
@@ -57,7 +80,7 @@ var imagePreviewOriginalRendererPattern = regexp.MustCompile(
 // a renderer could contain more than one matching expression and a marker for
 // one must never hide another unfinished expression.
 var imagePreviewLegacyHeaderPattern = regexp.MustCompile(
-	`^/\*antigravity-wf:image-preview-fallback:(v2|v3)\*/` +
+	`^/\*antigravity-wf:image-preview-fallback:(v2|v3|v4|v5|v6|v7)\*/` +
 		`([A-Za-z_$][A-Za-z0-9_$]*)=([A-Za-z_$][A-Za-z0-9_$]*)\.generatedMedia\|\|([A-Za-z_$][A-Za-z0-9_$]*)\.generatedImage,([A-Za-z_$][A-Za-z0-9_$]*);`,
 )
 
@@ -70,6 +93,96 @@ var imagePreviewLegacyInlinePattern = regexp.MustCompile(
 )
 
 var imagePreviewLegacyBlockEndPattern = regexp.MustCompile(`;let\s+`)
+
+const imagePreviewJavaScriptIdentifier = `[A-Za-z_$][A-Za-z0-9_$]*`
+
+// imageGenerationTitleRendererPattern describes one exact native title
+// component form. The minified identifier aliases are deliberately captured
+// separately: Go's regexp implementation does not support backreferences, so
+// we validate every alias after matching rather than silently accepting a
+// title expression that mixes values from separate components.
+type imageGenerationTitleRendererPattern struct {
+	expression             *regexp.Regexp
+	componentGroup         int
+	stepGroup              int
+	statusGroup            int
+	stepReferenceGroups    []int
+	resolvedModelGroup     int
+	resolvedModelRefGroups []int
+	displayNameGroup       int
+	isNewModelGroup        int
+}
+
+// These two forms match the complete native image-tool title components
+// observed in Antigravity 1.23.2. They deliberately include the surrounding
+// JSX shape so a similarly named string elsewhere in a future renderer cannot
+// be changed accidentally. The first form is used by the known Windows
+// renderer. The second is the real macOS 1.23.2 form, whose availability value
+// checks generatedMedia as well as generatedImage.
+var imageGenerationTitleRendererPatterns = []imageGenerationTitleRendererPattern{
+	{
+		expression: regexp.MustCompile(
+			`(` + imagePreviewJavaScriptIdentifier + `)=\(\{step:(` + imagePreviewJavaScriptIdentifier + `),status:(` + imagePreviewJavaScriptIdentifier + `)\}\)=>\{let ` +
+				`(` + imagePreviewJavaScriptIdentifier + `)=!!(` + imagePreviewJavaScriptIdentifier + `)\.generatedImage\?\.uri,` +
+				`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\.modelName\?(` + imagePreviewJavaScriptIdentifier + `)\[(` + imagePreviewJavaScriptIdentifier + `)\.modelName\]:void 0,` +
+				`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\?\.displayName\|\|"Gemini",` +
+				`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\?\.isNewModel\?\?!1;return `,
+		),
+		componentGroup:         1,
+		stepGroup:              2,
+		statusGroup:            3,
+		stepReferenceGroups:    []int{5, 7, 9},
+		resolvedModelGroup:     6,
+		resolvedModelRefGroups: []int{11, 13},
+		displayNameGroup:       10,
+		isNewModelGroup:        12,
+	},
+	{
+		expression: regexp.MustCompile(
+			`(` + imagePreviewJavaScriptIdentifier + `)=\(\{step:(` + imagePreviewJavaScriptIdentifier + `),status:(` + imagePreviewJavaScriptIdentifier + `)\}\)=>\{let ` +
+				`(` + imagePreviewJavaScriptIdentifier + `)=!!\((` + imagePreviewJavaScriptIdentifier + `)\.generatedMedia\?\.uri\|\|` +
+				`(` + imagePreviewJavaScriptIdentifier + `)\.generatedMedia\?\.payload\?\.value\?\.length\|\|` +
+				`(` + imagePreviewJavaScriptIdentifier + `)\.generatedImage\?\.uri\|\|` +
+				`(` + imagePreviewJavaScriptIdentifier + `)\.generatedImage\?\.base64Data\),` +
+				`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\.modelName\?(` + imagePreviewJavaScriptIdentifier + `)\[(` + imagePreviewJavaScriptIdentifier + `)\.modelName\]:void 0,` +
+				`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\?\.displayName\|\|"Gemini",` +
+				`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\?\.isNewModel\?\?!1;return `,
+		),
+		componentGroup:         1,
+		stepGroup:              2,
+		statusGroup:            3,
+		stepReferenceGroups:    []int{5, 6, 7, 8, 10, 12},
+		resolvedModelGroup:     9,
+		resolvedModelRefGroups: []int{14, 16},
+		displayNameGroup:       13,
+		isNewModelGroup:        15,
+	},
+}
+
+var imageGenerationResultRendererPattern = regexp.MustCompile(
+	`(` + imagePreviewJavaScriptIdentifier + `)=\(\{step:(` + imagePreviewJavaScriptIdentifier + `),status:(` + imagePreviewJavaScriptIdentifier + `),error:(` + imagePreviewJavaScriptIdentifier + `)\}\)=>` +
+		`(` + imagePreviewJavaScriptIdentifier + `)\((` + imagePreviewJavaScriptIdentifier + `),\{loading:(` + imagePreviewJavaScriptIdentifier + `)\((` + imagePreviewJavaScriptIdentifier + `)\),title:(` + imagePreviewJavaScriptIdentifier + `)\((` + imagePreviewJavaScriptIdentifier + `),\{step:(` + imagePreviewJavaScriptIdentifier + `),status:(` + imagePreviewJavaScriptIdentifier + `)\}\),supplementaryView:(` + imagePreviewJavaScriptIdentifier + `)\?null:(` + imagePreviewJavaScriptIdentifier + `)\((` + imagePreviewJavaScriptIdentifier + `),\{step:(` + imagePreviewJavaScriptIdentifier + `),status:(` + imagePreviewJavaScriptIdentifier + `)\}\),cta:null\}\)`,
+)
+
+var imageGenerationExpansionHooksPattern = regexp.MustCompile(
+	`\[(` + imagePreviewJavaScriptIdentifier + `),(` + imagePreviewJavaScriptIdentifier + `)\]=(` + imagePreviewJavaScriptIdentifier + `)\(!1\),` +
+		`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\(\(\)=>\{(` + imagePreviewJavaScriptIdentifier + `)\((` + imagePreviewJavaScriptIdentifier + `)=>!(` + imagePreviewJavaScriptIdentifier + `)\)\},\[\]\)`,
+)
+
+// This matches the title component emitted by the v1 UI patch, not arbitrary
+// workbench code. The surrounding marker is checked separately before a
+// migration is allowed.
+var imageGenerationLegacyUITitleRendererPattern = regexp.MustCompile(
+	`(` + imagePreviewJavaScriptIdentifier + `)=\(\{step:(` + imagePreviewJavaScriptIdentifier + `),status:(` + imagePreviewJavaScriptIdentifier + `)\}\)=>\{let ` +
+		`(` + imagePreviewJavaScriptIdentifier + `)=!!(` + imagePreviewJavaScriptIdentifier + `)\.generatedImage\?\.uri,` +
+		`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\.modelName\?(` + imagePreviewJavaScriptIdentifier + `)\[(` + imagePreviewJavaScriptIdentifier + `)\.modelName\]:void 0,` +
+		`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\?\.displayName\|\|\((` + imagePreviewJavaScriptIdentifier + `)\.modelName\?\.replace\(/\^gpt-image-\(\\d\+\)\$/i,"GPT Image \$1"\)\)\|\|(` + imagePreviewJavaScriptIdentifier + `)\.modelName\|\|"Image generator",` +
+		`(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\?\.isNewModel\?\?!1;return `,
+)
+
+var imageGenerationTitleChildrenPattern = regexp.MustCompile(
+	`(` + imagePreviewJavaScriptIdentifier + `)\("span",\{children:(` + imagePreviewJavaScriptIdentifier + `)\((` + imagePreviewJavaScriptIdentifier + `)\)\?`,
+)
 
 type imagePreviewPatchResult struct {
 	Recognized bool
@@ -84,6 +197,11 @@ func patchImagePreviewRenderer(source string) (string, imagePreviewPatchResult) 
 	result.Changed = changed
 
 	updated, recognized, changed := patchOriginalImagePreviewRenderers(source)
+	source = updated
+	result.Recognized = result.Recognized || recognized
+	result.Changed = result.Changed || changed
+
+	updated, recognized, changed = patchImageGenerationUIRenderers(source)
 	source = updated
 	result.Recognized = result.Recognized || recognized
 	result.Changed = result.Changed || changed
@@ -127,15 +245,17 @@ func upgradeLegacyImagePreviewRenderers(source string, recognized bool) (string,
 }
 
 func nextLegacyImagePreviewMarker(source string, from int) (int, string) {
-	v2 := strings.Index(source[from:], "/*"+imagePreviewPatchV2Marker+"*/")
-	v3 := strings.Index(source[from:], "/*"+imagePreviewPatchV3Marker+"*/")
-	if v2 < 0 && v3 < 0 {
+	bestStart, bestMarker := -1, ""
+	for _, marker := range []string{imagePreviewPatchV2Marker, imagePreviewPatchV3Marker, imagePreviewPatchV4Marker, imagePreviewPatchV5Marker, imagePreviewPatchV6Marker, imagePreviewPatchV7Marker} {
+		index := strings.Index(source[from:], "/*"+marker+"*/")
+		if index >= 0 && (bestStart < 0 || index < bestStart) {
+			bestStart, bestMarker = index, marker
+		}
+	}
+	if bestStart < 0 {
 		return -1, ""
 	}
-	if v2 >= 0 && (v3 < 0 || v2 < v3) {
-		return from + v2, imagePreviewPatchV2Marker
-	}
-	return from + v3, imagePreviewPatchV3Marker
+	return from + bestStart, bestMarker
 }
 
 func upgradeLegacyImagePreviewBlock(block string) (string, bool) {
@@ -152,10 +272,395 @@ func upgradeLegacyImagePreviewBlock(block string) (string, bool) {
 		!strings.Contains(block, "!"+image+"&&"+media+"?.base64Data") {
 		return "", false
 	}
-	if header[1] == "v3" && (!strings.Contains(block, `startsWith("file://")`) || !strings.Contains(block, "decodeURIComponent")) {
+	if (header[1] == "v3" || header[1] == "v4" || header[1] == "v5") && (!strings.Contains(block, `startsWith("file://")`) || !strings.Contains(block, "decodeURIComponent")) {
+		return "", false
+	}
+	if (header[1] == "v5" || header[1] == "v6" || header[1] == "v7") && !strings.Contains(block, `typeof `+image+`==="string"`) {
 		return "", false
 	}
 	return imagePreviewV4Renderer(media, step, image, resolver[3], inline[4]), true
+}
+
+type imagePreviewRendererReplacement struct {
+	start int
+	end   int
+	value string
+}
+
+type imageGenerationTitleRendererMatch struct {
+	start         int
+	end           int
+	component     string
+	step          string
+	status        string
+	resolvedModel string
+	displayName   string
+	isNewModel    string
+}
+
+func patchImageGenerationUIRenderers(source string) (string, bool, bool) {
+	recognized := strings.Contains(source, imageGenerationUIPatchMarker)
+	changed := false
+	updated, legacyRecognized, legacyChanged := upgradeLegacyImageGenerationUIRenderers(source)
+	source = updated
+	recognized = recognized || legacyRecognized
+	changed = changed || legacyChanged
+
+	titleMatches := findImageGenerationTitleRendererMatches(source)
+	resultMatches := imageGenerationResultRendererPattern.FindAllStringSubmatchIndex(source, -1)
+	if len(titleMatches) == 0 || len(resultMatches) == 0 {
+		return source, recognized, changed
+	}
+
+	titlesByComponent := make(map[string][]imageGenerationTitleRendererMatch, len(titleMatches))
+	for _, titleMatch := range titleMatches {
+		titlesByComponent[titleMatch.component] = append(titlesByComponent[titleMatch.component], titleMatch)
+	}
+
+	replacements := make([]imagePreviewRendererReplacement, 0, len(resultMatches)*2)
+	usedTitleOffsets := map[int]bool{}
+	for _, resultMatch := range resultMatches {
+		if !validImageGenerationResultRendererMatch(source, resultMatch) {
+			continue
+		}
+		titleComponent := imagePreviewSubmatch(source, resultMatch, 10)
+		var titleMatch imageGenerationTitleRendererMatch
+		for _, candidate := range titlesByComponent[titleComponent] {
+			if candidate.end <= resultMatch[0] && resultMatch[0]-candidate.end <= 8*1024 && !usedTitleOffsets[candidate.start] {
+				titleMatch = candidate
+				break
+			}
+		}
+		if titleMatch.component == "" {
+			continue
+		}
+
+		hookSearchEnd := resultMatch[1] + 4*1024
+		if hookSearchEnd > len(source) {
+			hookSearchEnd = len(source)
+		}
+		hookMatch := imageGenerationExpansionHooksPattern.FindStringSubmatchIndex(source[resultMatch[1]:hookSearchEnd])
+		if hookMatch == nil || !validImageGenerationExpansionHooks(source[resultMatch[1]:hookSearchEnd], hookMatch) {
+			continue
+		}
+		titleReplacement, ok := imageGenerationTitleRendererReplacement(source, titleMatch)
+		if !ok {
+			continue
+		}
+		resultReplacement := imageGenerationResultRendererReplacement(source, resultMatch, source[resultMatch[1]:hookSearchEnd], hookMatch)
+		replacements = append(replacements,
+			imagePreviewRendererReplacement{start: titleMatch.start, end: titleMatch.end, value: titleReplacement},
+			imagePreviewRendererReplacement{start: resultMatch[0], end: resultMatch[1], value: resultReplacement},
+		)
+		usedTitleOffsets[titleMatch.start] = true
+	}
+	if len(replacements) == 0 {
+		return source, recognized, changed
+	}
+
+	sort.Slice(replacements, func(left, right int) bool {
+		return replacements[left].start < replacements[right].start
+	})
+	var output strings.Builder
+	last := 0
+	for _, replacement := range replacements {
+		if replacement.start < last {
+			return source, recognized, changed
+		}
+		output.WriteString(source[last:replacement.start])
+		output.WriteString(replacement.value)
+		last = replacement.end
+	}
+	output.WriteString(source[last:])
+	return output.String(), true, true
+}
+
+func imagePreviewSubmatch(source string, match []int, group int) string {
+	if group < 0 || group*2+1 >= len(match) {
+		return ""
+	}
+	start, end := match[group*2], match[group*2+1]
+	if start < 0 || end < start {
+		return ""
+	}
+	return source[start:end]
+}
+
+func findImageGenerationTitleRendererMatches(source string) []imageGenerationTitleRendererMatch {
+	matches := make([]imageGenerationTitleRendererMatch, 0)
+	for _, pattern := range imageGenerationTitleRendererPatterns {
+		for _, match := range pattern.expression.FindAllStringSubmatchIndex(source, -1) {
+			titleMatch, ok := imageGenerationTitleRendererMatchFromPattern(source, match, pattern)
+			if ok {
+				matches = append(matches, titleMatch)
+			}
+		}
+	}
+	sort.Slice(matches, func(left, right int) bool {
+		return matches[left].start < matches[right].start
+	})
+	return matches
+}
+
+func imageGenerationTitleRendererMatchFromPattern(source string, match []int, pattern imageGenerationTitleRendererPattern) (imageGenerationTitleRendererMatch, bool) {
+	step := imagePreviewSubmatch(source, match, pattern.stepGroup)
+	stepReferences := make([]string, 0, len(pattern.stepReferenceGroups)+1)
+	stepReferences = append(stepReferences, step)
+	for _, group := range pattern.stepReferenceGroups {
+		stepReferences = append(stepReferences, imagePreviewSubmatch(source, match, group))
+	}
+	if !sameImagePreviewIdentifiers(stepReferences...) {
+		return imageGenerationTitleRendererMatch{}, false
+	}
+
+	resolvedModel := imagePreviewSubmatch(source, match, pattern.resolvedModelGroup)
+	resolvedModelReferences := make([]string, 0, len(pattern.resolvedModelRefGroups)+1)
+	resolvedModelReferences = append(resolvedModelReferences, resolvedModel)
+	for _, group := range pattern.resolvedModelRefGroups {
+		resolvedModelReferences = append(resolvedModelReferences, imagePreviewSubmatch(source, match, group))
+	}
+	if !sameImagePreviewIdentifiers(resolvedModelReferences...) {
+		return imageGenerationTitleRendererMatch{}, false
+	}
+
+	end, ok := imageGenerationTitleRendererEnd(source, match)
+	if !ok {
+		return imageGenerationTitleRendererMatch{}, false
+	}
+	component := imagePreviewSubmatch(source, match, pattern.componentGroup)
+	status := imagePreviewSubmatch(source, match, pattern.statusGroup)
+	displayName := imagePreviewSubmatch(source, match, pattern.displayNameGroup)
+	isNewModel := imagePreviewSubmatch(source, match, pattern.isNewModelGroup)
+	if component == "" || status == "" || displayName == "" || isNewModel == "" {
+		return imageGenerationTitleRendererMatch{}, false
+	}
+	return imageGenerationTitleRendererMatch{
+		start:         match[0],
+		end:           end,
+		component:     component,
+		step:          step,
+		status:        status,
+		resolvedModel: resolvedModel,
+		displayName:   displayName,
+		isNewModel:    isNewModel,
+	}, true
+}
+
+func imageGenerationTitleRendererEnd(source string, match []int) (int, bool) {
+	if len(match) < 2 || match[1] < 0 {
+		return 0, false
+	}
+	componentEndOffset := strings.Index(source[match[1]:], "})},")
+	if componentEndOffset < 0 || componentEndOffset > 4*1024 {
+		return 0, false
+	}
+	return match[1] + componentEndOffset + len("})}"), true
+}
+
+func validImageGenerationResultRendererMatch(source string, match []int) bool {
+	return sameImagePreviewIdentifiers(
+		imagePreviewSubmatch(source, match, 2),
+		imagePreviewSubmatch(source, match, 11),
+		imagePreviewSubmatch(source, match, 16),
+	) && sameImagePreviewIdentifiers(
+		imagePreviewSubmatch(source, match, 3),
+		imagePreviewSubmatch(source, match, 8),
+		imagePreviewSubmatch(source, match, 12),
+		imagePreviewSubmatch(source, match, 17),
+	) && sameImagePreviewIdentifiers(
+		imagePreviewSubmatch(source, match, 4),
+		imagePreviewSubmatch(source, match, 13),
+	) && sameImagePreviewIdentifiers(
+		imagePreviewSubmatch(source, match, 5),
+		imagePreviewSubmatch(source, match, 9),
+		imagePreviewSubmatch(source, match, 14),
+	)
+}
+
+func validImageGenerationExpansionHooks(source string, match []int) bool {
+	return imagePreviewSubmatch(source, match, 2) == imagePreviewSubmatch(source, match, 6) &&
+		imagePreviewSubmatch(source, match, 7) == imagePreviewSubmatch(source, match, 8)
+}
+
+func sameImagePreviewIdentifiers(values ...string) bool {
+	if len(values) == 0 || values[0] == "" {
+		return false
+	}
+	for _, value := range values[1:] {
+		if value != values[0] {
+			return false
+		}
+	}
+	return true
+}
+
+func imageGenerationTitleRendererReplacement(source string, match imageGenerationTitleRendererMatch) (string, bool) {
+	if match.start < 0 || match.end < match.start || match.end > len(source) || match.step == "" || match.resolvedModel == "" || match.displayName == "" || match.isNewModel == "" {
+		return "", false
+	}
+	current := source[match.start:match.end]
+	step, resolvedModel, displayName := match.step, match.resolvedModel, match.displayName
+
+	oldModelLabel := displayName + `=` + resolvedModel + `?.displayName||"Gemini"`
+	newModelLabel := imageGenerationModelLabel(step, resolvedModel, displayName)
+	if strings.Count(current, oldModelLabel) != 1 {
+		return "", false
+	}
+	updated := strings.Replace(current, oldModelLabel, newModelLabel, 1)
+	oldIsNewModel := `,` + match.isNewModel + `=` + resolvedModel + `?.isNewModel??!1;return `
+	newIsNewModel := `,` + match.isNewModel + `=` + resolvedModel + `?.isNewModel??!1,$wfIsGeminiImage=!!` + resolvedModel + `||/^gemini[-_]/i.test(` + step + `.modelName||"");return `
+	if strings.Count(updated, oldIsNewModel) != 1 {
+		return "", false
+	}
+	updated = strings.Replace(updated, oldIsNewModel, newIsNewModel, 1)
+	for _, prefix := range []string{"Generating with ", "Generated with ", "Generate with "} {
+		oldTitle := "`" + prefix + "${" + displayName + "} \\u{1F34C}`"
+		newTitle := "`" + prefix + "${" + displayName + "}${$wfIsGeminiImage?\" \\u{1F34C}\":\"\"}`"
+		if strings.Count(updated, oldTitle) != 1 {
+			return "", false
+		}
+		updated = strings.Replace(updated, oldTitle, newTitle, 1)
+	}
+	return addNeutralImageGenerationLoadingTitle(updated, step, match.status)
+}
+
+func imageGenerationModelLabel(step, resolvedModel, displayName string) string {
+	return displayName + `=` + resolvedModel + `?.displayName||((modelName)=>{let match=/^gpt-image-(\d+)$/i.exec(modelName||"");return match?"GPT Image "+match[1]:void 0})(` + step + `.modelName)||((modelName)=>{let match=/^gemini[-_](.+)$/i.exec(modelName||"");return match?"Gemini "+match[1].replace(/[-_]+/g," ").replace(/\b\w/g,character=>character.toUpperCase()):void 0})(` + step + `.modelName)||` + step + `.modelName||"Image generator"`
+}
+
+func addNeutralImageGenerationLoadingTitle(source, step, status string) (string, bool) {
+	matches := imageGenerationTitleChildrenPattern.FindAllStringSubmatchIndex(source, -1)
+	for _, match := range matches {
+		if imagePreviewSubmatch(source, match, 3) != status {
+			continue
+		}
+		newTitle := imagePreviewSubmatch(source, match, 1) + `("span",{children:` + imagePreviewSubmatch(source, match, 2) + `(` + status + `)&&!` + step + `.modelName?` + "`Generating image`:" + imagePreviewSubmatch(source, match, 2) + `(` + status + `)?`
+		return source[:match[0]] + newTitle + source[match[1]:], true
+	}
+	return source, false
+}
+
+func upgradeLegacyImageGenerationUIRenderers(source string) (string, bool, bool) {
+	recognized := false
+	changed := false
+	if strings.Contains(source, imageGenerationUIPatchV2Marker) {
+		// v2 was emitted only by this helper. It already has the expanded panel
+		// and title behaviour; migrate its version marker so a bundle can carry
+		// v2 and newly recognised stock components without an early-return gap.
+		source = strings.ReplaceAll(source, imageGenerationUIPatchV2Marker, imageGenerationUIPatchMarker)
+		recognized = true
+		changed = true
+	}
+	titleMatches := imageGenerationLegacyUITitleRendererPattern.FindAllStringSubmatchIndex(source, -1)
+	if len(titleMatches) == 0 {
+		return source, recognized, changed
+	}
+	replacements := make([]imagePreviewRendererReplacement, 0, len(titleMatches)*2)
+	usedMarkers := make(map[int]bool)
+	for _, match := range titleMatches {
+		if !sameImagePreviewIdentifiers(
+			imagePreviewSubmatch(source, match, 2),
+			imagePreviewSubmatch(source, match, 5),
+			imagePreviewSubmatch(source, match, 7),
+			imagePreviewSubmatch(source, match, 9),
+			imagePreviewSubmatch(source, match, 12),
+			imagePreviewSubmatch(source, match, 13),
+		) || !sameImagePreviewIdentifiers(
+			imagePreviewSubmatch(source, match, 6),
+			imagePreviewSubmatch(source, match, 11),
+			imagePreviewSubmatch(source, match, 15),
+		) {
+			continue
+		}
+		endOffset := strings.Index(source[match[1]:], "})},")
+		if endOffset < 0 || endOffset > 4*1024 {
+			continue
+		}
+		end := match[1] + endOffset + len("})}")
+		markerEnd := end + 8*1024
+		if markerEnd > len(source) {
+			markerEnd = len(source)
+		}
+		markerOffset := strings.Index(source[end:markerEnd], "/*"+imageGenerationUIPatchV1Marker+"*/")
+		if markerOffset < 0 {
+			continue
+		}
+		markerStart := end + markerOffset
+		if usedMarkers[markerStart] {
+			continue
+		}
+		updatedTitle, ok := upgradeLegacyImageGenerationTitleRenderer(source[match[0]:end], source, match)
+		if !ok {
+			continue
+		}
+		replacements = append(replacements,
+			imagePreviewRendererReplacement{start: match[0], end: end, value: updatedTitle},
+			imagePreviewRendererReplacement{start: markerStart, end: markerStart + len("/*"+imageGenerationUIPatchV1Marker+"*/"), value: "/*" + imageGenerationUIPatchMarker + "*/"},
+		)
+		usedMarkers[markerStart] = true
+	}
+	if len(replacements) == 0 {
+		return source, recognized, changed
+	}
+	sort.Slice(replacements, func(left, right int) bool {
+		return replacements[left].start < replacements[right].start
+	})
+	var output strings.Builder
+	last := 0
+	for _, replacement := range replacements {
+		if replacement.start < last {
+			return source, recognized, changed
+		}
+		output.WriteString(source[last:replacement.start])
+		output.WriteString(replacement.value)
+		last = replacement.end
+	}
+	output.WriteString(source[last:])
+	return output.String(), true, true
+}
+
+func upgradeLegacyImageGenerationTitleRenderer(current, source string, match []int) (string, bool) {
+	step := imagePreviewSubmatch(source, match, 2)
+	status := imagePreviewSubmatch(source, match, 3)
+	resolvedModel := imagePreviewSubmatch(source, match, 6)
+	displayName := imagePreviewSubmatch(source, match, 10)
+	isNewModel := imagePreviewSubmatch(source, match, 14)
+	oldModelLabel := displayName + `=` + resolvedModel + `?.displayName||(` + step + `.modelName?.replace(/^gpt-image-(\d+)$/i,"GPT Image $1"))||` + step + `.modelName||"Image generator"`
+	if strings.Count(current, oldModelLabel) != 1 {
+		return "", false
+	}
+	updated := strings.Replace(current, oldModelLabel, imageGenerationModelLabel(step, resolvedModel, displayName), 1)
+	oldIsNewModel := `,` + isNewModel + `=` + resolvedModel + `?.isNewModel??!1;return `
+	newIsNewModel := `,` + isNewModel + `=` + resolvedModel + `?.isNewModel??!1,$wfIsGeminiImage=!!` + resolvedModel + `||/^gemini[-_]/i.test(` + step + `.modelName||"");return `
+	if strings.Count(updated, oldIsNewModel) != 1 {
+		return "", false
+	}
+	updated = strings.Replace(updated, oldIsNewModel, newIsNewModel, 1)
+	for _, prefix := range []string{"Generating with ", "Generated with ", "Generate with "} {
+		oldTitle := "`" + prefix + "${" + displayName + "}${" + resolvedModel + `?" \u{1F34C}":""}` + "`"
+		newTitle := "`" + prefix + "${" + displayName + "}${$wfIsGeminiImage?\" \\u{1F34C}\":\"\"}`"
+		if strings.Count(updated, oldTitle) != 1 {
+			return "", false
+		}
+		updated = strings.Replace(updated, oldTitle, newTitle, 1)
+	}
+	return addNeutralImageGenerationLoadingTitle(updated, step, status)
+}
+
+func imageGenerationResultRendererReplacement(source string, match []int, hookSource string, hookMatch []int) string {
+	component := imagePreviewSubmatch(source, match, 1)
+	step := imagePreviewSubmatch(source, match, 2)
+	status := imagePreviewSubmatch(source, match, 3)
+	err := imagePreviewSubmatch(source, match, 4)
+	jsx := imagePreviewSubmatch(source, match, 5)
+	container := imagePreviewSubmatch(source, match, 6)
+	loading := imagePreviewSubmatch(source, match, 7)
+	title := imagePreviewSubmatch(source, match, 10)
+	supplementaryView := imagePreviewSubmatch(source, match, 15)
+	stateHook := imagePreviewSubmatch(hookSource, hookMatch, 3)
+	callbackHook := imagePreviewSubmatch(hookSource, hookMatch, 5)
+
+	return "/*" + imageGenerationUIPatchMarker + "*/" + component + "=({step:" + step + ",status:" + status + ",error:" + err + "})=>{let[$wfImageExpanded,$wfSetImageExpanded]=" + stateHook + "(!0),$wfToggleImageExpanded=" + callbackHook + "(()=>{$wfSetImageExpanded(value=>!value)},[]);return " + jsx + "(" + container + ",{loading:" + loading + "(" + status + "),title:" + jsx + "(" + title + ",{step:" + step + ",status:" + status + "}),supplementaryView:" + err + "?null:" + jsx + "(" + supplementaryView + ",{step:" + step + ",status:" + status + "}),cta:null,isExpanded:$wfImageExpanded,onToggle:$wfToggleImageExpanded,hasSupplementaryView:!" + err + "})}"
 }
 
 func patchOriginalImagePreviewRenderers(source string) (string, bool, bool) {
@@ -207,7 +712,7 @@ func imagePreviewV4Renderer(media, step, image, resolver, inlineData string) str
 // for generatedMedia and then, if necessary, for generatedImage; a metadata
 // object in generatedMedia can no longer hide a usable generatedImage URI.
 func imagePreviewResolveMedia(media, image, resolver, inlineData string) string {
-	return media + "?.uri?(" + image + "=" + resolver + "?.(" + media + ".uri)," + image + "=(" + image + "&&typeof " + image + ".getState===\"function\"?" + image + ".getState():" + image + "||void 0)):" +
+	return media + "?.uri?(" + image + "=" + resolver + "?.(" + media + ".uri)," + image + "=(" + image + "&&typeof " + image + ".getState===\"function\"?" + image + ".getState():" + image + ")," + image + "=typeof " + image + "===\"string\"?" + image + ":void 0):" +
 		media + "?.payload?.case===\"inlineData\"&&(" + image + "=" + media + "?" + inlineData + "(" + media + "):void 0),!" + image + "&&" + media + "?.base64Data&&(" + image + "=\"data:\"+(" + media + ".mimeType||\"image/png\")+\";base64,\"+(typeof " + media + ".base64Data===\"string\"?" + media + ".base64Data:btoa(Array.from(" + media + ".base64Data).map(i=>String.fromCharCode(i)).join(\"\"))))" +
 		imagePreviewFileURIFallback(media, image)
 }
@@ -216,8 +721,10 @@ func imagePreviewFileURIFallback(media, image string) string {
 	// The IIFE keeps the fallback's local names out of the minified renderer
 	// scope. It intentionally catches malformed percent encodings: a bad file
 	// name must not throw from React rendering and blank the whole chat step.
-	// file://server/share is retained as //server/share for Windows UNC paths.
-	return ",!" + image + "&&" + media + "?.uri&&typeof " + media + ".uri===\"string\"&&" + media + ".uri.startsWith(\"file://\")&&(" + image + "=((u)=>{let p=u.replace(/^file:\\/\\/\\/([A-Za-z]:\\/)/,\"$1\");p===u&&(p=u.startsWith(\"file:///\")?u.slice(7):u.replace(/^file:\\/\\//,\"//\"));try{return decodeURIComponent(p)}catch{return p}})(" + media + ".uri))"
+	// VS Code maps local files to vscode-file://vscode-app/...; that is a
+	// same-origin browser resource, while raw paths and file: are rejected by
+	// the workbench image CSP. UNC hosts remain URI authorities.
+	return ",!" + image + "&&" + media + "?.uri&&typeof " + media + ".uri===\"string\"&&" + media + ".uri.startsWith(\"file://\")&&(" + image + "=((u)=>{let p=u.replace(/^file:\\/\\//,\"\");try{p=decodeURIComponent(p)}catch{}let h=p.match(/^([^/]+)(\\/.*)$/),e=v=>encodeURI(v).replace(/[?#]/g,c=>c===\"#\"?\"%23\":\"%3F\");return h&&h[1]!==\"localhost\"?\"vscode-file://\"+h[1]+e(h[2]):\"vscode-file://vscode-app\"+e(h&&h[1]===\"localhost\"?h[2]:p)})(" + media + ".uri))"
 }
 
 func imagePreviewRendererPaths(root string) []string {

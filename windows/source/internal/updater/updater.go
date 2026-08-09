@@ -24,7 +24,7 @@ import (
 
 const (
 	Repository     = "xyf0104/Antigravity-WF-Assistant"
-	CurrentVersion = "1.4.20"
+	CurrentVersion = "1.4.24"
 	maxAssetBytes  = int64(2 << 30) // installers are normally tens of MB
 	// CheckTimeout keeps a background update check from blocking the UI when a
 	// network, DNS resolver, proxy, or captive portal is unhealthy.
@@ -577,19 +577,30 @@ func releaseChecksum(ctx context.Context, release githubRelease, assetName strin
 }
 
 func selectInstaller(release githubRelease, platform string) (githubAsset, error) {
+	version, ok := stableReleaseVersion(release)
+	if !ok {
+		return githubAsset{}, fmt.Errorf("该版本没有有效的稳定版标签")
+	}
+	// The release workflow deliberately publishes exactly one installer for each
+	// platform. Do not use a fuzzy extension/name match here: an accidentally
+	// attached portable build or unrelated package must never become an
+	// in-app-update candidate merely because it contains "windows" or "macos".
+	// Keeping this contract identical to release.yml also makes the SHA256
+	// manifest unambiguous.
+	expectedName := ""
+	switch platform {
+	case "darwin":
+		expectedName = fmt.Sprintf("Antigravity-WF-Assistant-macOS-universal-v%s-Installer.pkg", version)
+	case "windows":
+		expectedName = fmt.Sprintf("Antigravity-WF-Assistant-Windows-x64-v%s-Setup.exe", version)
+	default:
+		return githubAsset{}, fmt.Errorf("该版本没有适用于当前系统的安装包")
+	}
 	assets := append([]githubAsset(nil), release.Assets...)
 	sort.Slice(assets, func(i, j int) bool { return assets[i].Name < assets[j].Name })
 	for _, asset := range assets {
-		name := strings.ToLower(asset.Name)
-		switch platform {
-		case "darwin":
-			if strings.HasSuffix(name, ".pkg") && strings.Contains(name, "macos") {
-				return asset, nil
-			}
-		case "windows":
-			if strings.HasSuffix(name, ".exe") && strings.Contains(name, "windows") && strings.Contains(name, "setup") {
-				return asset, nil
-			}
+		if strings.EqualFold(asset.Name, expectedName) {
+			return asset, nil
 		}
 	}
 	return githubAsset{}, fmt.Errorf("该版本没有适用于当前系统的安装包")

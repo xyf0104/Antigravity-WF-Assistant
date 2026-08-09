@@ -94,7 +94,7 @@ const proxyDiagnostic = computed(() => {
     return { tone: "err", text: "本地代理尚未监听，Antigravity 暂时无法读取自定义模型。" };
   }
   if (!state.patch.proxyManaged) {
-    return { tone: "warn", text: "端口 50999 正由其他进程占用，请先关闭旧版助手后再试。" };
+    return { tone: "warn", text: "本地代理正由其他程序占用，请先关闭旧版助手后再试。" };
   }
   if (state.patch.lastModelRequestCanceled || isCanceledModelRequest(state.patch.lastError)) {
     return { tone: "neutral", text: "最近一次模型列表请求已取消，未影响已保存的自定义模型。" };
@@ -157,7 +157,7 @@ onUnmounted(() => {
         <div class="col" style="gap: 1px">
           <div class="t-headline">{{ statusLabel }}</div>
           <div class="t-caption" style="color: inherit; opacity: 0.7">
-            代理端口 50999 ·
+            本地代理 ·
             {{ state.patch.proxyManaged ? "当前 WF助手正在监听" : state.patch.proxyListening ? "被其他程序占用" : "未监听" }}
           </div>
         </div>

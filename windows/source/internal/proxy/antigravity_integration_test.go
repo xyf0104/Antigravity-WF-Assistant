@@ -281,6 +281,51 @@ func TestNativeImageGenerationUsesLastCustomOpenAIModelForSameTrajectory(t *test
 	}
 }
 
+func TestNativeAgentSwitchClearsRememberedImageSourceForItsTrajectory(t *testing.T) {
+	resetImageGenerationSourcesForTest()
+	t.Cleanup(resetImageGenerationSourcesForTest)
+
+	model := storage.CustomModel{
+		Name: "models/gpt-image-source", Provider: "openai", APIURL: "https://example.invalid",
+		APIKey: "test-key", ExternalModelName: "gpt-image-2", APIStyle: "auto",
+	}
+	setupAntigravityIntegrationModel(t, model)
+
+	trajectoryA := "0f3d1f6f-6caa-4cdd-a7bc-957c40358148"
+	trajectoryB := "c1f5fa72-7fa8-4d5d-ac51-d5f9b13398d1"
+	customAgentA := "agent/agent-id/1785736368613/" + trajectoryA + "/20"
+	customAgentB := "agent/agent-id/1785736368613/" + trajectoryB + "/20"
+	nativeImageA := "image_gen/1785736374865/" + trajectoryA + "/21"
+	nativeImageB := "image_gen/1785736374865/" + trajectoryB + "/21"
+	nativeGeminiA := "agent/agent-id/1785736380000/" + trajectoryA + "/22"
+
+	selected, customMatched, nativeImageSource := resolveGenerationModel(model.Name, customAgentA)
+	if selected == nil || !customMatched || nativeImageSource {
+		t.Fatalf("custom source resolution = model:%#v custom:%t native:%t", selected, customMatched, nativeImageSource)
+	}
+	rememberImageGenerationSource(customAgentA, selected)
+	rememberImageGenerationSource(customAgentB, selected)
+
+	selected, customMatched, nativeImageSource = resolveGenerationModel("gemini-3.1-flash-image", nativeImageA)
+	if selected == nil || customMatched || !nativeImageSource || selected.ExternalModelName != "gpt-image-2" {
+		t.Fatalf("remembered custom image source was not available: model:%#v custom:%t native:%t", selected, customMatched, nativeImageSource)
+	}
+
+	selected, customMatched, nativeImageSource = resolveGenerationModel("gemini-3.6-flash", nativeGeminiA)
+	if selected != nil || customMatched || nativeImageSource {
+		t.Fatalf("native Gemini agent request should pass through and clear only its source: model:%#v custom:%t native:%t", selected, customMatched, nativeImageSource)
+	}
+	selected, customMatched, nativeImageSource = resolveGenerationModel("gemini-3.1-flash-image", nativeImageA)
+	if selected != nil || customMatched || nativeImageSource {
+		t.Fatalf("native image request incorrectly reused GPT after Gemini switch: model:%#v custom:%t native:%t", selected, customMatched, nativeImageSource)
+	}
+
+	selected, customMatched, nativeImageSource = resolveGenerationModel("gemini-3.1-flash-image", nativeImageB)
+	if selected == nil || customMatched || !nativeImageSource || selected.ExternalModelName != "gpt-image-2" {
+		t.Fatalf("separate trajectory was incorrectly cleared: model:%#v custom:%t native:%t", selected, customMatched, nativeImageSource)
+	}
+}
+
 func TestSelectedImageModelUsesImagesEndpointWithoutGenerationConfig(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -31,6 +31,15 @@ var windowsASARPostReplaceHook func()
 func runWindows(action string) (message string, err error) {
 	windowsOperationMu.Lock()
 	defer windowsOperationMu.Unlock()
+	// Restore only consumes canonical backups; it must remain available even
+	// when a hand-edited runtime port state is corrupt.
+	if action == "status" {
+		_ = refreshPatchProxyEndpoint()
+	} else if action != "restore" {
+		if err := refreshPatchProxyEndpoint(); err != nil {
+			return "", err
+		}
+	}
 	targets := locateWindowsInstallations()
 	if action == "status" {
 		return windowsStatusText(buildWindowsStatus(targets)), nil
@@ -54,6 +63,9 @@ func runWindows(action string) (message string, err error) {
 }
 
 func getWindowsStatus() Status {
+	// Status remains available even if a hand-edited runtime state is invalid;
+	// apply will surface that error and refuse to write an inconsistent patch.
+	_ = refreshPatchProxyEndpoint()
 	return buildWindowsStatus(locateWindowsInstallations())
 }
 
@@ -611,7 +623,7 @@ func windowsReplaceFile(source, target string) error {
 }
 
 func windowsProxyListening() bool {
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:50999", 400*time.Millisecond)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", currentPatchProxyEndpoint().Port), 400*time.Millisecond)
 	if err != nil {
 		return false
 	}

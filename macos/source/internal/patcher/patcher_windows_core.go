@@ -14,6 +14,8 @@ import (
 const (
 	windowsProductionEndpoint    = "https://daily-cloudcode-pa.googleapis.com"
 	windowsSandboxEndpoint       = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+	windowsPublicEndpoint        = "https://cloudcode-pa.googleapis.com"
+	windowsAutopushEndpoint      = "https://autopush-cloudcode-pa.sandbox.googleapis.com"
 	windowsBaseProxyEndpoint     = "http://127.0.0.1:50999"
 	windowsTextProxyEndpoint     = "http://127.0.0.1:50999/v1internal/antigravity-byok"
 	windowsBinaryProxyEndpoint   = "http://127.0.0.1:50999/v1internal/byokxxx"
@@ -29,12 +31,20 @@ const (
 )
 
 var windowsCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.getCloudCodeUrl\(\)`)
-var windowsExtensionDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.getInstance\(\)\.appDataDirectoryName`)
-var windowsMainDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.ideName`)
+var windowsFlexibleCloudCodeCallPattern = regexp.MustCompile(`await\s+[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*\??\.getCloudCodeUrl\(\)`)
+var windowsCloudCodeSettingPattern = regexp.MustCompile(`this\.[A-Za-z_$][\w$]*\.getValue\(["']jetski\.cloudCodeUrl["']\)`)
+var windowsCloudCodeURLPattern = regexp.MustCompile(`https://[A-Za-z0-9.-]*cloudcode-pa(?:\.sandbox)?\.googleapis\.com`)
+var windowsCloudCodeFlagPattern = regexp.MustCompile(`["']--(?:cloud_code_endpoint|api_server_url)["']`)
+var windowsExtensionDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.getInstance\(\)\.appDataDirectoryName`)
+var windowsMainDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.ideName`)
+
+// This distinguishes a helper-generated fixed-width Language Server endpoint
+// from a vendor URL even after the selected fallback port changes.
+var windowsManagedBinaryEndpointPattern = regexp.MustCompile(`http://127\.0\.0\.1:[1-9][0-9]{4}/v1internal/`)
 
 // windowsTarget describes both the packaged Agent/2.x layout and the unpacked
 // IDE layout. Keeping the shape independent from discovery makes the patch
-// algorithms testable on macOS before the Windows executable is shipped.
+// algorithms independently testable before the executable is shipped.
 type windowsTarget struct {
 	root           string
 	name           string
@@ -74,10 +84,9 @@ func windowsLanguagePatchState(path string) (patched, hasEmbeddedEndpoint bool) 
 	if err != nil {
 		return false, false
 	}
-	hasOriginal := bytes.Contains(data, []byte(windowsProductionEndpoint)) ||
-		bytes.Contains(data, []byte(windowsSandboxEndpoint))
-	hasPatched := bytes.Contains(data, []byte(windowsBinaryProxyEndpoint)) ||
-		bytes.Contains(data, []byte(windowsBinarySandboxEndpoint))
+	endpoint := currentPatchProxyEndpoint()
+	hasOriginal := windowsCloudCodeURLPattern.Find(data) != nil
+	hasPatched := bytes.Contains(data, []byte(endpoint.Base+"/v1internal/"))
 	if !hasOriginal && !hasPatched {
 		return true, false
 	}
@@ -86,13 +95,21 @@ func windowsLanguagePatchState(path string) (patched, hasEmbeddedEndpoint bool) 
 
 func windowsTargetPatchState(target windowsTarget) (main, extension, language, fully bool) {
 	language, _ = windowsLanguagePatchState(target.language)
+	imagePreviewPatched := !windowsImagePreviewNeedsPatch(target)
 	if target.kind == "agent" {
 		main = windowsASARPatched(target.asar)
-		return main, true, language, main && language
+		return main, true, language, main && language && imagePreviewPatched
 	}
 	main = windowsMainPatched(target.main)
 	extension = target.extensionEntry == "" || windowsExtensionPatched(target.extensionEntry)
-	return main, extension, language, main && extension && language
+	return main, extension, language, main && extension && language && imagePreviewPatched
+}
+
+func windowsImagePreviewNeedsPatch(target windowsTarget) bool {
+	if target.kind == "agent" {
+		return imagePreviewASARNeedsPatch(target.asar)
+	}
+	return imagePreviewRenderersNeedPatch(windowsImagePreviewRendererPaths(target))
 }
 
 func windowsMainPatched(path string) bool {
@@ -101,9 +118,9 @@ func windowsMainPatched(path string) bool {
 		return false
 	}
 	source := string(data)
-	endpointPatched := strings.Contains(source, windowsBaseProxyEndpoint) &&
-		!strings.Contains(source, windowsProductionEndpoint) &&
-		!strings.Contains(source, windowsIDECloudCodeSetting)
+	endpointPatched := strings.Contains(source, currentPatchProxyEndpoint().Base) &&
+		!windowsCloudCodeURLPattern.MatchString(source) &&
+		!windowsCloudCodeSettingPattern.MatchString(source)
 	return endpointPatched && strings.Contains(source, windowsMainMarker) &&
 		!strings.Contains(source, authEligibilityOriginal) &&
 		!windowsMainDataPattern.MatchString(source)
@@ -116,8 +133,9 @@ func windowsExtensionPatched(path string) bool {
 	}
 	source := string(data)
 	return strings.Contains(source, windowsExtensionMarker) &&
-		strings.Contains(source, windowsBaseProxyEndpoint) &&
-		!windowsCloudCodeCallPattern.MatchString(source) &&
+		windowsLauncherHasProxyEndpoint(source) &&
+		!windowsFlexibleCloudCodeCallPattern.MatchString(source) &&
+		!windowsCloudCodeURLPattern.MatchString(source) &&
 		!windowsExtensionDataPattern.MatchString(source)
 }
 
@@ -137,10 +155,55 @@ func windowsASARPatched(path string) bool {
 	if err != nil {
 		return false
 	}
-	return bytes.Contains(launcher, []byte(windowsBaseProxyEndpoint)) &&
-		!bytes.Contains(launcher, []byte(windowsProductionEndpoint)) &&
+	return windowsLauncherHasProxyEndpoint(string(launcher)) &&
+		!windowsCloudCodeURLPattern.Match(launcher) &&
 		bytes.Contains(main, []byte(windowsASARMarker)) &&
 		!bytes.Contains(main, []byte(authEligibilityOriginal))
+}
+
+func windowsLauncherHasProxyEndpoint(source string) bool {
+	endpoint := currentPatchProxyEndpoint()
+	flagLocations := windowsCloudCodeFlagPattern.FindAllStringIndex(source, -1)
+	if len(flagLocations) == 0 {
+		return false
+	}
+	for _, location := range flagLocations {
+		start := location[0] - 1024
+		if start < 0 {
+			start = 0
+		}
+		end := location[1] + 1024
+		if end > len(source) {
+			end = len(source)
+		}
+		if strings.Contains(source[start:end], endpoint.Base) {
+			return true
+		}
+	}
+	return false
+}
+
+func patchWindowsCloudCodeSource(source string) string {
+	endpoint := currentPatchProxyEndpoint()
+	source = windowsCloudCodeURLPattern.ReplaceAllString(source, endpoint.Base)
+	source = windowsCloudCodeSettingPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
+	source = windowsFlexibleCloudCodeCallPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
+	return source
+}
+
+func windowsBinaryEndpointFor(original string) (string, error) {
+	endpoint := currentPatchProxyEndpoint()
+	switch original {
+	case windowsProductionEndpoint:
+		return endpoint.Binary, nil
+	case windowsSandboxEndpoint:
+		return endpoint.BinarySandbox, nil
+	}
+	prefix := endpoint.Base + "/v1internal/"
+	if len(prefix) > len(original) {
+		return "", fmt.Errorf("Language Server 地址过短，无法安全替换: %s", original)
+	}
+	return prefix + strings.Repeat("x", len(original)-len(prefix)), nil
 }
 
 func prepareWindowsLanguagePatch(path string) (*windowsPatchPlan, bool, error) {
@@ -155,14 +218,20 @@ func prepareWindowsLanguagePatch(path string) (*windowsPatchPlan, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	replacements := [][2]string{
-		{windowsProductionEndpoint, windowsBinaryProxyEndpoint},
-		{windowsSandboxEndpoint, windowsBinarySandboxEndpoint},
-	}
 	updated := append([]byte(nil), data...)
 	changed, embedded := false, false
-	for _, replacement := range replacements {
-		oldValue, newValue := []byte(replacement[0]), []byte(replacement[1])
+	seen := make(map[string]bool)
+	for _, match := range windowsCloudCodeURLPattern.FindAll(data, -1) {
+		original := string(match)
+		if seen[original] {
+			continue
+		}
+		seen[original] = true
+		replacement, replacementErr := windowsBinaryEndpointFor(original)
+		if replacementErr != nil {
+			return nil, false, replacementErr
+		}
+		oldValue, newValue := []byte(original), []byte(replacement)
 		if len(oldValue) != len(newValue) {
 			return nil, false, fmt.Errorf("Language Server 补丁长度不一致: %d != %d", len(oldValue), len(newValue))
 		}
@@ -171,9 +240,9 @@ func prepareWindowsLanguagePatch(path string) (*windowsPatchPlan, bool, error) {
 			updated = bytes.ReplaceAll(updated, oldValue, newValue)
 			changed = true
 		}
-		if bytes.Contains(updated, newValue) {
-			embedded = true
-		}
+	}
+	if bytes.Contains(updated, []byte(currentPatchProxyEndpoint().Base+"/v1internal/")) {
+		embedded = true
 	}
 	return &windowsPatchPlan{
 		path: path, original: data, updated: updated, mode: info.Mode(), changed: changed,
@@ -189,22 +258,52 @@ func prepareWindowsMainPatch(path string) (*windowsPatchPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	source := string(data)
-	source = strings.ReplaceAll(source, windowsProductionEndpoint, windowsTextProxyEndpoint)
-	source = strings.ReplaceAll(source, windowsIDECloudCodeSetting, `"`+windowsBaseProxyEndpoint+`"`)
+	source := patchWindowsCloudCodeSource(string(data))
 	source = strings.ReplaceAll(source, authEligibilityOriginal, authEligibilityPatched)
 	if windowsMainDataPattern.MatchString(source) {
 		source = windowsMainDataPattern.ReplaceAllString(source, windowsSharedDataArgument)
 	}
-	if !strings.Contains(source, windowsBaseProxyEndpoint) {
+	if !strings.Contains(source, currentPatchProxyEndpoint().Base) {
 		return nil, fmt.Errorf("%s 中未找到受支持的 Cloud Code URL 设置", path)
 	}
 	if !strings.Contains(source, windowsMainMarker) {
 		source = addWindowsSourceMarker(source, windowsMainMarker)
 	}
+	if updated, result := patchImagePreviewRenderer(source); result.Changed {
+		source = updated
+	}
 	updated := []byte(source)
 	return &windowsPatchPlan{
 		path: path, original: data, updated: updated, mode: info.Mode(), changed: !bytes.Equal(data, updated),
+	}, nil
+}
+
+func windowsImagePreviewRendererPaths(target windowsTarget) []string {
+	if target.kind != "ide" || target.root == "" {
+		return nil
+	}
+	return imagePreviewRendererPaths(filepath.Join(target.root, "resources", "app"))
+}
+
+func windowsASARUnpackedImagePreviewRendererPaths(target windowsTarget) []string {
+	if target.kind != "agent" || target.asar == "" {
+		return nil
+	}
+	return imagePreviewASARUnpackedRendererPathsForPath(target.asar)
+}
+
+func prepareWindowsImagePreviewPatch(path string) (*windowsPatchPlan, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取图片预览渲染器 %s 失败: %w", path, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	updated, result := patchImagePreviewRenderer(string(data))
+	return &windowsPatchPlan{
+		path: path, original: data, updated: []byte(updated), mode: info.Mode(), changed: result.Changed,
 	}, nil
 }
 
@@ -217,15 +316,11 @@ func prepareWindowsExtensionPatch(path string) (*windowsPatchPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	source := string(data)
-	if windowsCloudCodeCallPattern.MatchString(source) {
-		source = windowsCloudCodeCallPattern.ReplaceAllString(source, `"`+windowsBaseProxyEndpoint+`"`)
-	}
-	source = strings.ReplaceAll(source, windowsProductionEndpoint, windowsBaseProxyEndpoint)
+	source := patchWindowsCloudCodeSource(string(data))
 	if windowsExtensionDataPattern.MatchString(source) {
 		source = windowsExtensionDataPattern.ReplaceAllString(source, windowsSharedDataArgument)
 	}
-	if !strings.Contains(source, windowsBaseProxyEndpoint) {
+	if !windowsLauncherHasProxyEndpoint(source) {
 		return nil, fmt.Errorf("%s 中未找到受支持的 getCloudCodeUrl 调用", path)
 	}
 	if !strings.Contains(source, windowsExtensionMarker) {
@@ -250,8 +345,8 @@ func addWindowsSourceMarker(source, marker string) string {
 	return line + "\n" + source
 }
 
-func prepareWindowsASARCandidate(path string) (string, error) {
-	archive, err := readASAR(path)
+func prepareWindowsASARCandidate(sourcePath, destinationPath string) (string, error) {
+	archive, err := readASAR(sourcePath)
 	if err != nil {
 		return "", err
 	}
@@ -263,19 +358,21 @@ func prepareWindowsASARCandidate(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	mainSource := string(mainData)
-	mainSource = strings.ReplaceAll(mainSource, windowsProductionEndpoint, windowsTextProxyEndpoint)
+	mainSource := patchWindowsCloudCodeSource(string(mainData))
 	mainSource = strings.ReplaceAll(mainSource, authEligibilityOriginal, authEligibilityPatched)
 	if !strings.Contains(mainSource, windowsASARMarker) {
 		mainSource = addWindowsSourceMarker(mainSource, windowsASARMarker)
 	}
-	launcherSource := string(launcherData)
-	launcherSource = strings.ReplaceAll(launcherSource, windowsProductionEndpoint, windowsBaseProxyEndpoint)
-	launcherSource = strings.ReplaceAll(launcherSource, windowsSandboxEndpoint, windowsBaseProxyEndpoint)
-	if !strings.Contains(launcherSource, windowsBaseProxyEndpoint) {
+	if updated, result := patchImagePreviewRenderer(mainSource); result.Changed {
+		mainSource = updated
+	}
+	launcherSource := patchWindowsCloudCodeSource(string(launcherData))
+	if !windowsLauncherHasProxyEndpoint(launcherSource) {
 		return "", fmt.Errorf("app.asar 中的 cloud_code_endpoint 结构已变化")
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-byok-windows-asar-*")
+	// A clean backup may live on another volume. Create the candidate beside
+	// the destination so replacement remains an atomic same-volume operation.
+	temp, err := os.CreateTemp(filepath.Dir(destinationPath), ".antigravity-byok-windows-asar-*")
 	if err != nil {
 		return "", err
 	}
@@ -284,9 +381,11 @@ func prepareWindowsASARCandidate(path string) (string, error) {
 		return "", err
 	}
 	_ = os.Remove(candidate)
-	if err := archive.write(candidate, map[string][]byte{
+	replacements := map[string][]byte{
 		"dist/main.js": []byte(mainSource), "dist/languageServer.js": []byte(launcherSource),
-	}); err != nil {
+	}
+	patchImagePreviewASARRenderers(archive, replacements)
+	if err := archive.write(candidate, replacements); err != nil {
 		return "", err
 	}
 	if !windowsASARPatched(candidate) {
@@ -297,11 +396,24 @@ func prepareWindowsASARCandidate(path string) (string, error) {
 }
 
 func windowsContainsKnownPatch(data []byte) bool {
+	if windowsManagedBinaryEndpointPattern.Match(data) {
+		return true
+	}
 	markers := []string{
 		windowsBaseProxyEndpoint, windowsTextProxyEndpoint, windowsBinaryProxyEndpoint,
 		windowsBinarySandboxEndpoint, authEligibilityPatched,
 		windowsExtensionMarker, windowsMainMarker, windowsASARMarker,
 		windowsLegacyASARMarker, windowsLegacyExtensionMarker, windowsLegacyMainMarker,
+		// A renderer fallback is an application modification too.  Keep every
+		// released revision here: when an older helper marker is overlooked,
+		// windowsPatchSource can mistake the already-patched renderer for a
+		// vendor file and overwrite the canonical restore point.
+		imagePreviewPatchV2Marker, imagePreviewPatchV3Marker,
+		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
+		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
+		imagePreviewPatchMarker,
+		imageGenerationUIPatchV1Marker, imageGenerationUIPatchV2Marker,
+		imageGenerationUIPatchMarker,
 	}
 	for _, marker := range markers {
 		if bytes.Contains(data, []byte(marker)) {
