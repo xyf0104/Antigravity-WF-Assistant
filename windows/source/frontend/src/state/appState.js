@@ -61,6 +61,7 @@ export const state = reactive({
   patchLoading: false,
   patchBusy: false,
   patchLog: "",
+  patchProgress: { phase: "idle", operation: "", percent: 0, message: "" },
 
   // Antigravity 启动器
   antigravityActionBusy: {},
@@ -121,7 +122,8 @@ export const statusTone = computed(() => {
   if (!state.patch.proxyListening) return "err";
 	if (!state.patch.proxyManaged) return "err";
 	if (state.patch.targets?.length) {
-		return state.patch.targets.every((target) => target.patched) ? "ok" : "warn";
+		const supported = state.patch.targets.filter((target) => target.supported);
+		return supported.length && supported.every((target) => target.patched) ? "ok" : "warn";
 	}
   if (state.patch.agentPatched && state.patch.idePatched) return "ok";
   if (state.patch.agentPatched || state.patch.idePatched) return "warn";
@@ -132,10 +134,12 @@ export const statusLabel = computed(() => {
   if (!state.patch.proxyListening) return "代理未运行";
 	if (!state.patch.proxyManaged) return "本地代理由其他程序占用";
 	if (state.patch.targets?.length) {
-		const patched = state.patch.targets.filter((target) => target.patched).length;
-		if (patched === state.patch.targets.length) return "全部安装已激活";
-		if (patched > 0) return `${patched}/${state.patch.targets.length} 个安装已激活`;
-		return `发现 ${state.patch.targets.length} 个安装，尚未补丁`;
+		const supported = state.patch.targets.filter((target) => target.supported);
+		const connected = supported.filter((target) => target.patched).length;
+		if (!supported.length) return "未发现可安全连接的安装";
+		if (connected === supported.length) return "本地代理已安全连接";
+		if (connected > 0) return `${connected}/${supported.length} 个安装已连接`;
+		return `发现 ${supported.length} 个可安全连接安装`;
 	}
   if (state.patch.agentPatched && state.patch.idePatched) return "全部已激活";
   if (state.patch.agentPatched) return "Agent Window 已激活";
@@ -371,6 +375,7 @@ export async function loadPatchStatus() {
 export async function applyPatch() {
   state.patchBusy = true;
   state.patchLog = "";
+  state.patchProgress = { phase: "starting", operation: "全部连接", percent: 0, message: "正在准备连接" };
   try {
     const res = await call("ApplyPatch");
     state.patchLog = res?.message || "";
@@ -384,8 +389,23 @@ export async function applyPatch() {
 export async function applyIDEPatch() {
   state.patchBusy = true;
   state.patchLog = "";
+  state.patchProgress = { phase: "starting", operation: "连接 Antigravity IDE", percent: 0, message: "正在准备连接" };
   try {
     const res = await call("ApplyIDEPatch");
+    state.patchLog = res?.message || "";
+    if (res?.ok) await loadPatchStatus();
+    return res;
+  } finally {
+    state.patchBusy = false;
+  }
+}
+
+export async function applyAgentPatch() {
+  state.patchBusy = true;
+  state.patchLog = "";
+  state.patchProgress = { phase: "starting", operation: "连接 Antigravity 2.0", percent: 0, message: "正在准备连接" };
+  try {
+    const res = await call("ApplyAgentPatch");
     state.patchLog = res?.message || "";
     if (res?.ok) await loadPatchStatus();
     return res;
@@ -564,6 +584,19 @@ export async function installLatestUpdate() {
 }
 
 let updateEventsBound = false;
+let patchEventsBound = false;
+
+export function bindPatchEvents() {
+  if (patchEventsBound) return;
+  const runtime = window.runtime;
+  if (typeof runtime?.EventsOn !== "function") return;
+  patchEventsBound = true;
+  runtime.EventsOn("wf:patch-progress", (progress) => {
+    if (!progress) return;
+    state.patchProgress = { ...state.patchProgress, ...progress };
+  });
+}
+
 function bindUpdateEvents() {
   if (updateEventsBound) return;
   const runtime = window.runtime;
@@ -597,6 +630,7 @@ async function waitForStartupHistorySync() {
 
 // 初始加载
 export async function bootstrap() {
+	bindPatchEvents();
 	const [, , , , , , settings] = await Promise.all([
 		loadPatchStatus(), loadStats(), loadModels(), loadAccounts(), loadAutoApproval(), waitForStartupHistorySync(), loadSettings(),
 	]);

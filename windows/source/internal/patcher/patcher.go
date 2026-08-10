@@ -24,6 +24,9 @@ type TargetStatus struct {
 	ASARPath           string
 	ExtensionPath      string
 	LanguageServerPath string
+	Supported          bool
+	ConnectionMode     string
+	Reason             string
 	Patched            bool
 }
 

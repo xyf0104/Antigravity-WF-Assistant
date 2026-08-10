@@ -53,8 +53,12 @@ func runWindows(action string) (message string, err error) {
 		}
 	}()
 	switch action {
-	case "apply", "apply-ide":
-		return applyWindowsTargets(targets, action == "apply-ide")
+	case "apply":
+		return applyWindowsTargetsForKind(targets, "")
+	case "apply-ide":
+		return applyWindowsTargetsForKind(targets, "ide")
+	case "apply-agent":
+		return applyWindowsTargetsForKind(targets, "agent")
 	case "restore":
 		return restoreWindowsTargets(targets)
 	default:
@@ -74,12 +78,17 @@ func buildWindowsStatus(targets []windowsTarget) Status {
 	agentInstalled, ideInstalled := false, false
 	agentPatched, idePatched, ideMainPatched := true, true, true
 	for _, target := range targets {
+		supported, mode, reason := windowsTargetConnectionSupport(target)
 		mainPatched, _, _, patched := windowsTargetPatchState(target)
+		if target.kind == "ide" && target.version != "" {
+			patched = supported && windowsCloudCodeSettingIsConfigured(windowsSettingsPathForStatus(target), windowsBaseProxyEndpoint)
+			mainPatched = patched
+		}
 		status.Targets = append(status.Targets, TargetStatus{
 			Name: target.name, Kind: target.kind, Version: target.version, AppPath: target.root,
 			ExecutablePath: target.executable,
 			MainPath:       target.main, ASARPath: target.asar, ExtensionPath: target.extensionEntry,
-			LanguageServerPath: target.language, Patched: patched,
+			LanguageServerPath: target.language, Supported: supported, ConnectionMode: mode, Reason: reason, Patched: patched,
 		})
 		if status.AsarPath == "" {
 			status.AsarPath = firstWindowsValue(target.asar, target.main)
@@ -145,26 +154,54 @@ func firstWindowsValue(values ...string) string {
 }
 
 func applyWindowsTargets(targets []windowsTarget, onlyIDE bool) (string, error) {
+	if onlyIDE {
+		return applyWindowsTargetsForKind(targets, "ide")
+	}
+	return applyWindowsTargetsForKind(targets, "")
+}
+
+func applyWindowsTargetsForKind(targets []windowsTarget, targetKind string) (string, error) {
 	var selected []windowsTarget
 	for _, target := range targets {
-		if !onlyIDE || target.kind == "ide" {
+		if targetKind == "" || target.kind == targetKind {
 			selected = append(selected, target)
 		}
 	}
 	if len(selected) == 0 {
-		return "", fmt.Errorf("未找到独立 IDE 类型的 Antigravity 安装")
-	}
-	stopWindowsProducts(selected)
-	if windowsTargetsNeedHistoryMerge(selected) {
-		if err := mergeWindowsHistory(); err != nil {
-			return "", fmt.Errorf("合并历史会话失败: %w", err)
+		switch targetKind {
+		case "ide":
+			return "", fmt.Errorf("未找到独立 IDE 类型的 Antigravity 安装")
+		case "agent":
+			return "", fmt.Errorf("未找到 Antigravity Agent / 2.x 类型的安装")
+		default:
+			return "", fmt.Errorf("未找到 Antigravity 安装")
 		}
 	}
-	var messages []string
+
+	// A computer can have an official IDE and a newer Agent/2.x build at the
+	// same time. Only act on targets whose official user-setting chain was
+	// verified. An unsupported target must never prevent a compatible IDE from
+	// connecting, and it must never be treated as a reason to write its bundle.
+	compatible := make([]windowsTarget, 0, len(selected))
+	messages := make([]string, 0, len(selected))
 	for _, target := range selected {
+		supported, _, reason := windowsTargetConnectionSupport(target)
+		if !supported {
+			messages = append(messages, fmt.Sprintf("%s 未连接：%s", target.name, reason))
+			continue
+		}
+		compatible = append(compatible, target)
+	}
+	if len(compatible) == 0 {
+		return strings.Join(messages, "\n\n"), fmt.Errorf("未找到可安全连接的 Antigravity 安装；助手没有修改任何安装文件")
+	}
+	if windowsTargetsRunning(compatible) {
+		return strings.Join(messages, "\n\n"), fmt.Errorf("请先在 Antigravity 中保存内容并完全退出，再连接本地代理；为保护安装完整性，助手不会强制结束进程")
+	}
+	for _, target := range compatible {
 		message, err := applyWindowsTarget(target)
 		if err != nil {
-			return strings.Join(messages, "\n\n"), fmt.Errorf("%s 补丁失败: %w", target.name, err)
+			return strings.Join(messages, "\n\n"), fmt.Errorf("%s 连接失败: %w", target.name, err)
 		}
 		messages = append(messages, message)
 	}
@@ -181,6 +218,104 @@ func windowsTargetsNeedHistoryMerge(targets []windowsTarget) bool {
 }
 
 func applyWindowsTarget(target windowsTarget) (message string, err error) {
+	if target.kind == "agent" {
+		return applyWindowsASARTarget(target)
+	}
+	settingsPath, _, supportErr := windowsTargetUserSettingsPath(target)
+	if supportErr != nil {
+		return "", supportErr
+	}
+	settingPlan, settingChanged, err := prepareWindowsEnsureCloudCodeSetting(settingsPath, windowsBaseProxyEndpoint)
+	if err != nil {
+		return "", err
+	}
+
+	rendererPaths := windowsImageGenerationUIRendererPaths(target)
+	if len(rendererPaths) == 0 {
+		return "", fmt.Errorf("未找到已验证的 IDE 图片界面 renderer；未修改任何文件")
+	}
+	rendererPlans := make([]*windowsPatchPlan, 0, len(rendererPaths))
+	verifiedRenderers := make([]string, 0, len(rendererPaths))
+	for _, rendererPath := range rendererPaths {
+		rendererSource, sourceErr := windowsPatchSource(rendererPath)
+		if sourceErr != nil {
+			return "", sourceErr
+		}
+		plan, planErr := prepareWindowsImagePreviewPatch(rendererSource)
+		if planErr != nil {
+			return "", planErr
+		}
+		plan.path = rendererPath
+		if !bytes.Contains(plan.updated, []byte(imageGenerationUIPatchMarker)) ||
+			!bytes.Contains(plan.updated, []byte(imageGenerationDedupePatchMarker)) {
+			continue
+		}
+		rendererPlans = append(rendererPlans, plan)
+		verifiedRenderers = append(verifiedRenderers, rendererPath)
+	}
+	if len(verifiedRenderers) == 0 {
+		return "", fmt.Errorf("当前 IDE 图片标题结构尚未通过安全匹配；未修改任何文件")
+	}
+	productPlan, productErr := prepareWindowsIDEProductChecksumPatch(target, rendererPlans)
+	if productErr != nil {
+		return "", productErr
+	}
+	backupPlans := append([]*windowsPatchPlan{}, rendererPlans...)
+	if productPlan != nil {
+		backupPlans = append(backupPlans, productPlan)
+	}
+	if err := saveWindowsPlanBackups(backupPlans); err != nil {
+		return "", fmt.Errorf("创建图片界面备份失败: %w", err)
+	}
+	plans := append([]*windowsPatchPlan{}, backupPlans...)
+	if settingChanged {
+		plans = append(plans, settingPlan)
+	}
+	snapshots, snapshotErr := windowsRollbackSnapshots(plans)
+	if snapshotErr != nil {
+		return "", fmt.Errorf("创建事务回滚快照失败: %w", snapshotErr)
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if rollbackErr := restoreWindowsRollbackSnapshots(snapshots); rollbackErr != nil {
+			err = fmt.Errorf("%w；回滚到操作前状态失败: %v", err, rollbackErr)
+		}
+	}()
+	if err = writeWindowsPlans(plans); err != nil {
+		return "", err
+	}
+	if !windowsCloudCodeSettingIsConfigured(settingsPath, windowsBaseProxyEndpoint) {
+		return "", fmt.Errorf("用户级代理设置写入后未通过校验")
+	}
+	for _, rendererPath := range verifiedRenderers {
+		data, readErr := os.ReadFile(rendererPath)
+		if readErr != nil || !bytes.Contains(data, []byte(imageGenerationUIPatchMarker)) {
+			return "", fmt.Errorf("图片界面补丁写入后未通过校验: %s", rendererPath)
+		}
+	}
+	if err = verifyWindowsIDEProductChecksums(target, verifiedRenderers); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(
+		"%s 已安全连接本地代理并启用实际生图模型标题。\n设置文件: %s\n已验证图片 renderer: %d 个\nIDE 完整性 checksum 已同步。\n未修改主进程、扩展或 Language Server。",
+		target.name, settingsPath, len(verifiedRenderers),
+	), nil
+}
+
+func windowsSettingsPathForStatus(target windowsTarget) string {
+	path, _, err := windowsTargetUserSettingsPath(target)
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+// applyWindowsLegacyTarget is retained only for isolated regression fixtures
+// covering historical backup formats. Production flows must never call it:
+// newer Antigravity builds verify their bundled files at startup.
+func applyWindowsLegacyTarget(target windowsTarget) (message string, err error) {
 	if target.executable == "" {
 		return "", fmt.Errorf("%s 安装不完整，缺少主程序", target.root)
 	}
@@ -300,6 +435,11 @@ func applyWindowsASARTarget(target windowsTarget) (message string, err error) {
 	if err != nil {
 		return "", err
 	}
+	languagePlan, agentUIEmbedded, err := prepareWindowsAgentEmbeddedUIPlan(languagePlan)
+	if err != nil {
+		return "", err
+	}
+	embedded = embedded || agentUIEmbedded
 	if languagePlan != nil {
 		languagePlan.path = target.language
 	}
@@ -376,7 +516,11 @@ func windowsPatchSource(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !windowsContainsKnownPatch(data) {
+	hasKnownPatch := windowsContainsKnownPatch(data)
+	if !hasKnownPatch {
+		_, hasKnownPatch = windowsAgentEmbeddedUIPatchStateData(data)
+	}
+	if !hasKnownPatch {
 		return path, nil
 	}
 	if backup := windowsExistingFile(windowsBackupPath(path)); backup != "" {
@@ -423,6 +567,10 @@ func windowsRollbackSnapshots(plans []*windowsPatchPlan, extraPaths ...string) (
 		}
 		seen[path] = true
 		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			snapshots = append(snapshots, windowsRollbackSnapshot{path: path, existed: false})
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("读取 %s: %w", path, err)
 		}
@@ -434,16 +582,17 @@ func windowsRollbackSnapshots(plans []*windowsPatchPlan, extraPaths ...string) (
 			return nil, fmt.Errorf("%s 不是常规文件", path)
 		}
 		snapshots = append(snapshots, windowsRollbackSnapshot{
-			path: path, data: data, mode: info.Mode(),
+			path: path, data: data, mode: info.Mode(), existed: true,
 		})
 	}
 	return snapshots, nil
 }
 
 type windowsRollbackSnapshot struct {
-	path string
-	data []byte
-	mode os.FileMode
+	path    string
+	data    []byte
+	mode    os.FileMode
+	existed bool
 }
 
 func restoreWindowsRollbackSnapshots(snapshots []windowsRollbackSnapshot) error {
@@ -452,6 +601,12 @@ func restoreWindowsRollbackSnapshots(snapshots []windowsRollbackSnapshot) error 
 	// that observes a companion file while app.asar is being restored.
 	for index := len(snapshots) - 1; index >= 0; index-- {
 		snapshot := snapshots[index]
+		if !snapshot.existed {
+			if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("移除本次新建的 %s: %w", snapshot.path, err)
+			}
+			continue
+		}
 		if err := windowsWriteFileAtomic(snapshot.path, snapshot.data, snapshot.mode); err != nil {
 			return fmt.Errorf("恢复 %s: %w", snapshot.path, err)
 		}
@@ -514,10 +669,97 @@ func writeWindowsPlans(plans []*windowsPatchPlan) error {
 }
 
 func restoreWindowsTargets(targets []windowsTarget) (string, error) {
-	stopWindowsProducts(targets)
+	if len(targets) == 0 {
+		return "未找到 Antigravity 安装；未修改任何文件。", nil
+	}
+	if windowsTargetsRunning(targets) {
+		return "", fmt.Errorf("请先正常关闭所有 Antigravity 窗口，再恢复原机配置；助手不会强制结束进程")
+	}
+
+	var plans []*windowsPatchPlan
+	var messages []string
+	seen := map[string]bool{}
+	for _, target := range targets {
+		targetRestored := 0
+		var targetPlans []*windowsPatchPlan
+		if target.kind == "ide" {
+			if settingsPath := windowsSettingsPathForStatus(target); settingsPath != "" {
+				plan, ok, err := prepareWindowsRemoveCloudCodeSetting(settingsPath, windowsBaseProxyEndpoint)
+				if err != nil {
+					return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复用户设置失败: %w", target.name, err)
+				}
+				if ok {
+					plans = append(plans, plan)
+					targetRestored++
+				}
+			}
+		}
+
+		paths := []string{target.main, target.extensionEntry, target.asar, target.language}
+		paths = append(paths, windowsImagePreviewRendererPaths(target)...)
+		paths = append(paths, windowsASARUnpackedImagePreviewRendererPaths(target)...)
+		for _, path := range paths {
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			plan, ok, err := prepareWindowsRestorePlan(path)
+			if err != nil {
+				return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复失败: %w", target.name, err)
+			}
+			if ok {
+				plans = append(plans, plan)
+				targetPlans = append(targetPlans, plan)
+				targetRestored++
+			}
+		}
+		if target.kind == "ide" {
+			productPlan, productErr := prepareWindowsIDEProductChecksumPatch(target, targetPlans)
+			if productErr != nil {
+				return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复完整性 checksum 失败: %w", target.name, productErr)
+			}
+			if productPlan != nil {
+				plans = append(plans, productPlan)
+				targetRestored++
+			}
+		}
+		if targetRestored == 0 {
+			messages = append(messages, fmt.Sprintf("%s 未发现由本助手写入且可安全恢复的配置。", target.name))
+		} else {
+			messages = append(messages, fmt.Sprintf("%s 将恢复 %d 项本助手配置。", target.name, targetRestored))
+		}
+	}
+	if len(plans) == 0 {
+		return strings.Join(messages, "\n") + "\n未修改任何用户文件或安装文件。", nil
+	}
+	snapshots, err := windowsRollbackSnapshots(plans)
+	if err != nil {
+		return strings.Join(messages, "\n"), err
+	}
+	if err := writeWindowsPlans(plans); err != nil {
+		if rollbackErr := restoreWindowsRollbackSnapshots(snapshots); rollbackErr != nil {
+			return strings.Join(messages, "\n"), fmt.Errorf("%w；回滚失败: %v", err, rollbackErr)
+		}
+		return strings.Join(messages, "\n"), err
+	}
+	for _, target := range targets {
+		if target.kind == "ide" {
+			if err := verifyWindowsIDEProductChecksums(target, windowsImageGenerationUIRendererPaths(target)); err != nil {
+				_ = restoreWindowsRollbackSnapshots(snapshots)
+				return strings.Join(messages, "\n"), err
+			}
+		}
+	}
+	return strings.Join(messages, "\n") + "\n恢复完成。未删除其他用户设置、AppData、.gemini 或聊天数据。", nil
+}
+
+// restoreWindowsLegacyTargets exists solely for historical regression fixtures.
+// Production code must call restoreWindowsTargets, which intentionally never
+// writes an executable, bundle, ASAR, extension, renderer, or language server.
+func restoreWindowsLegacyTargets(targets []windowsTarget) (string, error) {
 	var messages []string
 	for _, target := range targets {
-		restored := 0
+		var plans []*windowsPatchPlan
 		paths := []string{target.main, target.extensionEntry, target.asar, target.language}
 		paths = append(paths, windowsImagePreviewRendererPaths(target)...)
 		paths = append(paths, windowsASARUnpackedImagePreviewRendererPaths(target)...)
@@ -527,18 +769,21 @@ func restoreWindowsTargets(targets []windowsTarget) (string, error) {
 				continue
 			}
 			seen[path] = true
-			ok, err := restoreWindowsFileIfAvailable(path)
+			plan, ok, err := prepareWindowsRestorePlan(path)
 			if err != nil {
 				return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复失败: %w", target.name, err)
 			}
 			if ok {
-				restored++
+				plans = append(plans, plan)
 			}
 		}
-		if restored == 0 {
+		if len(plans) == 0 {
 			messages = append(messages, fmt.Sprintf("%s 未发现可恢复的补丁备份。", target.name))
 		} else {
-			messages = append(messages, fmt.Sprintf("%s 已恢复 %d 个原始文件。", target.name, restored))
+			if err := writeWindowsPlans(plans); err != nil {
+				return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复失败: %w", target.name, err)
+			}
+			messages = append(messages, fmt.Sprintf("%s 已恢复 %d 个原始文件。", target.name, len(plans)))
 		}
 	}
 	return strings.Join(messages, "\n") + "\n请重新打开对应的 Antigravity。", nil
@@ -556,6 +801,26 @@ func restoreWindowsFile(path string) error {
 }
 
 func restoreWindowsFileIfAvailable(path string) (bool, error) {
+	plan, ok, err := prepareWindowsRestorePlan(path)
+	if err != nil || !ok {
+		return ok, err
+	}
+	return true, windowsWriteFileAtomic(plan.path, plan.updated, plan.mode)
+}
+
+func prepareWindowsRestorePlan(path string) (*windowsPatchPlan, bool, error) {
+	active, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	// A clean active file commonly means Antigravity was upgraded or repaired.
+	// Never write an older helper backup over that newer official file.
+	if !windowsContainsKnownPatch(active) {
+		return nil, false, nil
+	}
 	backup := windowsBackupPath(path)
 	if windowsExistingFile(backup) == "" {
 		for _, legacy := range windowsLegacyBackupPaths(path) {
@@ -566,20 +831,20 @@ func restoreWindowsFileIfAvailable(path string) (bool, error) {
 		}
 	}
 	if windowsExistingFile(backup) == "" {
-		return false, nil
+		return nil, false, nil
 	}
 	data, err := os.ReadFile(backup)
 	if err != nil {
-		return false, err
+		return nil, false, err
+	}
+	if windowsContainsKnownPatch(data) {
+		return nil, false, fmt.Errorf("原始备份已包含旧版助手 marker，不能安全恢复 %s；请使用官方安装器覆盖重装 Antigravity（不要删除 AppData、.gemini 或聊天数据）", path)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	if err := windowsWriteFileAtomic(path, data, info.Mode()); err != nil {
-		return false, err
-	}
-	return true, nil
+	return &windowsPatchPlan{path: path, original: active, updated: data, mode: info.Mode(), changed: true}, true, nil
 }
 
 func windowsWriteFileAtomic(path string, data []byte, mode os.FileMode) error {
@@ -656,6 +921,24 @@ func stopWindowsProducts(targets []windowsTarget) {
 		_ = cmd.Run()
 	}
 	time.Sleep(700 * time.Millisecond)
+}
+
+func windowsTargetsRunning(targets []windowsTarget) bool {
+	names := map[string]bool{}
+	for _, target := range targets {
+		if target.executable != "" {
+			names[strings.ToLower(filepath.Base(target.executable))] = true
+		}
+	}
+	for name := range names {
+		cmd := exec.Command("tasklist.exe", "/FI", "IMAGENAME eq "+name, "/FO", "CSV", "/NH")
+		configureCommand(cmd)
+		output, err := cmd.Output()
+		if err == nil && strings.Contains(strings.ToLower(string(output)), name) {
+			return true
+		}
+	}
+	return false
 }
 
 func windowsLanguageWarning(path string, embedded bool) string {

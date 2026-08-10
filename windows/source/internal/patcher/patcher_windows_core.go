@@ -285,6 +285,13 @@ func windowsImagePreviewRendererPaths(target windowsTarget) []string {
 	return imagePreviewRendererPaths(filepath.Join(target.root, "resources", "app"))
 }
 
+func windowsImageGenerationUIRendererPaths(target windowsTarget) []string {
+	if target.kind != "ide" || target.root == "" {
+		return nil
+	}
+	return imageGenerationUIRendererPaths(filepath.Join(target.root, "resources", "app"))
+}
+
 func windowsASARUnpackedImagePreviewRendererPaths(target windowsTarget) []string {
 	if target.kind != "agent" || target.asar == "" {
 		return nil
@@ -412,8 +419,9 @@ func windowsContainsKnownPatch(data []byte) bool {
 		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
 		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
 		imagePreviewPatchMarker,
-		imageGenerationUIPatchV1Marker, imageGenerationUIPatchV2Marker,
-		imageGenerationUIPatchMarker,
+		imageGenerationUIPatchV1Marker, imageGenerationUIPatchMarker,
+		imageGenerationDedupePatchMarker,
+		agentImageGenerationUIPatchMarker, agentImageGenerationDedupePatchMarker,
 	}
 	for _, marker := range markers {
 		if bytes.Contains(data, []byte(marker)) {

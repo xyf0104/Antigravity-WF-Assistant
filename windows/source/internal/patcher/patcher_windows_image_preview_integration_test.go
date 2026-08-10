@@ -49,7 +49,7 @@ func TestWindowsUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
 		root: root, name: "Antigravity", kind: "ide", executable: executable,
 		main: mainPath, extensionEntry: extensionPath, language: languagePath,
 	}
-	if _, err := applyWindowsTarget(target); err != nil {
+	if _, err := applyWindowsLegacyTarget(target); err != nil {
 		t.Fatal(err)
 	}
 	for _, rendererPath := range windowsImagePreviewRendererPaths(target) {
@@ -70,7 +70,7 @@ func TestWindowsUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
 			}
 		}
 	}
-	if _, err := restoreWindowsTargets([]windowsTarget{target}); err != nil {
+	if _, err := restoreWindowsLegacyTargets([]windowsTarget{target}); err != nil {
 		t.Fatal(err)
 	}
 	for path, original := range originals {
@@ -320,7 +320,7 @@ func TestWindowsASARUnpackedV3MigrationPreservesCanonicalBackupsAndRestore(t *te
 		}
 	}
 
-	if _, err := restoreWindowsTargets([]windowsTarget{target}); err != nil {
+	if _, err := restoreWindowsLegacyTargets([]windowsTarget{target}); err != nil {
 		t.Fatalf("restore migrated target: %v", err)
 	}
 	if restoredASAR, err := os.ReadFile(asarPath); err != nil || !bytes.Equal(restoredASAR, cleanASAR) {

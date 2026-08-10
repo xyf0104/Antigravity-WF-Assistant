@@ -158,8 +158,9 @@ func TestWindowsKnownPatchDetectionIncludesEveryReleasedImageMarker(t *testing.T
 		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
 		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
 		imagePreviewPatchMarker,
-		imageGenerationUIPatchV1Marker, imageGenerationUIPatchV2Marker,
-		imageGenerationUIPatchMarker,
+		imageGenerationUIPatchV1Marker, imageGenerationUIPatchMarker,
+		imageGenerationDedupePatchMarker,
+		agentImageGenerationUIPatchMarker, agentImageGenerationDedupePatchMarker,
 	} {
 		if !windowsContainsKnownPatch([]byte("/*" + marker + "*/")) {
 			t.Fatalf("known image marker was not protected by backup detection: %s", marker)

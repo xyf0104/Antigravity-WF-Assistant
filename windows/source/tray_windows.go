@@ -7,7 +7,7 @@ import (
 	goruntime "runtime"
 	"sync"
 
-	"github.com/getlantern/systray"
+	"fyne.io/systray"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -19,6 +19,16 @@ var windowsTrayState struct {
 	app     *App
 	started bool
 	ready   bool
+}
+
+var showWindowsTrayMainWindow = func(app *App) {
+	app.showMainWindow()
+}
+
+func handleWindowsTrayPrimaryClick() {
+	if app := currentWindowsTrayApp(); app != nil {
+		showWindowsTrayMainWindow(app)
+	}
 }
 
 // startTray creates a real notification-area icon next to the Windows clock.
@@ -53,6 +63,10 @@ func runWindowsTray() {
 			systray.SetIcon(windowsTrayIcon)
 		}
 		systray.SetTooltip("Antigravity WF助手")
+		systray.SetOnTapped(handleWindowsTrayPrimaryClick)
+		// With no secondary callback, the maintained systray implementation
+		// keeps the native right-click context menu behaviour.
+		systray.SetOnSecondaryTapped(nil)
 		showItem := systray.AddMenuItem("打开主界面", "显示 Antigravity WF助手主窗口")
 		systray.AddSeparator()
 		quitItem := systray.AddMenuItem("退出 Antigravity WF助手", "退出助手并释放本地代理端口")

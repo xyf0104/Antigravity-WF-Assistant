@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
+import Modal from "@/components/ui/Modal.vue";
 import {
   state,
   statusTone,
@@ -13,7 +14,8 @@ import {
   loadPatchStatus,
   applyPatch,
   applyIDEPatch,
-  restorePatch,
+  applyAgentPatch,
+	restorePatch,
   startProxy,
   stopProxy,
   loadHistorySync,
@@ -22,24 +24,65 @@ import {
 } from "@/state/appState";
 
 const patchError = ref("");
+const successDialogOpen = ref(false);
+const successMessage = ref("");
+const successTargets = ref([]);
+const successLaunchError = ref("");
 let pollTimer = null;
 
+const patchProgressPercent = computed(() => Math.min(100, Math.max(0, Number(state.patchProgress?.percent) || 0)));
+
+function showPatchSuccess(mode, result) {
+	const allowedKinds = mode === "all" ? ["ide", "agent"] : [mode];
+	successTargets.value = (state.patch.targets || []).filter((target) =>
+		allowedKinds.includes(target.kind) && target.supported && target.patched && target.launchable !== false
+	);
+	successMessage.value = result?.message || "Antigravity 已安全连接本地代理。";
+	successLaunchError.value = "";
+	successDialogOpen.value = true;
+}
+
+function successTargetLabel(target) {
+	const base = target.kind === "agent" ? "打开 Antigravity 2.0" : "打开 Antigravity IDE";
+	const sameKind = successTargets.value.filter((item) => item.kind === target.kind).length;
+	return sameKind > 1 && target.version ? `${base} v${target.version}` : base;
+}
+
+async function handleSuccessLaunch(target) {
+	successLaunchError.value = "";
+	const res = await launchOrRestartAntigravity(target.appPath);
+	if (!res?.ok) {
+		successLaunchError.value = res?.message || "打开 Antigravity 失败";
+		return;
+	}
+	successDialogOpen.value = false;
+}
+
 async function handleApply() {
-  patchError.value = "";
-  const res = await applyPatch();
-  if (!res?.ok) patchError.value = res?.message || "补丁失败";
+	patchError.value = "";
+	const res = await applyPatch();
+	if (!res?.ok) patchError.value = res?.message || "连接失败";
+	else showPatchSuccess("all", res);
 }
 
 async function handleApplyIDE() {
-  patchError.value = "";
-  const res = await applyIDEPatch();
-  if (!res?.ok) patchError.value = res?.message || "IDE 补丁失败";
+	patchError.value = "";
+	const res = await applyIDEPatch();
+	if (!res?.ok) patchError.value = res?.message || "IDE 连接失败";
+	else showPatchSuccess("ide", res);
+}
+
+async function handleApplyAgent() {
+	patchError.value = "";
+	const res = await applyAgentPatch();
+	if (!res?.ok) patchError.value = res?.message || "Antigravity 2.0 连接失败";
+	else showPatchSuccess("agent", res);
 }
 
 async function handleRestore() {
-  patchError.value = "";
-  const res = await restorePatch();
-  if (!res?.ok) patchError.value = res?.message || "恢复失败";
+	patchError.value = "";
+	const res = await restorePatch();
+	if (!res?.ok) patchError.value = res?.message || "恢复失败";
 }
 
 async function handleToggleProxy() {
@@ -70,10 +113,8 @@ const cacheRing = computed(() => {
   return `stroke-dasharray: ${pct} 100`;
 });
 
-const hasSeparateAgentAndIDE = computed(() => {
-	const kinds = new Set((state.patch.targets || []).map((target) => target.kind));
-	return kinds.has("agent") && kinds.has("ide");
-});
+const hasIDE = computed(() => (state.patch.targets || []).some((target) => target.kind === "ide"));
+const hasAgent = computed(() => (state.patch.targets || []).some((target) => target.kind === "agent"));
 
 const launchTargets = computed(() =>
   (state.patch.targets || []).filter((target) => target.launchable !== false)
@@ -281,7 +322,7 @@ onUnmounted(() => {
     </Card>
 
     <!-- ── 补丁状态 ── -->
-    <Card title="补丁与安装" subtitle="按检测到的安装类型自动应用对应补丁">
+    <Card title="Antigravity 连接" subtitle="自动识别 IDE 与 2.0，并按已验证方式连接本地代理">
       <template #action>
 		<Badge
 		  :tone="state.patch.targets?.length ? 'info' : 'warn'"
@@ -293,6 +334,16 @@ onUnmounted(() => {
         <div v-if="patchError" class="err-box">{{ patchError }}</div>
         <div v-if="state.patchLog && !patchError" class="log-box">{{ state.patchLog }}</div>
 
+		<div v-if="state.patchBusy || state.patchProgress?.phase === 'complete' || state.patchProgress?.phase === 'error'" class="patch-progress" :class="`progress-${state.patchProgress?.phase}`">
+		  <div class="patch-progress-meta">
+			<span>{{ state.patchProgress?.message || "正在连接 Antigravity" }}</span>
+			<strong>{{ patchProgressPercent }}%</strong>
+		  </div>
+		  <div class="patch-progress-track">
+			<div class="patch-progress-bar" :style="{ width: `${patchProgressPercent}%` }"></div>
+		  </div>
+		</div>
+
         <div class="proxy-diagnostic" :class="`diag-${proxyDiagnostic.tone}`">
           <div>{{ proxyDiagnostic.text }}</div>
           <div v-if="state.patch.lastRequestPath" class="mono diagnostic-path">
@@ -302,14 +353,17 @@ onUnmounted(() => {
 
         <div class="row" style="gap:8px;flex-wrap:wrap">
           <Button variant="filled" :disabled="state.patchBusy" :loading="state.patchBusy" @click="handleApply">
-            应用全部补丁
+			全部连接
           </Button>
-		  <Button v-if="hasSeparateAgentAndIDE" variant="tinted" :disabled="state.patchBusy" :loading="state.patchBusy" @click="handleApplyIDE">
-			仅 IDE 补丁
+		  <Button v-if="hasIDE" variant="tinted" :disabled="state.patchBusy" :loading="state.patchBusy" @click="handleApplyIDE">
+			仅连接 IDE
           </Button>
-          <Button variant="plain" :disabled="state.patchBusy" @click="handleRestore">
-            恢复原始文件
-          </Button>
+		  <Button v-if="hasAgent" variant="tinted" :disabled="state.patchBusy" :loading="state.patchBusy" @click="handleApplyAgent">
+			仅连接 Antigravity 2.0
+		  </Button>
+		  <Button variant="plain" :disabled="state.patchBusy" @click="handleRestore">
+			恢复原机配置
+		  </Button>
         </div>
 
 		<div v-if="state.patch.targets?.length" class="target-list">
@@ -322,14 +376,39 @@ onUnmounted(() => {
 			  <div class="row" style="gap:6px">
 					<Badge tone="neutral" :label="targetKindLabel(target.kind)" />
 					<Badge :tone="target.running ? 'ok' : 'neutral'" :label="target.running ? '运行中' : '未运行'" />
-					<Badge :tone="target.patched ? 'ok' : 'warn'" :label="target.patched ? '已补丁' : '待补丁'" />
-			  </div>
+					<Badge :tone="!target.supported ? 'neutral' : target.patched ? 'ok' : 'warn'" :label="!target.supported ? '暂未支持' : target.patched ? '已连接' : '待连接'" />
+				</div>
 			</div>
 			<div class="mono truncate target-path">{{ target.appPath }}</div>
+			<div v-if="target.reason" class="t-caption target-reason">{{ target.reason }}</div>
 		  </div>
 		</div>
       </div>
     </Card>
+
+	<Modal :open="successDialogOpen" title="连接成功" @close="successDialogOpen = false">
+	  <div class="success-dialog-content">
+		<div class="success-icon">✓</div>
+		<div>
+		  <div class="t-headline">补丁已安全应用</div>
+		  <div class="t-caption success-summary">{{ successMessage }}</div>
+		</div>
+	  </div>
+	  <div v-if="successLaunchError" class="err-box success-launch-error">{{ successLaunchError }}</div>
+	  <template #footer>
+		<Button variant="plain" @click="successDialogOpen = false">确定</Button>
+		<Button
+		  v-for="target in successTargets"
+		  :key="target.appPath"
+		  variant="filled"
+		  :disabled="state.antigravityActionBusy[target.appPath]"
+		  :loading="state.antigravityActionBusy[target.appPath]"
+		  @click="handleSuccessLaunch(target)"
+		>
+		  {{ successTargetLabel(target) }}
+		</Button>
+	  </template>
+	</Modal>
   </div>
 </template>
 
@@ -346,6 +425,73 @@ onUnmounted(() => {
 .page > * {
   flex-shrink: 0;
 }
+
+.patch-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-md);
+  background: var(--bg-fill);
+}
+
+.patch-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.patch-progress-meta strong {
+  color: var(--text-primary);
+  font: 12px var(--font-num);
+}
+
+.patch-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--separator);
+}
+
+.patch-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  transition: width 0.3s var(--ease);
+}
+
+.progress-complete .patch-progress-bar { background: var(--green); }
+.progress-error .patch-progress-bar { background: var(--red); }
+
+.success-dialog-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.success-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--green);
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.success-summary {
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.success-launch-error { margin-top: 12px; }
 
 /* 顶部横幅 */
 .banner {

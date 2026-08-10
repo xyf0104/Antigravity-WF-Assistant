@@ -1,7 +1,7 @@
 {
   "name": "antigravity-wf-assistant-frontend",
   "private": true,
-  "version": "1.4.24",
+  "version": "1.5.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test:oauth": "node --test test/oauthAuthorizationStatus.test.mjs",
     "test:oauth-ux": "node --test test/oauthLoginUX.test.mjs",
+    "test:patch-ux": "node --test test/patchProgressUX.test.mjs",
     "test:update-check": "node --test test/updateCheckState.test.mjs"
   },
   "dependencies": {
