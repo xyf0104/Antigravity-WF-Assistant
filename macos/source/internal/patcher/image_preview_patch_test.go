@@ -58,6 +58,28 @@ func imageGenerationUIWithMediaRendererFixture() string {
 	)
 }
 
+// imageGenerationCombinedUIRendererFixture mirrors the IDE 2.1.x renderer
+// where title and result container live in the same component.
+func imageGenerationCombinedUIRendererFixture() string {
+	return `const Za=status=>status==="loading",m=(component,props)=>({component,props}),co=()=>{},es=()=>{},UEi=()=>{};let GEi,XEi;GEi={"gemini-3.1-flash-image":{displayName:"Gemini 3.1 Flash Image",isNewModel:!0}},XEi=({step:e,status:t,error:r})=>{let n=!!e.generatedMedia?.uri,a=e.modelName?GEi[e.modelName]:void 0,i=a?.displayName||"Gemini",s=a?.isNewModel??!1,o=Za(t)?` + "`Generating with ${i} \\u{1F34C}`" + `:n?` + "`Generated with ${i} \\u{1F34C}`" + `:` + "`Generate with ${i} \\u{1F34C}`" + `;return m(co,{loading:Za(t),title:m(es,{prefix:s?m("span",{children:"New"}):void 0,content:o}),supplementaryView:r?null:m(UEi,{step:e,status:t}),cta:null})};`
+}
+
+func imageGenerationCombinedUIWithMediaRendererFixture() string {
+	return strings.Replace(
+		imageGenerationCombinedUIRendererFixture(),
+		`let n=!!e.generatedMedia?.uri,`,
+		`let n=!!(e.generatedMedia?.uri||e.generatedMedia?.payload?.value?.length||e.generatedImage?.uri||e.generatedImage?.base64Data),`,
+		1,
+	)
+}
+
+// imageArtifactMarkdownRendererFixture mirrors the dedicated Markdown image
+// component used by IDE 2.1. It intentionally retains a prompt-card value so
+// the dedupe test can prove that only the duplicate body image is hidden.
+func imageArtifactMarkdownRendererFixture() string {
+	return `;const ke=initial=>[initial,()=>{}],bun=value=>value,F=(component,props)=>({component,props});const wfPromptCard={prompt:"keep this prompt",src:"file:///C:/Users/Test/Image.png"};let _Ci;_Ci=({src:e,alt:t,originalFilePath:r,popout:n=!0,className:a="",openUri:i})=>{let[s,o]=ke(!1),u=bun(e),l=0;return!e||s?F("fallback",{}):F("img",{src:u,alt:t||"Artifact image",originalFilePath:r,popout:n,className:a,openUri:i,l})};`
+}
+
 func TestPatchImagePreviewRendererAddsV7Fallback(t *testing.T) {
 	updated, result := patchImagePreviewRenderer(imagePreviewOriginalRendererFixture())
 	if !result.Recognized || !result.Changed {
@@ -205,6 +227,195 @@ process.stdout.write(JSON.stringify({generatedMediaTitle,generatedImageTitle,gen
 	}
 	if got.GeneratedMediaTitle != "Generated with GPT Image 2" || got.GeneratedImageTitle != "Generated with GPT Image 2" || got.GenericGeminiTitle != "Generate with Gemini 3.6 Flash \U0001F34C" || got.LoadingTitle != "Generating image" || !got.Expanded || !got.HasToggle || !got.HasSupplementaryView {
 		t.Fatalf("unexpected patched macOS image-generation UI state: %#v", got)
+	}
+}
+
+func TestPatchCombinedImageGenerationUIRendererPreservesMultiSourceModelTitles(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		fixture   string
+		step      string
+		wantTitle string
+	}{
+		{
+			name:      "IDE 2.1 generatedMedia URI layout",
+			fixture:   imageGenerationCombinedUIRendererFixture(),
+			step:      `{modelName:"gpt-image-2",generatedMedia:{uri:"image.png"}}`,
+			wantTitle: "Generated with GPT Image 2",
+		},
+		{
+			name:      "macOS generatedImage base64 layout",
+			fixture:   imageGenerationCombinedUIWithMediaRendererFixture(),
+			step:      `{modelName:"gpt-image-2",generatedImage:{base64Data:"image-bytes"}}`,
+			wantTitle: "Generated with GPT Image 2",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			updated, result := patchImagePreviewRenderer(test.fixture)
+			if !result.Recognized || !result.Changed {
+				t.Fatalf("known IDE 2.1 combined image renderer was not patched: %#v", result)
+			}
+			for _, required := range []string{
+				imageGenerationUIPatchMarker,
+				`/^gpt-image-(\d+)$/i.exec(modelName||"")`,
+				`${$wfIsGeminiImage?" \u{1F34C}":""}`,
+				"`Generating image`",
+				`/^gemini[-_](.+)$/i`,
+			} {
+				if !strings.Contains(updated, required) {
+					t.Fatalf("patched combined image-generation UI is missing %q: %s", required, updated)
+				}
+			}
+			if second, secondResult := patchImagePreviewRenderer(updated); !secondResult.Recognized || secondResult.Changed || second != updated {
+				t.Fatalf("patched combined image-generation UI must be idempotent: result=%#v", secondResult)
+			}
+
+			node, err := exec.LookPath("node")
+			if err != nil {
+				t.Skip("node is unavailable; combined image-generation UI runtime check skipped")
+			}
+			path := filepath.Join(t.TempDir(), "combined-image-generation-ui.js")
+			source := updated + `
+const title=(step,status="done")=>XEi({step,status}).props.title.props.content;
+process.stdout.write(JSON.stringify({
+  requested:title(` + test.step + `),
+  gemini:title({modelName:"gemini-3.1-flash-image",generatedMedia:{uri:"image.png"}}),
+  genericGemini:title({modelName:"gemini-3.6-flash",generatedMedia:{uri:"image.png"}}),
+  loading:title({generatedMedia:void 0},"loading")
+}));`
+			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if output, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
+				t.Fatalf("patched combined image-generation UI failed node --check: %s: %v", output, err)
+			}
+			output, err := exec.Command(node, path).Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Requested     string `json:"requested"`
+				Gemini        string `json:"gemini"`
+				GenericGemini string `json:"genericGemini"`
+				Loading       string `json:"loading"`
+			}
+			if err := json.Unmarshal(output, &got); err != nil {
+				t.Fatalf("patched combined image-generation UI did not return JSON %q: %v", output, err)
+			}
+			if got.Requested != test.wantTitle || got.Gemini != "Generated with Gemini 3.1 Flash Image \U0001F34C" || got.GenericGemini != "Generated with Gemini 3.6 Flash \U0001F34C" || got.Loading != "Generating image" {
+				t.Fatalf("unexpected patched combined image-generation UI state: %#v", got)
+			}
+		})
+	}
+}
+
+func TestPatchCombinedImageGenerationUIRendererRejectsMixedAliases(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		replace string
+		with    string
+	}{
+		{
+			name:    "generated image source belongs to another step",
+			replace: `e.generatedImage?.base64Data`,
+			with:    `other.generatedImage?.base64Data`,
+		},
+		{
+			name:    "display name belongs to another resolved model",
+			replace: `i=a?.displayName`,
+			with:    `i=other?.displayName`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := strings.Replace(imageGenerationCombinedUIWithMediaRendererFixture(), test.replace, test.with, 1)
+			updated, result := patchImagePreviewRenderer(original)
+			if result.Recognized || result.Changed || updated != original {
+				t.Fatalf("mixed IDE 2.1 aliases must remain untouched: result=%#v", result)
+			}
+		})
+	}
+}
+
+func TestPatchDuplicateGeneratedImageRendererKeepsPromptAndExpiresAfterTenMinutes(t *testing.T) {
+	original := imagePreviewOriginalRendererFixture() + imageArtifactMarkdownRendererFixture()
+	updated, result := patchImagePreviewRenderer(original)
+	if !result.Recognized || !result.Changed {
+		t.Fatalf("known generated-image and artifact renderers were not patched: %#v", result)
+	}
+	for _, required := range []string{
+		imagePreviewPatchMarker,
+		imageGenerationDedupePatchMarker,
+		`__antigravityWFGeneratedImageTimesV2`,
+		`__antigravityWFIsRecentGeneratedImageV2`,
+		`$wfImageDuplicate?null`,
+		`now-seen<600000`,
+		`prompt:"keep this prompt"`,
+	} {
+		if !strings.Contains(updated, required) {
+			t.Fatalf("generated-image dedupe patch is missing %q: %s", required, updated)
+		}
+	}
+	if second, secondResult := patchImagePreviewRenderer(updated); !secondResult.Recognized || secondResult.Changed || second != updated {
+		t.Fatalf("generated-image dedupe patch must be idempotent: result=%#v", secondResult)
+	}
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable; generated-image dedupe runtime check skipped")
+	}
+	path := filepath.Join(t.TempDir(), "generated-image-dedupe.js")
+	source := `"use strict";Date.now=()=>1000;const prefix=0,suffix=0,e={generatedMedia:{uri:"file:///C:/Users/Test/Image.png"}},n=()=>void 0,YI=()=>void 0,Ia=()=>!1,t={};let a,i;` + updated + `
+const matching=_Ci({src:"vscode-file://vscode-app/C:/Users/Test/Image.png",alt:"Artifact image",originalFilePath:"C:\\\\Users\\\\Test\\\\Image.png"});
+const different=_Ci({src:"file:///C:/Users/Test/Other.png",alt:"Normal Markdown image",originalFilePath:"C:\\\\Users\\\\Test\\\\Other.png"});
+const caseVariant=_Ci({src:"file:///C:/Users/Test/image.png",alt:"Case-sensitive image",originalFilePath:"C:\\\\Users\\\\Test\\\\image.png"});
+Date.now=()=>601000;
+const expired=_Ci({src:"vscode-file://vscode-app/C:/Users/Test/Image.png",alt:"Expired image",originalFilePath:"C:\\\\Users\\\\Test\\\\Image.png"});
+process.stdout.write(JSON.stringify({matching,different,differentAlt:different?.props?.alt,caseVariant,caseVariantAlt:caseVariant?.props?.alt,expired,expiredAlt:expired?.props?.alt,prompt:wfPromptCard.prompt}));`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
+		t.Fatalf("generated-image dedupe failed node --check: %s: %v", output, err)
+	}
+	output, err := exec.Command(node, path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated-image dedupe failed at runtime: %s: %v", output, err)
+	}
+	var got struct {
+		Matching       any    `json:"matching"`
+		Different      any    `json:"different"`
+		DifferentAlt   string `json:"differentAlt"`
+		CaseVariant    any    `json:"caseVariant"`
+		CaseVariantAlt string `json:"caseVariantAlt"`
+		Expired        any    `json:"expired"`
+		ExpiredAlt     string `json:"expiredAlt"`
+		Prompt         string `json:"prompt"`
+	}
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("generated-image dedupe returned invalid JSON %q: %v", output, err)
+	}
+	if got.Matching != nil {
+		t.Fatalf("matching generated artifact was not hidden: %#v", got.Matching)
+	}
+	if got.Different == nil || got.DifferentAlt != "Normal Markdown image" || got.CaseVariant == nil || got.CaseVariantAlt != "Case-sensitive image" {
+		t.Fatalf("different Markdown image was incorrectly hidden or changed: %#v", got)
+	}
+	if got.Expired == nil || got.ExpiredAlt != "Expired image" {
+		t.Fatalf("duplicate image did not become visible after the ten-minute window: %#v", got)
+	}
+	if got.Prompt != "keep this prompt" {
+		t.Fatalf("native prompt card was changed or removed: %#v", got)
+	}
+}
+
+func TestPatchDuplicateGeneratedImageRendererSkipsAmbiguousArtifactComponents(t *testing.T) {
+	original := imagePreviewOriginalRendererFixture() + imageArtifactMarkdownRendererFixture() + imageArtifactMarkdownRendererFixture()
+	updated, result := patchImagePreviewRenderer(original)
+	if !result.Recognized || !result.Changed {
+		t.Fatalf("preview fallback should still be patched: %#v", result)
+	}
+	if strings.Contains(updated, imageGenerationDedupePatchMarker) || strings.Contains(updated, `$wfImageDuplicate`) {
+		t.Fatal("ambiguous Markdown component structure must not receive a guessed dedupe patch")
 	}
 }
 

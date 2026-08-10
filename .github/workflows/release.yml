@@ -72,6 +72,10 @@ jobs:
         working-directory: macos/source/frontend
         run: npm run test:update-check
 
+      - name: Run connection progress UX tests
+        working-directory: macos/source/frontend
+        run: npm run test:patch-ux
+
       - name: Run reasoning capability tests
         working-directory: macos/source/frontend
         run: node --test test/reasoningCapabilities.test.mjs
@@ -105,24 +109,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify release version
+      - name: Verify release version and Windows metadata
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must use numeric MAJOR.MINOR.PATCH form, got: $version" }
-          if ("${{ github.ref_name }}" -ne "v$version") { throw "Tag and VERSION differ" }
-          # npm lockfiles use packages[""] for the root package. PowerShell's
-          # default PSCustomObject parser rejects that empty property name, so
-          # parse all version metadata as hashtables and access explicit keys.
+          if ("${{ github.ref_name }}" -ne "v$version") { throw "Tag and Windows VERSION differ" }
           $frontend = Get-Content frontend/package.json -Raw | ConvertFrom-Json -AsHashtable
           $lockfile = Get-Content frontend/package-lock.json -Raw | ConvertFrom-Json -AsHashtable
           $wails = Get-Content wails.json -Raw | ConvertFrom-Json -AsHashtable
           if ($frontend['version'] -ne $version) { throw "frontend package version differs from VERSION" }
           if ($lockfile['version'] -ne $version) { throw "frontend lockfile version differs from VERSION" }
+          if ($lockfile['packages']['']['version'] -ne $version) { throw "frontend lockfile root package differs from VERSION" }
           if ($wails['info']['productVersion'] -ne $version) { throw "Wails product version differs from VERSION" }
           $updaterNeedle = 'CurrentVersion = "' + $version + '"'
           if (-not (Get-Content internal/updater/updater.go -Raw).Contains($updaterNeedle)) { throw "updater version differs from VERSION" }
           if (-not (Get-Content frontend/src/App.vue -Raw).Contains("v$version")) { throw "visible application version differs from VERSION" }
+
+          # package.json.md5 is Wails' dependency-install cache sentinel, not
+          # a release integrity hash. The checked-in Windows sentinel tracks
+          # the CRLF byte representation used by a normal Windows checkout.
+          $packageText = (Get-Content frontend/package.json -Raw) -replace "`r?`n", "`r`n"
+          $packageBytes = [Text.Encoding]::UTF8.GetBytes($packageText)
+          $md5 = [Security.Cryptography.MD5]::Create()
+          try {
+            $expectedPackageHash = ([BitConverter]::ToString($md5.ComputeHash($packageBytes))).Replace('-', '').ToLowerInvariant()
+          } finally {
+            $md5.Dispose()
+          }
+          $declaredPackageHash = (Get-Content frontend/package.json.md5 -Raw).Trim()
+          if ($declaredPackageHash -ne $expectedPackageHash) { throw "Wails package.json.md5 sentinel is stale" }
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -140,6 +156,13 @@ jobs:
       - name: Install frontend dependencies
         working-directory: windows/source/frontend
         run: npm ci
+
+      - name: Synchronise Wails dependency cache sentinel
+        working-directory: windows/source/frontend
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash package.json -Algorithm MD5).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'package.json.md5'), $hash, [Text.UTF8Encoding]::new($false))
 
       - name: Run frontend build
         working-directory: windows/source/frontend
@@ -160,6 +183,10 @@ jobs:
       - name: Run update-check tests
         working-directory: windows/source/frontend
         run: npm run test:update-check
+
+      - name: Run connection progress UX tests
+        working-directory: windows/source/frontend
+        run: npm run test:patch-ux
 
       - name: Run reasoning capability tests
         working-directory: windows/source/frontend
@@ -191,7 +218,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v*-Setup.exe
+          path: windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.5.2-Setup.exe
           if-no-files-found: error
 
   release:
@@ -205,7 +232,7 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Create SHA256 manifest
+      - name: Verify installer set and create SHA-256 manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -215,21 +242,43 @@ jobs:
           windows="Antigravity-WF-Assistant-Windows-x64-v${version}-Setup.exe"
           test -f "$macos"
           test -f "$windows"
+          test "$(find . -maxdepth 1 -type f \( -name '*.pkg' -o -name '*.exe' \) | wc -l | tr -d ' ')" = "2"
           sha256sum "$macos" "$windows" > SHA256SUMS.txt
+          macos_sha="$(sha256sum "$macos" | awk '{print $1}')"
+          windows_sha="$(sha256sum "$windows" | awk '{print $1}')"
+          {
+            echo "### Installer SHA-256"
+            echo '```text'
+            cat SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat > ../release-body.md <<EOF
+          ## Antigravity WF助手
+
+          - macOS 与 Windows 均为真实 v${version} 安装包；Windows 功能逻辑保持实测通过的 v1.5.1 基线，仅同步版本元数据并重新构建安装器。
+          - 自定义 GPT 生图使用同一上游的 \`gpt-image-2\`；切换回原生 Gemini 后继续使用 Gemini 图片链路。
+          - 未识别的 Antigravity 结构会被安全跳过并显示原因，不会全局替换未知 JavaScript。
+          - \`SHA256SUMS.txt\` 供客户端软件内更新和手动下载校验使用。
+
+          ### SHA-256
+
+          \`$macos\`
+
+          \`$macos_sha\`
+
+          \`$windows\`
+
+          \`$windows_sha\`
+          EOF
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           name: Antigravity WF助手 ${{ github.ref_name }}
           generate_release_notes: false
-          body: |
-            ## Antigravity WF助手
-
-            - 自定义图片模型与原生 Gemini 图片请求会按当前会话轨迹正确分流；切回原生 Gemini 后，不会继续复用之前的自定义图片来源。
-            - 图片预览兼容补丁支持 `generatedMedia`、`generatedImage`、`inlineData`、Base64 和本地图片 URI；图片完成后默认展开，并显示实际模型标题。
-            - 已识别的旧版图片预览补丁可安全升级，原始文件备份、失败回滚和“恢复原始文件”流程保持可用。
-            - renderer 补丁采用严格结构匹配。未知或已经变化的 Antigravity renderer 会被安全跳过，不会进行全局 JavaScript 替换；这不是对所有未来版本的兼容承诺。
-            - 本版本仅提供 macOS Universal `.pkg`、Windows x64 `.exe` 和校验清单。
-
-            请下载与系统匹配的安装包，并在安装前使用 `SHA256SUMS.txt` 核验完整性。
-          files: release-assets/*
+          body_path: release-body.md
+          files: |
+            release-assets/Antigravity-WF-Assistant-macOS-universal-v1.5.2-Installer.pkg
+            release-assets/Antigravity-WF-Assistant-Windows-x64-v1.5.2-Setup.exe
+            release-assets/SHA256SUMS.txt
+          fail_on_unmatched_files: true

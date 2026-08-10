@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func TestDirectOpenAIImageModelUsesOnlyEnabledModelsFromSameUpstream(t *testing.T) {

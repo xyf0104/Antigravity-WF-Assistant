@@ -22,8 +22,7 @@ const (
 )
 
 // Endpoint is the complete set of local URLs inserted into supported
-// Antigravity resources.  The legacy path segments are protocol compatibility
-// identifiers; only the loopback port is runtime-selectable.
+// Antigravity resources. Only the loopback port is runtime-selectable.
 type Endpoint struct {
 	Port          int
 	Base          string
@@ -44,9 +43,9 @@ func ForPort(port int) (Endpoint, error) {
 	return Endpoint{
 		Port:          port,
 		Base:          base,
-		Text:          base + "/v1internal/antigravity-byok",
-		Binary:        base + "/v1internal/byokxxx",
-		BinarySandbox: base + "/v1internal/byokxxx-sandbox",
+		Text:          base + "/v1internal/antigravity-wf",
+		Binary:        base + "/v1internal/wfproxy",
+		BinarySandbox: base + "/v1internal/wfproxy-sandbox",
 	}, nil
 }
 

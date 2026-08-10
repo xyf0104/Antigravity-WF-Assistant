@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 	"github.com/andybalholm/brotli"
 )
 
@@ -246,7 +246,7 @@ func TestInjectCustomModelsSupportsNestedResponseIndexesAndSlugCollisions(t *tes
 	}
 }
 
-func TestInjectCustomModelsAddsOnlyImageCapableModelsToImageGenerationIndex(t *testing.T) {
+func TestInjectCustomModelsPreservesNativeImageGenerationIndex(t *testing.T) {
 	imageModel := storage.CustomModel{
 		Name: "models/image", DisplayName: "Image model", ExternalModelName: "gpt-image-2",
 		Provider: "openai", APIStyle: "responses",
@@ -280,13 +280,16 @@ func TestInjectCustomModelsAddsOnlyImageCapableModelsToImageGenerationIndex(t *t
 	imageSlug := summary.assignments.slugs[modelPlaceholderKey(imageModel)]
 	textSlug := summary.assignments.slugs[modelPlaceholderKey(textModel)]
 	imageIDs := parsed["imageGenerationModelIds"].([]any)
-	if len(imageIDs) != 2 || imageIDs[0] != imageSlug || imageIDs[1] != "native-image" {
-		t.Fatalf("image-generation index = %#v, want only %q plus native model", imageIDs, imageSlug)
+	if len(imageIDs) != 1 || imageIDs[0] != "native-image" {
+		t.Fatalf("native image-generation index was modified: %#v", imageIDs)
 	}
 	for _, id := range imageIDs {
-		if id == textSlug {
-			t.Fatalf("text-only model leaked into image-generation index: %#v", imageIDs)
+		if id == imageSlug || id == textSlug {
+			t.Fatalf("custom model leaked into Google's global image-generation index: %#v", imageIDs)
 		}
+	}
+	if len(summary.assignments.nativeImageModelIDs) != 1 || summary.assignments.nativeImageModelIDs[0] != "native-image" {
+		t.Fatalf("native image route was not captured: %#v", summary.assignments.nativeImageModelIDs)
 	}
 
 	models := parsed["models"].(map[string]any)
@@ -296,15 +299,15 @@ func TestInjectCustomModelsAddsOnlyImageCapableModelsToImageGenerationIndex(t *t
 	if models[textSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != false {
 		t.Fatalf("text model must not claim an image-output presentation capability: %#v", models[textSlug])
 	}
-	imageIndexDiagnosed := false
+	imageIndexModified := false
 	for _, path := range summary.indexPaths {
 		if path == "imageGenerationModelIds" {
-			imageIndexDiagnosed = true
+			imageIndexModified = true
 			break
 		}
 	}
-	if !imageIndexDiagnosed {
-		t.Fatalf("image-generation index update was not diagnosed: %#v", summary.indexPaths)
+	if imageIndexModified {
+		t.Fatalf("native image-generation index must remain untouched: %#v", summary.indexPaths)
 	}
 }
 
@@ -434,8 +437,12 @@ func TestHandleFetchAvailableModelsInjectsIntoCompressedJSONWithoutChangingNativ
 		t.Fatalf("picker indexes = %#v", ids)
 	}
 	imageIDs := root["imageGenerationModelIds"].([]any)
-	if len(imageIDs) != 2 || imageIDs[0] != "custom-gpt-wf" || imageIDs[1] != "native-gemini" {
-		t.Fatalf("image-generation indexes = %#v", imageIDs)
+	if len(imageIDs) != 1 || imageIDs[0] != "native-gemini" {
+		t.Fatalf("native image-generation indexes were modified = %#v", imageIDs)
+	}
+	assignments := snapshotModelRouteAssignments()
+	if len(assignments.nativeImageModelIDs) != 1 || assignments.nativeImageModelIDs[0] != "native-gemini" {
+		t.Fatalf("native image model routing was not committed: %#v", assignments.nativeImageModelIDs)
 	}
 
 	diagnostics := GetDiagnostics()

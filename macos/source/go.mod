@@ -1,9 +1,10 @@
-module antigravity-byok
+module antigravity-wf-assistant
 
 go 1.25.0
 
 require (
 	github.com/andybalholm/brotli v1.2.0
+	github.com/foobaz/go-zopfli v0.0.0-20260611111302-2b73a4c8c2e9
 	github.com/wailsapp/wails/v2 v2.13.0
 	golang.org/x/sys v0.44.0
 )

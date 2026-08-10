@@ -1,8 +1,10 @@
-# Antigravity WF助手 Windows x64 v1.4.24
+# Antigravity WF助手 Windows x64 v1.5.2
+
+Windows v1.5.2 沿用已经验收通过的 v1.5.1 功能逻辑，仅同步应用、安装器、界面和更新识别所需的版本元数据并重新构建标准安装包，业务功能与使用方式不变。
 
 ## 安装
 
-1. 双击 `Antigravity-WF-Assistant-Windows-x64-v1.4.24-Setup.exe`。
+1. 从 GitHub 最新发布页下载并双击 `Antigravity-WF-Assistant-Windows-x64-v1.5.2-Setup.exe`。
 2. 在“选择组件”页按需要勾选“在桌面创建快捷方式”，然后完成安装并从开始菜单或桌面打开“Antigravity WF助手”。
 3. 安装器默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Antigravity WF助手`，安装助手本身不需要管理员权限。
 
@@ -13,7 +15,7 @@
 1. 打开 WF助手，本地代理会自动启动，并自动合并旧版 Antigravity 历史会话。
 2. 进入“账户池”，添加 API Key、导入账户 JSON，或完成 OAuth 登录；保存成功后直接在该账户卡片点击“同步全部模型”。“模型”页仅用于手动添加或调整单个模型。
 3. 回到“总览”，确认已自动识别 Antigravity IDE 或 Antigravity 2.x。
-4. 点击“应用全部补丁”。如果 Antigravity 安装在 `Program Files` 等受保护目录，请右键 WF助手，选择“以管理员身份运行”后再补丁。
+4. 完全退出 Antigravity，然后点击“全部连接”；也可按需要选择“仅连接 IDE”或“仅连接 Antigravity 2.0”。如果 Antigravity 安装在 `Program Files` 等受保护目录，请右键 WF助手，选择“以管理员身份运行”后再连接。
 5. 使用“Antigravity 快捷启动”按钮启动或重启对应安装。
 
 ## 账户池与登录
@@ -45,7 +47,7 @@
 ## 界面和数据
 
 - 右上角可选“浅色”、“深色”或“跟随系统”。
-- 模型、凭据、统计和备份保存在 `%USERPROFILE%\.antigravity-byok\`，旧目录名为兼容现有数据而保留。
+- 模型、凭据、统计和备份保存在当前 Windows 用户的本地数据目录；覆盖升级时会保留现有数据。
 - 可在 Windows “设置 → 应用”或开始菜单的卸载入口删除助手。
 - 点击窗口右上角关闭按钮时，主窗口会隐藏，不会继续占用任务栏；代理与历史同步继续运行。右下角时间旁的 WF 通知区域图标可“打开主界面”或“退出 Antigravity WF助手”；退出会先释放本地代理。若 Windows 将图标收进 `^` 溢出区，可在系统的任务栏设置中将其设为始终显示。
 
@@ -55,4 +57,4 @@
 
 ## 提醒
 
-当前 GitHub 发布包没有商业代码签名证书，Windows SmartScreen 可能显示“未知发布者”。请核对 `SHA256SUMS.txt` 后再安装。重装或升级 Antigravity 后，需要重新应用补丁。
+当前 GitHub 发布包没有商业代码签名证书，Windows SmartScreen 可能显示“未知发布者”。请只从项目的 GitHub 最新发布页下载安装包，并在 Release 正文中核对发布者提供的 SHA-256。重装或升级 Antigravity 后，需要重新执行连接。

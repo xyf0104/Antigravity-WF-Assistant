@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // These tests exercise the real Antigravity routing path rather than only the

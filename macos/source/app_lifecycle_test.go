@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/proxy"
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/updater"
+	"antigravity-wf-assistant/internal/proxy"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/updater"
 )
 
 func TestApplicationQuitIsOnlyInterceptedUntilNativeExitIsRequested(t *testing.T) {

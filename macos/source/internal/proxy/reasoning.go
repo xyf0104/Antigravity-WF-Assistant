@@ -3,7 +3,7 @@ package proxy
 import (
 	"strings"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // applyOpenAIChatReasoning adds only the parameters that the selected model's

@@ -31,8 +31,8 @@ func TestDarwinUnpackedIDENoLanguageServerUsesVerifiedEntrypoints(t *testing.T) 
 
 	t.Setenv("ANTIGRAVITY_APP_PATH", appPath)
 	t.Setenv("ANTIGRAVITY_APP_PATHS", "")
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	targets := locateDarwinInstallations()
 	if len(targets) != 1 || targets[0].kind != "ide" || targets[0].language != "" {
 		t.Fatalf("unpacked no-LS fixture was not safely discovered: %+v", targets)
@@ -73,6 +73,7 @@ func TestDarwinASARNoLanguageServerUsesVerifiedEntrypoints(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	originalPlist := writeDarwinAgentIntegrityFixture(t, appPath, asarPath)
 	originalASAR, err := os.ReadFile(asarPath)
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +81,8 @@ func TestDarwinASARNoLanguageServerUsesVerifiedEntrypoints(t *testing.T) {
 
 	t.Setenv("ANTIGRAVITY_APP_PATH", appPath)
 	t.Setenv("ANTIGRAVITY_APP_PATHS", "")
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	targets := locateDarwinInstallations()
 	if len(targets) != 1 || targets[0].kind != "agent" || targets[0].language != "" {
 		t.Fatalf("ASAR no-LS fixture was not safely discovered: %+v", targets)
@@ -103,6 +104,7 @@ func TestDarwinASARNoLanguageServerUsesVerifiedEntrypoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFileEquals(t, asarPath, originalASAR)
+	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), originalPlist)
 }
 
 func TestDarwinNoLanguageServerUnknownLayoutsAreNotDiscovered(t *testing.T) {

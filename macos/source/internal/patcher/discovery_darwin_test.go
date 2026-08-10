@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -54,8 +55,8 @@ func TestSelectDarwinInstallationsDoesNotTreatRuntimePathAsExplicit(t *testing.T
 	trustedPath := normalizeAppBundlePath(trusted)
 	trustOnlyTrusted := func(path string) bool { return path == trustedPath }
 	targets := selectDarwinInstallations([]string{custom, trusted}, nil, trustOnlyTrusted)
-	if len(targets) != 1 || targets[0].app != trustedPath {
-		t.Fatalf("a standard install should win over a process/Spotlight custom copy: %+v", targets)
+	if len(targets) != 2 || targets[0].app != trustedPath || targets[1].app != normalizeAppBundlePath(custom) {
+		t.Fatalf("a verified custom install should remain available alongside a standard install: %+v", targets)
 	}
 
 	// A valid active custom installation remains discoverable when it is the
@@ -103,11 +104,72 @@ func TestInspectDarwinUnpackedIDEFindsLanguageServerWithoutExtensionEntry(t *tes
 	}
 }
 
+func TestLocateDarwinLanguageServerPrefersOfficialStandaloneName(t *testing.T) {
+	bin := t.TempDir()
+	official := filepath.Join(bin, "language_server")
+	legacy := filepath.Join(bin, "language_server_macos_x64")
+	for _, path := range []string{official, legacy} {
+		if err := os.WriteFile(path, []byte("Mach-O fixture"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := locateDarwinLanguageServer(bin); got != official {
+		t.Fatalf("language server = %q, want official standalone path %q", got, official)
+	}
+}
+
+func TestOfficialDarwinAgentStructureWhenFixturePresent(t *testing.T) {
+	app := strings.TrimSpace(os.Getenv("ANTIGRAVITY_WF_TEST_DARWIN_AGENT_ROOT"))
+	if app == "" {
+		t.Skip("set ANTIGRAVITY_WF_TEST_DARWIN_AGENT_ROOT to an official read-only Antigravity 2.0.app")
+	}
+	target, ok := inspectDarwinApp(app)
+	if !ok || target.kind != "agent" {
+		t.Fatalf("official standalone app was not detected as Agent: ok=%t target=%+v", ok, target)
+	}
+	if filepath.Base(target.language) != "language_server" {
+		t.Fatalf("official Agent language server = %q, want language_server", target.language)
+	}
+	if !darwinASARHasSupportedEntrypoints(target.asar) {
+		t.Fatalf("official Agent ASAR launch chain was not recognized: %s", target.asar)
+	}
+}
+
+func TestInstalledDarwinAgentConnectionSupportWhenFixturePresent(t *testing.T) {
+	app := strings.TrimSpace(os.Getenv("ANTIGRAVITY_WF_TEST_DARWIN_AGENT_ROOT"))
+	if app == "" {
+		t.Skip("set ANTIGRAVITY_WF_TEST_DARWIN_AGENT_ROOT to a read-only Antigravity 2.0.app")
+	}
+	target, ok := inspectDarwinApp(app)
+	if !ok || target.kind != "agent" {
+		t.Fatalf("installed standalone app was not detected as Agent: ok=%t target=%+v", ok, target)
+	}
+	supported, mode, reason := darwinTargetConnectionSupport(target)
+	if !supported || mode != "asar-language-server" {
+		t.Fatalf("installed Agent failed production connection gates: supported=%t mode=%q reason=%s", supported, mode, reason)
+	}
+}
+
 func TestNormalizeAppBundlePathHandlesQuotedProcessPath(t *testing.T) {
 	app := filepath.Join(t.TempDir(), "Antigravity IDE.app")
 	input := `"` + filepath.Join(app, "Contents", "MacOS", "Electron") + `"`
 	if got, want := normalizeAppBundlePath(input), filepath.Clean(app); got != want {
 		t.Fatalf("quoted app process path = %q, want %q", got, want)
+	}
+}
+
+func TestDarwinCanonicalAppKeyResolvesSymlinkForDeduplication(t *testing.T) {
+	root := t.TempDir()
+	realApp := filepath.Join(root, "Antigravity IDE.app")
+	if err := os.MkdirAll(realApp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkApp := filepath.Join(root, "Antigravity Link.app")
+	if err := os.Symlink(realApp, linkApp); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := darwinCanonicalAppKey(normalizeAppBundlePath(linkApp)), darwinCanonicalAppKey(realApp); got != want {
+		t.Fatalf("symlink bundle path = %q, want canonical %q", got, want)
 	}
 }
 

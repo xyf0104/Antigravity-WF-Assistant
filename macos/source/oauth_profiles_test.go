@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/oauthflow"
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/oauthflow"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func TestOAuthProfilesArePublicAndPreserveUserOAuthOverrides(t *testing.T) {

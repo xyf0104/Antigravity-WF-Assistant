@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 )
 
 const (
@@ -34,15 +34,17 @@ const (
 // UI state still uses the corresponding slug.  A failed compatibility probe
 // must therefore never replace either half of the currently active mapping.
 var (
-	modelAssignmentsMu          sync.RWMutex
-	modelInjectionTransactionMu sync.Mutex
-	allocatedPlaceholders       = map[string]string{}
-	allocatedSlugs              = map[string]string{}
+	modelAssignmentsMu            sync.RWMutex
+	modelInjectionTransactionMu   sync.Mutex
+	allocatedPlaceholders         = map[string]string{}
+	allocatedSlugs                = map[string]string{}
+	nativeImageGenerationModelIDs []string
 )
 
 type modelRouteAssignments struct {
-	placeholders map[string]string
-	slugs        map[string]string
+	placeholders        map[string]string
+	slugs               map[string]string
+	nativeImageModelIDs []string
 }
 
 func copyModelRouteAssignmentMap(source map[string]string) map[string]string {
@@ -66,6 +68,7 @@ func commitModelRouteAssignments(assignments modelRouteAssignments) {
 	modelAssignmentsMu.Lock()
 	allocatedPlaceholders = copyModelRouteAssignmentMap(assignments.placeholders)
 	allocatedSlugs = copyModelRouteAssignmentMap(assignments.slugs)
+	nativeImageGenerationModelIDs = append([]string(nil), assignments.nativeImageModelIDs...)
 	modelAssignmentsMu.Unlock()
 }
 
@@ -73,9 +76,20 @@ func snapshotModelRouteAssignments() modelRouteAssignments {
 	modelAssignmentsMu.RLock()
 	defer modelAssignmentsMu.RUnlock()
 	return modelRouteAssignments{
-		placeholders: copyModelRouteAssignmentMap(allocatedPlaceholders),
-		slugs:        copyModelRouteAssignmentMap(allocatedSlugs),
+		placeholders:        copyModelRouteAssignmentMap(allocatedPlaceholders),
+		slugs:               copyModelRouteAssignmentMap(allocatedSlugs),
+		nativeImageModelIDs: append([]string(nil), nativeImageGenerationModelIDs...),
 	}
+}
+
+func currentNativeImageGenerationModelID() string {
+	assignments := snapshotModelRouteAssignments()
+	for _, modelID := range assignments.nativeImageModelIDs {
+		if modelID = strings.TrimSpace(modelID); modelID != "" {
+			return modelID
+		}
+	}
+	return ""
 }
 
 // replaceModelRouteAssignmentsForTest isolates package-level routing state for
@@ -464,19 +478,47 @@ func findModel(modelID string) *storage.CustomModel {
 // agent turn is an explicit model switch for that trajectory, so it clears a
 // previously remembered custom source before being passed through to Gemini.
 func resolveGenerationModel(modelID, requestID string) (customModel *storage.CustomModel, customMatched, nativeImageSource bool) {
-	customModel = findModel(modelID)
-	customMatched = customModel != nil
-	if customMatched {
-		return customModel, true, false
-	}
+	// The image tool's model field is not the user's selected chat model. In
+	// Antigravity 2.6 it can even contain the first helper-injected image-capable
+	// slug. The trajectory's preceding agent turn is the only authoritative
+	// source: a remembered custom turn routes to its same-upstream image model;
+	// a native/Gemini turn has no source and must remain Google-native.
 	if isNativeImageGenerationRequestID(requestID) {
 		if source := imageGenerationSourceForRequest(requestID); source != nil {
 			return source, false, true
 		}
 		return nil, false, false
 	}
+	customModel = findModel(modelID)
+	customMatched = customModel != nil
+	if customMatched {
+		return customModel, true, false
+	}
 	forgetImageGenerationSource(requestID)
 	return nil, false, false
+}
+
+// restoreNativeImageGenerationRequestModel repairs a stale picker response
+// from an older helper build. Those builds prepended custom slugs to Google's
+// global imageGenerationModelIds list, so after switching to Gemini the native
+// image tool could still send a custom slug. With no remembered custom source,
+// rewrite only that outer routing ID to the native image model captured from
+// Google's unmodified list. No prompt, media, tool or credential field changes.
+func restoreNativeImageGenerationRequestModel(req map[string]any, modelID, requestID string) (string, bool, error) {
+	if !isNativeImageGenerationRequestID(requestID) || findModel(modelID) == nil {
+		return modelID, false, nil
+	}
+	nativeModelID := currentNativeImageGenerationModelID()
+	if nativeModelID == "" {
+		return modelID, false, fmt.Errorf("原生 Gemini 图片模型目录尚未刷新；请完全退出并重新打开 Antigravity 后重试")
+	}
+	if _, exists := req["model"]; exists {
+		req["model"] = nativeModelID
+	}
+	if _, exists := req["modelId"]; exists {
+		req["modelId"] = nativeModelID
+	}
+	return nativeModelID, true, nil
 }
 
 // handleGenerate routes a streamGenerateContent request. cleanPath is the
@@ -516,6 +558,19 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	})
 
 	if customModel == nil {
+		if restoredModelID, restored, restoreErr := restoreNativeImageGenerationRequestModel(req, modelID, requestID); restoreErr != nil {
+			http.Error(w, restoreErr.Error(), http.StatusConflict)
+			return
+		} else if restored {
+			body, err = json.Marshal(req)
+			if err != nil {
+				http.Error(w, "恢复原生 Gemini 图片路由失败", http.StatusBadRequest)
+				return
+			}
+			trace("native-image-model-restored", map[string]any{
+				"requestId": requestID, "staleModel": modelID, "nativeModel": restoredModelID,
+			})
+		}
 		// Passthrough to Google
 		passthroughRequest(w, r, body, cleanPath)
 		return
@@ -526,10 +581,9 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 		geminiReq = req
 	}
 	if nativeImageSource {
-		// image_gen requests are addressed to Antigravity's internal Gemini
-		// image model. This marker keeps the recovered upstream model on the
-		// dedicated image route even though that payload has no model-specific
-		// generationConfig field.
+		// The remembered custom agent turn keeps this internal image tool request
+		// on the dedicated same-upstream Images route. A Gemini turn never reaches
+		// this branch and remains on Google's native image path.
 		geminiReq["wfNativeImageGeneration"] = true
 	} else {
 		rememberImageGenerationSource(requestID, customModel)

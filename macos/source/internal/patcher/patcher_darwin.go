@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 const (
@@ -27,12 +27,22 @@ const (
 	autopushEndpoint   = "https://autopush-cloudcode-pa.sandbox.googleapis.com"
 
 	baseProxyEndpoint          = "http://127.0.0.1:50999"
-	textProxyEndpoint          = "http://127.0.0.1:50999/v1internal/antigravity-byok"
-	binaryProxyEndpoint        = "http://127.0.0.1:50999/v1internal/byokxxx"
-	binarySandboxProxyEndpoint = "http://127.0.0.1:50999/v1internal/byokxxx-sandbox"
+	textProxyEndpoint          = "http://127.0.0.1:50999/v1internal/antigravity-wf"
+	binaryProxyEndpoint        = "http://127.0.0.1:50999/v1internal/wfproxy"
+	binarySandboxProxyEndpoint = "http://127.0.0.1:50999/v1internal/wfproxy-sandbox"
 
-	darwinExtensionMarker = "antigravity-byok:mac-extension-endpoint"
-	darwinASARMarker      = "antigravity-byok:mac-asar-endpoint"
+	darwinExtensionMarker = "antigravity-wf:mac-extension-endpoint"
+	darwinASARMarker      = "antigravity-wf:mac-asar-endpoint"
+)
+
+// Recognized only while upgrading an application patched by an older WF
+// build. Newly written applications contain only the WF markers/endpoints.
+var (
+	legacyTextProxyEndpoint          = "http://127.0.0.1:50999/v1internal/antigravity-" + legacyPatcherProductToken()
+	legacyBinaryProxyEndpoint        = "http://127.0.0.1:50999/v1internal/" + legacyPatcherProductToken() + "xxx"
+	legacyBinarySandboxProxyEndpoint = legacyBinaryProxyEndpoint + "-sandbox"
+	legacyDarwinExtensionMarker      = "antigravity-" + legacyPatcherProductToken() + ":mac-extension-endpoint"
+	legacyDarwinASARMarker           = "antigravity-" + legacyPatcherProductToken() + ":mac-asar-endpoint"
 )
 
 var darwinCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.getCloudCodeUrl\(\)`)
@@ -88,6 +98,52 @@ type patchPlan struct {
 	changed  bool
 }
 
+// bindDarwinPatchPlanDestination preserves metadata from the installed file
+// when a migration prepared bytes from a canonical backup. Backups are
+// intentionally stored as 0600, so copying the backup's mode into an app
+// bundle would make a Language Server non-executable and Electron would fail
+// to spawn it with EACCES. Content may come from the clean backup; destination
+// permissions must always come from the active installation.
+func bindDarwinPatchPlanDestination(plan *patchPlan, destination string, requireExecutable bool) error {
+	if plan == nil {
+		return fmt.Errorf("补丁计划为空: %s", destination)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		return fmt.Errorf("检查补丁目标 %s 失败: %w", destination, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("补丁目标不是常规文件: %s", destination)
+	}
+	destinationMode := info.Mode()
+	if requireExecutable && destinationMode.Perm()&0o111 == 0 {
+		// Official Language Servers are ordinary 0755 executables. Repair all
+		// execute/read bits rather than only owner-execute so an application in
+		// /Applications remains launchable by every local user.
+		destinationMode = (destinationMode &^ os.ModePerm) | 0o755
+	}
+	if plan.mode.Perm() != destinationMode.Perm() {
+		plan.changed = true
+	}
+	plan.path = destination
+	plan.mode = destinationMode
+	return nil
+}
+
+func verifyDarwinExecutable(path string) error {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("Language Server 不可执行: %s（权限 %04o）", path, info.Mode().Perm())
+	}
+	return nil
+}
+
 // darwinPatchSnapshot captures the bytes actually active immediately before a
 // write. A migration may prepare a plan from the canonical clean backup, so
 // patchPlan.original is not always the safe rollback source.
@@ -95,6 +151,10 @@ type darwinPatchSnapshot struct {
 	path string
 	data []byte
 	mode os.FileMode
+	// existed makes a settings.json creation rollback-safe. The older patch
+	// transaction only touched installed files, but the v1.5.2 user-setting
+	// connection path can validly create the first settings file.
+	existed bool
 }
 
 func snapshotDarwinPatchTargets(plans []*patchPlan) ([]darwinPatchSnapshot, error) {
@@ -105,18 +165,22 @@ func snapshotDarwinPatchTargets(plans []*patchPlan) ([]darwinPatchSnapshot, erro
 			continue
 		}
 		seen[plan.path] = true
-		data, err := os.ReadFile(plan.path)
-		if err != nil {
-			return nil, fmt.Errorf("读取事务回滚文件 %s: %w", plan.path, err)
+		data, readErr := os.ReadFile(plan.path)
+		if os.IsNotExist(readErr) {
+			snapshots = append(snapshots, darwinPatchSnapshot{path: plan.path, existed: false})
+			continue
 		}
-		info, err := os.Stat(plan.path)
-		if err != nil {
-			return nil, fmt.Errorf("检查事务回滚文件 %s: %w", plan.path, err)
+		if readErr != nil {
+			return nil, fmt.Errorf("读取事务回滚文件 %s: %w", plan.path, readErr)
+		}
+		info, statErr := os.Stat(plan.path)
+		if statErr != nil {
+			return nil, fmt.Errorf("检查事务回滚文件 %s: %w", plan.path, statErr)
 		}
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("事务回滚路径不是常规文件: %s", plan.path)
 		}
-		snapshots = append(snapshots, darwinPatchSnapshot{path: plan.path, data: data, mode: info.Mode()})
+		snapshots = append(snapshots, darwinPatchSnapshot{path: plan.path, data: data, mode: info.Mode(), existed: true})
 	}
 	return snapshots, nil
 }
@@ -124,6 +188,12 @@ func snapshotDarwinPatchTargets(plans []*patchPlan) ([]darwinPatchSnapshot, erro
 func restoreDarwinPatchSnapshots(snapshots []darwinPatchSnapshot) error {
 	for index := len(snapshots) - 1; index >= 0; index-- {
 		snapshot := snapshots[index]
+		if !snapshot.existed {
+			if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("移除本次新建的 %s: %w", snapshot.path, err)
+			}
+			continue
+		}
 		if err := writeFileAtomic(snapshot.path, snapshot.data, snapshot.mode); err != nil {
 			return fmt.Errorf("恢复 %s: %w", snapshot.path, err)
 		}
@@ -162,10 +232,14 @@ func runDarwin(action string) (string, error) {
 	}
 
 	switch action {
-	case "apply", "apply-ide":
-		return applyDarwinPatches(targets, action == "apply-ide")
+	case "apply":
+		return applyDarwinTargetsForKind(targets, "")
+	case "apply-ide":
+		return applyDarwinTargetsForKind(targets, "ide")
+	case "apply-agent":
+		return applyDarwinTargetsForKind(targets, "agent")
 	case "restore":
-		return restoreDarwinPatches(targets)
+		return restoreDarwinTargets(targets)
 	default:
 		return "", fmt.Errorf("未知补丁操作: %s", action)
 	}
@@ -224,11 +298,20 @@ func buildDarwinStatus(targets []darwinTargets) Status {
 	agentPatched, idePatched := true, true
 	ideMainPatched := true
 	for _, target := range targets {
+		supported, mode, reason := darwinTargetConnectionSupport(target)
 		mainPatched, _, _, patched := darwinTargetPatchState(target)
+		// IDE connection now uses the vendor-supported user setting instead of
+		// modifying the Electron main process, extension, or Language Server.
+		// Keep the legacy inspection helper for migration/restore fixtures, but
+		// make the live status reflect the production connection contract.
+		if target.kind == "ide" {
+			patched = supported && darwinCloudCodeSettingIsConfigured(darwinSettingsPathForStatus(target), currentPatchProxyEndpoint().Base)
+			mainPatched = patched
+		}
 		entry := TargetStatus{
 			Name: target.name, Kind: target.kind, Version: target.version, AppPath: target.app,
 			MainPath: target.main, ASARPath: target.asar, ExtensionPath: target.extensionEntry,
-			LanguageServerPath: target.language, Patched: patched,
+			LanguageServerPath: target.language, Supported: supported, ConnectionMode: mode, Reason: reason, Patched: patched,
 		}
 		status.Targets = append(status.Targets, entry)
 		if status.AsarPath == "" {
@@ -282,11 +365,13 @@ func darwinTargetPatchState(target darwinTargets) (main, extension, language, fu
 		}
 	} else {
 		language, _ = darwinLanguagePatchState(target.language)
+		language = language && verifyDarwinExecutable(target.language) == nil
 	}
 	imagePreviewPatched := !darwinImagePreviewNeedsPatch(target)
 	if target.kind == "agent" {
 		main = darwinASARPatched(target.asar)
-		return main, true, language, main && language && imagePreviewPatched
+		integrityValid := verifyDarwinAgentASARIntegrity(target) == nil
+		return main, true, language, main && language && imagePreviewPatched && integrityValid
 	}
 	main = darwinMainPatched(target.main)
 	extension = target.extensionEntry == "" || darwinExtensionPatched(target.extensionEntry)
@@ -451,6 +536,17 @@ func darwinPatchSource(path string) (string, error) {
 }
 
 func containsCurrentDarwinProxyEndpoint(data []byte) bool {
+	// A previous WF endpoint uses the same loopback host/port, so checking Base
+	// first would incorrectly classify its old path/marker as current and skip
+	// the clean-backup migration.
+	for _, value := range []string{
+		legacyTextProxyEndpoint, legacyBinaryProxyEndpoint, legacyBinarySandboxProxyEndpoint,
+		legacyDarwinExtensionMarker, legacyDarwinASARMarker,
+	} {
+		if bytes.Contains(data, []byte(value)) {
+			return false
+		}
+	}
 	endpoint := currentPatchProxyEndpoint()
 	for _, value := range []string{endpoint.Base, endpoint.Text, endpoint.Binary, endpoint.BinarySandbox} {
 		if bytes.Contains(data, []byte(value)) {
@@ -481,7 +577,9 @@ func applyDarwinPatch(targets darwinTargets) (message string, err error) {
 	if err != nil {
 		return "", err
 	}
-	mainPlan.path = targets.main
+	if err := bindDarwinPatchPlanDestination(mainPlan, targets.main, false); err != nil {
+		return "", err
+	}
 	authRecognized := bytes.Contains(mainPlan.original, []byte(authEligibilityOriginal)) ||
 		bytes.Contains(mainPlan.original, []byte(authEligibilityPatched))
 	plans := []*patchPlan{mainPlan}
@@ -495,7 +593,9 @@ func applyDarwinPatch(targets darwinTargets) (message string, err error) {
 		if err != nil {
 			return "", err
 		}
-		languagePlan.path = targets.language
+		if err := bindDarwinPatchPlanDestination(languagePlan, targets.language, true); err != nil {
+			return "", err
+		}
 		plans = append(plans, languagePlan)
 	}
 
@@ -509,7 +609,9 @@ func applyDarwinPatch(targets darwinTargets) (message string, err error) {
 		if err != nil {
 			return "", err
 		}
-		extensionPlan.path = targets.extensionEntry
+		if err := bindDarwinPatchPlanDestination(extensionPlan, targets.extensionEntry, false); err != nil {
+			return "", err
+		}
 		plans = append(plans, extensionPlan)
 	}
 	for _, rendererPath := range darwinImagePreviewRendererPaths(targets) {
@@ -560,6 +662,9 @@ func applyDarwinPatch(targets darwinTargets) (message string, err error) {
 		if err = signDarwinLanguageServer(targets.language); err != nil {
 			return "", fmt.Errorf("补丁已自动回滚，macOS 语言服务器签名失败: %w", err)
 		}
+	}
+	if err = verifyDarwinExecutable(targets.language); err != nil {
+		return "", fmt.Errorf("补丁已自动回滚，macOS 语言服务器权限验证失败: %w", err)
 	}
 
 	warnings := make([]string, 0, 2)
@@ -658,7 +763,7 @@ func prepareDarwinExtensionPatch(path string) (*patchPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	source := string(data)
+	source := strings.ReplaceAll(string(data), legacyDarwinExtensionMarker, darwinExtensionMarker)
 	endpoint := currentPatchProxyEndpoint()
 	if darwinExtensionPatched(path) {
 		return &patchPlan{path: path, original: data, updated: data, mode: info.Mode()}, nil
@@ -712,7 +817,7 @@ func mergeDarwinHistory() error {
 }
 
 func syncDarwinHistory() (darwinHistorySummary, error) {
-	base := strings.TrimSpace(os.Getenv("ANTIGRAVITY_BYOK_GEMINI_DIR"))
+	base := strings.TrimSpace(os.Getenv("ANTIGRAVITY_WF_GEMINI_DIR"))
 	if base == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -745,7 +850,7 @@ func syncDarwinHistory() (darwinHistorySummary, error) {
 		"code_tracker", "html_artifacts", "implicit", "knowledge", "playground", "plugins", "prompting", "scratch",
 	}
 	for _, source := range sources {
-		backup := source + ".antigravity-byok-backup"
+		backup := source + ".antigravity-wf-backup"
 		if _, err := copyDirectoryMissingCount(source, backup); err != nil {
 			return summary, fmt.Errorf("备份旧历史目录失败（%s）: %w", source, err)
 		}
@@ -794,7 +899,7 @@ func discoverDarwinHistorySources(base, target string) ([]string, error) {
 		if !entry.IsDir() || filepath.Clean(path) == filepath.Clean(target) || !strings.HasPrefix(name, "antigravity") {
 			continue
 		}
-		if strings.Contains(name, "antigravity-byok-backup") || strings.Contains(name, ".previous-") {
+		if strings.Contains(name, "antigravity-wf-backup") || strings.Contains(name, "antigravity-"+legacyPatcherProductToken()+"-backup") || strings.Contains(name, ".previous-") {
 			continue
 		}
 		if !darwinDirectoryContainsHistory(path) {
@@ -880,7 +985,9 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 		if err != nil {
 			return "", err
 		}
-		languagePlan.path = target.language
+		if err := bindDarwinPatchPlanDestination(languagePlan, target.language, true); err != nil {
+			return "", err
+		}
 	}
 	asarWasPatched := darwinASARPatched(target.asar)
 	asarHadKnownPatch := darwinASARContainsKnownPatch(target.asar)
@@ -906,6 +1013,8 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 	}
 
 	var candidate string
+	var integrityPlan *patchPlan
+	preserveCanonicalIntegrityBackup := false
 	var rollbackASAR string
 	var rollbackASARMode os.FileMode
 	if asarChanged {
@@ -948,6 +1057,28 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 			return "", err
 		}
 		defer os.Remove(candidate)
+		// Released WF builds exist in both integrity states: older builds kept
+		// Info.plist pointed at the clean vendor ASAR, while newer builds updated
+		// it to the active patched ASAR. Accept only one of those two verified
+		// sources, preferring the currently active archive. Arbitrary/stale plist
+		// hashes still stop the transaction before any write.
+		declaredASAR := target.asar
+		if verifyDarwinAgentASARIntegrityAgainst(target, declaredASAR) != nil {
+			if !asarHadKnownPatch || verifyDarwinAgentASARIntegrityAgainst(target, candidateSource) != nil {
+				return "", fmt.Errorf("当前 app.asar 与规范原始备份均不匹配 Info.plist 完整性元数据；未修改任何文件")
+			}
+			declaredASAR = candidateSource
+		}
+		integrityPlan, err = prepareDarwinAgentASARIntegrityPatchFrom(target, candidate, declaredASAR)
+		if err != nil {
+			return "", fmt.Errorf("准备 app.asar 完整性元数据失败: %w", err)
+		}
+		if asarHadKnownPatch {
+			if err = ensureDarwinAgentCanonicalPlistBackup(target, candidateSource); err != nil {
+				return "", fmt.Errorf("保留规范原始 Info.plist 备份失败: %w", err)
+			}
+			preserveCanonicalIntegrityBackup = true
+		}
 		if !asarHadKnownPatch {
 			if err = writeFileBackup(target.asar); err != nil {
 				return "", fmt.Errorf("创建 app.asar 备份失败: %w", err)
@@ -958,7 +1089,19 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 	if languagePlan != nil {
 		plans = append(plans, languagePlan)
 	}
-	if err = saveApplyBackups(plans, nil); err != nil {
+	if integrityPlan != nil {
+		plans = append(plans, integrityPlan)
+	}
+	backupPlans := plans
+	if preserveCanonicalIntegrityBackup && integrityPlan != nil {
+		backupPlans = make([]*patchPlan, 0, len(plans)-1)
+		for _, plan := range plans {
+			if plan != integrityPlan {
+				backupPlans = append(backupPlans, plan)
+			}
+		}
+	}
+	if err = saveApplyBackups(backupPlans, nil); err != nil {
 		return "", fmt.Errorf("创建补丁备份失败: %w", err)
 	}
 	planSnapshots, snapshotErr := snapshotDarwinPatchTargets(plans)
@@ -970,16 +1113,22 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 		if err == nil {
 			return
 		}
-		if rollbackErr := restoreDarwinPatchSnapshots(planSnapshots); rollbackErr != nil {
-			err = fmt.Errorf("%w；补丁事务回滚失败: %v", err, rollbackErr)
-		}
 		if wroteASAR {
 			if rollbackErr := copyFileAtomic(rollbackASAR, target.asar, rollbackASARMode); rollbackErr != nil {
 				err = fmt.Errorf("%w；app.asar 事务回滚失败: %v", err, rollbackErr)
 			}
 		}
+		if rollbackErr := restoreDarwinPatchSnapshots(planSnapshots); rollbackErr != nil {
+			err = fmt.Errorf("%w；补丁事务回滚失败: %v", err, rollbackErr)
+		}
 	}()
-	if err = writePatchPlans(plans); err != nil {
+	preASARPlans := make([]*patchPlan, 0, len(plans))
+	for _, plan := range plans {
+		if plan != integrityPlan {
+			preASARPlans = append(preASARPlans, plan)
+		}
+	}
+	if err = writePatchPlans(preASARPlans); err != nil {
 		return "", err
 	}
 	if asarChanged {
@@ -995,10 +1144,21 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 		}
 		wroteASAR = true
 	}
+	if integrityPlan != nil {
+		if err = writePatchPlans([]*patchPlan{integrityPlan}); err != nil {
+			return "", fmt.Errorf("写入 app.asar 完整性元数据失败: %w", err)
+		}
+	}
+	if err = verifyDarwinAgentASARIntegrity(target); err != nil {
+		return "", fmt.Errorf("写入后的 app.asar 完整性验证失败: %w", err)
+	}
 	if languagePlan != nil && languagePlan.changed {
 		if err = signDarwinLanguageServer(target.language); err != nil {
 			return "", fmt.Errorf("macOS 语言服务器签名失败: %w", err)
 		}
+	}
+	if err = verifyDarwinExecutable(target.language); err != nil {
+		return "", fmt.Errorf("macOS 语言服务器权限验证失败: %w", err)
 	}
 	if _, _, _, patched := darwinTargetPatchState(target); !patched {
 		return "", fmt.Errorf("写入后的 app.asar 补丁未通过完整校验")
@@ -1024,7 +1184,8 @@ func prepareDarwinASARCandidate(sourcePath, destinationPath string) (string, err
 		return "", err
 	}
 	endpoint := currentPatchProxyEndpoint()
-	mainSource := string(mainData)
+	mainSource := strings.ReplaceAll(string(mainData), legacyDarwinASARMarker, darwinASARMarker)
+	mainSource = strings.ReplaceAll(mainSource, legacyTextProxyEndpoint, endpoint.Text)
 	if !strings.Contains(mainSource, darwinASARMarker) {
 		if !strings.HasPrefix(mainSource, `"use strict";`) {
 			return "", fmt.Errorf("当前 app.asar 主入口结构已变化，已停止补丁")
@@ -1045,7 +1206,7 @@ func prepareDarwinASARCandidate(sourcePath, destinationPath string) (string, err
 	// A clean backup can live in the home directory while the application is in
 	// /Applications. Build beside the destination to retain same-volume rename
 	// semantics when applying the candidate.
-	temp, err := os.CreateTemp(filepath.Dir(destinationPath), ".antigravity-byok-asar-*")
+	temp, err := os.CreateTemp(filepath.Dir(destinationPath), ".antigravity-wf-asar-*")
 	if err != nil {
 		return "", err
 	}
@@ -1114,10 +1275,11 @@ func darwinLanguagePatchState(path string) (patched, hasEmbeddedEndpoint bool) {
 	endpoint := currentPatchProxyEndpoint()
 	hasPatched := bytes.Contains(data, []byte(endpoint.Base+"/v1internal/"))
 	hasManaged := darwinManagedBinaryEndpointPattern.Match(data)
+	hasImageArchive, imageUIPatched := darwinAgentEmbeddedUIPatchStateData(data)
 	if !hasOriginal && !hasManaged {
-		return true, false
+		return !hasImageArchive || imageUIPatched, false
 	}
-	return !hasOriginal && hasPatched, true
+	return !hasOriginal && hasPatched && (!hasImageArchive || imageUIPatched), true
 }
 
 // darwinBinaryEndpointFor produces a byte-for-byte replacement for one
@@ -1183,9 +1345,14 @@ func prepareDarwinLanguagePatch(path string) (*patchPlan, bool, error) {
 	if bytes.Contains(updated, []byte(currentPatchProxyEndpoint().Base+"/v1internal/")) {
 		embedded = true
 	}
-	return &patchPlan{
+	plan := &patchPlan{
 		path: path, original: data, updated: updated, mode: info.Mode(), changed: changed,
-	}, embedded, nil
+	}
+	plan, _, err = prepareDarwinAgentEmbeddedUIPlan(plan)
+	if err != nil {
+		return nil, embedded, err
+	}
+	return plan, embedded, nil
 }
 
 func patchPlansChanged(plans []*patchPlan) bool {
@@ -1241,6 +1408,9 @@ func containsKnownDarwinPatch(data []byte) bool {
 		[]byte(baseProxyEndpoint), []byte(textProxyEndpoint), []byte(binaryProxyEndpoint),
 		[]byte(binarySandboxProxyEndpoint), []byte(authEligibilityPatched),
 		[]byte(darwinExtensionMarker), []byte(darwinASARMarker),
+		[]byte(legacyTextProxyEndpoint), []byte(legacyBinaryProxyEndpoint),
+		[]byte(legacyBinarySandboxProxyEndpoint), []byte(legacyDarwinExtensionMarker),
+		[]byte(legacyDarwinASARMarker),
 		// Every released fallback/UI marker represents an already-modified
 		// renderer.  Do not classify any of them as a fresh Antigravity file.
 		[]byte(imagePreviewPatchV2Marker), []byte(imagePreviewPatchV3Marker),
@@ -1248,7 +1418,8 @@ func containsKnownDarwinPatch(data []byte) bool {
 		[]byte(imagePreviewPatchV6Marker), []byte(imagePreviewPatchV7Marker),
 		[]byte(imagePreviewPatchMarker),
 		[]byte(imageGenerationUIPatchV1Marker), []byte(imageGenerationUIPatchV2Marker),
-		[]byte(imageGenerationUIPatchMarker),
+		[]byte(imageGenerationUIPatchMarker), []byte(imageGenerationDedupePatchMarker),
+		[]byte(agentImageGenerationUIPatchMarker), []byte(agentImageGenerationDedupePatchMarker),
 	} {
 		if bytes.Contains(data, marker) {
 			return true
@@ -1282,6 +1453,9 @@ func rollbackPatchPlans(plans []*patchPlan) error {
 
 func restoreDarwinPatch(targets darwinTargets) (string, error) {
 	paths := []string{targets.main, targets.extensionEntry, targets.asar, targets.language}
+	if targets.kind == "agent" && targets.app != "" {
+		paths = append(paths, filepath.Join(targets.app, "Contents", "Info.plist"))
+	}
 	paths = append(paths, darwinImagePreviewRendererPaths(targets)...)
 	paths = append(paths, darwinASARUnpackedImagePreviewRendererPaths(targets)...)
 
@@ -1302,7 +1476,11 @@ func restoreDarwinPatch(targets darwinTargets) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if err := copyFileAtomic(backup, path, info.Mode()); err != nil {
+		restoreMode := info.Mode()
+		if path == targets.language && restoreMode.Perm()&0o111 == 0 {
+			restoreMode = (restoreMode &^ os.ModePerm) | 0o755
+		}
+		if err := copyFileAtomic(backup, path, restoreMode); err != nil {
 			return "", fmt.Errorf("恢复 %s 失败: %w", path, err)
 		}
 		restored++
@@ -1311,7 +1489,7 @@ func restoreDarwinPatch(targets darwinTargets) (string, error) {
 		return "未发现可恢复的 macOS 补丁备份。", nil
 	}
 
-	if os.Getenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN") != "1" {
+	if os.Getenv("ANTIGRAVITY_WF_SKIP_CODESIGN") != "1" {
 		if out, err := exec.Command("codesign", "--verify", "--deep", "--strict", targets.app).CombinedOutput(); err != nil {
 			return "", fmt.Errorf("文件已恢复，但原始签名校验失败（备份已保留）: %s: %w", strings.TrimSpace(string(out)), err)
 		}
@@ -1342,7 +1520,7 @@ func restoreDarwinPatches(targets []darwinTargets) (string, error) {
 // which makes the UI appear frozen during startup. The modified nested binary
 // still needs its own valid signature to execute under macOS.
 func signPatchedDarwinLanguageServer(languagePath string) error {
-	if os.Getenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN") == "1" {
+	if os.Getenv("ANTIGRAVITY_WF_SKIP_CODESIGN") == "1" {
 		return nil
 	}
 	args := []string{"--force", "--sign", "-", "--preserve-metadata=entitlements,flags,runtime"}
@@ -1443,21 +1621,79 @@ func fileSHA256(path string) ([32]byte, error) {
 }
 
 func backupPath(sourcePath string) string {
-	dir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_BYOK_BACKUP_DIR"))
+	dir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_WF_BACKUP_DIR"))
 	if dir == "" {
 		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".antigravity-byok", "backups")
+		dir = filepath.Join(home, ".antigravity-wf", "backups")
 	}
 	digest := sha256.Sum256([]byte(filepath.Clean(sourcePath)))
 	name := fmt.Sprintf("%s-%x.bak", filepath.Base(sourcePath), digest[:8])
 	return filepath.Join(dir, name)
 }
 
+// matchingDarwinBackupPath locates a canonical source across both the current
+// compatibility directory and the historical WF directory. Explicit test or
+// recovery directories remain isolated and never fall back into the user's
+// home. Historical .previous files are considered because some old helpers
+// accidentally rotated a helper-patched renderer into the primary .bak while
+// retaining the real vendor bytes in a content-addressed previous backup.
+func matchingDarwinBackupPath(sourcePath string, accept func([]byte) bool) string {
+	primary := backupPath(sourcePath)
+	if data, err := os.ReadFile(primary); err == nil && accept(data) {
+		return primary
+	}
+
+	patterns := []string{strings.TrimSuffix(primary, ".bak") + ".previous-*.bak"}
+	if strings.TrimSpace(os.Getenv("ANTIGRAVITY_WF_BACKUP_DIR")) == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			digest := sha256.Sum256([]byte(filepath.Clean(sourcePath)))
+			legacy := filepath.Join(home, legacyPatcherDirectoryName(), "backups",
+				fmt.Sprintf("%s-%x.bak", filepath.Base(sourcePath), digest[:8]))
+			patterns = append(patterns, legacy, strings.TrimSuffix(legacy, ".bak")+".previous-*.bak")
+		}
+	}
+
+	type candidate struct {
+		path    string
+		modTime time.Time
+	}
+	var candidates []candidate
+	seen := map[string]bool{primary: true}
+	for _, pattern := range patterns {
+		matches := []string{pattern}
+		if strings.ContainsAny(pattern, "*?[") {
+			matches, _ = filepath.Glob(pattern)
+		}
+		for _, path := range matches {
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			data, err := os.ReadFile(path)
+			if err != nil || !accept(data) {
+				continue
+			}
+			info, err := os.Stat(path)
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			candidates = append(candidates, candidate{path: path, modTime: info.ModTime()})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+	if len(candidates) > 0 {
+		return candidates[0].path
+	}
+	return ""
+}
+
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-byok-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-wf-*")
 	if err != nil {
 		return err
 	}
@@ -1490,7 +1726,7 @@ func copyFileAtomic(sourcePath, targetPath string, mode os.FileMode) error {
 		return err
 	}
 	defer source.Close()
-	temp, err := os.CreateTemp(filepath.Dir(targetPath), ".antigravity-byok-copy-*")
+	temp, err := os.CreateTemp(filepath.Dir(targetPath), ".antigravity-wf-copy-*")
 	if err != nil {
 		return err
 	}

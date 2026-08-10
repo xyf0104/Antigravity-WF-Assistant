@@ -586,7 +586,7 @@ func windowsWriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-byok-*")
+	temp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-wf-*")
 	if err != nil {
 		return err
 	}
@@ -715,7 +715,7 @@ func mergeWindowsHistoryAt(home string) error {
 	for _, entry := range entries {
 		name := strings.ToLower(entry.Name())
 		if !entry.IsDir() || !strings.HasPrefix(name, "antigravity") ||
-			name == "antigravity" || strings.Contains(name, "antigravity-byok-backup") {
+			name == "antigravity" || strings.Contains(name, "antigravity-wf-backup") || strings.Contains(name, "antigravity-"+legacyPatcherProductToken()+"-backup") {
 			continue
 		}
 		source := filepath.Join(geminiRoot, entry.Name())
@@ -734,7 +734,7 @@ func mergeWindowsHistoryAt(home string) error {
 		return err
 	}
 	for _, source := range sources {
-		backup := source + ".antigravity-byok-backup"
+		backup := source + ".antigravity-wf-backup"
 		if _, statErr := os.Stat(backup); os.IsNotExist(statErr) {
 			if err := copyWindowsTreeMissing(source, backup); err != nil {
 				return err
@@ -817,7 +817,7 @@ func copyWindowsFile(source, target string) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(target), ".antigravity-byok-copy-*")
+	temp, err := os.CreateTemp(filepath.Dir(target), ".antigravity-wf-copy-*")
 	if err != nil {
 		return err
 	}

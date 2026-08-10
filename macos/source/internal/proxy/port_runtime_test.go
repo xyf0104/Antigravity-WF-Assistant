@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/proxyendpoint"
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/proxyendpoint"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func TestProxyPortCandidatesPreferHistoricalDefaultAndStayFixedWidth(t *testing.T) {
@@ -134,8 +134,8 @@ func TestCommittedManagedListenerIsReusedWithoutTakingOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/_antigravity-byok/health" {
-			w.Header().Set("X-Antigravity-BYOK", "go-proxy")
+		if r.URL.Path == "/_antigravity-wf/health" {
+			w.Header().Set("X-Antigravity-WF", "go-proxy")
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -165,11 +165,14 @@ func TestCommittedManagedListenerIsReusedWithoutTakingOwnership(t *testing.T) {
 
 func prepareProxyRuntimeTest(t *testing.T) string {
 	t.Helper()
+	dir := t.TempDir()
+	storage.Init(dir)
+	if err := storage.SaveProxyRuntimePort(findFreeFiveDigitPort(t)); err != nil {
+		t.Fatalf("isolate test proxy endpoint: %v", err)
+	}
 	if err := Stop(); err != nil {
 		t.Fatalf("stop previous test proxy: %v", err)
 	}
-	dir := t.TempDir()
-	storage.Init(dir)
 	t.Cleanup(func() { _ = Stop() })
 	return dir
 }

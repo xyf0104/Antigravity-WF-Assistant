@@ -59,7 +59,7 @@ func New(home, storageDir string) *Manager {
 	return &Manager{
 		configPath: configPath,
 		statePath:  filepath.Join(storageDir, "auto-approval-state.json"),
-		backupPath: configPath + ".antigravity-byok-backup",
+		backupPath: configPath + ".antigravity-wf-backup",
 	}
 }
 
@@ -262,7 +262,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-byok-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-wf-*")
 	if err != nil {
 		return err
 	}

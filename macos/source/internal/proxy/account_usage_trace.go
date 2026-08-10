@@ -3,7 +3,7 @@ package proxy
 import (
 	"strings"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // accountUsageTraceContext adds the account-pool selection to the token usage

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/proxyendpoint"
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/proxyendpoint"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 const (
@@ -277,12 +277,12 @@ func IsManagedListener() bool {
 
 func isManagedListenerAt(port int) bool {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/_antigravity-byok/health", port))
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/_antigravity-wf/health", port))
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK && resp.Header.Get("X-Antigravity-BYOK") == "go-proxy"
+	return resp.StatusCode == http.StatusOK && resp.Header.Get("X-Antigravity-WF") == "go-proxy"
 }
 
 func OwnsListener() bool {
@@ -315,10 +315,10 @@ func readBody(r *http.Request) ([]byte, error) {
 // handleRequest is the top-level HTTP handler.
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
-	if path == "/_antigravity-byok/health" {
+	if path == "/_antigravity-wf/health" {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("X-Antigravity-BYOK", "go-proxy")
-		_, _ = io.WriteString(w, `{"ok":true,"proxy":"antigravity-byok"}`)
+		w.Header().Set("X-Antigravity-WF", "go-proxy")
+		_, _ = io.WriteString(w, `{"ok":true,"proxy":"antigravity-wf"}`)
 		return
 	}
 
@@ -353,11 +353,15 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 // cleanPatchedPath strips the path prefix inserted by the text and fixed-size
 // binary patch variants before a request is routed or passed through.
 func cleanPatchedPath(path string) string {
-	for _, prefix := range []string{
-		"/v1internal/antigravity-byok/",
-		"/v1internal/byokxxx/",
-		"/v1internal/byokxxx-sandbox/",
-	} {
+	prefixes := []string{
+		"/v1internal/antigravity-wf/",
+		"/v1internal/wfproxy/",
+		"/v1internal/wfproxy-sandbox/",
+	}
+	// Upgrade compatibility: accept requests from applications patched by a
+	// pre-WF release until the user reapplies the current patch.
+	prefixes = append(prefixes, legacyPatchedPrefixes()...)
+	for _, prefix := range prefixes {
 		if strings.HasPrefix(path, prefix) {
 			cleanPath := strings.TrimPrefix(path, prefix)
 			if strings.HasPrefix(cleanPath, "v1internal:") || strings.HasPrefix(cleanPath, "v1internal/") {

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func TestAnthropicRequestDropsOnlyTerminalAssistantPrefill(t *testing.T) {

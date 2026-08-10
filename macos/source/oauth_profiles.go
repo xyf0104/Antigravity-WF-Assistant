@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/oauthflow"
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/oauthflow"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )

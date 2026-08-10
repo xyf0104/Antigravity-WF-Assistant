@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"antigravity-byok/internal/proxyendpoint"
+	"antigravity-wf-assistant/internal/proxyendpoint"
 )
 
 // proxyRuntime is intentionally separate from settings.json and all account or

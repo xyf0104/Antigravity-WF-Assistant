@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // DefaultXIASSBaseURL intentionally contains only the domain. The resolver

@@ -17,17 +17,24 @@ const (
 	windowsPublicEndpoint        = "https://cloudcode-pa.googleapis.com"
 	windowsAutopushEndpoint      = "https://autopush-cloudcode-pa.sandbox.googleapis.com"
 	windowsBaseProxyEndpoint     = "http://127.0.0.1:50999"
-	windowsTextProxyEndpoint     = "http://127.0.0.1:50999/v1internal/antigravity-byok"
-	windowsBinaryProxyEndpoint   = "http://127.0.0.1:50999/v1internal/byokxxx"
-	windowsBinarySandboxEndpoint = "http://127.0.0.1:50999/v1internal/byokxxx-sandbox"
-	windowsExtensionMarker       = "antigravity-byok:windows-extension-endpoint"
-	windowsMainMarker            = "antigravity-byok:windows-main-endpoint"
-	windowsASARMarker            = "antigravity-byok:windows-asar-endpoint"
-	windowsLegacyASARMarker      = "antigravity-byok:proxy-hook"
-	windowsLegacyExtensionMarker = "antigravity-byok:ide-proxy-hook"
-	windowsLegacyMainMarker      = "antigravity-byok:ide-main-proxy-hook"
+	windowsTextProxyEndpoint     = "http://127.0.0.1:50999/v1internal/antigravity-wf"
+	windowsBinaryProxyEndpoint   = "http://127.0.0.1:50999/v1internal/wfproxy"
+	windowsBinarySandboxEndpoint = "http://127.0.0.1:50999/v1internal/wfproxy-sandbox"
+	windowsExtensionMarker       = "antigravity-wf:windows-extension-endpoint"
+	windowsMainMarker            = "antigravity-wf:windows-main-endpoint"
+	windowsASARMarker            = "antigravity-wf:windows-asar-endpoint"
 	windowsSharedDataArgument    = `"--app_data_dir","antigravity"`
 	windowsIDECloudCodeSetting   = `this._configurationService.getValue("jetski.cloudCodeUrl")`
+)
+
+var (
+	windowsOldTextProxyEndpoint  = "http://127.0.0.1:50999/v1internal/antigravity-" + legacyPatcherProductToken()
+	windowsOldExtensionMarker    = "antigravity-" + legacyPatcherProductToken() + ":windows-extension-endpoint"
+	windowsOldMainMarker         = "antigravity-" + legacyPatcherProductToken() + ":windows-main-endpoint"
+	windowsOldASARMarker         = "antigravity-" + legacyPatcherProductToken() + ":windows-asar-endpoint"
+	windowsLegacyASARMarker      = "antigravity-" + legacyPatcherProductToken() + ":proxy-hook"
+	windowsLegacyExtensionMarker = "antigravity-" + legacyPatcherProductToken() + ":ide-proxy-hook"
+	windowsLegacyMainMarker      = "antigravity-" + legacyPatcherProductToken() + ":ide-main-proxy-hook"
 )
 
 var windowsCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.getCloudCodeUrl\(\)`)
@@ -259,6 +266,8 @@ func prepareWindowsMainPatch(path string) (*windowsPatchPlan, error) {
 		return nil, err
 	}
 	source := patchWindowsCloudCodeSource(string(data))
+	source = strings.ReplaceAll(source, windowsOldMainMarker, windowsMainMarker)
+	source = strings.ReplaceAll(source, windowsOldTextProxyEndpoint, currentPatchProxyEndpoint().Text)
 	source = strings.ReplaceAll(source, authEligibilityOriginal, authEligibilityPatched)
 	if windowsMainDataPattern.MatchString(source) {
 		source = windowsMainDataPattern.ReplaceAllString(source, windowsSharedDataArgument)
@@ -317,6 +326,7 @@ func prepareWindowsExtensionPatch(path string) (*windowsPatchPlan, error) {
 		return nil, err
 	}
 	source := patchWindowsCloudCodeSource(string(data))
+	source = strings.ReplaceAll(source, windowsOldExtensionMarker, windowsExtensionMarker)
 	if windowsExtensionDataPattern.MatchString(source) {
 		source = windowsExtensionDataPattern.ReplaceAllString(source, windowsSharedDataArgument)
 	}
@@ -359,6 +369,8 @@ func prepareWindowsASARCandidate(sourcePath, destinationPath string) (string, er
 		return "", err
 	}
 	mainSource := patchWindowsCloudCodeSource(string(mainData))
+	mainSource = strings.ReplaceAll(mainSource, windowsOldASARMarker, windowsASARMarker)
+	mainSource = strings.ReplaceAll(mainSource, windowsOldTextProxyEndpoint, currentPatchProxyEndpoint().Text)
 	mainSource = strings.ReplaceAll(mainSource, authEligibilityOriginal, authEligibilityPatched)
 	if !strings.Contains(mainSource, windowsASARMarker) {
 		mainSource = addWindowsSourceMarker(mainSource, windowsASARMarker)
@@ -372,7 +384,7 @@ func prepareWindowsASARCandidate(sourcePath, destinationPath string) (string, er
 	}
 	// A clean backup may live on another volume. Create the candidate beside
 	// the destination so replacement remains an atomic same-volume operation.
-	temp, err := os.CreateTemp(filepath.Dir(destinationPath), ".antigravity-byok-windows-asar-*")
+	temp, err := os.CreateTemp(filepath.Dir(destinationPath), ".antigravity-wf-windows-asar-*")
 	if err != nil {
 		return "", err
 	}
@@ -403,6 +415,8 @@ func windowsContainsKnownPatch(data []byte) bool {
 		windowsBaseProxyEndpoint, windowsTextProxyEndpoint, windowsBinaryProxyEndpoint,
 		windowsBinarySandboxEndpoint, authEligibilityPatched,
 		windowsExtensionMarker, windowsMainMarker, windowsASARMarker,
+		windowsOldTextProxyEndpoint,
+		windowsOldExtensionMarker, windowsOldMainMarker, windowsOldASARMarker,
 		windowsLegacyASARMarker, windowsLegacyExtensionMarker, windowsLegacyMainMarker,
 		// A renderer fallback is an application modification too.  Keep every
 		// released revision here: when an older helper marker is overlooked,
@@ -424,10 +438,10 @@ func windowsContainsKnownPatch(data []byte) bool {
 }
 
 func windowsBackupPath(sourcePath string) string {
-	dir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_BYOK_BACKUP_DIR"))
+	dir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_WF_BACKUP_DIR"))
 	if dir == "" {
 		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".antigravity-byok", "backups")
+		dir = filepath.Join(home, ".antigravity-wf", "backups")
 	}
 	digest := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(sourcePath))))
 	return filepath.Join(dir, fmt.Sprintf("%s-%x.windows.bak", filepath.Base(sourcePath), digest[:8]))
@@ -436,7 +450,7 @@ func windowsBackupPath(sourcePath string) string {
 func windowsLegacyBackupPaths(sourcePath string) []string {
 	return []string{
 		sourcePath + ".orig",
-		sourcePath + ".antigravity-byok.orig",
+		sourcePath + legacyPatcherDirectoryName() + ".orig",
 	}
 }
 

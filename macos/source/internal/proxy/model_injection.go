@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 	"github.com/andybalholm/brotli"
 )
 
@@ -27,10 +27,6 @@ var modelIDIndexKeys = map[string]bool{
 	"availableModelIds":   true,
 	"allowedModelIds":     true,
 	"allowlistedModelIds": true,
-	// Present in newer FetchAvailableModels responses. It is not a generic
-	// picker index: only models that really support image generation belong in
-	// it. Older Antigravity versions omit this field and continue unchanged.
-	"imageGenerationModelIds": true,
 }
 
 type modelResponseRoot struct {
@@ -188,6 +184,35 @@ func collectUsedModelIDs(roots []modelResponseRoot) map[string]struct{} {
 	return used
 }
 
+func collectNativeImageGenerationModelIDs(roots []modelResponseRoot) []string {
+	var collected []string
+	seen := make(map[string]bool)
+	var visit func(any)
+	visit = func(value any) {
+		switch current := value.(type) {
+		case string:
+			if current = strings.TrimSpace(current); current != "" && !seen[current] {
+				seen[current] = true
+				collected = append(collected, current)
+			}
+		case []any:
+			for _, item := range current {
+				visit(item)
+			}
+		case map[string]any:
+			for _, item := range current {
+				visit(item)
+			}
+		}
+	}
+	for _, root := range roots {
+		if value, exists := root.value["imageGenerationModelIds"]; exists {
+			visit(value)
+		}
+	}
+	return collected
+}
+
 func buildArrayModelEntry(m storage.CustomModel, slug, placeholder string) map[string]any {
 	entry := buildFakeModelEntry(m, placeholder)
 	entry["name"] = "models/" + slug
@@ -248,9 +273,12 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 		summary.assignmentErr = placeholderErr
 		return summary
 	}
-	summary.assignments = modelRouteAssignments{placeholders: assignments, slugs: slugAssignments}
+	summary.assignments = modelRouteAssignments{
+		placeholders:        assignments,
+		slugs:               slugAssignments,
+		nativeImageModelIDs: collectNativeImageGenerationModelIDs(roots),
+	}
 	slugs := make([]string, 0, len(models))
-	imageGenerationSlugs := make([]string, 0, len(models))
 	for _, model := range models {
 		key := modelPlaceholderKey(model)
 		if assignments[key] == "" || slugAssignments[key] == "" {
@@ -258,9 +286,6 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 		}
 		slug := slugAssignments[key]
 		slugs = append(slugs, slug)
-		if storage.EffectiveCapabilities(model).SupportsImageGeneration {
-			imageGenerationSlugs = append(imageGenerationSlugs, slug)
-		}
 		summary.customNames = append(summary.customNames, modelDisplayName(model))
 		summary.customSlugs = append(summary.customSlugs, slug)
 	}
@@ -338,7 +363,11 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 		return summary
 	}
 	for _, root := range indexedRoots {
-		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs, imageGenerationSlugs)...)
+		// imageGenerationModelIds is a global execution-model directory, not a
+		// general picker visibility index. Keep Google's native list byte-for-byte
+		// intact; custom chat models advertise image capability on their own entry
+		// and the trajectory router selects gpt-image-2 only for custom turns.
+		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs)...)
 	}
 	summary.indexPaths = uniqueStrings(summary.indexPaths)
 	return summary
@@ -357,7 +386,7 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-func addModelIndexes(parsed map[string]any, rootPath string, modelIDs, imageGenerationModelIDs []string) []string {
+func addModelIndexes(parsed map[string]any, rootPath string, modelIDs []string) []string {
 	if len(modelIDs) == 0 {
 		return nil
 	}
@@ -389,14 +418,7 @@ func addModelIndexes(parsed map[string]any, rootPath string, modelIDs, imageGene
 		if !exists {
 			continue
 		}
-		ids := modelIDs
-		if key == "imageGenerationModelIds" {
-			ids = imageGenerationModelIDs
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		if updated, changed := prependModelIDs(value, ids); changed {
+		if updated, changed := prependModelIDs(value, modelIDs); changed {
 			parsed[key] = updated
 			paths = append(paths, modelPath(rootPath, key))
 		}

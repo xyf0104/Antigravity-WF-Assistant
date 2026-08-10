@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 const upstreamStreamTimeout = 15 * time.Minute

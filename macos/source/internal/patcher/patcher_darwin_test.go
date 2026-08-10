@@ -37,8 +37,8 @@ func TestDarwinPatchApplyStatusAndRestore(t *testing.T) {
 	}
 
 	t.Setenv("ANTIGRAVITY_APP_PATH", appPath)
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 
 	targets := locateDarwinTargets()
 	if targets.main != mainPath || targets.language != languagePath {
@@ -159,8 +159,8 @@ func TestDarwinPortMigrationRebuildsEveryEndpointFromCleanBackup(t *testing.T) {
 	if err := os.WriteFile(languagePath, cleanLanguage, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	for _, path := range []string{mainPath, extensionPath, languagePath} {
 		if err := writeFileBackup(path); err != nil {
 			t.Fatal(err)
@@ -248,8 +248,8 @@ func TestDarwinUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
 
 	t.Setenv("ANTIGRAVITY_APP_PATH", appPath)
 	t.Setenv("ANTIGRAVITY_APP_PATHS", "")
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	targets := locateDarwinInstallations()
 	if len(targets) != 1 || targets[0].kind != "ide" {
 		t.Fatalf("unexpected target: %+v", targets)
@@ -334,8 +334,8 @@ func TestDarwinCodesignRoundTrip(t *testing.T) {
 	originalCodeResources, _ := os.ReadFile(codeResourcesPath)
 
 	t.Setenv("ANTIGRAVITY_APP_PATH", appPath)
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "")
 	targets := locateDarwinTargets()
 	if _, err := applyDarwinPatch(targets); err != nil {
 		t.Fatal(err)
@@ -387,7 +387,7 @@ func assertFileEquals(t *testing.T, path string, want []byte) {
 }
 
 func TestWriteBackupPreservesFirstOriginal(t *testing.T) {
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
 	sourcePath := filepath.Join(t.TempDir(), "main.js")
 	first := []byte("first-original")
 	if err := writeBackup(sourcePath, first); err != nil {
@@ -401,7 +401,7 @@ func TestWriteBackupPreservesFirstOriginal(t *testing.T) {
 
 func TestCurrentBackupRotatesAfterApplicationUpdate(t *testing.T) {
 	backupDir := t.TempDir()
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", backupDir)
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", backupDir)
 	sourcePath := filepath.Join(t.TempDir(), "main.js")
 	first := []byte("version-one-original")
 	second := []byte("version-two-original")
@@ -425,8 +425,57 @@ func TestCurrentBackupRotatesAfterApplicationUpdate(t *testing.T) {
 	assertFileEquals(t, matches[0], first)
 }
 
+func TestDarwinBackupMigrationPreservesAndRepairsLanguageServerExecutableMode(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		activeMode os.FileMode
+	}{
+		{name: "preserves executable destination", activeMode: 0o755},
+		{name: "repairs v1.5.2 permission regression", activeMode: 0o600},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			active := filepath.Join(root, "language_server")
+			backup := filepath.Join(root, "language_server.clean.bak")
+			if err := os.WriteFile(active, []byte("binary\x00"+legacyBinaryProxyEndpoint+"\x00tail"), test.activeMode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(backup, []byte("binary\x00"+productionEndpoint+"\x00tail"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			plan, _, err := prepareDarwinLanguagePatch(backup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := bindDarwinPatchPlanDestination(plan, active, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := writePatchPlans([]*patchPlan{plan}); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyDarwinExecutable(active); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(active)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != 0o755 {
+				t.Fatalf("language_server mode=%04o want=0755", got)
+			}
+			data, err := os.ReadFile(active)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(data, []byte(legacyBinaryProxyEndpoint)) || !bytes.Contains(data, []byte(binaryProxyEndpoint)) {
+				t.Fatalf("language_server endpoint was not migrated: %q", data)
+			}
+		})
+	}
+}
+
 func TestFinishingPartialPatchPreservesCleanRestorePoint(t *testing.T) {
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
 	sourcePath := filepath.Join(t.TempDir(), "main.js")
 	clean := []byte("const endpoint='" + productionEndpoint + "';")
 	partial := []byte("const endpoint='" + textProxyEndpoint + "'; dynamic-app-data")
@@ -450,7 +499,7 @@ func TestDarwinKnownPatchDetectionIncludesEveryReleasedImageMarker(t *testing.T)
 		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
 		imagePreviewPatchMarker,
 		imageGenerationUIPatchV1Marker, imageGenerationUIPatchV2Marker,
-		imageGenerationUIPatchMarker,
+		imageGenerationUIPatchMarker, imageGenerationDedupePatchMarker,
 	} {
 		if !containsKnownDarwinPatch([]byte("/*" + marker + "*/")) {
 			t.Fatalf("known image marker was not protected by backup detection: %s", marker)
@@ -469,7 +518,7 @@ func TestDarwinLegacyImageMarkerPreservesCleanRestorePoint(t *testing.T) {
 	}
 	for _, marker := range markers {
 		t.Run(marker, func(t *testing.T) {
-			t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+			t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
 			sourcePath := filepath.Join(t.TempDir(), "renderer.js")
 			clean := []byte("clean renderer source")
 			legacy := []byte("/*" + marker + "*/ legacy renderer source")
@@ -486,7 +535,7 @@ func TestDarwinLegacyImageMarkerPreservesCleanRestorePoint(t *testing.T) {
 }
 
 func TestDarwinLegacyImageMarkerWithoutBackupFailsSafely(t *testing.T) {
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
 	sourcePath := filepath.Join(t.TempDir(), "renderer.js")
 	legacy := []byte("/*" + imagePreviewPatchV6Marker + "*/ legacy renderer source")
 	plan := &patchPlan{path: sourcePath, original: legacy, updated: append([]byte(nil), legacy...), mode: 0o644, changed: true}
@@ -526,6 +575,7 @@ func TestDarwinASARApplyStatusAndRestore(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	originalPlist := writeDarwinAgentIntegrityFixture(t, appPath, asarPath)
 	originalASAR, _ := os.ReadFile(asarPath)
 	originalLanguage := []byte("binary\x00" + sandboxEndpoint + "\x00tail")
 	if err := os.WriteFile(languagePath, originalLanguage, 0o755); err != nil {
@@ -534,8 +584,8 @@ func TestDarwinASARApplyStatusAndRestore(t *testing.T) {
 
 	t.Setenv("ANTIGRAVITY_APP_PATH", appPath)
 	t.Setenv("ANTIGRAVITY_APP_PATHS", "")
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	targets := locateDarwinInstallations()
 	if len(targets) != 1 || targets[0].kind != "agent" || targets[0].asar != asarPath {
 		t.Fatalf("unexpected ASAR target: %+v", targets)
@@ -565,6 +615,7 @@ func TestDarwinASARApplyStatusAndRestore(t *testing.T) {
 	if !bytes.Equal(restoredASAR, originalASAR) || !bytes.Equal(restoredLanguage, originalLanguage) {
 		t.Fatal("ASAR installation was not restored byte-for-byte")
 	}
+	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), originalPlist)
 }
 
 // TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint covers the
@@ -591,6 +642,7 @@ func TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
+	cleanPlist := writeDarwinAgentIntegrityFixture(t, appPath, asarPath)
 	cleanASAR, err := os.ReadFile(asarPath)
 	if err != nil {
 		t.Fatal(err)
@@ -599,8 +651,8 @@ func TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint(t *testing.T)
 		t.Fatal(err)
 	}
 
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	// S0: canonical clean restore point from the first helper application.
 	if err := writeBackup(asarPath, cleanASAR); err != nil {
 		t.Fatal(err)
@@ -656,6 +708,119 @@ func TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint(t *testing.T)
 		t.Fatal(err)
 	}
 	assertFileEquals(t, asarPath, cleanASAR)
+	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), cleanPlist)
+}
+
+// TestDarwinASARLegacyWFUpgradeWhenPlistTracksPatchedArchive covers released
+// helper builds that updated ElectronAsarIntegrity to their already-patched
+// app.asar. A matching, helper-authored archive is a supported upgrade input:
+// it must be rebuilt from the canonical vendor backup instead of being
+// rejected merely because the application was patched before.
+func TestDarwinASARLegacyWFUpgradeWhenPlistTracksPatchedArchive(t *testing.T) {
+	root := t.TempDir()
+	appPath := filepath.Join(root, "Antigravity 2.0.app")
+	resources := filepath.Join(appPath, "Contents", "Resources")
+	asarPath := filepath.Join(resources, "app.asar")
+	languagePath := filepath.Join(resources, "bin", "language_server")
+	if err := os.MkdirAll(filepath.Dir(languagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanArchive := &asarArchive{root: &asarNode{Files: map[string]*asarNode{}}}
+	if err := cleanArchive.write(asarPath, map[string][]byte{
+		"dist/main.js":            []byte(`"use strict";const endpoint="` + productionEndpoint + `";`),
+		"dist/languageServer.js":  []byte(`args.push("--cloud_code_endpoint","` + productionEndpoint + `")`),
+		"out/jetskiAgent/main.js": []byte(imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture()),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleanPlist := writeDarwinAgentIntegrityFixture(t, appPath, asarPath)
+	cleanASAR, err := os.ReadFile(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeDarwinAgentLanguageServerUIFixture(t, languagePath)
+
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
+	// The synthetic Language Server reuses the Go test Mach-O and therefore
+	// contains patch-marker constants from the test binary itself. Seed its
+	// canonical fixture backup so that this test exercises the ASAR migration,
+	// not that deliberate false-positive guard.
+	cleanLanguage, err := os.ReadFile(languagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(backupPath(languagePath), cleanLanguage, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := darwinTargets{
+		app: appPath, name: "Antigravity 2.0", kind: "agent", version: "2.6.0",
+		asar: asarPath, language: languagePath,
+	}
+	if _, err := applyDarwinASARPatch(target); err != nil {
+		t.Fatalf("initial WF patch failed: %v", err)
+	}
+	assertFileEquals(t, backupPath(asarPath), cleanASAR)
+
+	// Emulate an older WF release whose active ASAR uses the historical marker
+	// and whose Info.plist was synchronised to that patched archive (state B).
+	vendorArchive, err := readASAR(backupPath(asarPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(resources, "legacy.app.asar")
+	if err := vendorArchive.write(legacyPath, map[string][]byte{
+		"dist/main.js": []byte(`"use strict";` + "\n// " + legacyDarwinASARMarker +
+			`\nconst endpoint="` + legacyTextProxyEndpoint + `";`),
+		"dist/languageServer.js": []byte(`args.push("--cloud_code_endpoint","` + legacyBinaryProxyEndpoint + `")`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(legacyPath, asarPath); err != nil {
+		t.Fatal(err)
+	}
+	legacyHash, err := darwinASARHeaderHash(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appPath, "Contents", "Info.plist"), darwinIntegrityPlist(legacyHash), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !darwinASARContainsKnownPatch(asarPath) {
+		t.Fatal("legacy WF archive was not recognized as a managed upgrade input")
+	}
+	if supported, _, reason := darwinTargetConnectionSupport(target); !supported {
+		t.Fatalf("verified legacy WF application was incorrectly rejected: %s", reason)
+	}
+
+	if _, err := applyDarwinASARPatch(target); err != nil {
+		t.Fatalf("legacy WF upgrade failed: %v", err)
+	}
+	if !darwinASARPatched(asarPath) {
+		t.Fatal("legacy WF archive was not upgraded to the current patch")
+	}
+	if err := verifyDarwinAgentASARIntegrity(target); err != nil {
+		t.Fatalf("upgraded archive and Info.plist do not match: %v", err)
+	}
+	activeArchive, err := readASAR(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeMain, err := activeArchive.readFile("dist/main.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(activeMain, []byte(legacyDarwinASARMarker)) || !bytes.Contains(activeMain, []byte(darwinASARMarker)) {
+		t.Fatalf("legacy marker was not replaced by the current WF marker: %s", activeMain)
+	}
+	assertFileEquals(t, backupPath(asarPath), cleanASAR)
+
+	if _, err := restoreDarwinPatch(target); err != nil {
+		t.Fatal(err)
+	}
+	assertFileEquals(t, asarPath, cleanASAR)
+	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), cleanPlist)
 }
 
 // TestDarwinASARImagePreviewUpgradeRollbackKeepsActiveArchive protects the
@@ -680,13 +845,14 @@ func TestDarwinASARImagePreviewUpgradeRollbackKeepsActiveArchive(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	cleanPlist := writeDarwinAgentIntegrityFixture(t, appPath, asarPath)
 	cleanASAR, err := os.ReadFile(asarPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	if err := writeBackup(asarPath, cleanASAR); err != nil {
 		t.Fatal(err)
 	}
@@ -729,6 +895,7 @@ func TestDarwinASARImagePreviewUpgradeRollbackKeepsActiveArchive(t *testing.T) {
 	assertFileEquals(t, asarPath, legacyASAR)
 	assertFileEquals(t, backupPath(asarPath), cleanASAR)
 	assertFileEquals(t, languagePath, originalLanguage)
+	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), cleanPlist)
 }
 
 // TestDarwinASARUnpackedImagePreviewPatchApplyAndRestore verifies the package
@@ -766,6 +933,7 @@ func TestDarwinASARUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	originalPlist := writeDarwinAgentIntegrityFixture(t, appPath, asarPath)
 	originalASAR, err := os.ReadFile(asarPath)
 	if err != nil {
 		t.Fatal(err)
@@ -779,8 +947,8 @@ func TestDarwinASARUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	target := darwinTargets{
 		app: appPath, name: "Antigravity 2.0", kind: "agent", asar: asarPath, language: languagePath,
 	}
@@ -822,11 +990,12 @@ func TestDarwinASARUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
 	assertFileEquals(t, asarPath, originalASAR)
 	assertFileEquals(t, externalRendererPath, originalRenderer)
 	assertFileEquals(t, languagePath, originalLanguage)
+	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), originalPlist)
 }
 
 func TestMergeDarwinHistoryBacksUpAndNeverOverwrites(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("ANTIGRAVITY_BYOK_GEMINI_DIR", base)
+	t.Setenv("ANTIGRAVITY_WF_GEMINI_DIR", base)
 	source := filepath.Join(base, "antigravity-ide")
 	target := filepath.Join(base, "antigravity")
 	for _, dir := range []string{filepath.Join(source, "conversations"), filepath.Join(target, "conversations")} {
@@ -848,12 +1017,12 @@ func TestMergeDarwinHistoryBacksUpAndNeverOverwrites(t *testing.T) {
 	}
 	assertFileEquals(t, filepath.Join(target, "conversations", "new.json"), []byte("source-new"))
 	assertFileEquals(t, filepath.Join(target, "conversations", "same.json"), []byte("target-value"))
-	assertFileEquals(t, filepath.Join(base, "antigravity-ide.antigravity-byok-backup", "conversations", "same.json"), []byte("source-value"))
+	assertFileEquals(t, filepath.Join(base, "antigravity-ide.antigravity-wf-backup", "conversations", "same.json"), []byte("source-value"))
 }
 
 func TestSyncDarwinHistoryDiscoversAllLegacyDirectories(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("ANTIGRAVITY_BYOK_GEMINI_DIR", base)
+	t.Setenv("ANTIGRAVITY_WF_GEMINI_DIR", base)
 	target := filepath.Join(base, "antigravity")
 	sources := []string{
 		filepath.Join(base, "antigravity-ide"),
@@ -887,7 +1056,7 @@ func TestSyncDarwinHistoryDiscoversAllLegacyDirectories(t *testing.T) {
 		t.Fatalf("transient SQLite file should not be restored: %v", err)
 	}
 	for _, source := range sources {
-		if info, err := os.Stat(source + ".antigravity-byok-backup"); err != nil || !info.IsDir() {
+		if info, err := os.Stat(source + ".antigravity-wf-backup"); err != nil || !info.IsDir() {
 			t.Fatalf("backup missing for %s: %v", source, err)
 		}
 	}
@@ -903,7 +1072,7 @@ func TestSyncDarwinHistoryDiscoversAllLegacyDirectories(t *testing.T) {
 
 func TestRunDarwinSyncHistoryDoesNotRequireInstalledApplication(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("ANTIGRAVITY_BYOK_GEMINI_DIR", base)
+	t.Setenv("ANTIGRAVITY_WF_GEMINI_DIR", base)
 	message, err := runDarwin("sync-history")
 	if err != nil {
 		t.Fatal(err)
@@ -914,8 +1083,8 @@ func TestRunDarwinSyncHistoryDoesNotRequireInstalledApplication(t *testing.T) {
 }
 
 func TestDarwinPatchAgainstInstalledVersionFixture(t *testing.T) {
-	if os.Getenv("ANTIGRAVITY_BYOK_TEST_INSTALLED") != "1" {
-		t.Skip("set ANTIGRAVITY_BYOK_TEST_INSTALLED=1 for the installed-version fixture")
+	if os.Getenv("ANTIGRAVITY_WF_TEST_INSTALLED") != "1" {
+		t.Skip("set ANTIGRAVITY_WF_TEST_INSTALLED=1 for the installed-version fixture")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -951,9 +1120,9 @@ func TestDarwinPatchAgainstInstalledVersionFixture(t *testing.T) {
 
 	t.Setenv("ANTIGRAVITY_APP_PATH", appPath)
 	t.Setenv("ANTIGRAVITY_APP_PATHS", "")
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_GEMINI_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_GEMINI_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	targets := locateDarwinInstallations()
 	if len(targets) != 1 {
 		t.Fatalf("fixture discovery returned %+v", targets)

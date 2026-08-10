@@ -115,8 +115,8 @@ func TestDarwinPatchApplyAndRestoreGenericLanguageServerHost(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
-	t.Setenv("ANTIGRAVITY_BYOK_SKIP_CODESIGN", "1")
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	target := darwinTargets{
 		app: appPath, name: "Antigravity IDE", kind: "ide",
 		main: mainPath, extensionEntry: extensionPath, language: languagePath,

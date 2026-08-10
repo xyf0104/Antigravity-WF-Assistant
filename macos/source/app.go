@@ -14,15 +14,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"antigravity-byok/internal/launcher"
-	"antigravity-byok/internal/oauthflow"
-	"antigravity-byok/internal/patcher"
-	"antigravity-byok/internal/permissions"
-	"antigravity-byok/internal/proxy"
-	"antigravity-byok/internal/stats"
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/updater"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/launcher"
+	"antigravity-wf-assistant/internal/oauthflow"
+	"antigravity-wf-assistant/internal/patcher"
+	"antigravity-wf-assistant/internal/permissions"
+	"antigravity-wf-assistant/internal/proxy"
+	"antigravity-wf-assistant/internal/stats"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/updater"
+	"antigravity-wf-assistant/internal/upstream"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -36,6 +36,7 @@ type App struct {
 	historyRunMu          sync.Mutex
 	historyStatus         HistorySyncStatus
 	launchMu              sync.Mutex
+	patchMu               sync.Mutex
 	updateMu              sync.Mutex
 	updateCheckMu         sync.Mutex
 	updateCheckCancel     context.CancelFunc
@@ -96,7 +97,7 @@ type UpstreamAccountView struct {
 
 func newApp() *App {
 	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".antigravity-byok")
+	dir := resolveWFStorageDir(home)
 	_ = os.MkdirAll(dir, 0o700)
 	_ = os.Chmod(dir, 0o700)
 	storage.Init(dir)
@@ -222,10 +223,14 @@ type PatchTargetStatus struct {
 	Kind               string `json:"kind"`
 	Version            string `json:"version"`
 	AppPath            string `json:"appPath"`
+	ExecutablePath     string `json:"executablePath"`
 	MainPath           string `json:"mainPath"`
 	ASARPath           string `json:"asarPath"`
 	ExtensionPath      string `json:"extensionPath"`
 	LanguageServerPath string `json:"languageServerPath"`
+	Supported          bool   `json:"supported"`
+	ConnectionMode     string `json:"connectionMode"`
+	Reason             string `json:"reason"`
 	Patched            bool   `json:"patched"`
 	Running            bool   `json:"running"`
 	Launchable         bool   `json:"launchable"`
@@ -274,6 +279,13 @@ type UpdateProgress struct {
 	Total      int64  `json:"total"`
 	Percent    int    `json:"percent"`
 	Message    string `json:"message"`
+}
+
+type PatchProgress struct {
+	Phase     string `json:"phase"`
+	Operation string `json:"operation"`
+	Percent   int    `json:"percent"`
+	Message   string `json:"message"`
 }
 
 // ─── Proxy ────────────────────────────────────────────────────────────────────
@@ -1447,7 +1459,9 @@ func (a *App) GetPatchStatus() PatchStatus {
 		targets = append(targets, PatchTargetStatus{
 			Name: target.Name, Kind: target.Kind, Version: target.Version,
 			AppPath: target.AppPath, MainPath: target.MainPath, ASARPath: target.ASARPath,
-			ExtensionPath: target.ExtensionPath, LanguageServerPath: target.LanguageServerPath,
+			ExecutablePath: target.ExecutablePath,
+			ExtensionPath:  target.ExtensionPath, LanguageServerPath: target.LanguageServerPath,
+			Supported: target.Supported, ConnectionMode: target.ConnectionMode, Reason: target.Reason,
 			Patched: target.Patched, Running: running, Launchable: launcher.Supported(),
 		})
 	}
@@ -1570,7 +1584,7 @@ func (a *App) LaunchOrRestartAntigravity(appPath string) Result {
 	return Result{OK: true, Message: fmt.Sprintf("%s已%s；聊天历史已在操作前后安全同步。", selectedName, verb)}
 }
 
-func (a *App) ApplyPatch() Result {
+func (a *App) applyAllPatchesWithResolvedEndpoint() Result {
 	// Resolve and bind the endpoint before writing any Antigravity file. The
 	// patcher reads the same persisted non-secret runtime state, so a fallback
 	// selected after a 50999 collision is never written as a dead endpoint.
@@ -1587,7 +1601,7 @@ func (a *App) ApplyPatch() Result {
 	return Result{OK: true, Message: out}
 }
 
-func (a *App) ApplyIDEPatch() Result {
+func (a *App) applyIDEPatchWithResolvedEndpoint() Result {
 	if pending, err := storage.HasStagedProxyRuntimePort(); err != nil {
 		return Result{OK: false, Message: "无法确认本地代理端口切换状态；为保护所有已补丁的 Antigravity，本次仅 IDE 补丁已停止：" + err.Error()}
 	} else if pending {
@@ -1609,6 +1623,85 @@ func (a *App) ApplyIDEPatch() Result {
 		return Result{OK: false, Message: fmt.Sprintf("IDE 补丁已写入，但本地代理端口切换尚未安全确认：%s。请保持助手运行并重新执行“仅 IDE 补丁”。", err)}
 	}
 	return Result{OK: true, Message: out}
+}
+
+func (a *App) ApplyPatch() Result {
+	return a.runPatchAction("全部连接", a.applyAllPatchesWithResolvedEndpoint)
+}
+
+func (a *App) ApplyIDEPatch() Result {
+	return a.runPatchAction("连接 Antigravity IDE", a.applyIDEPatchWithResolvedEndpoint)
+}
+
+func (a *App) ApplyAgentPatch() Result {
+	return a.runPatchAction("连接 Antigravity 2.0", func() Result {
+		if pending, err := storage.HasStagedProxyRuntimePort(); err != nil {
+			return Result{OK: false, Message: "无法确认本地代理端口切换状态；为保护所有已连接的 Antigravity，本次操作已停止：" + err.Error()}
+		} else if pending {
+			return Result{OK: false, Message: "本地代理连接正在安全调整中。请使用“全部连接”，避免其他 Antigravity 安装仍指向旧连接。"}
+		}
+		if err := proxy.Start(a.storageDir); err != nil {
+			return Result{OK: false, Message: fmt.Sprintf("本地代理启动失败，未写入 Antigravity 2.0 补丁：%s", err)}
+		}
+		if pending, err := storage.HasStagedProxyRuntimePort(); err != nil {
+			return Result{OK: false, Message: "无法确认本地代理端口切换状态；为保护所有已连接的 Antigravity，本次操作已停止：" + err.Error()}
+		} else if pending {
+			return Result{OK: false, Message: "本地代理连接正在安全调整中。请使用“全部连接”，避免其他 Antigravity 安装仍指向旧连接。"}
+		}
+		out, err := patcher.Run("apply-agent")
+		if err != nil {
+			return Result{OK: false, Message: fmt.Sprintf("%s\n%s", err.Error(), out)}
+		}
+		if err := proxy.CommitSelectedPort(); err != nil {
+			return Result{OK: false, Message: fmt.Sprintf("Antigravity 2.0 补丁已写入，但本地代理端口切换尚未安全确认：%s。请保持助手运行并重新执行“仅连接 Antigravity 2.0”。", err)}
+		}
+		return Result{OK: true, Message: out}
+	})
+}
+
+func (a *App) runPatchAction(operation string, action func() Result) Result {
+	if !a.patchMu.TryLock() {
+		return Result{OK: false, Message: "已有连接任务正在进行，请等待当前任务完成。"}
+	}
+	defer a.patchMu.Unlock()
+
+	a.emitPatchProgress(PatchProgress{Phase: "analyzing", Operation: operation, Percent: 5, Message: "正在识别已安装产品与兼容结构"})
+	progressContext, cancelProgress := context.WithCancel(context.Background())
+	progressDone := make(chan struct{})
+	go func() {
+		defer close(progressDone)
+		ticker := time.NewTicker(650 * time.Millisecond)
+		defer ticker.Stop()
+		percent := 12
+		for {
+			select {
+			case <-progressContext.Done():
+				return
+			case <-ticker.C:
+				a.emitPatchProgress(PatchProgress{Phase: "patching", Operation: operation, Percent: percent, Message: "正在验证结构并安全写入连接配置"})
+				if percent < 84 {
+					percent += 2
+				}
+			}
+		}
+	}()
+
+	result := action()
+	cancelProgress()
+	<-progressDone
+	if !result.OK {
+		a.emitPatchProgress(PatchProgress{Phase: "error", Operation: operation, Percent: 100, Message: result.Message})
+		return result
+	}
+	a.emitPatchProgress(PatchProgress{Phase: "verifying", Operation: operation, Percent: 90, Message: "正在核验连接状态与安装完整性"})
+	a.emitPatchProgress(PatchProgress{Phase: "complete", Operation: operation, Percent: 100, Message: "连接成功，可以打开 Antigravity"})
+	return result
+}
+
+func (a *App) emitPatchProgress(progress PatchProgress) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "wf:patch-progress", progress)
+	}
 }
 
 func (a *App) RestorePatch() Result {

@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 )
 
 // A direct Images response contains base64 data, so reserve enough space for

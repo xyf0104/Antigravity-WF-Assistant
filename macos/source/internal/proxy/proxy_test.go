@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func decodeAntigravityStreamResponse(t *testing.T, out string) map[string]any {
@@ -54,13 +54,13 @@ func TestGetModelSlug(t *testing.T) {
 }
 
 func TestHealthEndpointIdentifiesCurrentProxy(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/_antigravity-byok/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_antigravity-wf/health", nil)
 	recorder := httptest.NewRecorder()
 	handleRequest(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("health status = %d", recorder.Code)
 	}
-	if got := recorder.Header().Get("X-Antigravity-BYOK"); got != "go-proxy" {
+	if got := recorder.Header().Get("X-Antigravity-WF"); got != "go-proxy" {
 		t.Fatalf("health identity = %q", got)
 	}
 }
@@ -886,16 +886,23 @@ func TestBoundAccountPoolFailsOverAfterQuotaResponse(t *testing.T) {
 }
 
 func TestCleanPatchedPath(t *testing.T) {
+	legacyToken := legacyProxyProductToken()
 	cases := map[string]string{
-		"/v1internal/antigravity-byok/v1internal:streamGenerateContent": "/v1internal:streamGenerateContent",
-		"/v1internal/antigravity-byok/v1internal/cascadeNuxes":          "/v1internal/cascadeNuxes",
-		"/v1internal/byokxxx/v1internal:generateContent":                "/v1internal:generateContent",
-		"/v1internal/byokxxx/v1internal/cascadeNuxes":                   "/v1internal/cascadeNuxes",
-		"/v1internal/byokxxx-sandbox/v1internal:fetchAvailableModels":   "/v1internal:fetchAvailableModels",
-		"/v1internal/byokxxx-sandbox/v1internal/cascadeNuxes":           "/v1internal/cascadeNuxes",
-		"/v1internal/xxxxxxxxxxxx/v1internal:fetchAvailableModels":      "/v1internal:fetchAvailableModels",
-		"/v1internal/xxxxxxxxxxxx/not-an-antigravity-api":               "/v1internal/xxxxxxxxxxxx/not-an-antigravity-api",
-		"/v1internal:retrieveUserQuota":                                 "/v1internal:retrieveUserQuota",
+		"/v1internal/antigravity-wf/v1internal:streamGenerateContent":                  "/v1internal:streamGenerateContent",
+		"/v1internal/antigravity-wf/v1internal/cascadeNuxes":                           "/v1internal/cascadeNuxes",
+		"/v1internal/wfproxy/v1internal:generateContent":                               "/v1internal:generateContent",
+		"/v1internal/wfproxy/v1internal/cascadeNuxes":                                  "/v1internal/cascadeNuxes",
+		"/v1internal/wfproxy-sandbox/v1internal:fetchAvailableModels":                  "/v1internal:fetchAvailableModels",
+		"/v1internal/wfproxy-sandbox/v1internal/cascadeNuxes":                          "/v1internal/cascadeNuxes",
+		"/v1internal/antigravity-" + legacyToken + "/v1internal:streamGenerateContent": "/v1internal:streamGenerateContent",
+		"/v1internal/antigravity-" + legacyToken + "/v1internal/cascadeNuxes":          "/v1internal/cascadeNuxes",
+		"/v1internal/" + legacyToken + "xxx/v1internal:generateContent":                "/v1internal:generateContent",
+		"/v1internal/" + legacyToken + "xxx/v1internal/cascadeNuxes":                   "/v1internal/cascadeNuxes",
+		"/v1internal/" + legacyToken + "xxx-sandbox/v1internal:fetchAvailableModels":   "/v1internal:fetchAvailableModels",
+		"/v1internal/" + legacyToken + "xxx-sandbox/v1internal/cascadeNuxes":           "/v1internal/cascadeNuxes",
+		"/v1internal/xxxxxxxxxxxx/v1internal:fetchAvailableModels":                     "/v1internal:fetchAvailableModels",
+		"/v1internal/xxxxxxxxxxxx/not-an-antigravity-api":                              "/v1internal/xxxxxxxxxxxx/not-an-antigravity-api",
+		"/v1internal:retrieveUserQuota":                                                "/v1internal:retrieveUserQuota",
 	}
 	for input, want := range cases {
 		if got := cleanPatchedPath(input); got != want {

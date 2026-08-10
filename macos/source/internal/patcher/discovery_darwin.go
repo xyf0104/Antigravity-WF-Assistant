@@ -39,10 +39,11 @@ func selectDarwinInstallations(candidates []string, explicit map[string]bool, is
 	var deferredCustomLocations []string
 	for _, candidate := range candidates {
 		candidate = normalizeAppBundlePath(candidate)
-		if candidate == "" || seen[candidate] {
+		canonical := darwinCanonicalAppKey(candidate)
+		if candidate == "" || seen[canonical] {
 			continue
 		}
-		seen[candidate] = true
+		seen[canonical] = true
 		if !explicit[candidate] && !isTrusted(candidate) {
 			deferredCustomLocations = append(deferredCustomLocations, candidate)
 			continue
@@ -54,17 +55,16 @@ func selectDarwinInstallations(candidates []string, explicit map[string]bool, is
 			targets = append(targets, target)
 		}
 	}
-	// A standard installation wins over stray copies found by Spotlight. If no
-	// standard installation exists, accept a structurally valid Google
-	// Antigravity bundle from a custom location.
-	if len(targets) == 0 {
-		for _, candidate := range deferredCustomLocations {
-			if !darwinBundleIdentifierIsAntigravity(candidate) {
-				continue
-			}
-			if target, ok := inspectDarwinApp(candidate); ok {
-				targets = append(targets, target)
-			}
+	// Process and Spotlight results outside standard roots are accepted only
+	// when both the bundle identifier and strict product structure match. Keep
+	// them alongside standard installs: users can legitimately have the IDE and
+	// Antigravity 2.0 on separate volumes or in versioned application folders.
+	for _, candidate := range deferredCustomLocations {
+		if !darwinBundleIdentifierIsAntigravity(candidate) {
+			continue
+		}
+		if target, ok := inspectDarwinApp(candidate); ok {
+			targets = append(targets, target)
 		}
 	}
 	sort.SliceStable(targets, func(i, j int) bool {
@@ -99,7 +99,7 @@ func darwinAppCandidates() ([]string, map[string]bool) {
 		return candidates, explicit
 	}
 
-	roots := []string{"/Applications"}
+	roots := []string{"/Applications", "/System/Applications"}
 	if home, err := os.UserHomeDir(); err == nil {
 		roots = append(roots, filepath.Join(home, "Applications"))
 	}
@@ -194,6 +194,16 @@ func normalizeAppBundlePath(path string) string {
 	return filepath.Clean(abs)
 }
 
+func darwinCanonicalAppKey(path string) string {
+	if path == "" {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
+}
+
 func trustedDarwinInstallLocation(path string) bool {
 	if strings.HasPrefix(path, "/Applications/") || strings.HasPrefix(path, "/System/Applications/") {
 		return true
@@ -208,10 +218,13 @@ func darwinCandidateRank(path string) int {
 	if strings.HasPrefix(path, "/Applications/") {
 		return 0
 	}
-	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, filepath.Join(home, "Applications")+string(os.PathSeparator)) {
+	if strings.HasPrefix(path, "/System/Applications/") {
 		return 1
 	}
-	return 2
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, filepath.Join(home, "Applications")+string(os.PathSeparator)) {
+		return 2
+	}
+	return 3
 }
 
 func inspectDarwinApp(appPath string) (darwinTargets, bool) {
@@ -290,12 +303,15 @@ func darwinASARHasSupportedEntrypoints(asarPath string) bool {
 	if err != nil {
 		return false
 	}
-	managedMain := bytes.Contains(main, []byte(darwinASARMarker))
+	managedMain := bytes.Contains(main, []byte(darwinASARMarker)) || bytes.Contains(main, []byte(legacyDarwinASARMarker))
 	if !managedMain && !bytes.HasPrefix(main, []byte(`"use strict";`)) {
 		return false
 	}
 	endpoint := currentPatchProxyEndpoint()
-	if darwinCloudCodeURLPattern.Match(launcher) || bytes.Contains(launcher, []byte(endpoint.Base)) {
+	if !managedMain && bytes.Count(launcher, []byte("--cloud_code_endpoint")) == 1 && len(darwinCloudCodeURLPattern.FindAll(launcher, -1)) == 1 {
+		return true
+	}
+	if managedMain && bytes.Count(launcher, []byte("--cloud_code_endpoint")) == 1 && bytes.Count(launcher, []byte(endpoint.Base)) == 1 {
 		return true
 	}
 	// A previously managed archive may use a staged fallback port that is no
@@ -317,8 +333,22 @@ func locateDarwinLanguageServer(binDir string) string {
 	if binDir == "" {
 		return ""
 	}
-	matches, _ := filepath.Glob(filepath.Join(binDir, "language_server_macos*"))
+	// Official standalone Antigravity 2.0 v2.3.1 packages the executable as
+	// Contents/Resources/bin/language_server. Older IDE/Agent builds used
+	// architecture-suffixed language_server_macos_x64/arm64 names. Recognize
+	// both exact families, but never broaden this to arbitrary files in bin/.
+	var matches []string
+	if exact := existingFile(filepath.Join(binDir, "language_server")); exact != "" {
+		matches = append(matches, exact)
+	}
+	legacy, _ := filepath.Glob(filepath.Join(binDir, "language_server_macos*"))
+	matches = append(matches, legacy...)
 	sort.Strings(matches)
+	for _, path := range matches {
+		if filepath.Base(path) == "language_server" && existingFile(path) != "" {
+			return path
+		}
+	}
 	preferred := "x64"
 	if runtime.GOARCH == "arm64" {
 		preferred = "arm64"

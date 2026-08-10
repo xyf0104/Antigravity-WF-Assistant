@@ -35,7 +35,13 @@ type TargetStatus struct {
 	ASARPath           string
 	ExtensionPath      string
 	LanguageServerPath string
-	Patched            bool
+	// Supported describes whether this exact target passed the bounded
+	// structural checks required for its connection method. Discovery alone is
+	// never enough to authorise a write.
+	Supported      bool
+	ConnectionMode string
+	Reason         string
+	Patched        bool
 }
 
 func patchCoreScript() string {
