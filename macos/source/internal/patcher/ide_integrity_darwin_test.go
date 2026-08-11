@@ -3,6 +3,7 @@
 package patcher
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -66,7 +67,7 @@ func TestDarwinIDEProductChecksumPatchUpdatesOnlyTrackedRenderer(t *testing.T) {
 	}
 }
 
-func TestDarwinIDEProductChecksumPatchRejectsUnexpectedChecksum(t *testing.T) {
+func TestDarwinIDEProductChecksumPatchSynchronizesThirdPartyChecksum(t *testing.T) {
 	target, renderer, original := newDarwinIntegrityFixture(t)
 	productPath := darwinIDEProductPath(target)
 	data, err := os.ReadFile(productPath)
@@ -86,7 +87,11 @@ func TestDarwinIDEProductChecksumPatchRejectsUnexpectedChecksum(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := &patchPlan{path: renderer, original: original, updated: []byte("patched renderer"), mode: 0o644, changed: true}
-	if productPlan, err := prepareDarwinIDEProductChecksumPatch(target, []*patchPlan{plan}); err == nil || productPlan != nil {
-		t.Fatalf("unexpected checksum must fail safely, plan=%#v err=%v", productPlan, err)
+	productPlan, err := prepareDarwinIDEProductChecksumPatch(target, []*patchPlan{plan})
+	if err != nil || productPlan == nil || !productPlan.changed {
+		t.Fatalf("third-party checksum was not synchronized: plan=%#v err=%v", productPlan, err)
+	}
+	if !bytes.Contains(productPlan.updated, []byte(darwinIDEChecksum(plan.updated))) {
+		t.Fatalf("synchronized product checksum is missing candidate hash: %s", productPlan.updated)
 	}
 }

@@ -271,6 +271,16 @@ func applyWindowsTarget(target windowsTarget) (message string, err error) {
 		// state immediately preceding this upgrade instead of deleting it.
 		backupPlans = append(backupPlans, settingPlan)
 	}
+	if windowsPlansChanged(backupPlans) {
+		// Renderer bytes, product metadata and the endpoint setting form one IDE
+		// state. Refresh every existing member, including unchanged companions,
+		// so Restore cannot combine this upgrade with a stale older .bak.
+		statePaths := append([]string{}, verifiedRenderers...)
+		statePaths = append(statePaths, windowsIDEProductPath(target), settingsPath)
+		if err := saveWindowsCurrentBackups(statePaths...); err != nil {
+			return "", fmt.Errorf("创建 IDE 升级前状态备份失败: %w", err)
+		}
+	}
 	if err := saveWindowsPlanBackups(backupPlans); err != nil {
 		return "", fmt.Errorf("创建图片界面备份失败: %w", err)
 	}
@@ -463,10 +473,17 @@ func applyWindowsASARTarget(target windowsTarget) (message string, err error) {
 	if !asarChanged && (languagePlan == nil || !languagePlan.changed) && !windowsPlansChanged(previewPlans) {
 		return fmt.Sprintf("%s 补丁已处于激活状态，无需重复应用。", target.name), nil
 	}
-	if asarChanged {
-		if err = saveWindowsBackupFrom(target.asar, asarSource); err != nil {
-			return "", fmt.Errorf("创建 app.asar 备份失败: %w", err)
+	// Refresh every active Agent member for every target transaction, even when
+	// only one unpacked renderer or the Language Server changes. Restore scans
+	// the target as one unit and must not mix states from separate upgrades.
+	statePaths := []string{target.asar, target.language}
+	for _, plan := range previewPlans {
+		if plan != nil {
+			statePaths = append(statePaths, plan.path)
 		}
+	}
+	if err = saveWindowsCurrentBackups(statePaths...); err != nil {
+		return "", fmt.Errorf("创建 Agent 升级前状态备份失败: %w", err)
 	}
 	plans := append([]*windowsPatchPlan{}, previewPlans...)
 	if languagePlan != nil {
@@ -616,12 +633,22 @@ func saveWindowsPlanBackups(plans []*windowsPatchPlan) error {
 	return nil
 }
 
-func saveWindowsBackupFrom(targetPath, sourcePath string) error {
-	data, err := os.ReadFile(sourcePath)
-	if err != nil {
-		return err
+func saveWindowsCurrentBackups(paths ...string) error {
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		if path == "" || seen[path] || windowsExistingFile(path) == "" {
+			continue
+		}
+		seen[path] = true
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := saveWindowsBackup(path, data); err != nil {
+			return err
+		}
 	}
-	return saveWindowsBackup(targetPath, data)
+	return nil
 }
 
 func saveWindowsBackup(sourcePath string, data []byte) error {

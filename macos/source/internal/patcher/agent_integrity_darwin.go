@@ -122,26 +122,20 @@ func darwinAgentInfoPlistPath(target darwinTargets) (string, error) {
 }
 
 // prepareDarwinAgentASARIntegrityPatch creates the companion Info.plist plan
-// for a prepared app.asar candidate. The currently declared hash must match
-// the active archive exactly; accepting a stale or already-unrelated value
-// would hide a partial third-party modification.
+// for a prepared app.asar candidate. A parsed current hash may belong to the
+// vendor, an older WF release, or a third-party archive; the entire plist and
+// active archive are backed up before the transaction replaces that one value.
 func prepareDarwinAgentASARIntegrityPatch(target darwinTargets, candidateASAR string) (*patchPlan, error) {
 	return prepareDarwinAgentASARIntegrityPatchFrom(target, candidateASAR, target.asar)
 }
 
-// prepareDarwinAgentASARIntegrityPatchFrom also supports upgrading an older
-// helper patch: in that case the active ASAR is already modified, while the
-// untouched vendor Info.plist still (correctly) names the canonical clean
-// backup's header hash. The caller must supply that exact canonical backup as
-// declaredASAR; arbitrary stale metadata remains rejected.
-func prepareDarwinAgentASARIntegrityPatchFrom(target darwinTargets, candidateASAR, declaredASAR string) (*patchPlan, error) {
+// prepareDarwinAgentASARIntegrityPatchFrom retains its third argument for
+// compatibility with historical regression fixtures. Upgrade planning is now
+// based on the installed plist and candidate bytes, not an official backup.
+func prepareDarwinAgentASARIntegrityPatchFrom(target darwinTargets, candidateASAR, _ string) (*patchPlan, error) {
 	plistPath, err := darwinAgentInfoPlistPath(target)
 	if err != nil {
 		return nil, err
-	}
-	declaredSourceHash, err := darwinASARHeaderHash(declaredASAR)
-	if err != nil {
-		return nil, fmt.Errorf("计算当前声明来源的 app.asar 完整性失败: %w", err)
 	}
 	candidateHash, err := darwinASARHeaderHash(candidateASAR)
 	if err != nil {
@@ -155,24 +149,21 @@ func prepareDarwinAgentASARIntegrityPatchFrom(target darwinTargets, candidateASA
 	if err != nil {
 		return nil, err
 	}
-	if declared != declaredSourceHash {
-		return nil, fmt.Errorf("Info.plist 中的 app.asar hash 与当前归档或规范原始备份不匹配；未修改任何文件")
-	}
 	info, err := os.Stat(plistPath)
 	if err != nil {
 		return nil, err
 	}
-	if candidateHash == declaredSourceHash {
+	if candidateHash == declared {
 		return &patchPlan{path: plistPath, original: data, updated: append([]byte(nil), data...), mode: info.Mode()}, nil
 	}
 
 	// The parsed hierarchy proves which logical value owns the hash. Requiring
 	// its exact bytes to occur once in the document makes the minimal in-place
 	// replacement unambiguous and preserves all unrelated plist formatting.
-	if bytes.Count(data, []byte(declaredSourceHash)) != 1 {
+	if bytes.Count(data, []byte(declared)) != 1 {
 		return nil, errors.New("Info.plist 中 app.asar hash 出现多次；未修改任何文件")
 	}
-	updated := bytes.Replace(data, []byte(declaredSourceHash), []byte(candidateHash), 1)
+	updated := bytes.Replace(data, []byte(declared), []byte(candidateHash), 1)
 	updatedHash, err := darwinElectronASARIntegrityHash(updated)
 	if err != nil || updatedHash != candidateHash {
 		if err != nil {
@@ -210,64 +201,6 @@ func verifyDarwinAgentASARIntegrityAgainst(target darwinTargets, asarPath string
 		return fmt.Errorf("Antigravity 2.0 app.asar 完整性校验失败: Info.plist=%s app.asar=%s", declared, actual)
 	}
 	return nil
-}
-
-// ensureDarwinAgentCanonicalPlistBackup keeps Restore pointed at vendor bytes
-// while upgrading an older WF patch. Some released builds left Info.plist on
-// the vendor ASAR hash; others updated it to the active patched ASAR hash. In
-// the latter state the vendor plist is reconstructed by replacing only the
-// uniquely parsed integrity hash with the verified canonical ASAR hash.
-func ensureDarwinAgentCanonicalPlistBackup(target darwinTargets, canonicalASAR string) error {
-	plistPath, err := darwinAgentInfoPlistPath(target)
-	if err != nil {
-		return err
-	}
-	canonicalHash, err := darwinASARHeaderHash(canonicalASAR)
-	if err != nil {
-		return fmt.Errorf("计算规范原始 app.asar 完整性失败: %w", err)
-	}
-	activeHash, err := darwinASARHeaderHash(target.asar)
-	if err != nil {
-		return fmt.Errorf("计算当前 app.asar 完整性失败: %w", err)
-	}
-	data, err := os.ReadFile(plistPath)
-	if err != nil {
-		return err
-	}
-	declared, err := darwinElectronASARIntegrityHash(data)
-	if err != nil {
-		return err
-	}
-	canonical := append([]byte(nil), data...)
-	switch declared {
-	case canonicalHash:
-		// The installed plist is already the exact vendor restore source.
-	case activeHash:
-		if bytes.Count(data, []byte(activeHash)) != 1 {
-			return errors.New("Info.plist 中当前 app.asar hash 不是唯一值；未修改任何文件")
-		}
-		canonical = bytes.Replace(data, []byte(activeHash), []byte(canonicalHash), 1)
-		if got, parseErr := darwinElectronASARIntegrityHash(canonical); parseErr != nil || got != canonicalHash {
-			if parseErr != nil {
-				return fmt.Errorf("重建规范原始 Info.plist 失败: %w", parseErr)
-			}
-			return errors.New("重建规范原始 Info.plist 完整性校验失败")
-		}
-	default:
-		return errors.New("Info.plist 既不匹配当前补丁归档，也不匹配规范原始归档；未修改任何文件")
-	}
-
-	primary := backupPath(plistPath)
-	if existing, readErr := os.ReadFile(primary); readErr == nil {
-		if existingHash, parseErr := darwinElectronASARIntegrityHash(existing); parseErr == nil && existingHash == canonicalHash {
-			return nil
-		}
-	} else if !os.IsNotExist(readErr) {
-		return readErr
-	}
-	// Replace only a missing/stale helper backup. writeCurrentBackup archives
-	// the previous bytes, retaining forensic and rollback evidence.
-	return writeCurrentBackup(plistPath, canonical)
 }
 
 func darwinElectronASARIntegrityHash(data []byte) (string, error) {

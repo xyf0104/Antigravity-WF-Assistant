@@ -173,9 +173,9 @@ func darwinCloudCodeSettingIsConfigured(path, endpoint string) bool {
 }
 
 // prepareDarwinEnsureCloudCodeSetting plans a minimal settings.json mutation.
-// Existing endpoints are deliberately not overwritten: another tool or a
-// user may be using that value, and taking it over would silently redirect
-// their IDE traffic.
+// Existing string endpoints are replaced in place after the caller records an
+// exact pre-upgrade backup. Comments, formatting and unrelated settings remain
+// byte-identical.
 func prepareDarwinEnsureCloudCodeSetting(path, endpoint string) (*patchPlan, bool, error) {
 	data, err := os.ReadFile(path)
 	mode := os.FileMode(0o600)
@@ -203,7 +203,10 @@ func prepareDarwinEnsureCloudCodeSetting(path, endpoint string) (*patchPlan, boo
 		if value == endpoint {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("%s 已有非本助手写入的 %s，已拒绝覆盖", path, darwinCloudCodeSetting)
+		updated := append([]byte(nil), data[:member.valueBeg]...)
+		updated = append(updated, []byte(strconv.Quote(endpoint))...)
+		updated = append(updated, data[member.valueEnd:]...)
+		return &patchPlan{path: path, original: data, updated: updated, mode: mode, changed: true}, true, nil
 	}
 	entry := `  "` + darwinCloudCodeSetting + `": ` + strconv.Quote(endpoint)
 	updated := string(data)

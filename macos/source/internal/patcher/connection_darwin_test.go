@@ -222,7 +222,7 @@ func TestDarwinIDEConnectionCommitsSettingsRendererAndProductTogether(t *testing
 	assertDarwinConnectionTestBytes(t, fixture.extensionPath, fixture.originalExtension)
 	for _, path := range []string{fixture.rendererPath, fixture.productPath} {
 		if _, statErr := os.Stat(backupPath(path)); statErr != nil {
-			t.Fatalf("canonical backup is missing for %s: %v", path, statErr)
+			t.Fatalf("pre-upgrade backup is missing for %s: %v", path, statErr)
 		}
 	}
 }
@@ -274,26 +274,26 @@ func TestDarwinConnectionRollbackRestoresRendererProductAndDeletesNewSettings(t 
 	}
 }
 
-func TestDarwinConnectionPreservesThirdPartyEndpointAndWritesNothing(t *testing.T) {
+func TestDarwinConnectionBacksUpTakesOverAndRestoresThirdPartyEndpoint(t *testing.T) {
 	const foreignEndpoint = "https://other-proxy.example/cloudcode"
 	fixture := newDarwinConnectionFixture(t, "{\n  \"jetski.cloudCodeUrl\": \""+foreignEndpoint+"\",\n  \"editor.fontSize\": 16\n}\n")
 	originalSettings := readDarwinConnectionTestFile(t, fixture.settingsPath)
 
 	_, err := applyDarwinSafeIDETarget(fixture.target)
-	if err == nil || !strings.Contains(err.Error(), "拒绝覆盖") {
-		t.Fatalf("foreign endpoint must stop the transaction, got %v", err)
+	if err != nil {
+		t.Fatalf("foreign endpoint takeover failed: %v", err)
+	}
+	if !darwinCloudCodeSettingIsConfigured(fixture.settingsPath, currentPatchProxyEndpoint().Base) {
+		t.Fatal("third-party setting was not replaced by the local proxy")
+	}
+	assertDarwinConnectionTestBytes(t, backupPath(fixture.settingsPath), originalSettings)
+	if _, err := restoreDarwinSafeIDETarget(fixture.target); err != nil {
+		t.Fatalf("restore third-party setting: %v", err)
 	}
 	assertDarwinConnectionTestBytes(t, fixture.settingsPath, originalSettings)
-	assertDarwinConnectionTestBytes(t, fixture.rendererPath, fixture.originalRenderer)
-	assertDarwinConnectionTestBytes(t, fixture.productPath, fixture.originalProduct)
-	for _, path := range []string{fixture.rendererPath, fixture.productPath} {
-		if _, statErr := os.Stat(backupPath(path)); !os.IsNotExist(statErr) {
-			t.Fatalf("foreign endpoint rejection created a backup for %s: %v", path, statErr)
-		}
-	}
 }
 
-func TestDarwinOldImagePatchWithoutCanonicalBackupCausesZeroWrites(t *testing.T) {
+func TestDarwinOldImagePatchWithoutOfficialBackupUpgradesCurrentState(t *testing.T) {
 	fixture := newDarwinConnectionFixture(t, "")
 	patched, result := patchImagePreviewRenderer(string(fixture.originalRenderer))
 	if !result.Changed {
@@ -307,20 +307,19 @@ func TestDarwinOldImagePatchWithoutCanonicalBackupCausesZeroWrites(t *testing.T)
 		t.Fatal(err)
 	}
 	legacyRenderer := readDarwinConnectionTestFile(t, fixture.rendererPath)
-	originalProduct := readDarwinConnectionTestFile(t, fixture.productPath)
-
 	_, err := applyDarwinSafeIDETarget(fixture.target)
-	if err == nil || !strings.Contains(err.Error(), "缺少原始备份") {
-		t.Fatalf("legacy renderer without a clean backup must fail safely, got %v", err)
+	if err != nil {
+		t.Fatalf("legacy renderer upgrade failed: %v", err)
 	}
-	if _, statErr := os.Stat(fixture.settingsPath); !os.IsNotExist(statErr) {
-		t.Fatalf("settings were written before legacy backup validation: %v", statErr)
+	assertDarwinConnectionTestBytes(t, backupPath(fixture.rendererPath), legacyRenderer)
+	current := readDarwinConnectionTestFile(t, fixture.rendererPath)
+	if !bytes.Contains(current, []byte(imagePreviewPatchMarker)) || bytes.Contains(current, []byte(imagePreviewPatchV6Marker)) {
+		t.Fatalf("legacy renderer was not upgraded to the current image patch: %s", current)
+	}
+	if _, err := restoreDarwinSafeIDETarget(fixture.target); err != nil {
+		t.Fatal(err)
 	}
 	assertDarwinConnectionTestBytes(t, fixture.rendererPath, legacyRenderer)
-	assertDarwinConnectionTestBytes(t, fixture.productPath, originalProduct)
-	if _, statErr := os.Stat(backupPath(fixture.rendererPath)); !os.IsNotExist(statErr) {
-		t.Fatalf("legacy renderer was accepted as a canonical backup: %v", statErr)
-	}
 }
 
 func TestDarwinRestoreTouchesOnlyAssistantOwnedState(t *testing.T) {
@@ -412,6 +411,65 @@ func TestRunDarwinApplyAgentRoutesOnlyToVerifiedAgent(t *testing.T) {
 	if _, err := runDarwin("apply-ide"); err == nil || !strings.Contains(err.Error(), "未找到独立 IDE") {
 		t.Fatalf("apply-ide unexpectedly selected the Agent target: %v", err)
 	}
+}
+
+func TestDarwinAgentTakesOverAndRestoresThirdPartyLauncherWithoutOfficialBackup(t *testing.T) {
+	appPath := filepath.Join(t.TempDir(), "Antigravity 2.0.app")
+	resources := filepath.Join(appPath, "Contents", "Resources")
+	asarPath := filepath.Join(resources, "app.asar")
+	languagePath := filepath.Join(resources, "bin", "language_server")
+	if err := os.MkdirAll(resources, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archive := &asarArchive{root: &asarNode{Files: map[string]*asarNode{}}}
+	const thirdPartyEndpoint = "https://third-party.example.invalid/cloudcode"
+	if err := archive.write(asarPath, map[string][]byte{
+		"dist/main.js":            []byte(`"use strict"; const thirdPartyWrapper=true;`),
+		"dist/languageServer.js":  []byte(`const args=["--cloud_code_endpoint","` + thirdPartyEndpoint + `"];`),
+		"out/jetskiAgent/main.js": []byte(imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture()),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	thirdPartyASAR := readDarwinConnectionTestFile(t, asarPath)
+	thirdPartyHash, err := darwinASARHeaderHash(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plistPath := filepath.Join(appPath, "Contents", "Info.plist")
+	thirdPartyPlist := darwinIntegrityPlist(thirdPartyHash)
+	if err := os.WriteFile(plistPath, thirdPartyPlist, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeDarwinAgentLanguageServerUIFixture(t, languagePath)
+
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
+	target := darwinTargets{
+		app: appPath, name: "Third-party Antigravity 2.0", kind: "agent",
+		asar: asarPath, language: languagePath,
+	}
+	if supported, _, reason := darwinTargetConnectionSupport(target); !supported {
+		t.Fatalf("third-party literal launcher was not accepted: %s", reason)
+	}
+	if _, err := applyDarwinASARPatch(target); err != nil {
+		t.Fatalf("third-party Agent takeover failed: %v", err)
+	}
+	patchedArchive, err := readASAR(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher, err := patchedArchive.readFile("dist/languageServer.js")
+	if err != nil || bytes.Contains(launcher, []byte(thirdPartyEndpoint)) ||
+		!bytes.Contains(launcher, []byte(currentPatchProxyEndpoint().Base)) {
+		t.Fatalf("third-party launcher was not scoped to the local proxy: %s (%v)", launcher, err)
+	}
+	assertDarwinConnectionTestBytes(t, backupPath(asarPath), thirdPartyASAR)
+	assertDarwinConnectionTestBytes(t, backupPath(plistPath), thirdPartyPlist)
+	if _, err := restoreDarwinPatch(target); err != nil {
+		t.Fatalf("restore third-party Agent state: %v", err)
+	}
+	assertDarwinConnectionTestBytes(t, asarPath, thirdPartyASAR)
+	assertDarwinConnectionTestBytes(t, plistPath, thirdPartyPlist)
 }
 
 func TestDarwinProcessListFailureStopsBeforeAnyWrite(t *testing.T) {

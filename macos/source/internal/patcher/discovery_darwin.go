@@ -307,18 +307,11 @@ func darwinASARHasSupportedEntrypoints(asarPath string) bool {
 	if !managedMain && !bytes.HasPrefix(main, []byte(`"use strict";`)) {
 		return false
 	}
-	endpoint := currentPatchProxyEndpoint()
-	if !managedMain && bytes.Count(launcher, []byte("--cloud_code_endpoint")) == 1 && len(darwinCloudCodeURLPattern.FindAll(launcher, -1)) == 1 {
-		return true
-	}
-	if managedMain && bytes.Count(launcher, []byte("--cloud_code_endpoint")) == 1 && bytes.Count(launcher, []byte(endpoint.Base)) == 1 {
-		return true
-	}
-	// A previously managed archive may use a staged fallback port that is no
-	// longer the process-local endpoint. It is safe to migrate only because the
-	// main entry carries our explicit marker and apply will rebuild from its
-	// canonical vendor backup.
-	return managedMain && bytes.Contains(launcher, []byte("http://127.0.0.1:"))
+	// The launcher may contain the vendor URL, an old WF endpoint, or a literal
+	// third-party endpoint. Exactly one verified flag must be convertible to the
+	// current local proxy without replacing unrelated URLs.
+	return len(darwinCloudCodeFlagPattern.FindAllIndex(launcher, -1)) == 1 &&
+		darwinLauncherHasProxyEndpoint(patchDarwinCloudCodeLauncher(string(launcher)))
 }
 
 func darwinBundleValue(appPath, key string) string {

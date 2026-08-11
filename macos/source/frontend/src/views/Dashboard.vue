@@ -368,7 +368,7 @@ onUnmounted(() => {
 			仅连接 Antigravity 2.0
 		  </Button>
           <Button variant="plain" :disabled="state.patchBusy" @click="handleRestore">
-            恢复原机配置
+            恢复升级前状态
           </Button>
         </div>
 

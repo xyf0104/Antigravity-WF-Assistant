@@ -131,15 +131,19 @@ func TestDarwinAgentASARIntegrityPatchAndVerify(t *testing.T) {
 	}
 }
 
-func TestDarwinAgentASARIntegrityPatchRejectsMismatchedCurrentHash(t *testing.T) {
-	target, candidate, _, _ := newDarwinAgentIntegrityFixture(t)
+func TestDarwinAgentASARIntegrityPatchTakesOverThirdPartyCurrentHash(t *testing.T) {
+	target, candidate, _, candidateHash := newDarwinAgentIntegrityFixture(t)
 	plist := filepath.Join(target.app, "Contents", "Info.plist")
 	other := strings.Repeat("0", sha256.Size*2)
 	if err := os.WriteFile(plist, darwinIntegrityPlist(other), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if plan, err := prepareDarwinAgentASARIntegrityPatch(target, candidate); err == nil || plan != nil {
-		t.Fatalf("mismatched active hash must fail closed: plan=%#v err=%v", plan, err)
+	plan, err := prepareDarwinAgentASARIntegrityPatch(target, candidate)
+	if err != nil || plan == nil || !plan.changed {
+		t.Fatalf("third-party integrity hash was not accepted: plan=%#v err=%v", plan, err)
+	}
+	if !strings.Contains(string(plan.original), other) || !strings.Contains(string(plan.updated), candidateHash) {
+		t.Fatalf("third-party integrity plan did not replace only the tracked hash: %s", plan.updated)
 	}
 }
 

@@ -134,7 +134,7 @@ func TestDarwinDynamicProxyEndpointPatchesTextBinaryAndState(t *testing.T) {
 	}
 }
 
-func TestDarwinPortMigrationRebuildsEveryEndpointFromCleanBackup(t *testing.T) {
+func TestDarwinPortMigrationRebuildsEveryEndpointFromCurrentState(t *testing.T) {
 	restoreEndpoint := setPatchProxyPortForTest(51042)
 	t.Cleanup(restoreEndpoint)
 	endpoint := currentPatchProxyEndpoint()
@@ -168,8 +168,7 @@ func TestDarwinPortMigrationRebuildsEveryEndpointFromCleanBackup(t *testing.T) {
 	}
 
 	// Emulate P: a previously valid helper install whose endpoint is no longer
-	// available. The migration must use the clean backup rather than rotating P
-	// into the restore point while moving it to Q.
+	// available. The migration backs up P itself before moving it to Q.
 	legacyMain := []byte(`"use strict";` + "\n// " + darwinExtensionMarker + `
 const endpoint="` + textProxyEndpoint + `";` + authEligibilityPatched)
 	legacyExtension := []byte("// " + darwinExtensionMarker + "\nconst endpoint=\"" + baseProxyEndpoint + "\";")
@@ -200,9 +199,9 @@ const endpoint="` + textProxyEndpoint + `";` + authEligibilityPatched)
 			t.Fatalf("%s did not migrate to selected endpoint %q: %v", check.path, check.want, err)
 		}
 	}
-	assertFileEquals(t, backupPath(mainPath), cleanMain)
-	assertFileEquals(t, backupPath(extensionPath), cleanExtension)
-	assertFileEquals(t, backupPath(languagePath), cleanLanguage)
+	assertFileEquals(t, backupPath(mainPath), legacyMain)
+	assertFileEquals(t, backupPath(extensionPath), legacyExtension)
+	assertFileEquals(t, backupPath(languagePath), legacyLanguage)
 }
 
 func TestDarwinUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
@@ -474,7 +473,7 @@ func TestDarwinBackupMigrationPreservesAndRepairsLanguageServerExecutableMode(t 
 	}
 }
 
-func TestFinishingPartialPatchPreservesCleanRestorePoint(t *testing.T) {
+func TestFinishingPartialPatchCapturesCurrentRestorePoint(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
 	sourcePath := filepath.Join(t.TempDir(), "main.js")
 	clean := []byte("const endpoint='" + productionEndpoint + "';")
@@ -489,7 +488,7 @@ func TestFinishingPartialPatchPreservesCleanRestorePoint(t *testing.T) {
 	if err := saveApplyBackups([]*patchPlan{plan}, nil); err != nil {
 		t.Fatal(err)
 	}
-	assertFileEquals(t, backupPath(sourcePath), clean)
+	assertFileEquals(t, backupPath(sourcePath), partial)
 }
 
 func TestDarwinKnownPatchDetectionIncludesEveryReleasedImageMarker(t *testing.T) {
@@ -507,7 +506,7 @@ func TestDarwinKnownPatchDetectionIncludesEveryReleasedImageMarker(t *testing.T)
 	}
 }
 
-func TestDarwinLegacyImageMarkerPreservesCleanRestorePoint(t *testing.T) {
+func TestDarwinLegacyImageMarkerCapturesCurrentRestorePoint(t *testing.T) {
 	markers := []string{
 		imagePreviewPatchV2Marker, imagePreviewPatchV3Marker,
 		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
@@ -529,23 +528,20 @@ func TestDarwinLegacyImageMarkerPreservesCleanRestorePoint(t *testing.T) {
 			if err := saveApplyBackups([]*patchPlan{plan}, nil); err != nil {
 				t.Fatal(err)
 			}
-			assertFileEquals(t, backupPath(sourcePath), clean)
+			assertFileEquals(t, backupPath(sourcePath), legacy)
 		})
 	}
 }
 
-func TestDarwinLegacyImageMarkerWithoutBackupFailsSafely(t *testing.T) {
+func TestDarwinLegacyImageMarkerWithoutBackupCreatesCurrentSnapshot(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
 	sourcePath := filepath.Join(t.TempDir(), "renderer.js")
 	legacy := []byte("/*" + imagePreviewPatchV6Marker + "*/ legacy renderer source")
 	plan := &patchPlan{path: sourcePath, original: legacy, updated: append([]byte(nil), legacy...), mode: 0o644, changed: true}
-	err := saveApplyBackups([]*patchPlan{plan}, nil)
-	if err == nil || !strings.Contains(err.Error(), "缺少原始备份") {
-		t.Fatalf("legacy renderer without a canonical backup should fail safely, got %v", err)
+	if err := saveApplyBackups([]*patchPlan{plan}, nil); err != nil {
+		t.Fatalf("legacy renderer current-state backup failed: %v", err)
 	}
-	if _, statErr := os.Stat(backupPath(sourcePath)); !os.IsNotExist(statErr) {
-		t.Fatalf("legacy renderer should not be saved as a clean backup: %v", statErr)
-	}
+	assertFileEquals(t, backupPath(sourcePath), legacy)
 }
 
 func TestDarwinExplicitPathNeverFallsBack(t *testing.T) {
@@ -618,12 +614,10 @@ func TestDarwinASARApplyStatusAndRestore(t *testing.T) {
 	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), originalPlist)
 }
 
-// TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint covers the
-// upgrade path used by installations that received the earlier v3 renderer
-// fallback. The canonical backup must remain the original, clean app.asar:
-// otherwise Restore would put the old (and Windows-path-broken) v3 patch back
-// into the application instead of the vendor file.
-func TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint(t *testing.T) {
+// TestDarwinASARImagePreviewV3UpgradeCapturesCurrentRestorePoint covers an
+// installation with the earlier v3 renderer and no dependency on vendor
+// bytes. Restore returns to the exact v3/third-party state present at upgrade.
+func TestDarwinASARImagePreviewV3UpgradeCapturesCurrentRestorePoint(t *testing.T) {
 	root := t.TempDir()
 	appPath := filepath.Join(root, "Antigravity 2.0.app")
 	resources := filepath.Join(appPath, "Contents", "Resources")
@@ -653,14 +647,13 @@ func TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint(t *testing.T)
 
 	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
 	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
-	// S0: canonical clean restore point from the first helper application.
+	// Seed an older backup to prove the next upgrade rotates it to history.
 	if err := writeBackup(asarPath, cleanASAR); err != nil {
 		t.Fatal(err)
 	}
 
 	// S1: emulate the old helper's fully endpoint-patched ASAR with its v3
-	// image renderer. The app must appear otherwise patched so the upgrade path
-	// is forced to use the canonical S0 backup as the candidate source.
+	// image renderer.
 	legacyArchive, err := readASAR(asarPath)
 	if err != nil {
 		t.Fatal(err)
@@ -674,6 +667,10 @@ func TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := os.Rename(legacyPath, asarPath); err != nil {
+		t.Fatal(err)
+	}
+	legacyASAR, err := os.ReadFile(asarPath)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !darwinASARPatched(asarPath) || !imagePreviewASARArchiveNeedsPatch(asarPath) {
@@ -690,8 +687,8 @@ func TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint(t *testing.T)
 	if _, _, _, patched := darwinTargetPatchState(target); !patched {
 		t.Fatal("v4-migrated ASAR target was not reported as fully patched")
 	}
-	// The previous v3 archive must never replace S0 while applying an upgrade.
-	assertFileEquals(t, backupPath(asarPath), cleanASAR)
+	// The current v3 archive becomes this upgrade's exact restore point.
+	assertFileEquals(t, backupPath(asarPath), legacyASAR)
 	upgraded, err := readASAR(asarPath)
 	if err != nil {
 		t.Fatal(err)
@@ -707,15 +704,13 @@ func TestDarwinASARImagePreviewV3UpgradePreservesCleanRestorePoint(t *testing.T)
 	if _, err := restoreDarwinPatch(target); err != nil {
 		t.Fatal(err)
 	}
-	assertFileEquals(t, asarPath, cleanASAR)
+	assertFileEquals(t, asarPath, legacyASAR)
 	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), cleanPlist)
 }
 
 // TestDarwinASARLegacyWFUpgradeWhenPlistTracksPatchedArchive covers released
 // helper builds that updated ElectronAsarIntegrity to their already-patched
-// app.asar. A matching, helper-authored archive is a supported upgrade input:
-// it must be rebuilt from the canonical vendor backup instead of being
-// rejected merely because the application was patched before.
+// app.asar. That active archive is a supported upgrade and restore input.
 func TestDarwinASARLegacyWFUpgradeWhenPlistTracksPatchedArchive(t *testing.T) {
 	root := t.TempDir()
 	appPath := filepath.Join(root, "Antigravity 2.0.app")
@@ -734,7 +729,7 @@ func TestDarwinASARLegacyWFUpgradeWhenPlistTracksPatchedArchive(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cleanPlist := writeDarwinAgentIntegrityFixture(t, appPath, asarPath)
+	writeDarwinAgentIntegrityFixture(t, appPath, asarPath)
 	cleanASAR, err := os.ReadFile(asarPath)
 	if err != nil {
 		t.Fatal(err)
@@ -745,8 +740,8 @@ func TestDarwinASARLegacyWFUpgradeWhenPlistTracksPatchedArchive(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_WF_SKIP_CODESIGN", "1")
 	// The synthetic Language Server reuses the Go test Mach-O and therefore
 	// contains patch-marker constants from the test binary itself. Seed its
-	// canonical fixture backup so that this test exercises the ASAR migration,
-	// not that deliberate false-positive guard.
+	// fixture backup so that this test also proves the next upgrade replaces it
+	// with the then-active state.
 	cleanLanguage, err := os.ReadFile(languagePath)
 	if err != nil {
 		t.Fatal(err)
@@ -790,6 +785,11 @@ func TestDarwinASARLegacyWFUpgradeWhenPlistTracksPatchedArchive(t *testing.T) {
 	if !darwinASARContainsKnownPatch(asarPath) {
 		t.Fatal("legacy WF archive was not recognized as a managed upgrade input")
 	}
+	legacyASAR, err := os.ReadFile(asarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPlist := darwinIntegrityPlist(legacyHash)
 	if supported, _, reason := darwinTargetConnectionSupport(target); !supported {
 		t.Fatalf("verified legacy WF application was incorrectly rejected: %s", reason)
 	}
@@ -814,19 +814,19 @@ func TestDarwinASARLegacyWFUpgradeWhenPlistTracksPatchedArchive(t *testing.T) {
 	if bytes.Contains(activeMain, []byte(legacyDarwinASARMarker)) || !bytes.Contains(activeMain, []byte(darwinASARMarker)) {
 		t.Fatalf("legacy marker was not replaced by the current WF marker: %s", activeMain)
 	}
-	assertFileEquals(t, backupPath(asarPath), cleanASAR)
+	assertFileEquals(t, backupPath(asarPath), legacyASAR)
 
 	if _, err := restoreDarwinPatch(target); err != nil {
 		t.Fatal(err)
 	}
-	assertFileEquals(t, asarPath, cleanASAR)
-	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), cleanPlist)
+	assertFileEquals(t, asarPath, legacyASAR)
+	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), legacyPlist)
 }
 
 // TestDarwinASARImagePreviewUpgradeRollbackKeepsActiveArchive protects the
 // other half of an upgrade: if a late step fails after app.asar has already
 // been replaced, the transaction must restore the pre-upgrade v3 archive (S1)
-// while retaining the clean canonical restore point (S0).
+// and keep that S1 state as the current user-visible restore point.
 func TestDarwinASARImagePreviewUpgradeRollbackKeepsActiveArchive(t *testing.T) {
 	root := t.TempDir()
 	appPath := filepath.Join(root, "Antigravity 2.0.app")
@@ -893,7 +893,7 @@ func TestDarwinASARImagePreviewUpgradeRollbackKeepsActiveArchive(t *testing.T) {
 		t.Fatalf("expected injected post-ASAR failure, got %v", err)
 	}
 	assertFileEquals(t, asarPath, legacyASAR)
-	assertFileEquals(t, backupPath(asarPath), cleanASAR)
+	assertFileEquals(t, backupPath(asarPath), legacyASAR)
 	assertFileEquals(t, languagePath, originalLanguage)
 	assertFileEquals(t, filepath.Join(appPath, "Contents", "Info.plist"), cleanPlist)
 }

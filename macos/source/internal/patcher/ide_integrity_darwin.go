@@ -35,10 +35,9 @@ func darwinIDEChecksum(data []byte) string {
 	return base64.RawStdEncoding.EncodeToString(digest[:])
 }
 
-// prepareDarwinIDEProductChecksumPatch updates only tracked, validated
-// renderer entries. It refuses a checksum that matches neither the active
-// file nor the exact source used for this patch plan: that indicates an
-// unrelated installation change and the transaction must stop before writing.
+// prepareDarwinIDEProductChecksumPatch updates only tracked renderer entries.
+// A checksum may belong to an older WF or third-party renderer; product.json
+// itself is backed up from the active installation before the transaction.
 func prepareDarwinIDEProductChecksumPatch(target darwinTargets, rendererPlans []*patchPlan) (*patchPlan, error) {
 	productPath := darwinIDEProductPath(target)
 	if productPath == "" || existingFile(productPath) == "" {
@@ -57,48 +56,6 @@ func prepareDarwinIDEProductChecksumPatch(target darwinTargets, rendererPlans []
 	}
 
 	appOut := filepath.Join(target.app, "Contents", "Resources", "app", "out")
-	canonicalData := data
-	needsCanonicalBackup := false
-	for _, plan := range rendererPlans {
-		if plan == nil || !plan.changed || plan.path == "" {
-			continue
-		}
-		active, readErr := os.ReadFile(plan.path)
-		if readErr != nil {
-			return nil, readErr
-		}
-		needsCanonicalBackup = needsCanonicalBackup || containsKnownDarwinPatch(active)
-	}
-	if needsCanonicalBackup {
-		backup := matchingDarwinBackupPath(productPath, func(candidate []byte) bool {
-			var clean darwinIDEProductIntegrity
-			if json.Unmarshal(candidate, &clean) != nil || len(clean.Checksums) == 0 {
-				return false
-			}
-			for _, plan := range rendererPlans {
-				if plan == nil || !plan.changed || plan.path == "" {
-					continue
-				}
-				relative, relErr := filepath.Rel(appOut, plan.path)
-				if relErr != nil || relative == "." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || relative == ".." {
-					continue
-				}
-				key := filepath.ToSlash(relative)
-				expected, tracked := clean.Checksums[key]
-				if !tracked || expected != darwinIDEChecksum(plan.original) {
-					return false
-				}
-			}
-			return true
-		})
-		if backup == "" {
-			return nil, fmt.Errorf("IDE product.json 已随旧版图片补丁修改但缺少匹配的原始备份；未修改任何文件")
-		}
-		canonicalData, err = os.ReadFile(backup)
-		if err != nil {
-			return nil, err
-		}
-	}
 	updated := string(data)
 	changed := false
 	for _, plan := range rendererPlans {
@@ -118,15 +75,6 @@ func prepareDarwinIDEProductChecksumPatch(target darwinTargets, rendererPlans []
 		if current == desired {
 			continue
 		}
-		active, readErr := os.ReadFile(plan.path)
-		if readErr != nil {
-			return nil, readErr
-		}
-		activeChecksum := darwinIDEChecksum(active)
-		originalChecksum := darwinIDEChecksum(plan.original)
-		if current != activeChecksum && current != originalChecksum {
-			return nil, fmt.Errorf("IDE checksum %s 与官方源文件和当前文件均不匹配；未修改任何文件", key)
-		}
 		pattern := regexp.MustCompile(`("` + regexp.QuoteMeta(key) + `"\s*:\s*")` + regexp.QuoteMeta(current) + `(")`)
 		if len(pattern.FindAllStringIndex(updated, -1)) != 1 {
 			return nil, fmt.Errorf("IDE checksum 字段 %s 的结构尚未验证；未修改任何文件", key)
@@ -142,7 +90,7 @@ func prepareDarwinIDEProductChecksumPatch(target darwinTargets, rendererPlans []
 	if err != nil {
 		return nil, err
 	}
-	return &patchPlan{path: productPath, original: canonicalData, updated: []byte(updated), mode: info.Mode(), changed: true}, nil
+	return &patchPlan{path: productPath, original: data, updated: []byte(updated), mode: info.Mode(), changed: true}, nil
 }
 
 func verifyDarwinIDEProductChecksums(target darwinTargets, rendererPaths []string) error {

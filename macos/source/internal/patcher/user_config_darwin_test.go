@@ -137,7 +137,7 @@ func TestDarwinCloudCodeSettingRoundTripPreservesCommentsAndOtherSettings(t *tes
 	}
 }
 
-func TestDarwinCloudCodeSettingNeverOverwritesAnotherEndpoint(t *testing.T) {
+func TestDarwinCloudCodeSettingTakesOverAndPreservesAnotherEndpointInPlan(t *testing.T) {
 	target, configRoot := newDarwinSettingsFixture(t)
 	settings := filepath.Join(configRoot, "Antigravity", "User", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
@@ -152,12 +152,15 @@ func TestDarwinCloudCodeSettingNeverOverwritesAnotherEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, changed, err := prepareDarwinEnsureCloudCodeSetting(path, "http://127.0.0.1:50999")
-	if err == nil || changed || plan != nil {
-		t.Fatalf("foreign endpoint must be preserved, plan=%#v changed=%t err=%v", plan, changed, err)
+	if err != nil || !changed || plan == nil {
+		t.Fatalf("foreign endpoint must be accepted for managed takeover, plan=%#v changed=%t err=%v", plan, changed, err)
 	}
 	data, readErr := os.ReadFile(path)
 	if readErr != nil || !strings.Contains(string(data), foreign) {
-		t.Fatalf("foreign endpoint was changed: %s (%v)", data, readErr)
+		t.Fatalf("planning changed the active foreign endpoint: %s (%v)", data, readErr)
+	}
+	if !strings.Contains(string(plan.updated), "http://127.0.0.1:50999") || strings.Contains(string(plan.updated), foreign) {
+		t.Fatalf("takeover plan did not replace the scoped endpoint: %s", plan.updated)
 	}
 }
 

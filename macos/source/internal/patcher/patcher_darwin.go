@@ -48,6 +48,8 @@ var (
 var darwinCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.getCloudCodeUrl\(\)`)
 var darwinExtensionDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.getInstance\(\)\.appDataDirectoryName`)
 var darwinMainDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.ideName`)
+var darwinCloudCodeFlagPattern = regexp.MustCompile(`["']--(?:cloud_code_endpoint|api_server_url)["']`)
+var darwinCloudCodeLiteralArgumentPattern = regexp.MustCompile(`(["']--(?:cloud_code_endpoint|api_server_url)["']\s*,\s*["'])(https?://[^"']+)(["'])`)
 
 // Language Server binaries in newer Antigravity releases may use a different
 // Cloud Code hostname. Keep this bounded to Google's cloudcode-pa hosts; an
@@ -98,12 +100,10 @@ type patchPlan struct {
 	changed  bool
 }
 
-// bindDarwinPatchPlanDestination preserves metadata from the installed file
-// when a migration prepared bytes from a canonical backup. Backups are
-// intentionally stored as 0600, so copying the backup's mode into an app
-// bundle would make a Language Server non-executable and Electron would fail
-// to spawn it with EACCES. Content may come from the clean backup; destination
-// permissions must always come from the active installation.
+// bindDarwinPatchPlanDestination preserves metadata from the installed file.
+// Backups are intentionally stored as 0600, so destination permissions must
+// always come from the active installation; otherwise a Language Server could
+// become non-executable and Electron would fail to spawn it with EACCES.
 func bindDarwinPatchPlanDestination(plan *patchPlan, destination string, requireExecutable bool) error {
 	if plan == nil {
 		return fmt.Errorf("补丁计划为空: %s", destination)
@@ -145,8 +145,8 @@ func verifyDarwinExecutable(path string) error {
 }
 
 // darwinPatchSnapshot captures the bytes actually active immediately before a
-// write. A migration may prepare a plan from the canonical clean backup, so
-// patchPlan.original is not always the safe rollback source.
+// write. Persistent backups provide the user-visible pre-upgrade restore
+// point; these snapshots protect a partially written multi-file transaction.
 type darwinPatchSnapshot struct {
 	path string
 	data []byte
@@ -212,8 +212,9 @@ func runDarwin(action string) (string, error) {
 		}
 		return summary.message(), nil
 	}
-	// Restore only consumes canonical backups; it must remain available even
-	// when a hand-edited runtime port state is corrupt.
+	// Restore only consumes snapshots captured before the most recent upgrade;
+	// it must remain available even when a hand-edited runtime port state is
+	// corrupt.
 	if action == "status" {
 		_ = refreshPatchProxyEndpoint()
 	} else if action != "restore" {
@@ -457,6 +458,37 @@ func darwinASARContainsKnownPatch(path string) bool {
 	return false
 }
 
+func patchDarwinCloudCodeLauncher(source string) string {
+	endpoint := currentPatchProxyEndpoint()
+	source = normalizeDarwinManagedEndpoints(source)
+	source = darwinCloudCodeURLPattern.ReplaceAllString(source, endpoint.Base)
+	// Scope forced takeover to the literal argument immediately following one
+	// verified launcher flag. Other third-party URLs in the bundle are untouched.
+	source = darwinCloudCodeLiteralArgumentPattern.ReplaceAllString(source, `${1}`+endpoint.Base+`${3}`)
+	return source
+}
+
+func normalizeDarwinManagedEndpoints(source string) string {
+	endpoint := currentPatchProxyEndpoint()
+	for _, replacement := range []struct{ old, new string }{
+		{legacyBinarySandboxProxyEndpoint, endpoint.BinarySandbox},
+		{legacyBinaryProxyEndpoint, endpoint.Binary},
+		{legacyTextProxyEndpoint, endpoint.Text},
+		{binarySandboxProxyEndpoint, endpoint.BinarySandbox},
+		{binaryProxyEndpoint, endpoint.Binary},
+		{textProxyEndpoint, endpoint.Text},
+		{baseProxyEndpoint, endpoint.Base},
+	} {
+		source = strings.ReplaceAll(source, replacement.old, replacement.new)
+	}
+	return source
+}
+
+func darwinLauncherHasProxyEndpoint(source string) bool {
+	return len(darwinCloudCodeFlagPattern.FindAllStringIndex(source, -1)) == 1 &&
+		strings.Contains(source, currentPatchProxyEndpoint().Base)
+}
+
 func boolPointer(value bool) *bool { return &value }
 
 func boolPointerText(value *bool) string {
@@ -511,49 +543,17 @@ func proxyPortListening() bool {
 	return true
 }
 
-// darwinPatchSource selects the clean canonical source for an endpoint
-// migration. A fallback-port change must never use a previously patched file
-// as the new canonical backup, otherwise Restore would stop restoring vendor
-// bytes. The source is only redirected when a known helper marker is present.
+// darwinPatchSource always selects the bytes active on this Mac. The caller
+// persists those exact bytes before writing, whether they came from the vendor,
+// an older WF release, or a third-party modification.
 func darwinPatchSource(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if _, err := os.ReadFile(path); err != nil {
 		return "", err
 	}
-	if !containsKnownDarwinPatch(data) || containsCurrentDarwinProxyEndpoint(data) {
-		return path, nil
-	}
-	backup := backupPath(path)
-	if info, statErr := os.Stat(backup); statErr == nil && info.Mode().IsRegular() {
-		return backup, nil
-	} else if statErr != nil && !os.IsNotExist(statErr) {
-		return "", fmt.Errorf("检查 %s 的原始备份失败: %w", path, statErr)
-	}
-	return "", fmt.Errorf("%s 已带有旧版助手补丁但缺少原始备份；请重新安装该 Antigravity 后再补丁", path)
-}
-
-func containsCurrentDarwinProxyEndpoint(data []byte) bool {
-	// A previous WF endpoint uses the same loopback host/port, so checking Base
-	// first would incorrectly classify its old path/marker as current and skip
-	// the clean-backup migration.
-	for _, value := range []string{
-		legacyTextProxyEndpoint, legacyBinaryProxyEndpoint, legacyBinarySandboxProxyEndpoint,
-		legacyDarwinExtensionMarker, legacyDarwinASARMarker,
-	} {
-		if bytes.Contains(data, []byte(value)) {
-			return false
-		}
-	}
-	endpoint := currentPatchProxyEndpoint()
-	for _, value := range []string{endpoint.Base, endpoint.Text, endpoint.Binary, endpoint.BinarySandbox} {
-		if bytes.Contains(data, []byte(value)) {
-			return true
-		}
-	}
-	return false
+	return path, nil
 }
 
 func applyDarwinPatch(targets darwinTargets) (message string, err error) {
@@ -701,6 +701,7 @@ func prepareDarwinMainPatch(path string) (*patchPlan, error) {
 		return nil, err
 	}
 	source := string(plan.updated)
+	source = normalizeDarwinManagedEndpoints(source)
 	if darwinMainDataPattern.MatchString(source) {
 		source = darwinMainDataPattern.ReplaceAllString(source, darwinSharedDataArgument)
 	}
@@ -764,6 +765,7 @@ func prepareDarwinExtensionPatch(path string) (*patchPlan, error) {
 		return nil, err
 	}
 	source := strings.ReplaceAll(string(data), legacyDarwinExtensionMarker, darwinExtensionMarker)
+	source = normalizeDarwinManagedEndpoints(source)
 	endpoint := currentPatchProxyEndpoint()
 	if darwinExtensionPatched(path) {
 		return &patchPlan{path: path, original: data, updated: data, mode: info.Mode()}, nil
@@ -990,7 +992,6 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 		}
 	}
 	asarWasPatched := darwinASARPatched(target.asar)
-	asarHadKnownPatch := darwinASARContainsKnownPatch(target.asar)
 	// Rebuild app.asar only for endpoint or packed-renderer changes. Renderer
 	// files declared as unpacked live beside the archive and must not be folded
 	// into its manifest during an image-preview upgrade.
@@ -1006,24 +1007,28 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 	if !asarChanged && (languagePlan == nil || !languagePlan.changed) && !patchPlansChanged(previewPlans) {
 		return fmt.Sprintf("%s 补丁已处于激活状态，无需重复应用。", target.name), nil
 	}
-	if asarHadKnownPatch {
-		if _, statErr := os.Stat(backupPath(target.asar)); statErr != nil {
-			return "", fmt.Errorf("app.asar 已打补丁但缺少原始备份: %s", backupPath(target.asar))
-		}
+	// Capture the complete active Agent pair for every transaction, even when
+	// only an unpacked renderer or Language Server changes. Restore treats the
+	// Agent as one unit and must never combine a stale ASAR/plist snapshot with
+	// freshly captured companion files.
+	if err = writeFileBackup(target.asar); err != nil {
+		return "", fmt.Errorf("创建 app.asar 升级前备份失败: %w", err)
 	}
-
+	plistPath, plistErr := darwinAgentInfoPlistPath(target)
+	if plistErr != nil {
+		return "", plistErr
+	}
+	if err = writeFileBackup(plistPath); err != nil {
+		return "", fmt.Errorf("创建 Info.plist 升级前备份失败: %w", err)
+	}
 	var candidate string
 	var integrityPlan *patchPlan
-	preserveCanonicalIntegrityBackup := false
 	var rollbackASAR string
 	var rollbackASARMode os.FileMode
 	if asarChanged {
-		// Keep a per-operation snapshot of the active archive.  During a v3 ->
-		// v4 migration the canonical backup intentionally remains the clean
-		// vendor archive, while the active archive still contains the previous
-		// helper patch.  A late failure (for example code-signing the language
-		// server) must restore that active pre-upgrade state, not silently turn
-		// the application into an unpatched install.
+		// Keep a per-operation snapshot of the active archive. A late failure
+		// (for example code-signing the language server) must restore this exact
+		// old-WF/third-party state.
 		activeInfo, statErr := os.Stat(target.asar)
 		if statErr != nil {
 			return "", statErr
@@ -1045,44 +1050,14 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 		rollbackASARMode = activeInfo.Mode()
 		defer os.Remove(rollbackASAR)
 
-		candidateSource := target.asar
-		if asarHadKnownPatch {
-			// Preserve the canonical clean backup while rebuilding the archive.
-			// Calling writeFileBackup on a previous helper patch would rotate the
-			// clean restore point into a historical file and break Restore.
-			candidateSource = backupPath(target.asar)
-		}
-		candidate, err = prepareDarwinASARCandidate(candidateSource, target.asar)
+		candidate, err = prepareDarwinASARCandidate(target.asar, target.asar)
 		if err != nil {
 			return "", err
 		}
 		defer os.Remove(candidate)
-		// Released WF builds exist in both integrity states: older builds kept
-		// Info.plist pointed at the clean vendor ASAR, while newer builds updated
-		// it to the active patched ASAR. Accept only one of those two verified
-		// sources, preferring the currently active archive. Arbitrary/stale plist
-		// hashes still stop the transaction before any write.
-		declaredASAR := target.asar
-		if verifyDarwinAgentASARIntegrityAgainst(target, declaredASAR) != nil {
-			if !asarHadKnownPatch || verifyDarwinAgentASARIntegrityAgainst(target, candidateSource) != nil {
-				return "", fmt.Errorf("当前 app.asar 与规范原始备份均不匹配 Info.plist 完整性元数据；未修改任何文件")
-			}
-			declaredASAR = candidateSource
-		}
-		integrityPlan, err = prepareDarwinAgentASARIntegrityPatchFrom(target, candidate, declaredASAR)
+		integrityPlan, err = prepareDarwinAgentASARIntegrityPatch(target, candidate)
 		if err != nil {
 			return "", fmt.Errorf("准备 app.asar 完整性元数据失败: %w", err)
-		}
-		if asarHadKnownPatch {
-			if err = ensureDarwinAgentCanonicalPlistBackup(target, candidateSource); err != nil {
-				return "", fmt.Errorf("保留规范原始 Info.plist 备份失败: %w", err)
-			}
-			preserveCanonicalIntegrityBackup = true
-		}
-		if !asarHadKnownPatch {
-			if err = writeFileBackup(target.asar); err != nil {
-				return "", fmt.Errorf("创建 app.asar 备份失败: %w", err)
-			}
 		}
 	}
 	plans := append([]*patchPlan{}, previewPlans...)
@@ -1092,16 +1067,7 @@ func applyDarwinASARPatch(target darwinTargets) (message string, err error) {
 	if integrityPlan != nil {
 		plans = append(plans, integrityPlan)
 	}
-	backupPlans := plans
-	if preserveCanonicalIntegrityBackup && integrityPlan != nil {
-		backupPlans = make([]*patchPlan, 0, len(plans)-1)
-		for _, plan := range plans {
-			if plan != integrityPlan {
-				backupPlans = append(backupPlans, plan)
-			}
-		}
-	}
-	if err = saveApplyBackups(backupPlans, nil); err != nil {
+	if err = saveApplyBackups(plans, nil); err != nil {
 		return "", fmt.Errorf("创建补丁备份失败: %w", err)
 	}
 	planSnapshots, snapshotErr := snapshotDarwinPatchTargets(plans)
@@ -1197,10 +1163,8 @@ func prepareDarwinASARCandidate(sourcePath, destinationPath string) (string, err
 	if updated, result := patchImagePreviewRenderer(mainSource); result.Changed {
 		mainSource = updated
 	}
-	launcherSource := string(launcherData)
-	if darwinCloudCodeURLPattern.MatchString(launcherSource) {
-		launcherSource = darwinCloudCodeURLPattern.ReplaceAllString(launcherSource, endpoint.Base)
-	} else if !strings.Contains(launcherSource, endpoint.Base) {
+	launcherSource := patchDarwinCloudCodeLauncher(string(launcherData))
+	if !strings.Contains(launcherSource, endpoint.Base) {
 		return "", fmt.Errorf("app.asar 中的 cloud_code_endpoint 结构已变化")
 	}
 	// A clean backup can live in the home directory while the application is in
@@ -1319,8 +1283,8 @@ func prepareDarwinLanguagePatch(path string) (*patchPlan, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	updated := append([]byte(nil), data...)
-	changed, embedded := false, false
+	updated := []byte(normalizeDarwinManagedEndpoints(string(data)))
+	changed, embedded := !bytes.Equal(data, updated), false
 	seen := make(map[string]bool)
 	for _, match := range darwinCloudCodeURLPattern.FindAll(data, -1) {
 		original := string(match)
@@ -1366,24 +1330,8 @@ func patchPlansChanged(plans []*patchPlan) bool {
 
 func saveApplyBackups(plans []*patchPlan, signingPaths []string) error {
 	for _, plan := range plans {
-		if plan.changed {
-			backupWriter := writeCurrentBackup
-			if containsKnownDarwinPatch(plan.original) {
-				// A previous helper version may already have patched one part of
-				// the file.  Never make that patched source the canonical restore
-				// point: retain the verified clean backup while completing the
-				// migration.  If it is absent, stop before writing anything; a
-				// reinstall is safer than making "Restore original files" restore
-				// an old patch.
-				if _, err := os.Stat(backupPath(plan.path)); err != nil {
-					if os.IsNotExist(err) {
-						return fmt.Errorf("%s 已带有旧版助手补丁但缺少原始备份；请重新安装该 Antigravity 后再补丁", plan.path)
-					}
-					return fmt.Errorf("检查 %s 的原始备份失败: %w", plan.path, err)
-				}
-				backupWriter = writeBackup
-			}
-			if err := backupWriter(plan.path, plan.original); err != nil {
+		if plan != nil && plan.changed {
+			if err := writeCurrentBackup(plan.path, plan.original); err != nil {
 				return err
 			}
 		}
@@ -1393,7 +1341,7 @@ func saveApplyBackups(plans []*patchPlan, signingPaths []string) error {
 		if err != nil {
 			return err
 		}
-		if err := writeBackup(path, data); err != nil {
+		if err := writeCurrentBackup(path, data); err != nil {
 			return err
 		}
 	}
@@ -1412,7 +1360,7 @@ func containsKnownDarwinPatch(data []byte) bool {
 		[]byte(legacyBinarySandboxProxyEndpoint), []byte(legacyDarwinExtensionMarker),
 		[]byte(legacyDarwinASARMarker),
 		// Every released fallback/UI marker represents an already-modified
-		// renderer.  Do not classify any of them as a fresh Antigravity file.
+		// renderer and remains recognisable for status/restore decisions.
 		[]byte(imagePreviewPatchV2Marker), []byte(imagePreviewPatchV3Marker),
 		[]byte(imagePreviewPatchV4Marker), []byte(imagePreviewPatchV5Marker),
 		[]byte(imagePreviewPatchV6Marker), []byte(imagePreviewPatchV7Marker),
@@ -1451,7 +1399,13 @@ func rollbackPatchPlans(plans []*patchPlan) error {
 	return nil
 }
 
-func restoreDarwinPatch(targets darwinTargets) (string, error) {
+func restoreDarwinPatch(targets darwinTargets) (message string, err error) {
+	// A vendor update or a later third-party replacement must not be downgraded
+	// from a stale helper backup. Restore is available while the active Agent
+	// still carries a recognised WF-managed archive marker.
+	if targets.kind == "agent" && !darwinASARContainsKnownPatch(targets.asar) {
+		return "未发现可恢复的 macOS 升级前状态。", nil
+	}
 	paths := []string{targets.main, targets.extensionEntry, targets.asar, targets.language}
 	if targets.kind == "agent" && targets.app != "" {
 		paths = append(paths, filepath.Join(targets.app, "Contents", "Info.plist"))
@@ -1459,47 +1413,53 @@ func restoreDarwinPatch(targets darwinTargets) (string, error) {
 	paths = append(paths, darwinImagePreviewRendererPaths(targets)...)
 	paths = append(paths, darwinASARUnpackedImagePreviewRendererPaths(targets)...)
 
-	restored := 0
+	plans := make([]*patchPlan, 0, len(paths))
 	seen := map[string]bool{}
 	for _, path := range paths {
 		if path == "" || seen[path] {
 			continue
 		}
 		seen[path] = true
-		backup := backupPath(path)
-		if _, err := os.Stat(backup); os.IsNotExist(err) {
+		plan, changed, planErr := prepareDarwinRestorePlan(path)
+		if planErr != nil {
+			return "", fmt.Errorf("读取 %s 的升级前备份失败: %w", path, planErr)
+		}
+		if !changed {
 			continue
-		} else if err != nil {
-			return "", fmt.Errorf("读取 %s 的备份失败: %w", path, err)
 		}
-		info, err := os.Stat(path)
-		if err != nil {
-			return "", err
+		if path == targets.language && plan.mode.Perm()&0o111 == 0 {
+			plan.mode = (plan.mode &^ os.ModePerm) | 0o755
 		}
-		restoreMode := info.Mode()
-		if path == targets.language && restoreMode.Perm()&0o111 == 0 {
-			restoreMode = (restoreMode &^ os.ModePerm) | 0o755
-		}
-		if err := copyFileAtomic(backup, path, restoreMode); err != nil {
-			return "", fmt.Errorf("恢复 %s 失败: %w", path, err)
-		}
-		restored++
+		plans = append(plans, plan)
 	}
-	if restored == 0 {
-		return "未发现可恢复的 macOS 补丁备份。", nil
+	if len(plans) == 0 {
+		return "未发现可恢复的 macOS 升级前状态。", nil
 	}
-
-	if os.Getenv("ANTIGRAVITY_WF_SKIP_CODESIGN") != "1" {
-		if out, err := exec.Command("codesign", "--verify", "--deep", "--strict", targets.app).CombinedOutput(); err != nil {
-			return "", fmt.Errorf("文件已恢复，但原始签名校验失败（备份已保留）: %s: %w", strings.TrimSpace(string(out)), err)
+	snapshots, snapshotErr := snapshotDarwinPatchTargets(plans)
+	if snapshotErr != nil {
+		return "", fmt.Errorf("创建恢复事务快照失败: %w", snapshotErr)
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if rollbackErr := restoreDarwinPatchSnapshots(snapshots); rollbackErr != nil {
+			err = fmt.Errorf("%w；恢复事务回滚失败: %v", err, rollbackErr)
+		}
+	}()
+	if err = writePatchPlans(plans); err != nil {
+		return "", err
+	}
+	for _, plan := range plans {
+		actual, readErr := os.ReadFile(plan.path)
+		if readErr != nil || !bytes.Equal(actual, plan.updated) {
+			if readErr != nil {
+				return "", fmt.Errorf("校验恢复文件 %s 失败: %w", plan.path, readErr)
+			}
+			return "", fmt.Errorf("恢复文件未通过逐字节校验: %s", plan.path)
 		}
 	}
-	for _, path := range paths {
-		if path != "" && seen[path] {
-			_ = os.Remove(backupPath(path))
-		}
-	}
-	return fmt.Sprintf("%s 的原始文件与原始 macOS 签名已恢复。", targets.name), nil
+	return fmt.Sprintf("%s 已恢复到本次升级前状态。升级前备份已保留。", targets.name), nil
 }
 
 func restoreDarwinPatches(targets []darwinTargets) (string, error) {
@@ -1543,10 +1503,9 @@ func writeBackup(sourcePath string, data []byte) error {
 	return writeFileAtomic(path, data, 0o600)
 }
 
-// writeCurrentBackup keeps the canonical restore point aligned with the
-// currently installed Antigravity version. If an app update changed the
-// original file, the older restore point is archived by content hash instead
-// of being overwritten or accidentally restored into the new version.
+// writeCurrentBackup keeps the restore point aligned with the state active
+// immediately before this upgrade. An older restore point is archived by
+// content hash before the primary backup is refreshed.
 func writeCurrentBackup(sourcePath string, data []byte) error {
 	path := backupPath(sourcePath)
 	existing, err := os.ReadFile(path)
@@ -1629,64 +1588,6 @@ func backupPath(sourcePath string) string {
 	digest := sha256.Sum256([]byte(filepath.Clean(sourcePath)))
 	name := fmt.Sprintf("%s-%x.bak", filepath.Base(sourcePath), digest[:8])
 	return filepath.Join(dir, name)
-}
-
-// matchingDarwinBackupPath locates a canonical source across both the current
-// compatibility directory and the historical WF directory. Explicit test or
-// recovery directories remain isolated and never fall back into the user's
-// home. Historical .previous files are considered because some old helpers
-// accidentally rotated a helper-patched renderer into the primary .bak while
-// retaining the real vendor bytes in a content-addressed previous backup.
-func matchingDarwinBackupPath(sourcePath string, accept func([]byte) bool) string {
-	primary := backupPath(sourcePath)
-	if data, err := os.ReadFile(primary); err == nil && accept(data) {
-		return primary
-	}
-
-	patterns := []string{strings.TrimSuffix(primary, ".bak") + ".previous-*.bak"}
-	if strings.TrimSpace(os.Getenv("ANTIGRAVITY_WF_BACKUP_DIR")) == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			digest := sha256.Sum256([]byte(filepath.Clean(sourcePath)))
-			legacy := filepath.Join(home, legacyPatcherDirectoryName(), "backups",
-				fmt.Sprintf("%s-%x.bak", filepath.Base(sourcePath), digest[:8]))
-			patterns = append(patterns, legacy, strings.TrimSuffix(legacy, ".bak")+".previous-*.bak")
-		}
-	}
-
-	type candidate struct {
-		path    string
-		modTime time.Time
-	}
-	var candidates []candidate
-	seen := map[string]bool{primary: true}
-	for _, pattern := range patterns {
-		matches := []string{pattern}
-		if strings.ContainsAny(pattern, "*?[") {
-			matches, _ = filepath.Glob(pattern)
-		}
-		for _, path := range matches {
-			if path == "" || seen[path] {
-				continue
-			}
-			seen[path] = true
-			data, err := os.ReadFile(path)
-			if err != nil || !accept(data) {
-				continue
-			}
-			info, err := os.Stat(path)
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			candidates = append(candidates, candidate{path: path, modTime: info.ModTime()})
-		}
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].modTime.After(candidates[j].modTime)
-	})
-	if len(candidates) > 0 {
-		return candidates[0].path
-	}
-	return ""
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
