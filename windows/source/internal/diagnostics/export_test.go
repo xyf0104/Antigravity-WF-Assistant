@@ -27,6 +27,7 @@ func TestExportCreatesRedactedLatestSessionArchive(t *testing.T) {
 		`normal application event`,
 		`Authorization: Bearer bearer-secret-value`,
 		`OAuth code=manual-oauth-code-secret`,
+		`Args: --csrf_token csrf-secret-one --extension_server_csrf_token csrf-secret-two`,
 		`callback=https://localhost/callback?code=query-oauth-code-secret&state=ok`,
 		`github=` + githubSecret,
 		`google=` + googleSecret,
@@ -116,6 +117,8 @@ func TestExportCreatesRedactedLatestSessionArchive(t *testing.T) {
 	for _, secret := range []string{
 		"bearer-secret-value",
 		"manual-oauth-code-secret",
+		"csrf-secret-one",
+		"csrf-secret-two",
 		"query-oauth-code-secret",
 		githubSecret,
 		googleSecret,

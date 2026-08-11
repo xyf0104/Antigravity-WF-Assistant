@@ -258,7 +258,7 @@ jobs:
           - macOS 与 Windows 均为真实 v${version} 安装包，使用一致的当前状态升级、事务回滚与恢复逻辑。
           - Antigravity 2.x 同时包含原生 Gemini API 与 Cloud Code 启动参数时，只接管 Cloud Code 端点并保留原生 Gemini 服务。
           - Antigravity IDE 2.1.1 的单次图片生成请求固定返回 JSON；只有流式方法才返回 SSE，避免 Proto 将 data: 前缀误解析为响应对象。
-          - 设置页新增一键导出脱敏诊断 ZIP，可安全收集 WF助手与 Antigravity 最近一次运行日志，便于定位客户电脑上的补丁、模型注入和生图问题。
+          - 设置页可一键导出脱敏诊断 ZIP；API Key、OAuth、Cookie、图片数据和 Antigravity 启动 CSRF Token 均会隐藏，账户、模型及聊天历史配置文件不会被打包。
           - 旧版 WF 或第三方修改不再要求官方原始备份；连接前会精确备份当前结构，再只接管 WF 管理的端点、图片界面和完整性字段。
           - 自定义 GPT 生图优先使用同一上游的 \`gpt-image-2\`；当前供应商没有图片模型时自动使用另一个已启用图片上游，切换回原生 Gemini 后继续使用 Gemini 图片链路。
           - 未识别的 Antigravity 结构会被安全跳过并显示原因，不会全局替换未知 JavaScript。

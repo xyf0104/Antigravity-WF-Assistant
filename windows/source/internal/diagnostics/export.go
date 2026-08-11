@@ -32,12 +32,13 @@ var (
 	logFile         *os.File
 	logStorageDir   string
 	logHomeDir      string
-	jsonSecret      = regexp.MustCompile(`(?i)("(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|cookie|set-cookie|credential)"\s*:\s*")[^"]*(")`)
-	jsonArraySecret = regexp.MustCompile(`(?i)("(?:authorization|x-api-key|api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|cookie|set-cookie)"\s*:\s*\[\s*")[^"]*(")`)
+	jsonSecret      = regexp.MustCompile(`(?i)("(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|csrf[_-]?token|client[_-]?secret|password|cookie|set-cookie|credential)"\s*:\s*")[^"]*(")`)
+	jsonArraySecret = regexp.MustCompile(`(?i)("(?:authorization|x-api-key|api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|csrf[_-]?token|client[_-]?secret|password|cookie|set-cookie)"\s*:\s*\[\s*")[^"]*(")`)
 	jsonImageData   = regexp.MustCompile(`(?i)("(?:b64_json|b64Json|image_base64|imageBase64|base64)"\s*:\s*")[^"]*(")`)
-	headerSecret    = regexp.MustCompile(`(?i)((?:authorization|x-api-key|api-key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|cookie|set-cookie)\s*[:=]\s*)(?:Bearer\s+)?[^\s,;]+`)
+	headerSecret    = regexp.MustCompile(`(?i)((?:authorization|x-api-key|api-key|access[_ -]?token|refresh[_ -]?token|csrf[_ -]?token|client[_ -]?secret|password|cookie|set-cookie)\s*[:=]\s*)(?:Bearer\s+)?[^\s,;]+`)
+	commandSecret   = regexp.MustCompile(`(?i)((?:--(?:csrf_token|extension_server_csrf_token|api_key|access_token|refresh_token|id_token|client_secret|password))\s+)[^\s]+`)
 	oauthCodeSecret = regexp.MustCompile(`(?i)((?:oauth|authorization)\s+code\s*[:=]\s*)[^\s,;]+`)
-	urlSecret       = regexp.MustCompile(`(?i)([?&](?:key|api_key|token|access_token|refresh_token|id_token|code|client_secret)=)[^&\s"']+`)
+	urlSecret       = regexp.MustCompile(`(?i)([?&](?:key|api_key|token|access_token|refresh_token|id_token|csrf_token|code|client_secret)=)[^&\s"']+`)
 	knownSecret     = regexp.MustCompile(`\b(?:(?:sk|ghp|github_pat|xox[baprs])[-_A-Za-z0-9]{12,}|AIza[A-Za-z0-9_-]{20,})\b`)
 	jwtSecret       = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)
 	longBase64Data  = regexp.MustCompile(`\b[A-Za-z0-9+/]{256,}={0,2}\b`)
@@ -386,6 +387,7 @@ func redact(data []byte, home string) []byte {
 	value = jsonArraySecret.ReplaceAllString(value, `${1}[REDACTED]${2}`)
 	value = jsonImageData.ReplaceAllString(value, `${1}[REDACTED]${2}`)
 	value = headerSecret.ReplaceAllString(value, `${1}[REDACTED]`)
+	value = commandSecret.ReplaceAllString(value, `${1}[REDACTED]`)
 	value = oauthCodeSecret.ReplaceAllString(value, `${1}[REDACTED]`)
 	value = urlSecret.ReplaceAllString(value, `${1}[REDACTED]`)
 	value = knownSecret.ReplaceAllString(value, `[REDACTED]`)
