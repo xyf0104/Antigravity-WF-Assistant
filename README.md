@@ -24,12 +24,12 @@
 
 ## 下载与安装
 
-请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与系统对应的 v1.5.2 安装包。Release 只上传两个标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与系统对应的 v1.5.3 安装包。Release 只上传两个标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
 
 | 系统 | 安装包 | 支持范围 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.5.2-Installer.pkg` | Apple Silicon 与 Intel Mac |
-| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.5.2-Setup.exe` | Windows 10/11 x64 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.5.3-Installer.pkg` | Apple Silicon 与 Intel Mac |
+| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.5.3-Setup.exe` | Windows 10/11 x64 |
 
 手动下载时可使用同一 Release 中的 `SHA256SUMS.txt` 校验文件完整性；软件内更新会自动完成该校验。
 

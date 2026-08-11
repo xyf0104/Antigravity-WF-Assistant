@@ -152,7 +152,7 @@ type darwinPatchSnapshot struct {
 	data []byte
 	mode os.FileMode
 	// existed makes a settings.json creation rollback-safe. The older patch
-	// transaction only touched installed files, but the v1.5.2 user-setting
+	// transaction only touched installed files, but the current user-setting
 	// connection path can validly create the first settings file.
 	existed bool
 }

@@ -218,7 +218,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v1.5.2-Setup.exe
+          path: windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-${{ github.ref_name }}-Setup.exe
           if-no-files-found: error
 
   release:
@@ -255,7 +255,8 @@ jobs:
           cat > ../release-body.md <<EOF
           ## Antigravity WF助手
 
-          - macOS 与 Windows 均为真实 v${version} 安装包；Windows 功能逻辑保持实测通过的 v1.5.1 基线，仅同步版本元数据并重新构建安装器。
+          - macOS 与 Windows 均为真实 v${version} 安装包，使用一致的当前状态升级、事务回滚与恢复逻辑。
+          - 旧版 WF 或第三方修改不再要求官方原始备份；连接前会精确备份当前结构，再只接管 WF 管理的端点、图片界面和完整性字段。
           - 自定义 GPT 生图使用同一上游的 \`gpt-image-2\`；切换回原生 Gemini 后继续使用 Gemini 图片链路。
           - 未识别的 Antigravity 结构会被安全跳过并显示原因，不会全局替换未知 JavaScript。
           - \`SHA256SUMS.txt\` 供客户端软件内更新和手动下载校验使用。
@@ -278,7 +279,7 @@ jobs:
           generate_release_notes: false
           body_path: release-body.md
           files: |
-            release-assets/Antigravity-WF-Assistant-macOS-universal-v1.5.2-Installer.pkg
-            release-assets/Antigravity-WF-Assistant-Windows-x64-v1.5.2-Setup.exe
+            release-assets/Antigravity-WF-Assistant-macOS-universal-${{ github.ref_name }}-Installer.pkg
+            release-assets/Antigravity-WF-Assistant-Windows-x64-${{ github.ref_name }}-Setup.exe
             release-assets/SHA256SUMS.txt
           fail_on_unmatched_files: true

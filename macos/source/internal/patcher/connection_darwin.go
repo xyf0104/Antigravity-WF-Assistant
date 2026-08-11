@@ -2,7 +2,7 @@
 
 package patcher
 
-// This is the v1.5.2 macOS connection path.  The legacy byte-patching
+// This is the current macOS connection path. The legacy byte-patching
 // helpers remain below in patcher_darwin.go only for historical restore and
 // isolated regression fixtures; production IDE connections use the official
 // user-level jetski.cloudCodeUrl setting verified in the installed bundle.
