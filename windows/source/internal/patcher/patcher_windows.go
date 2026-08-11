@@ -515,9 +515,12 @@ func applyWindowsASARTarget(target windowsTarget) (message string, err error) {
 		if err = windowsReplaceFile(candidate, target.asar); err != nil {
 			return "", fmt.Errorf("替换 app.asar 失败: %w", err)
 		}
-		if windowsASARPostReplaceHook != nil {
-			windowsASARPostReplaceHook()
-		}
+	}
+	// Test-only fault injection runs after every member write, including a
+	// transaction that changed only an unpacked renderer. Production keeps the
+	// hook nil.
+	if windowsASARPostReplaceHook != nil {
+		windowsASARPostReplaceHook()
 	}
 	if _, _, _, patched := windowsTargetPatchState(target); !patched {
 		return "", fmt.Errorf("写入后的 Windows app.asar 补丁未通过完整校验")
