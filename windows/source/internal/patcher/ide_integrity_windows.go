@@ -30,8 +30,10 @@ func windowsIDEChecksum(data []byte) string {
 }
 
 // prepareWindowsIDEProductChecksumPatch updates only checksum values for the
-// two verified chat renderers. It preserves every other byte in product.json
-// and refuses an unexpected pre-existing checksum.
+// two verified chat renderers. It preserves every other byte in product.json.
+// The active checksum may belong to an older WF or third-party build; the
+// entire current product.json is backed up transactionally before this plan is
+// written, so synchronising the tracked value is safe and reversible.
 func prepareWindowsIDEProductChecksumPatch(target windowsTarget, rendererPlans []*windowsPatchPlan) (*windowsPatchPlan, error) {
 	productPath := windowsIDEProductPath(target)
 	if productPath == "" || windowsExistingFile(productPath) == "" {
@@ -68,15 +70,6 @@ func prepareWindowsIDEProductChecksumPatch(target windowsTarget, rendererPlans [
 		desired := windowsIDEChecksum(plan.updated)
 		if current == desired {
 			continue
-		}
-		active, readErr := os.ReadFile(plan.path)
-		if readErr != nil {
-			return nil, readErr
-		}
-		activeChecksum := windowsIDEChecksum(active)
-		originalChecksum := windowsIDEChecksum(plan.original)
-		if current != activeChecksum && current != originalChecksum {
-			return nil, fmt.Errorf("IDE checksum %s 与官方源文件和当前文件均不匹配；未修改任何文件", key)
 		}
 		pattern := regexp.MustCompile(`("` + regexp.QuoteMeta(key) + `"\s*:\s*")` + regexp.QuoteMeta(current) + `(")`)
 		if len(pattern.FindAllStringIndex(updated, -1)) != 1 {

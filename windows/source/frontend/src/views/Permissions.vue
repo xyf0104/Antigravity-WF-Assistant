@@ -117,7 +117,7 @@ onMounted(async () => {
         <span class="mono truncate">{{ state.autoApproval.configPath || '—' }}</span>
       </div>
       <div class="path-row">
-        <span class="t-footnote">原始备份</span>
+        <span class="t-footnote">启用前备份</span>
         <span class="mono truncate">{{ state.autoApproval.backupPath || '启用后创建' }}</span>
       </div>
     </Card>

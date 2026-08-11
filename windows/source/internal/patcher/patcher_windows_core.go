@@ -35,6 +35,7 @@ var windowsFlexibleCloudCodeCallPattern = regexp.MustCompile(`await\s+[A-Za-z_$]
 var windowsCloudCodeSettingPattern = regexp.MustCompile(`this\.[A-Za-z_$][\w$]*\.getValue\(["']jetski\.cloudCodeUrl["']\)`)
 var windowsCloudCodeURLPattern = regexp.MustCompile(`https://[A-Za-z0-9.-]*cloudcode-pa(?:\.sandbox)?\.googleapis\.com`)
 var windowsCloudCodeFlagPattern = regexp.MustCompile(`["']--(?:cloud_code_endpoint|api_server_url)["']`)
+var windowsCloudCodeLiteralArgumentPattern = regexp.MustCompile(`(["']--(?:cloud_code_endpoint|api_server_url)["']\s*,\s*["'])(https?://[^"']+)(["'])`)
 var windowsExtensionDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.getInstance\(\)\.appDataDirectoryName`)
 var windowsMainDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.ideName`)
 
@@ -188,6 +189,11 @@ func patchWindowsCloudCodeSource(source string) string {
 	source = windowsCloudCodeURLPattern.ReplaceAllString(source, endpoint.Base)
 	source = windowsCloudCodeSettingPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
 	source = windowsFlexibleCloudCodeCallPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
+	// A previous WF release or third-party adapter may already have replaced
+	// the official URL. When the endpoint is the literal value of the one
+	// verified launcher flag, overwrite that scoped argument with the current
+	// runtime endpoint instead of demanding an official reinstall.
+	source = windowsCloudCodeLiteralArgumentPattern.ReplaceAllString(source, `${1}`+endpoint.Base+`${3}`)
 	return source
 }
 
@@ -412,9 +418,8 @@ func windowsContainsKnownPatch(data []byte) bool {
 		windowsExtensionMarker, windowsMainMarker, windowsASARMarker,
 		windowsLegacyASARMarker, windowsLegacyExtensionMarker, windowsLegacyMainMarker,
 		// A renderer fallback is an application modification too.  Keep every
-		// released revision here: when an older helper marker is overlooked,
-		// windowsPatchSource can mistake the already-patched renderer for a
-		// vendor file and overwrite the canonical restore point.
+		// released revision here so status and restore can recognise an active
+		// older helper before the next upgrade snapshot is created.
 		imagePreviewPatchV2Marker, imagePreviewPatchV3Marker,
 		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
 		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,

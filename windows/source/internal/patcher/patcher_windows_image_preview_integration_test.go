@@ -84,6 +84,60 @@ func TestWindowsUnpackedImagePreviewPatchApplyAndRestore(t *testing.T) {
 	}
 }
 
+func TestWindowsLegacyRendererWithoutOriginalBackupUpgradesCurrentBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resources", "app", "out", "jetskiAgent", "main.js")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := []byte("/* third-party-prefix */\n" + imagePreviewV3RendererFixture() + "\n/* third-party-suffix */")
+	if err := os.WriteFile(path, current, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	if windowsExistingFile(windowsBackupPath(path)) != "" {
+		t.Fatal("fixture unexpectedly has an original backup")
+	}
+	source, err := windowsPatchSource(path)
+	if err != nil || source != path {
+		t.Fatalf("legacy active renderer was not selected directly: source=%q err=%v", source, err)
+	}
+	plan, err := prepareWindowsImagePreviewPatch(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.path = path
+	if !plan.changed || !bytes.Contains(plan.updated, []byte(imagePreviewPatchMarker)) ||
+		bytes.Contains(plan.updated, []byte(imagePreviewPatchV3Marker)) {
+		t.Fatalf("legacy current renderer was not upgraded: %s", plan.updated)
+	}
+	for _, preserved := range [][]byte{[]byte("third-party-prefix"), []byte("third-party-suffix")} {
+		if !bytes.Contains(plan.updated, preserved) {
+			t.Fatalf("forced upgrade removed third-party bytes %q", preserved)
+		}
+	}
+	if err := saveWindowsPlanBackups([]*windowsPatchPlan{plan}); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := os.ReadFile(windowsBackupPath(path))
+	if err != nil || !bytes.Equal(backup, current) {
+		t.Fatalf("active legacy/third-party renderer was not backed up exactly: %v", err)
+	}
+	if err := writeWindowsPlans([]*windowsPatchPlan{plan}); err != nil {
+		t.Fatal(err)
+	}
+	restorePlan, ok, err := prepareWindowsRestorePlan(path)
+	if err != nil || !ok || restorePlan == nil {
+		t.Fatalf("current-state renderer backup is not restorable: plan=%#v ok=%t err=%v", restorePlan, ok, err)
+	}
+	if err := writeWindowsPlans([]*windowsPatchPlan{restorePlan}); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(restored, current) {
+		t.Fatalf("restore did not reproduce the exact pre-upgrade renderer: %v", err)
+	}
+}
+
 func TestWindowsStatusReflectsPendingImagePreviewFallback(t *testing.T) {
 	root := t.TempDir()
 	main := filepath.Join(root, "resources", "app", "out", "main.js")
@@ -113,16 +167,16 @@ func TestWindowsStatusReflectsPendingImagePreviewFallback(t *testing.T) {
 	}
 }
 
-// TestWindowsASARUnpackedV3MigrationPreservesCanonicalBackupsAndRestore
-// exercises the release-upgrade path that affected packaged Antigravity
-// builds: a clean app.asar S0 and its external unpacked renderer are backed
-// up, an older WF patch S1 leaves the renderer at v3, and v4 is then applied.
+// TestWindowsASARUnpackedV3MigrationBacksUpCurrentStateAndRestore exercises
+// the release-upgrade path that affected packaged Antigravity builds: an older
+// WF patch S1 is active without requiring a clean S0 source, then the current
+// patch is applied directly and Restore returns both files to exact S1 bytes.
 //
 // An ASAR node marked unpacked must remain unpacked. Putting its replacement
 // in archive.write's replacement map would silently pack it back into the
 // archive, so this test checks both the manifest and the external file before
-// proving that the public restore flow returns *both* files to exact S0 bytes.
-func TestWindowsASARUnpackedV3MigrationPreservesCanonicalBackupsAndRestore(t *testing.T) {
+// proving that the public restore flow returns *both* files to exact S1 bytes.
+func TestWindowsASARUnpackedV3MigrationBacksUpCurrentStateAndRestore(t *testing.T) {
 	root := t.TempDir()
 	asarPath := filepath.Join(root, "resources", "app.asar")
 	unpackedRelative := "out/jetskiAgent/main.js"
@@ -216,14 +270,13 @@ func TestWindowsASARUnpackedV3MigrationPreservesCanonicalBackupsAndRestore(t *te
 		t.Fatalf("read active legacy S1 ASAR: %v", err)
 	}
 
-	// Both patch sources must resolve to their canonical clean backups. This
-	// is the regression guard for an upgrade that accidentally turns S1 into
-	// the new "original" and makes Restore reinstall the old helper patch.
-	if source, err := windowsPatchSource(asarPath); err != nil || source != windowsBackupPath(asarPath) {
-		t.Fatalf("ASAR migration source = %q, %v; want canonical backup %q", source, err, windowsBackupPath(asarPath))
+	// The active installation is always the forward-upgrade source, regardless
+	// of an old WF marker or an existing backup from another helper version.
+	if source, err := windowsPatchSource(asarPath); err != nil || source != asarPath {
+		t.Fatalf("ASAR migration source = %q, %v; want active file %q", source, err, asarPath)
 	}
-	if source, err := windowsPatchSource(unpackedPath); err != nil || source != windowsBackupPath(unpackedPath) {
-		t.Fatalf("unpacked renderer migration source = %q, %v; want canonical backup %q", source, err, windowsBackupPath(unpackedPath))
+	if source, err := windowsPatchSource(unpackedPath); err != nil || source != unpackedPath {
+		t.Fatalf("unpacked renderer migration source = %q, %v; want active file %q", source, err, unpackedPath)
 	}
 
 	target := windowsTarget{root: root, name: "Antigravity Agent", kind: "agent", asar: asarPath}
@@ -267,23 +320,22 @@ func TestWindowsASARUnpackedV3MigrationPreservesCanonicalBackupsAndRestore(t *te
 		t.Fatalf("v4 migration did not report a patched Windows target: %+v", status)
 	}
 
-	// Canonical .bak files remain S0 after the upgrade; neither one may be
-	// replaced with S1 while new candidates are generated.
-	for path, want := range map[string][]byte{asarPath: cleanASAR, unpackedPath: cleanRenderer} {
+	// Persistent backups are the exact S1 state present immediately before this
+	// upgrade, even when an older clean backup already exists.
+	for path, want := range map[string][]byte{asarPath: legacyASAR, unpackedPath: legacyRenderer} {
 		backup, err := os.ReadFile(windowsBackupPath(path))
 		if err != nil {
-			t.Fatalf("read canonical backup for %s: %v", path, err)
+			t.Fatalf("read pre-upgrade backup for %s: %v", path, err)
 		}
 		if !bytes.Equal(backup, want) {
-			t.Fatalf("canonical backup for %s was overwritten during v3 -> v4 migration", path)
+			t.Fatalf("pre-upgrade backup for %s does not match active S1", path)
 		}
 	}
 
 	// Force the same failure point that can occur when a post-replace target
 	// validation observes an unexpected renderer structure. The transactional
 	// rollback must return to S1 (the state at the start of *this* apply), not
-	// to canonical S0. The latter remains reserved for the explicit Restore
-	// command below.
+	// to an unrelated clean S0 or partially written current state.
 	if err := windowsWriteFileAtomic(asarPath, legacyASAR, 0o644); err != nil {
 		t.Fatalf("restore legacy S1 ASAR for failure rollback test: %v", err)
 	}
@@ -313,21 +365,21 @@ func TestWindowsASARUnpackedV3MigrationPreservesCanonicalBackupsAndRestore(t *te
 	if _, _, _, fullyPatched := windowsTargetPatchState(target); fullyPatched {
 		t.Fatal("rollback should restore the original pending v3 target state, not a partial v4 state")
 	}
-	for path, want := range map[string][]byte{asarPath: cleanASAR, unpackedPath: cleanRenderer} {
+	for path, want := range map[string][]byte{asarPath: legacyASAR, unpackedPath: legacyRenderer} {
 		backup, err := os.ReadFile(windowsBackupPath(path))
 		if err != nil || !bytes.Equal(backup, want) {
-			t.Fatalf("failed migration changed canonical S0 backup for %s: %v", path, err)
+			t.Fatalf("failed migration changed pre-upgrade S1 backup for %s: %v", path, err)
 		}
 	}
 
 	if _, err := restoreWindowsLegacyTargets([]windowsTarget{target}); err != nil {
 		t.Fatalf("restore migrated target: %v", err)
 	}
-	if restoredASAR, err := os.ReadFile(asarPath); err != nil || !bytes.Equal(restoredASAR, cleanASAR) {
-		t.Fatalf("restore did not reproduce clean ASAR S0 byte-for-byte: %v", err)
+	if restoredASAR, err := os.ReadFile(asarPath); err != nil || !bytes.Equal(restoredASAR, legacyASAR) {
+		t.Fatalf("restore did not reproduce pre-upgrade ASAR S1 byte-for-byte: %v", err)
 	}
-	if restoredRenderer, err := os.ReadFile(unpackedPath); err != nil || !bytes.Equal(restoredRenderer, cleanRenderer) {
-		t.Fatalf("restore did not reproduce clean unpacked renderer S0 byte-for-byte: %v", err)
+	if restoredRenderer, err := os.ReadFile(unpackedPath); err != nil || !bytes.Equal(restoredRenderer, legacyRenderer) {
+		t.Fatalf("restore did not reproduce pre-upgrade unpacked renderer S1 byte-for-byte: %v", err)
 	}
 	restoredArchive, err := readASAR(asarPath)
 	if err != nil {

@@ -206,3 +206,14 @@ func TestWindowsASARLauncherPatchDoesNotRequireBinaryEndpoint(t *testing.T) {
 		t.Fatalf("ASAR image-preview renderer was not patched: %v", err)
 	}
 }
+
+func TestWindowsLauncherPatchOverridesThirdPartyLiteralEndpoint(t *testing.T) {
+	source := `const args=["--cloud_code_endpoint","https://third-party.example.invalid/custom/path"];`
+	updated := patchWindowsCloudCodeSource(source)
+	if strings.Contains(updated, "third-party.example.invalid") || !strings.Contains(updated, windowsBaseProxyEndpoint) {
+		t.Fatalf("third-party launcher endpoint was not forced to the current local proxy: %s", updated)
+	}
+	if !windowsLauncherHasProxyEndpoint(updated) {
+		t.Fatalf("forced launcher endpoint did not satisfy the connection contract: %s", updated)
+	}
+}

@@ -25,14 +25,15 @@ var windowsOperationMu sync.Mutex
 // windowsASARPostReplaceHook is deliberately nil in production. Windows-only
 // regression tests use it to force a validation failure after app.asar has
 // been replaced, proving that a migration rolls back to the user's immediate
-// pre-upgrade state rather than to the canonical clean backup.
+// pre-upgrade state.
 var windowsASARPostReplaceHook func()
 
 func runWindows(action string) (message string, err error) {
 	windowsOperationMu.Lock()
 	defer windowsOperationMu.Unlock()
-	// Restore only consumes canonical backups; it must remain available even
-	// when a hand-edited runtime port state is corrupt.
+	// Restore only consumes snapshots captured before the most recent upgrade;
+	// it must remain available even when a hand-edited runtime port state is
+	// corrupt.
 	if action == "status" {
 		_ = refreshPatchProxyEndpoint()
 	} else if action != "restore" {
@@ -264,13 +265,16 @@ func applyWindowsTarget(target windowsTarget) (message string, err error) {
 	if productPlan != nil {
 		backupPlans = append(backupPlans, productPlan)
 	}
+	if settingChanged {
+		// The user may already have an older WF or third-party endpoint. Keep an
+		// exact persistent snapshot before replacing it so Restore returns to the
+		// state immediately preceding this upgrade instead of deleting it.
+		backupPlans = append(backupPlans, settingPlan)
+	}
 	if err := saveWindowsPlanBackups(backupPlans); err != nil {
 		return "", fmt.Errorf("创建图片界面备份失败: %w", err)
 	}
 	plans := append([]*windowsPatchPlan{}, backupPlans...)
-	if settingChanged {
-		plans = append(plans, settingPlan)
-	}
 	snapshots, snapshotErr := windowsRollbackSnapshots(plans)
 	if snapshotErr != nil {
 		return "", fmt.Errorf("创建事务回滚快照失败: %w", snapshotErr)
@@ -512,29 +516,17 @@ func windowsPatchSource(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if _, err := os.ReadFile(path); err != nil {
 		return "", err
 	}
-	hasKnownPatch := windowsContainsKnownPatch(data)
-	if !hasKnownPatch {
-		_, hasKnownPatch = windowsAgentEmbeddedUIPatchStateData(data)
-	}
-	if !hasKnownPatch {
-		return path, nil
-	}
-	if backup := windowsExistingFile(windowsBackupPath(path)); backup != "" {
-		// Re-apply every migrated patch from the clean canonical backup. This
-		// keeps “恢复原始文件” byte-for-byte original instead of rotating a
-		// previous helper patch into the canonical restore point.
-		return backup, nil
-	}
-	for _, candidate := range windowsLegacyBackupPaths(path) {
-		if windowsExistingFile(candidate) != "" {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("%s 已带有旧版助手补丁但缺少原始备份；请重新安装该 Antigravity 后再补丁", path)
+	// Always upgrade the bytes that are active on this computer. They can be an
+	// official file, an old WF build, or a third-party modification. Every
+	// changed plan is persisted by saveWindowsPlanBackups before the first
+	// installed byte is replaced, so a failed transaction and the public
+	// Restore action both return to this exact pre-upgrade state. Structural
+	// patchers still have to recognise their required insertion points; this
+	// does not copy a foreign whole-file fixture over an unknown version.
+	return path, nil
 }
 
 func windowsPlansChanged(plans []*windowsPatchPlan) bool {
@@ -547,11 +539,9 @@ func windowsPlansChanged(plans []*windowsPatchPlan) bool {
 }
 
 // windowsRollbackSnapshots captures the actual active files immediately
-// before an apply operation starts writing. Patch plans may be prepared from a
-// canonical clean backup during a v2/v3 migration, so plan.original is not a
-// safe transaction rollback source: it can be S0 while the user's pre-upgrade
-// installation is S1. The canonical backup remains solely for the explicit
-// "恢复原始文件" operation.
+// before an apply operation starts writing. Persistent backups provide a
+// user-requested pre-upgrade restore point; these in-memory snapshots keep a
+// partially failed multi-file transaction from exposing mixed structures.
 func windowsRollbackSnapshots(plans []*windowsPatchPlan, extraPaths ...string) ([]windowsRollbackSnapshot, error) {
 	paths := append([]string(nil), extraPaths...)
 	for _, plan := range plans {
@@ -673,7 +663,7 @@ func restoreWindowsTargets(targets []windowsTarget) (string, error) {
 		return "未找到 Antigravity 安装；未修改任何文件。", nil
 	}
 	if windowsTargetsRunning(targets) {
-		return "", fmt.Errorf("请先正常关闭所有 Antigravity 窗口，再恢复原机配置；助手不会强制结束进程")
+		return "", fmt.Errorf("请先正常关闭所有 Antigravity 窗口，再恢复升级前状态；助手不会强制结束进程")
 	}
 
 	var plans []*windowsPatchPlan
@@ -684,14 +674,21 @@ func restoreWindowsTargets(targets []windowsTarget) (string, error) {
 		var targetPlans []*windowsPatchPlan
 		if target.kind == "ide" {
 			if settingsPath := windowsSettingsPathForStatus(target); settingsPath != "" {
-				plan, ok, err := prepareWindowsRemoveCloudCodeSetting(settingsPath, windowsBaseProxyEndpoint)
-				if err != nil {
-					return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复用户设置失败: %w", target.name, err)
+				plan, ok, restoreErr := prepareWindowsRestorePlan(settingsPath)
+				if restoreErr != nil {
+					return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复用户设置失败: %w", target.name, restoreErr)
+				}
+				if !ok {
+					plan, ok, restoreErr = prepareWindowsRemoveCloudCodeSetting(settingsPath, windowsBaseProxyEndpoint)
+					if restoreErr != nil {
+						return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复用户设置失败: %w", target.name, restoreErr)
+					}
 				}
 				if ok {
 					plans = append(plans, plan)
 					targetRestored++
 				}
+				seen[settingsPath] = true
 			}
 		}
 
@@ -724,9 +721,9 @@ func restoreWindowsTargets(targets []windowsTarget) (string, error) {
 			}
 		}
 		if targetRestored == 0 {
-			messages = append(messages, fmt.Sprintf("%s 未发现由本助手写入且可安全恢复的配置。", target.name))
+			messages = append(messages, fmt.Sprintf("%s 未发现可恢复的升级前状态。", target.name))
 		} else {
-			messages = append(messages, fmt.Sprintf("%s 将恢复 %d 项本助手配置。", target.name, targetRestored))
+			messages = append(messages, fmt.Sprintf("%s 将恢复 %d 项升级前配置。", target.name, targetRestored))
 		}
 	}
 	if len(plans) == 0 {
@@ -750,7 +747,7 @@ func restoreWindowsTargets(targets []windowsTarget) (string, error) {
 			}
 		}
 	}
-	return strings.Join(messages, "\n") + "\n恢复完成。未删除其他用户设置、AppData、.gemini 或聊天数据。", nil
+	return strings.Join(messages, "\n") + "\n已恢复到本次升级前状态。未删除其他用户设置、AppData、.gemini 或聊天数据。", nil
 }
 
 // restoreWindowsLegacyTargets exists solely for historical regression fixtures.
@@ -778,12 +775,12 @@ func restoreWindowsLegacyTargets(targets []windowsTarget) (string, error) {
 			}
 		}
 		if len(plans) == 0 {
-			messages = append(messages, fmt.Sprintf("%s 未发现可恢复的补丁备份。", target.name))
+			messages = append(messages, fmt.Sprintf("%s 未发现可恢复的升级前备份。", target.name))
 		} else {
 			if err := writeWindowsPlans(plans); err != nil {
 				return strings.Join(messages, "\n"), fmt.Errorf("%s 恢复失败: %w", target.name, err)
 			}
-			messages = append(messages, fmt.Sprintf("%s 已恢复 %d 个原始文件。", target.name, len(plans)))
+			messages = append(messages, fmt.Sprintf("%s 已恢复 %d 个升级前文件。", target.name, len(plans)))
 		}
 	}
 	return strings.Join(messages, "\n") + "\n请重新打开对应的 Antigravity。", nil
@@ -795,7 +792,7 @@ func restoreWindowsFile(path string) error {
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("没有找到原始备份: %s", path)
+		return fmt.Errorf("没有找到升级前备份: %s", path)
 	}
 	return nil
 }
@@ -837,12 +834,15 @@ func prepareWindowsRestorePlan(path string) (*windowsPatchPlan, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if windowsContainsKnownPatch(data) {
-		return nil, false, fmt.Errorf("原始备份已包含旧版助手 marker，不能安全恢复 %s；请使用官方安装器覆盖重装 Antigravity（不要删除 AppData、.gemini 或聊天数据）", path)
-	}
+	// A backup intentionally represents the exact state immediately before the
+	// latest WF upgrade. It may therefore contain an older WF marker or a
+	// third-party modification; restoring those bytes is the requested action.
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, false, err
+	}
+	if bytes.Equal(active, data) {
+		return nil, false, nil
 	}
 	return &windowsPatchPlan{path: path, original: active, updated: data, mode: info.Mode(), changed: true}, true, nil
 }

@@ -75,7 +75,8 @@ func windowsTargetASARConnectionSupport(target windowsTarget) error {
 		return fmt.Errorf("app.asar 缺少已验证的 dist/languageServer.js")
 	}
 	launcherSource := string(launcher)
-	if strings.Count(launcherSource, "--cloud_code_endpoint") != 1 || len(windowsCloudCodeURLPattern.FindAllString(launcherSource, -1)) != 1 {
+	if len(windowsCloudCodeFlagPattern.FindAllStringIndex(launcherSource, -1)) != 1 ||
+		!windowsLauncherHasProxyEndpoint(patchWindowsCloudCodeSource(launcherSource)) {
 		return fmt.Errorf("app.asar Language Server 端点结构尚未验证，未修改任何文件")
 	}
 	languageSource, err := windowsPatchSource(target.language)
@@ -205,7 +206,12 @@ func prepareWindowsEnsureCloudCodeSetting(path, endpoint string) (*windowsPatchP
 		if value == endpoint {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("%s 已有非本助手写入的 %s，已拒绝覆盖", path, windowsCloudCodeSetting)
+		updated := append([]byte(nil), data[:member.valueBeg]...)
+		updated = append(updated, []byte(strconv.Quote(endpoint))...)
+		updated = append(updated, data[member.valueEnd:]...)
+		return &windowsPatchPlan{
+			path: path, original: data, updated: updated, mode: mode, changed: true,
+		}, true, nil
 	}
 	entry := `  "` + windowsCloudCodeSetting + `": ` + strconv.Quote(endpoint)
 	updated := string(data)

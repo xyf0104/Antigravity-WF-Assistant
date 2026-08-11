@@ -40,7 +40,7 @@ func TestIDEChecksumPatchMigratesAlreadyPatchedRendererWithOfficialChecksum(t *t
 	}
 }
 
-func TestIDEChecksumPatchRejectsUnknownChecksumWithoutWriting(t *testing.T) {
+func TestIDEChecksumPatchSynchronizesThirdPartyChecksumTransactionally(t *testing.T) {
 	root := t.TempDir()
 	renderer := filepath.Join(root, "resources", "app", "out", "jetskiAgent", "main.js")
 	product := filepath.Join(root, "resources", "app", "product.json")
@@ -52,8 +52,12 @@ func TestIDEChecksumPatchRejectsUnknownChecksumWithoutWriting(t *testing.T) {
 
 	target := windowsTarget{root: root, kind: "ide"}
 	rendererPlan := &windowsPatchPlan{path: renderer, original: official, updated: patched, mode: 0o644, changed: true}
-	if plan, err := prepareWindowsIDEProductChecksumPatch(target, []*windowsPatchPlan{rendererPlan}); err == nil || plan != nil {
-		t.Fatalf("unknown product checksum must be rejected: plan=%#v err=%v", plan, err)
+	productPlan, err := prepareWindowsIDEProductChecksumPatch(target, []*windowsPatchPlan{rendererPlan})
+	if err != nil || productPlan == nil {
+		t.Fatalf("third-party product checksum was not synchronized: plan=%#v err=%v", productPlan, err)
+	}
+	if !bytes.Contains(productPlan.updated, []byte(windowsIDEChecksum(patched))) {
+		t.Fatalf("synchronized product checksum is missing candidate hash: %s", productPlan.updated)
 	}
 	productAfter, err := os.ReadFile(product)
 	if err != nil {
@@ -67,7 +71,13 @@ func TestIDEChecksumPatchRejectsUnknownChecksumWithoutWriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(rendererAfter, official) {
-		t.Fatal("checksum validation failure changed the renderer")
+		t.Fatal("planning the forced checksum update changed the renderer")
+	}
+	if err := writeWindowsPlans([]*windowsPatchPlan{rendererPlan, productPlan}); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyWindowsIDEProductChecksums(target, []string{renderer}); err != nil {
+		t.Fatalf("third-party checksum synchronization did not produce a valid pair: %v", err)
 	}
 }
 

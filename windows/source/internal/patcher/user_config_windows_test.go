@@ -167,6 +167,44 @@ func TestWindowsRestorePreservesUserCloudCodeSetting(t *testing.T) {
 	}
 }
 
+func TestWindowsEnsureCloudCodeSettingBacksUpAndRestoresThirdPartyValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	original := []byte("{\n  // third-party setting\n  \"jetski.cloudCodeUrl\": \"https://third-party.example.invalid\",\n  \"editor.fontSize\": 15\n}\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", t.TempDir())
+	plan, changed, err := prepareWindowsEnsureCloudCodeSetting(path, windowsBaseProxyEndpoint)
+	if err != nil || !changed || plan == nil {
+		t.Fatalf("third-party setting was not accepted for forced upgrade: plan=%#v changed=%t err=%v", plan, changed, err)
+	}
+	if !strings.Contains(string(plan.updated), `"jetski.cloudCodeUrl": "`+windowsBaseProxyEndpoint+`"`) ||
+		!strings.Contains(string(plan.updated), `"editor.fontSize": 15`) {
+		t.Fatalf("forced setting update lost structure: %s", plan.updated)
+	}
+	if err := saveWindowsPlanBackups([]*windowsPatchPlan{plan}); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := os.ReadFile(windowsBackupPath(path))
+	if err != nil || !bytes.Equal(backup, original) {
+		t.Fatalf("current third-party setting was not backed up exactly: %v", err)
+	}
+	if err := writeWindowsPlans([]*windowsPatchPlan{plan}); err != nil {
+		t.Fatal(err)
+	}
+	restorePlan, ok, err := prepareWindowsRestorePlan(path)
+	if err != nil || !ok || restorePlan == nil {
+		t.Fatalf("pre-upgrade setting snapshot was not restorable: plan=%#v ok=%t err=%v", restorePlan, ok, err)
+	}
+	if err := writeWindowsPlans([]*windowsPatchPlan{restorePlan}); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(restored, original) {
+		t.Fatalf("restore did not reproduce the third-party setting: %v", err)
+	}
+}
+
 func TestWindowsApplyRejectsUnknownStructureWithoutWriting(t *testing.T) {
 	root := t.TempDir()
 	mainPath := filepath.Join(root, "resources", "app", "out", "main.js")
