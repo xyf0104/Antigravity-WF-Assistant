@@ -75,8 +75,7 @@ func windowsTargetASARConnectionSupport(target windowsTarget) error {
 		return fmt.Errorf("app.asar 缺少已验证的 dist/languageServer.js")
 	}
 	launcherSource := string(launcher)
-	if len(windowsCloudCodeFlagPattern.FindAllStringIndex(launcherSource, -1)) != 1 ||
-		!windowsLauncherHasProxyEndpoint(patchWindowsCloudCodeSource(launcherSource)) {
+	if !windowsLauncherHasProxyEndpoint(patchWindowsCloudCodeSource(launcherSource)) {
 		return fmt.Errorf("app.asar Language Server 端点结构尚未验证，未修改任何文件")
 	}
 	languageSource, err := windowsPatchSource(target.language)

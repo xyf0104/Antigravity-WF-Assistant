@@ -48,8 +48,10 @@ var (
 var darwinCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.getCloudCodeUrl\(\)`)
 var darwinExtensionDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.getInstance\(\)\.appDataDirectoryName`)
 var darwinMainDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*\.ideName`)
-var darwinCloudCodeFlagPattern = regexp.MustCompile(`["']--(?:cloud_code_endpoint|api_server_url)["']`)
-var darwinCloudCodeLiteralArgumentPattern = regexp.MustCompile(`(["']--(?:cloud_code_endpoint|api_server_url)["']\s*,\s*["'])(https?://[^"']+)(["'])`)
+var darwinCloudCodeEndpointFlagPattern = regexp.MustCompile(`["']--cloud_code_endpoint["']`)
+var darwinAPIServerURLFlagPattern = regexp.MustCompile(`["']--api_server_url["']`)
+var darwinCloudCodeEndpointLiteralPattern = regexp.MustCompile(`(["']--cloud_code_endpoint["']\s*,\s*["'])(https?://[^"']+)(["'])`)
+var darwinAPIServerURLLiteralPattern = regexp.MustCompile(`(["']--api_server_url["']\s*,\s*["'])(https?://[^"']+)(["'])`)
 
 // Language Server binaries in newer Antigravity releases may use a different
 // Cloud Code hostname. Keep this bounded to Google's cloudcode-pa hosts; an
@@ -462,10 +464,34 @@ func patchDarwinCloudCodeLauncher(source string) string {
 	endpoint := currentPatchProxyEndpoint()
 	source = normalizeDarwinManagedEndpoints(source)
 	source = darwinCloudCodeURLPattern.ReplaceAllString(source, endpoint.Base)
-	// Scope forced takeover to the literal argument immediately following one
-	// verified launcher flag. Other third-party URLs in the bundle are untouched.
-	source = darwinCloudCodeLiteralArgumentPattern.ReplaceAllString(source, `${1}`+endpoint.Base+`${3}`)
+	// Current Agent launchers carry both --api_server_url (the native Gemini
+	// service) and --cloud_code_endpoint (the endpoint managed by this helper).
+	// Prefer the latter and preserve the Gemini URL byte-for-byte. Older builds
+	// that expose only --api_server_url continue to use that single verified
+	// fallback.
+	if literalPattern, ok := darwinLauncherManagedLiteralPattern(source); ok {
+		source = literalPattern.ReplaceAllString(source, `${1}`+endpoint.Base+`${3}`)
+	}
 	return source
+}
+
+func darwinLauncherManagedFlagLocations(source string) ([][]int, bool) {
+	if locations := darwinCloudCodeEndpointFlagPattern.FindAllStringIndex(source, -1); len(locations) > 0 {
+		return locations, len(locations) == 1
+	}
+	locations := darwinAPIServerURLFlagPattern.FindAllStringIndex(source, -1)
+	return locations, len(locations) == 1
+}
+
+func darwinLauncherManagedLiteralPattern(source string) (*regexp.Regexp, bool) {
+	locations, ok := darwinLauncherManagedFlagLocations(source)
+	if !ok || len(locations) != 1 {
+		return nil, false
+	}
+	if darwinCloudCodeEndpointFlagPattern.MatchString(source) {
+		return darwinCloudCodeEndpointLiteralPattern, true
+	}
+	return darwinAPIServerURLLiteralPattern, true
 }
 
 func normalizeDarwinManagedEndpoints(source string) string {
@@ -485,8 +511,21 @@ func normalizeDarwinManagedEndpoints(source string) string {
 }
 
 func darwinLauncherHasProxyEndpoint(source string) bool {
-	return len(darwinCloudCodeFlagPattern.FindAllStringIndex(source, -1)) == 1 &&
-		strings.Contains(source, currentPatchProxyEndpoint().Base)
+	locations, ok := darwinLauncherManagedFlagLocations(source)
+	if !ok {
+		return false
+	}
+	endpoint := currentPatchProxyEndpoint().Base
+	location := locations[0]
+	start := location[0] - 1024
+	if start < 0 {
+		start = 0
+	}
+	end := location[1] + 1024
+	if end > len(source) {
+		end = len(source)
+	}
+	return strings.Contains(source[start:end], endpoint)
 }
 
 func boolPointer(value bool) *bool { return &value }

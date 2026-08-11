@@ -304,7 +304,16 @@ func writeDirectImageGenerationResponse(w http.ResponseWriter, incoming *http.Re
 	if strings.TrimSpace(modelName) != "" {
 		response["modelVersion"] = modelName
 	}
-	if incoming != nil && (strings.Contains(cleanPatchedPath(incoming.URL.Path), ":streamGenerateContent") || strings.EqualFold(incoming.URL.Query().Get("alt"), "sse")) {
+	// The RPC method is the wire-format contract. Some Antigravity builds append
+	// alt=sse to the unary generateContent request even though their image tool
+	// still decodes one JSON/proto response. Returning an SSE frame there starts
+	// the body with "data:", which protojson reports as "invalid value data".
+	// Only the explicit streaming RPC may receive an SSE envelope.
+	if incoming != nil && strings.Contains(cleanPatchedPath(incoming.URL.Path), ":streamGenerateContent") {
+		trace("images-downstream-response", map[string]any{
+			"requestId": requestID, "format": "sse", "model": modelName,
+			"mimeType": mimeType, "base64Length": len(imageData),
+		})
 		newDownstreamSSEWriter(w).write(encodeAntigravityStreamEvent(response, requestID))
 		return
 	}
@@ -312,6 +321,10 @@ func writeDirectImageGenerationResponse(w http.ResponseWriter, incoming *http.Re
 	// Native image generation uses v1internal:generateContent, which is unary
 	// rather than SSE. The same internal envelope is returned as JSON so the
 	// Cortex generate-image handler can read inlineData from response.candidates.
+	trace("images-downstream-response", map[string]any{
+		"requestId": requestID, "format": "json", "model": modelName,
+		"mimeType": mimeType, "base64Length": len(imageData),
+	})
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(antigravityResponseEnvelope(response, requestID))

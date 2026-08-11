@@ -175,7 +175,7 @@ func TestWindowsASARLauncherPatchDoesNotRequireBinaryEndpoint(t *testing.T) {
 	if err := fixture.write(path, map[string][]byte{
 		"package.json":               []byte(`{"version":"2.0.0"}`),
 		"dist/main.js":               []byte(`"use strict";` + authEligibilityOriginal),
-		"dist/languageServer.js":     []byte(`const args=["--cloud_code_endpoint","` + windowsProductionEndpoint + `"]`),
+		"dist/languageServer.js":     []byte(`const args=["--api_server_url","https://generativelanguage.googleapis.com","--cloud_code_endpoint","` + windowsProductionEndpoint + `"]`),
 		"out/jetskiAgent/main.js":    []byte(imagePreviewOriginalRendererFixture()),
 		"dist/unrelated-renderer.js": []byte(imagePreviewOriginalRendererFixture()),
 	}); err != nil {
@@ -198,6 +198,9 @@ func TestWindowsASARLauncherPatchDoesNotRequireBinaryEndpoint(t *testing.T) {
 	if !bytes.Contains(launcher, []byte(windowsBaseProxyEndpoint)) || bytes.Contains(launcher, []byte(windowsProductionEndpoint)) {
 		t.Fatalf("launcher endpoint was not patched: %s", launcher)
 	}
+	if !bytes.Contains(launcher, []byte(`"--api_server_url","https://generativelanguage.googleapis.com"`)) {
+		t.Fatalf("native Gemini API endpoint was changed: %s", launcher)
+	}
 	if !bytes.Contains(main, []byte(authEligibilityPatched)) || bytes.Contains(main, []byte(authEligibilityOriginal)) {
 		t.Fatal("local credential eligibility branch was not patched")
 	}
@@ -215,5 +218,33 @@ func TestWindowsLauncherPatchOverridesThirdPartyLiteralEndpoint(t *testing.T) {
 	}
 	if !windowsLauncherHasProxyEndpoint(updated) {
 		t.Fatalf("forced launcher endpoint did not satisfy the connection contract: %s", updated)
+	}
+}
+
+func TestWindowsLauncherPrefersCloudCodeEndpointAndPreservesAPIServerURL(t *testing.T) {
+	const apiServer = "https://generativelanguage.googleapis.com"
+	const thirdPartyCloudCode = "https://third-party.example.invalid/cloudcode"
+	source := `const args=["--api_server_url","` + apiServer + `","--cloud_code_endpoint","` + thirdPartyCloudCode + `"];`
+	updated := patchWindowsCloudCodeSource(source)
+	if !strings.Contains(updated, `"--api_server_url","`+apiServer+`"`) {
+		t.Fatalf("native API server URL was not preserved: %s", updated)
+	}
+	if strings.Contains(updated, thirdPartyCloudCode) || !windowsLauncherHasProxyEndpoint(updated) {
+		t.Fatalf("cloud code endpoint was not exclusively routed to the local proxy: %s", updated)
+	}
+}
+
+func TestWindowsLauncherFallsBackToSingleLegacyAPIServerURL(t *testing.T) {
+	source := `const args=["--api_server_url","https://third-party.example.invalid/cloudcode"];`
+	updated := patchWindowsCloudCodeSource(source)
+	if strings.Contains(updated, "third-party.example.invalid") || !windowsLauncherHasProxyEndpoint(updated) {
+		t.Fatalf("legacy API-server-only launcher was not routed to the local proxy: %s", updated)
+	}
+}
+
+func TestWindowsLauncherRejectsDuplicateManagedFlags(t *testing.T) {
+	source := `const args=["--cloud_code_endpoint","https://one.invalid","--cloud_code_endpoint","https://two.invalid"];`
+	if windowsLauncherHasProxyEndpoint(patchWindowsCloudCodeSource(source)) {
+		t.Fatalf("duplicate cloud code flags must remain unsupported: %s", source)
 	}
 }

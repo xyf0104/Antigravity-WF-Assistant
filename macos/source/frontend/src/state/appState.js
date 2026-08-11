@@ -523,6 +523,10 @@ export async function saveSettings(settings) {
   }
 }
 
+export async function exportDiagnosticLogs() {
+  return call("ExportDiagnosticLogs");
+}
+
 let updateCheckGeneration = 0;
 
 export async function checkForUpdates() {

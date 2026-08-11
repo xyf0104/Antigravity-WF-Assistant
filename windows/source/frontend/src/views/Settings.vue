@@ -5,8 +5,9 @@ import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import {
 	state,
-	cancelUpdateCheck,
+  cancelUpdateCheck,
   checkForUpdates,
+  exportDiagnosticLogs,
   installLatestUpdate,
   loadSettings,
   saveSettings,
@@ -19,6 +20,9 @@ const form = ref({
 });
 const message = ref("");
 const error = ref("");
+const diagnosticBusy = ref(false);
+const diagnosticMessage = ref("");
+const diagnosticError = ref("");
 
 const updateInfo = computed(() => state.update.info || {});
 const progressPercent = computed(() => Math.min(100, Math.max(0, Number(state.update.progress?.percent) || 0)));
@@ -103,6 +107,21 @@ async function handleInstall() {
   error.value = "";
   const res = await installLatestUpdate();
   if (!res?.ok) error.value = res?.message || "无法启动更新";
+}
+
+async function handleExportDiagnostics() {
+  diagnosticBusy.value = true;
+  diagnosticMessage.value = "";
+  diagnosticError.value = "";
+  try {
+    const res = await exportDiagnosticLogs();
+    if (res?.ok) diagnosticMessage.value = res.message || "诊断日志已导出";
+    else diagnosticError.value = res?.message || "导出诊断日志失败";
+  } catch (e) {
+    diagnosticError.value = e?.message || "导出诊断日志失败";
+  } finally {
+    diagnosticBusy.value = false;
+  }
 }
 
 function formatBytes(value) {
@@ -207,6 +226,28 @@ onMounted(async () => {
       </div>
     </Card>
 
+    <Card title="诊断与日志">
+      <template #action>
+        <Badge tone="neutral" label="隐私脱敏" />
+      </template>
+
+      <div class="col" style="gap:14px">
+        <div class="note-box diagnostic-note">
+          遇到补丁、模型注入、对话或生图异常时，可导出最近一次运行的诊断包交给技术支持。导出前会自动隐藏 API Key、Token、OAuth 授权码、Cookie、用户目录和图片数据；不会主动打包账户文件、模型配置文件或聊天历史文件。
+        </div>
+        <div class="diagnostic-list t-caption">
+          <span>包含 WF助手运行日志与代理事件</span>
+          <span>包含最近一次 Antigravity 运行日志</span>
+          <span>单文件自动截断，避免诊断包过大</span>
+        </div>
+        <div v-if="diagnosticError" class="result-box error">{{ diagnosticError }}</div>
+        <div v-if="diagnosticMessage" class="result-box success">{{ diagnosticMessage }}</div>
+        <div class="row end">
+          <Button variant="filled" :loading="diagnosticBusy" :disabled="diagnosticBusy" @click="handleExportDiagnostics">导出诊断日志</Button>
+        </div>
+      </div>
+    </Card>
+
     <div class="row end">
       <Button variant="filled" :loading="state.settingsBusy" :disabled="state.settingsBusy" @click="handleSave">保存设置</Button>
     </div>
@@ -228,6 +269,9 @@ onMounted(async () => {
 .number-field input { height:34px; width:100%; padding:0 10px; border:.5px solid var(--separator-strong); border-radius:var(--r-sm); background:var(--bg-inset); color:var(--text-primary); font:13px var(--font-num); }
 .number-field input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 .note-box { padding:11px 12px; border-radius:var(--r-sm); color:var(--text-secondary); background:var(--accent-soft); border:.5px solid var(--accent-border); font-size:12px; line-height:1.6; }
+.diagnostic-note { background:var(--bg-inset); border-color:var(--separator); }
+.diagnostic-list { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.diagnostic-list span { padding:9px 10px; border:.5px solid var(--separator); border-radius:var(--r-sm); background:var(--bg-card); color:var(--text-secondary); line-height:1.5; }
 .update-info { border:1px solid var(--separator); border-radius:var(--r-md); overflow:hidden; }
 .info-row { display:flex; align-items:center; justify-content:space-between; gap:14px; min-width:0; padding:10px 12px; background:var(--bg-card); font-size:12px; }
 .info-row + .info-row { border-top:.5px solid var(--separator); }
@@ -241,5 +285,5 @@ onMounted(async () => {
 .result-box.error { color:var(--red); background:rgba(255,69,58,.1); }
 .result-box.success { color:var(--green); background:rgba(48,209,88,.1); }
 .end { justify-content:flex-end; }
-@media (max-width:620px) { .recovery-grid { grid-template-columns:1fr; } }
+@media (max-width:620px) { .recovery-grid, .diagnostic-list { grid-template-columns:1fr; } }
 </style>

@@ -34,8 +34,10 @@ var windowsCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.ge
 var windowsFlexibleCloudCodeCallPattern = regexp.MustCompile(`await\s+[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*\??\.getCloudCodeUrl\(\)`)
 var windowsCloudCodeSettingPattern = regexp.MustCompile(`this\.[A-Za-z_$][\w$]*\.getValue\(["']jetski\.cloudCodeUrl["']\)`)
 var windowsCloudCodeURLPattern = regexp.MustCompile(`https://[A-Za-z0-9.-]*cloudcode-pa(?:\.sandbox)?\.googleapis\.com`)
-var windowsCloudCodeFlagPattern = regexp.MustCompile(`["']--(?:cloud_code_endpoint|api_server_url)["']`)
-var windowsCloudCodeLiteralArgumentPattern = regexp.MustCompile(`(["']--(?:cloud_code_endpoint|api_server_url)["']\s*,\s*["'])(https?://[^"']+)(["'])`)
+var windowsCloudCodeEndpointFlagPattern = regexp.MustCompile(`["']--cloud_code_endpoint["']`)
+var windowsAPIServerURLFlagPattern = regexp.MustCompile(`["']--api_server_url["']`)
+var windowsCloudCodeEndpointLiteralPattern = regexp.MustCompile(`(["']--cloud_code_endpoint["']\s*,\s*["'])(https?://[^"']+)(["'])`)
+var windowsAPIServerURLLiteralPattern = regexp.MustCompile(`(["']--api_server_url["']\s*,\s*["'])(https?://[^"']+)(["'])`)
 var windowsExtensionDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.getInstance\(\)\.appDataDirectoryName`)
 var windowsMainDataPattern = regexp.MustCompile(`"--app_data_dir",[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.ideName`)
 
@@ -164,8 +166,8 @@ func windowsASARPatched(path string) bool {
 
 func windowsLauncherHasProxyEndpoint(source string) bool {
 	endpoint := currentPatchProxyEndpoint()
-	flagLocations := windowsCloudCodeFlagPattern.FindAllStringIndex(source, -1)
-	if len(flagLocations) == 0 {
+	flagLocations, ok := windowsLauncherManagedFlagLocations(source)
+	if !ok {
 		return false
 	}
 	for _, location := range flagLocations {
@@ -184,16 +186,38 @@ func windowsLauncherHasProxyEndpoint(source string) bool {
 	return false
 }
 
+func windowsLauncherManagedFlagLocations(source string) ([][]int, bool) {
+	if locations := windowsCloudCodeEndpointFlagPattern.FindAllStringIndex(source, -1); len(locations) > 0 {
+		return locations, len(locations) == 1
+	}
+	locations := windowsAPIServerURLFlagPattern.FindAllStringIndex(source, -1)
+	return locations, len(locations) == 1
+}
+
+func windowsLauncherManagedLiteralPattern(source string) (*regexp.Regexp, bool) {
+	locations, ok := windowsLauncherManagedFlagLocations(source)
+	if !ok || len(locations) != 1 {
+		return nil, false
+	}
+	if windowsCloudCodeEndpointFlagPattern.MatchString(source) {
+		return windowsCloudCodeEndpointLiteralPattern, true
+	}
+	return windowsAPIServerURLLiteralPattern, true
+}
+
 func patchWindowsCloudCodeSource(source string) string {
 	endpoint := currentPatchProxyEndpoint()
 	source = windowsCloudCodeURLPattern.ReplaceAllString(source, endpoint.Base)
 	source = windowsCloudCodeSettingPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
 	source = windowsFlexibleCloudCodeCallPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
-	// A previous WF release or third-party adapter may already have replaced
-	// the official URL. When the endpoint is the literal value of the one
-	// verified launcher flag, overwrite that scoped argument with the current
-	// runtime endpoint instead of demanding an official reinstall.
-	source = windowsCloudCodeLiteralArgumentPattern.ReplaceAllString(source, `${1}`+endpoint.Base+`${3}`)
+	// Current Agent launchers carry both --api_server_url (the native Gemini
+	// service) and --cloud_code_endpoint (the endpoint managed by this helper).
+	// Prefer the latter and preserve the Gemini URL byte-for-byte. Older builds
+	// that expose only --api_server_url continue to use that single verified
+	// fallback.
+	if literalPattern, ok := windowsLauncherManagedLiteralPattern(source); ok {
+		source = literalPattern.ReplaceAllString(source, `${1}`+endpoint.Base+`${3}`)
+	}
 	return source
 }
 

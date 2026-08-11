@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -26,6 +28,33 @@ func TestDirectOpenAIImageModelUsesOnlyEnabledModelsFromSameUpstream(t *testing.
 	image := directOpenAIImageModel(&selected)
 	if image == nil || image.ExternalModelName != "gpt-image-1" {
 		t.Fatalf("selected image model = %#v, want enabled same-upstream gpt-image-1", image)
+	}
+}
+
+func TestDirectImageGenerationUnaryResponseNeverUsesSSEForAltQuery(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/v1internal:generateContent?alt=sse", nil)
+	recorder := httptest.NewRecorder()
+	writeDirectImageGenerationResponse(recorder, request, "image-request", "gpt-image-2", "image/png", "aW1hZ2U=")
+
+	if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("unary image response = status %d, content-type %q", recorder.Code, recorder.Header().Get("Content-Type"))
+	}
+	body := strings.TrimSpace(recorder.Body.String())
+	if strings.HasPrefix(body, "data:") || !strings.HasPrefix(body, "{") || !strings.Contains(body, `"inlineData"`) {
+		t.Fatalf("unary generateContent returned a non-JSON image envelope: %s", body)
+	}
+}
+
+func TestDirectImageGenerationStreamingResponseUsesSSE(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent?alt=sse", nil)
+	recorder := httptest.NewRecorder()
+	writeDirectImageGenerationResponse(recorder, request, "image-request", "gpt-image-2", "image/png", "aW1hZ2U=")
+
+	if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("streaming image response = status %d, content-type %q", recorder.Code, recorder.Header().Get("Content-Type"))
+	}
+	if body := recorder.Body.String(); !strings.HasPrefix(body, "data: ") || !strings.Contains(body, `"inlineData"`) {
+		t.Fatalf("streamGenerateContent did not return an SSE image envelope: %s", body)
 	}
 }
 

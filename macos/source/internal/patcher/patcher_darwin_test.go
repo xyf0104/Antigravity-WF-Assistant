@@ -12,6 +12,34 @@ import (
 	"testing"
 )
 
+func TestDarwinLauncherPrefersCloudCodeEndpointAndPreservesAPIServerURL(t *testing.T) {
+	const apiServer = "https://generativelanguage.googleapis.com"
+	const thirdPartyCloudCode = "https://third-party.example.invalid/cloudcode"
+	source := `const args=["--api_server_url","` + apiServer + `","--cloud_code_endpoint","` + thirdPartyCloudCode + `"];`
+	updated := patchDarwinCloudCodeLauncher(source)
+	if !strings.Contains(updated, `"--api_server_url","`+apiServer+`"`) {
+		t.Fatalf("native API server URL was not preserved: %s", updated)
+	}
+	if strings.Contains(updated, thirdPartyCloudCode) || !darwinLauncherHasProxyEndpoint(updated) {
+		t.Fatalf("cloud code endpoint was not exclusively routed to the local proxy: %s", updated)
+	}
+}
+
+func TestDarwinLauncherFallsBackToSingleLegacyAPIServerURL(t *testing.T) {
+	source := `const args=["--api_server_url","https://third-party.example.invalid/cloudcode"];`
+	updated := patchDarwinCloudCodeLauncher(source)
+	if strings.Contains(updated, "third-party.example.invalid") || !darwinLauncherHasProxyEndpoint(updated) {
+		t.Fatalf("legacy API-server-only launcher was not routed to the local proxy: %s", updated)
+	}
+}
+
+func TestDarwinLauncherRejectsDuplicateManagedFlags(t *testing.T) {
+	source := `const args=["--cloud_code_endpoint","https://one.invalid","--cloud_code_endpoint","https://two.invalid"];`
+	if darwinLauncherHasProxyEndpoint(patchDarwinCloudCodeLauncher(source)) {
+		t.Fatalf("duplicate cloud code flags must remain unsupported: %s", source)
+	}
+}
+
 func TestDarwinPatchApplyStatusAndRestore(t *testing.T) {
 	appPath := filepath.Join(t.TempDir(), "Antigravity.app")
 	mainPath := filepath.Join(appPath, "Contents", "Resources", "app", "out", "main.js")

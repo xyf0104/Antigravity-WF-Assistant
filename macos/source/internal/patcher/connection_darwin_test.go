@@ -413,7 +413,7 @@ func TestRunDarwinApplyAgentRoutesOnlyToVerifiedAgent(t *testing.T) {
 	archive := &asarArchive{root: &asarNode{Files: map[string]*asarNode{}}}
 	if err := archive.write(asarPath, map[string][]byte{
 		"dist/main.js":            []byte(`"use strict"; const endpoint="` + productionEndpoint + `";`),
-		"dist/languageServer.js":  []byte(`args.push("--cloud_code_endpoint","` + productionEndpoint + `")`),
+		"dist/languageServer.js":  []byte(`const args=["--api_server_url","https://generativelanguage.googleapis.com","--cloud_code_endpoint","` + productionEndpoint + `"];`),
 		"out/jetskiAgent/main.js": []byte(imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture()),
 	}); err != nil {
 		t.Fatal(err)

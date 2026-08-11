@@ -310,8 +310,7 @@ func darwinASARHasSupportedEntrypoints(asarPath string) bool {
 	// The launcher may contain the vendor URL, an old WF endpoint, or a literal
 	// third-party endpoint. Exactly one verified flag must be convertible to the
 	// current local proxy without replacing unrelated URLs.
-	return len(darwinCloudCodeFlagPattern.FindAllIndex(launcher, -1)) == 1 &&
-		darwinLauncherHasProxyEndpoint(patchDarwinCloudCodeLauncher(string(launcher)))
+	return darwinLauncherHasProxyEndpoint(patchDarwinCloudCodeLauncher(string(launcher)))
 }
 
 func darwinBundleValue(appPath, key string) string {

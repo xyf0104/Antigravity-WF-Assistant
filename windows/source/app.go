@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"antigravity-byok/internal/diagnostics"
 	"antigravity-byok/internal/launcher"
 	"antigravity-byok/internal/patcher"
 	"antigravity-byok/internal/permissions"
@@ -61,6 +62,9 @@ func newApp() *App {
 	_ = os.MkdirAll(dir, 0o700)
 	_ = os.Chmod(dir, 0o700)
 	storage.Init(dir)
+	if err := diagnostics.Init(dir); err != nil {
+		log.Printf("[wf] 无法初始化本地诊断日志: %v", err)
+	}
 	return &App{
 		storageDir:         dir,
 		permissions:        permissions.New(home, dir),
@@ -145,6 +149,45 @@ func (a *App) releaseExitResources() {
 type Result struct {
 	OK      bool   `json:"ok"`
 	Message string `json:"message"`
+}
+
+// ExportDiagnosticLogs opens the native save dialog and creates a bounded,
+// credential-safe ZIP for support. Account/model/OAuth stores are never added;
+// diagnostics.Export also applies a second redaction pass to every text file.
+func (a *App) ExportDiagnosticLogs() Result {
+	if a.ctx == nil {
+		return Result{OK: false, Message: "助手尚未完成启动，请稍后再试。"}
+	}
+	filename := "Antigravity-WF-Diagnostics-" + time.Now().Format("20060102-150405") + ".zip"
+	destination, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "导出诊断日志",
+		DefaultFilename: filename,
+		Filters: []runtime.FileFilter{{
+			DisplayName: "ZIP 诊断包 (*.zip)",
+			Pattern:     "*.zip",
+		}},
+	})
+	if err != nil {
+		return Result{OK: false, Message: "无法打开日志保存窗口: " + err.Error()}
+	}
+	if strings.TrimSpace(destination) == "" {
+		return Result{OK: true, Message: "已取消导出诊断日志。"}
+	}
+	if !strings.EqualFold(filepath.Ext(destination), ".zip") {
+		destination += ".zip"
+	}
+	home, _ := os.UserHomeDir()
+	snapshot := map[string]any{
+		"patchStatus": a.GetPatchStatus(),
+		"historySync": a.GetHistorySyncStatus(),
+	}
+	if err := diagnostics.Export(destination, a.storageDir, diagnostics.Options{
+		Version: updater.CurrentVersion, Snapshot: snapshot, HomeDir: home,
+	}); err != nil {
+		return Result{OK: false, Message: "导出诊断日志失败: " + err.Error()}
+	}
+	log.Printf("[wf] 用户已导出脱敏诊断日志")
+	return Result{OK: true, Message: "诊断日志已导出：" + destination}
 }
 
 type PatchStatus struct {

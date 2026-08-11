@@ -20,16 +20,17 @@
 - 已识别的图片界面可显示实际图片模型名、默认展开生成结果、保留 Prompt 缩略图，并隐藏同一结果的正文重复大图。
 - 提供“全部连接”“仅连接 IDE”“仅连接 Antigravity 2.0”和“恢复原机配置”；写入前创建备份，失败时自动回滚。
 - 启动时安全合并历史会话；支持浅色、深色和跟随系统主题。
+- 设置页可一键导出脱敏诊断 ZIP，自动收集 WF助手和 Antigravity 最近一次运行日志，便于定位客户电脑上的补丁、模型注入、对话和生图故障。
 - Windows 关闭主窗口后驻留通知区域；macOS 关闭主窗口后保留 Dock 与顶部菜单栏入口。选择“退出”会关闭本地代理并释放端口。
 
 ## 下载与安装
 
-请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与系统对应的 v1.5.4 安装包。Release 只上传两个标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与系统对应的 v1.5.5 安装包。Release 只上传两个标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
 
 | 系统 | 安装包 | 支持范围 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.5.4-Installer.pkg` | Apple Silicon 与 Intel Mac |
-| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.5.4-Setup.exe` | Windows 10/11 x64 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.5.5-Installer.pkg` | Apple Silicon 与 Intel Mac |
+| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.5.5-Setup.exe` | Windows 10/11 x64 |
 
 手动下载时可使用同一 Release 中的 `SHA256SUMS.txt` 校验文件完整性；软件内更新会自动完成该校验。
 
@@ -66,6 +67,8 @@ macOS 会检查 `/Applications`、`/System/Applications`、`~/Applications`、�
 - `ANTIGRAVITY_APP_PATHS`：多个路径，macOS 使用冒号分隔，Windows 使用分号分隔。
 
 本地代理只监听本机回环地址，不向局域网或互联网开放。账户凭据、模型配置、统计与备份只保存在本机。请勿上传 API Key、Token、Cookie、账户 JSON、模型配置或未经脱敏的运行日志。
+
+遇到客户电脑故障时，请打开“设置 → 诊断与日志 → 导出诊断日志”，将生成的 ZIP 发给技术支持。导出过程会二次隐藏 API Key、Authorization、Token、OAuth 授权码、Cookie、用户目录和图片 Base64，并且不会打包账户、模型或 OAuth 配置文件。
 
 ## 兼容说明
 
