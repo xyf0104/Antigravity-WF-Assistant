@@ -233,7 +233,8 @@ func TestPatchDuplicateGeneratedImageRendererHidesOnlyMatchingArtifact(t *testin
 	for _, required := range []string{
 		imagePreviewPatchMarker,
 		imageGenerationDedupePatchMarker,
-		`globalThis.__antigravityWFGeneratedImages`,
+		`globalThis.__antigravityWFGeneratedImageTimesV2`,
+		`globalThis.__antigravityWFIsRecentGeneratedImageV2`,
 		`$wfImageDuplicate?null`,
 	} {
 		if !strings.Contains(updated, required) {
