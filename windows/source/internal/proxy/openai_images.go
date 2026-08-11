@@ -19,16 +19,16 @@ import (
 // from exhausting the local proxy process.
 const maxOpenAIImageGenerationResponseBytes int64 = (maxForwardedAttachmentBytes * 4 / 3) + (2 << 20)
 
-// directOpenAIImageModel returns an image-only model from the same configured
-// upstream as the active text model. Antigravity sends an image-generation
-// feature request to the selected text model (for example gpt-5.6-sol), but
-// OpenAI-compatible gateways normally expose image generation through a
-// separate model such as gpt-image-2 at /v1/images/generations.
+// directOpenAIImageModel returns the best enabled image-only model for the
+// active text model. A same-upstream model is always preferred; when that
+// supplier has no image model, WF falls back to an enabled image model from a
+// separately configured OpenAI-compatible supplier. This lets a GPT-5.6 chat
+// model and gpt-image-2 live on two independent supplier cards.
 //
-// The image model is used only for its upstream model id. Credentials and
-// account-pool scheduling deliberately come from the selected text model, so
-// one API account remains one coherent pool and a different saved API key can
-// never be selected accidentally.
+// A same-upstream image keeps the text model's credential/account pool for
+// backward compatibility. A cross-upstream fallback uses the selected image
+// model's own endpoint, credential and account pool; secrets are never copied
+// into logs or the Antigravity response.
 func directOpenAIImageModel(model *storage.CustomModel) *storage.CustomModel {
 	if model == nil || !isOpenAICompatibleImageProvider(model.Provider) {
 		return nil
@@ -38,10 +38,7 @@ func directOpenAIImageModel(model *storage.CustomModel) *storage.CustomModel {
 		// image endpoint and must stay on the existing Responses route.
 		return nil
 	}
-	endpoint, err := upstream.ResolveImagesGenerationsURLForConfig(upstream.ConfigFromModel(*model))
-	if err != nil || endpoint == "" {
-		return nil
-	}
+	selectedEndpoint, _ := upstream.ResolveImagesGenerationsURLForConfig(upstream.ConfigFromModel(*model))
 
 	candidates := []storage.CustomModel{*model}
 	configured, loadErr := storage.LoadEnabledModels()
@@ -49,35 +46,66 @@ func directOpenAIImageModel(model *storage.CustomModel) *storage.CustomModel {
 		candidates = append(candidates, configured...)
 	}
 
-	valid := make([]storage.CustomModel, 0, len(candidates))
+	type imageCandidate struct {
+		model        storage.CustomModel
+		endpoint     string
+		sameUpstream bool
+	}
+	valid := make([]imageCandidate, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
 		if !isOpenAICompatibleImageProvider(candidate.Provider) || !isDirectImageModelName(candidate.ExternalModelName) {
 			continue
 		}
-		candidateEndpoint, err := upstream.ResolveImagesGenerationsURLForConfig(upstream.ConfigFromModel(candidate))
-		if err != nil || candidateEndpoint != endpoint {
+		config := upstream.ConfigFromModel(candidate)
+		if upstream.IsOpenAICodexOAuth(config) {
 			continue
 		}
-		key := strings.TrimSpace(candidate.Name) + "\x00" + strings.TrimSpace(candidate.ExternalModelName)
+		candidateEndpoint, err := upstream.ResolveImagesGenerationsURLForConfig(config)
+		if err != nil || candidateEndpoint == "" {
+			continue
+		}
+		key := candidateEndpoint + "\x00" + strings.TrimSpace(candidate.Name) + "\x00" + strings.TrimSpace(candidate.ExternalModelName)
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
-		valid = append(valid, candidate)
+		valid = append(valid, imageCandidate{
+			model:        candidate,
+			endpoint:     candidateEndpoint,
+			sameUpstream: selectedEndpoint != "" && candidateEndpoint == selectedEndpoint,
+		})
 	}
 	if len(valid) == 0 {
 		return nil
 	}
 	sort.SliceStable(valid, func(i, j int) bool {
-		left, right := directImageModelPriority(valid[i].ExternalModelName), directImageModelPriority(valid[j].ExternalModelName)
+		if valid[i].sameUpstream != valid[j].sameUpstream {
+			return valid[i].sameUpstream
+		}
+		left, right := directImageModelPriority(valid[i].model.ExternalModelName), directImageModelPriority(valid[j].model.ExternalModelName)
 		if left != right {
 			return left < right
 		}
-		return strings.ToLower(valid[i].ExternalModelName) < strings.ToLower(valid[j].ExternalModelName)
+		if valid[i].endpoint != valid[j].endpoint {
+			return valid[i].endpoint < valid[j].endpoint
+		}
+		return strings.ToLower(valid[i].model.ExternalModelName) < strings.ToLower(valid[j].model.ExternalModelName)
 	})
-	selected := valid[0]
+	selected := valid[0].model
 	return &selected
+}
+
+func directOpenAIImageExecutionModel(textModel, imageModel *storage.CustomModel) *storage.CustomModel {
+	if textModel == nil || imageModel == nil {
+		return imageModel
+	}
+	textEndpoint, textErr := upstream.ResolveImagesGenerationsURLForConfig(upstream.ConfigFromModel(*textModel))
+	imageEndpoint, imageErr := upstream.ResolveImagesGenerationsURLForConfig(upstream.ConfigFromModel(*imageModel))
+	if textErr == nil && imageErr == nil && textEndpoint != "" && textEndpoint == imageEndpoint {
+		return textModel
+	}
+	return imageModel
 }
 
 func isOpenAICompatibleImageProvider(provider string) bool {
@@ -141,9 +169,10 @@ func requestsDirectImageGeneration(gemini map[string]any) bool {
 // image generation started.
 func forwardOpenAIImagesGeneration(w http.ResponseWriter, incoming *http.Request, model *storage.CustomModel, imageModel *storage.CustomModel, gemini map[string]any, requestID string) {
 	if model == nil || imageModel == nil || strings.TrimSpace(imageModel.ExternalModelName) == "" {
-		http.Error(w, "未找到同一上游的可用图片模型", http.StatusBadRequest)
+		http.Error(w, "未找到可用的自定义图片模型", http.StatusBadRequest)
 		return
 	}
+	executionModel := directOpenAIImageExecutionModel(model, imageModel)
 	prompt := directImageGenerationPrompt(gemini)
 	requestBody := map[string]any{
 		"model":           strings.TrimSpace(imageModel.ExternalModelName),
@@ -162,7 +191,7 @@ func forwardOpenAIImagesGeneration(w http.ResponseWriter, incoming *http.Request
 	reconnects := 0
 	client := &http.Client{Timeout: upstreamStreamTimeout}
 	for attempt := 1; ; attempt++ {
-		attemptModel, lease, err := acquireAttemptModel(model, excludedAccounts)
+		attemptModel, lease, err := acquireAttemptModel(executionModel, excludedAccounts)
 		if err != nil {
 			trace("images-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			http.Error(w, accountPoolError("图片模型", err), http.StatusServiceUnavailable)
@@ -314,11 +343,63 @@ func directImageGenerationPrompt(gemini map[string]any) string {
 				text.WriteString(strings.TrimSpace(value))
 			}
 		}
-		if prompt := trimImageGenerationPrompt(text.String()); prompt != "" {
+		if prompt := sanitizeImageGenerationPrompt(text.String()); prompt != "" {
 			return prompt
 		}
 	}
 	return "Generate an image based on the user's current request."
+}
+
+// sanitizeImageGenerationPrompt deliberately operates only on the selected
+// user turn. Antigravity carries MCP/rules/tool instructions in
+// systemInstruction and occasionally wraps them in XML-like blocks when a
+// renderer replays a turn. Those instructions are for the chat agent, not for
+// an image model, and must never be forwarded as an image prompt or increase
+// the image request's token/charge. Explicit user-request wrappers take
+// precedence; otherwise only known instruction blocks are removed.
+func sanitizeImageGenerationPrompt(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, marker := range []string{"original user request:", "user request:", "user message:", "用户请求：", "用户消息："} {
+		lower := strings.ToLower(value)
+		if index := strings.LastIndex(lower, marker); index >= 0 {
+			if candidate := strings.TrimSpace(value[index+len(marker):]); candidate != "" {
+				value = candidate
+				break
+			}
+		}
+	}
+	for _, block := range []struct{ open, close string }{
+		{"<system", "</system>"},
+		{"<developer", "</developer>"},
+		{"<rules", "</rules>"},
+		{"<mcp", "</mcp>"},
+		{"[system]", "[/system]"},
+		{"[developer]", "[/developer]"},
+		{"[rules]", "[/rules]"},
+		{"[mcp]", "[/mcp]"},
+	} {
+		value = removeDelimitedImageInstruction(value, block.open, block.close)
+	}
+	return trimImageGenerationPrompt(strings.TrimSpace(value))
+}
+
+func removeDelimitedImageInstruction(value, open, close string) string {
+	for {
+		lower := strings.ToLower(value)
+		start := strings.Index(lower, strings.ToLower(open))
+		if start < 0 {
+			return value
+		}
+		closeOffset := strings.Index(lower[start+len(open):], strings.ToLower(close))
+		if closeOffset < 0 {
+			return strings.TrimSpace(value[:start])
+		}
+		end := start + len(open) + closeOffset + len(close)
+		value = value[:start] + "\n" + value[end:]
+	}
 }
 
 func trimImageGenerationPrompt(value string) string {

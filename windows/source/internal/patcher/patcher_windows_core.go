@@ -305,6 +305,14 @@ func windowsASARUnpackedImagePreviewRendererPaths(target windowsTarget) []string
 	return imagePreviewASARUnpackedRendererPathsForPath(target.asar)
 }
 
+func windowsImageRendererReady(data []byte) bool {
+	uiReady := bytes.Contains(data, []byte(imageGenerationUIPatchMarker)) ||
+		bytes.Contains(data, []byte(imageGenerationUIPatchV3Marker))
+	dedupeReady := bytes.Contains(data, []byte(imageGenerationDedupePatchMarker)) ||
+		bytes.Contains(data, []byte(imageGenerationDedupePatchV2Marker))
+	return bytes.Contains(data, []byte(imagePreviewPatchMarker)) && uiReady && dedupeReady
+}
+
 func prepareWindowsImagePreviewPatch(path string) (*windowsPatchPlan, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

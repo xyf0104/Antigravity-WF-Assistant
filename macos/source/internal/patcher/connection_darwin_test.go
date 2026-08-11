@@ -227,6 +227,46 @@ func TestDarwinIDEConnectionCommitsSettingsRendererAndProductTogether(t *testing
 	}
 }
 
+func TestDarwinUnknownOptionalImageRendererDoesNotBlockIDEConnection(t *testing.T) {
+	fixture := newDarwinConnectionFixture(t, "{\n  \"editor.fontSize\": 15\n}\n")
+	unknownRenderer := []byte(`const futureImageRenderer={generatedMedia:"unknown-layout"};`)
+	product := map[string]any{
+		"nameShort":      "Antigravity",
+		"dataFolderName": ".antigravity",
+		"checksums": map[string]string{
+			"jetskiAgent/main.js": darwinIDEChecksum(unknownRenderer),
+		},
+	}
+	productBytes, err := json.MarshalIndent(product, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.rendererPath, unknownRenderer, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.productPath, productBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	message, err := applyDarwinSafeIDETarget(fixture.target)
+	if err != nil {
+		t.Fatalf("optional unknown renderer blocked the IDE endpoint: %v", err)
+	}
+	if !strings.Contains(message, "已安全连接本地代理") || !strings.Contains(message, "已跳过可选界面增强") {
+		t.Fatalf("unexpected compatibility message: %s", message)
+	}
+	if !darwinCloudCodeSettingIsConfigured(fixture.settingsPath, currentPatchProxyEndpoint().Base) {
+		t.Fatal("official endpoint setting was not connected")
+	}
+	assertDarwinConnectionTestBytes(t, fixture.rendererPath, unknownRenderer)
+	assertDarwinConnectionTestBytes(t, fixture.productPath, productBytes)
+	for _, path := range []string{fixture.rendererPath, fixture.productPath} {
+		if existingFile(backupPath(path)) != "" {
+			t.Fatalf("unchanged optional image file received a misleading backup: %s", path)
+		}
+	}
+}
+
 func TestDarwinConnectionRollbackRestoresRendererProductAndDeletesNewSettings(t *testing.T) {
 	fixture := newDarwinConnectionFixture(t, "")
 	endpoint := currentPatchProxyEndpoint().Base

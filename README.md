@@ -16,7 +16,7 @@
 - 支持 API Key、Bearer / Access Token、x-api-key、Setup Token、Codex PAT、自定义认证头、账户 JSON、Refresh Token，以及 OpenAI / Codex 浏览器 OAuth 登录。
 - 从账户或 API 获取真实可用模型，一键同步到 Antigravity；同一模型可绑定多个账户并按优先级、并发和健康状态调度。
 - 模型支持自定义显示名、完整 API 路径、推理等级、连接测试与可用性测试。
-- 支持文字、截图、图片识别、文件、PDF、工具调用、推理、联网搜索和上游支持的图片生成能力。
+- 支持文字、截图、图片识别、文件、PDF、工具调用、推理、联网搜索和上游支持的图片生成能力；当前聊天供应商没有图片模型时，可自动使用另一个已启用供应商的 `gpt-image-2`，不改变当前聊天模型。
 - 已识别的图片界面可显示实际图片模型名、默认展开生成结果、保留 Prompt 缩略图，并隐藏同一结果的正文重复大图。
 - 提供“全部连接”“仅连接 IDE”“仅连接 Antigravity 2.0”和“恢复原机配置”；写入前创建备份，失败时自动回滚。
 - 启动时安全合并历史会话；支持浅色、深色和跟随系统主题。
@@ -24,12 +24,12 @@
 
 ## 下载与安装
 
-请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与系统对应的 v1.5.3 安装包。Release 只上传两个标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与系统对应的 v1.5.4 安装包。Release 只上传两个标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
 
 | 系统 | 安装包 | 支持范围 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.5.3-Installer.pkg` | Apple Silicon 与 Intel Mac |
-| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.5.3-Setup.exe` | Windows 10/11 x64 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.5.4-Installer.pkg` | Apple Silicon 与 Intel Mac |
+| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.5.4-Setup.exe` | Windows 10/11 x64 |
 
 手动下载时可使用同一 Release 中的 `SHA256SUMS.txt` 校验文件完整性；软件内更新会自动完成该校验。
 
@@ -69,7 +69,7 @@ macOS 会检查 `/Applications`、`/System/Applications`、`~/Applications`、�
 
 ## 兼容说明
 
-助手按安装结构而不是仅按版本号判断兼容性。已识别的连接链、renderer 和完整性字段会进入可恢复事务；未知或变化的结构会显示原因并保持零写入，不会全局替换未知 JavaScript，也不会把其他版本文件强行复制到当前安装。
+助手按安装结构而不是仅按版本号判断兼容性。已识别的连接链、renderer 和完整性字段会进入可恢复事务；图片 renderer 未识别时会保持原文件不变并跳过可选界面增强，不会阻断已验证的用户级代理设置。必要的连接链本身无法识别时仍保持零写入；助手不会全局替换未知 JavaScript，也不会把其他版本文件强行复制到当前安装。
 
 更多说明：
 

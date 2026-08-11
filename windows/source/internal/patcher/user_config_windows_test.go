@@ -91,6 +91,57 @@ func TestWindowsApplyUsesOfficialSettingsAndKeepsIDEChecksumsValid(t *testing.T)
 	}
 }
 
+func TestWindowsUnknownOptionalImageRendererDoesNotBlockIDEConnection(t *testing.T) {
+	root := t.TempDir()
+	appRoot := filepath.Join(root, "resources", "app")
+	mainPath := filepath.Join(appRoot, "out", "main.js")
+	extensionPath := filepath.Join(appRoot, "extensions", "antigravity", "dist", "extension.js")
+	rendererPath := filepath.Join(appRoot, "out", "jetskiAgent", "main.js")
+	productPath := filepath.Join(appRoot, "product.json")
+	unknownRenderer := []byte(`const futureImageRenderer={generatedMedia:"unknown-layout"};`)
+	product := []byte(`{"nameShort":"Antigravity Test","dataFolderName":".antigravity-test","checksums":{"jetskiAgent/main.js":"` + windowsIDEChecksum(unknownRenderer) + `"}}`)
+	for path, data := range map[string][]byte{
+		mainPath:      []byte(`const base=configuration.getValue("jetski.cloudCodeUrl");`),
+		extensionPath: []byte(`const key="jetski.cloudCodeUrl";args.push("--cloud_code_endpoint",await service.getCloudCodeUrl());`),
+		rendererPath:  unknownRenderer,
+		productPath:   product,
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appData := t.TempDir()
+	t.Setenv("APPDATA", appData)
+	t.Setenv("ANTIGRAVITY_WF_BACKUP_DIR", t.TempDir())
+	target := windowsTarget{root: root, name: "Antigravity IDE", kind: "ide", main: mainPath, extensionEntry: extensionPath}
+	message, err := applyWindowsTarget(target)
+	if err != nil {
+		t.Fatalf("optional unknown renderer blocked the IDE endpoint: %v", err)
+	}
+	if !strings.Contains(message, "已安全连接本地代理") || !strings.Contains(message, "已跳过可选界面增强") {
+		t.Fatalf("unexpected compatibility message: %s", message)
+	}
+	settingsPath := filepath.Join(appData, "Antigravity Test", "User", "settings.json")
+	if !windowsCloudCodeSettingIsConfigured(settingsPath, windowsBaseProxyEndpoint) {
+		t.Fatal("official endpoint setting was not connected")
+	}
+	for path, expected := range map[string][]byte{rendererPath: unknownRenderer, productPath: product} {
+		actual, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !bytes.Equal(actual, expected) {
+			t.Fatalf("optional unknown image file changed: %s", path)
+		}
+		if windowsExistingFile(windowsBackupPath(path)) != "" {
+			t.Fatalf("unchanged optional image file received a misleading backup: %s", path)
+		}
+	}
+}
+
 func TestWindowsRestoreNeverWritesHistoricalBackup(t *testing.T) {
 	root := t.TempDir()
 	mainPath := filepath.Join(root, "resources", "app", "out", "main.js")

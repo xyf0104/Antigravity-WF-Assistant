@@ -1308,11 +1308,10 @@ func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.Cus
 		forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false)
 		return
 	}
-	// When the same API exposes a dedicated image model (for example
-	// gpt-image-2), route an explicit image-generation turn directly to
-	// /v1/images/generations. A directly selected image-only model also always
-	// uses this route: it cannot satisfy a Chat Completions request and native
-	// image_gen requests do not include a generationConfig marker.
+	// Route an explicit image-generation turn to the preferred enabled image
+	// model. The current supplier is preferred; if it has no image model, an
+	// independently configured image supplier provides its own endpoint and
+	// credentials. A directly selected image-only model always uses this route.
 	directImageRequest := requestsDirectImageGeneration(geminiReq)
 	directImageModelSelected := isDirectImageModelName(m.ExternalModelName)
 	if directImageRequest || directImageModelSelected {

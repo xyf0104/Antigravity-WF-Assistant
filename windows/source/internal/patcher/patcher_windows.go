@@ -232,9 +232,6 @@ func applyWindowsTarget(target windowsTarget) (message string, err error) {
 	}
 
 	rendererPaths := windowsImageGenerationUIRendererPaths(target)
-	if len(rendererPaths) == 0 {
-		return "", fmt.Errorf("未找到已验证的 IDE 图片界面 renderer；未修改任何文件")
-	}
 	rendererPlans := make([]*windowsPatchPlan, 0, len(rendererPaths))
 	verifiedRenderers := make([]string, 0, len(rendererPaths))
 	for _, rendererPath := range rendererPaths {
@@ -247,19 +244,19 @@ func applyWindowsTarget(target windowsTarget) (message string, err error) {
 			return "", planErr
 		}
 		plan.path = rendererPath
-		if !bytes.Contains(plan.updated, []byte(imageGenerationUIPatchMarker)) ||
-			!bytes.Contains(plan.updated, []byte(imageGenerationDedupePatchMarker)) {
+		if !windowsImageRendererReady(plan.updated) {
 			continue
 		}
 		rendererPlans = append(rendererPlans, plan)
 		verifiedRenderers = append(verifiedRenderers, rendererPath)
 	}
-	if len(verifiedRenderers) == 0 {
-		return "", fmt.Errorf("当前 IDE 图片标题结构尚未通过安全匹配；未修改任何文件")
-	}
-	productPlan, productErr := prepareWindowsIDEProductChecksumPatch(target, rendererPlans)
-	if productErr != nil {
-		return "", productErr
+	var productPlan *windowsPatchPlan
+	if len(rendererPlans) > 0 {
+		var productErr error
+		productPlan, productErr = prepareWindowsIDEProductChecksumPatch(target, rendererPlans)
+		if productErr != nil {
+			return "", productErr
+		}
 	}
 	backupPlans := append([]*windowsPatchPlan{}, rendererPlans...)
 	if productPlan != nil {
@@ -276,7 +273,10 @@ func applyWindowsTarget(target windowsTarget) (message string, err error) {
 		// state. Refresh every existing member, including unchanged companions,
 		// so Restore cannot combine this upgrade with a stale older .bak.
 		statePaths := append([]string{}, verifiedRenderers...)
-		statePaths = append(statePaths, windowsIDEProductPath(target), settingsPath)
+		if len(verifiedRenderers) > 0 {
+			statePaths = append(statePaths, windowsIDEProductPath(target))
+		}
+		statePaths = append(statePaths, settingsPath)
 		if err := saveWindowsCurrentBackups(statePaths...); err != nil {
 			return "", fmt.Errorf("创建 IDE 升级前状态备份失败: %w", err)
 		}
@@ -305,12 +305,20 @@ func applyWindowsTarget(target windowsTarget) (message string, err error) {
 	}
 	for _, rendererPath := range verifiedRenderers {
 		data, readErr := os.ReadFile(rendererPath)
-		if readErr != nil || !bytes.Contains(data, []byte(imageGenerationUIPatchMarker)) {
+		if readErr != nil || !windowsImageRendererReady(data) {
 			return "", fmt.Errorf("图片界面补丁写入后未通过校验: %s", rendererPath)
 		}
 	}
-	if err = verifyWindowsIDEProductChecksums(target, verifiedRenderers); err != nil {
-		return "", err
+	if len(verifiedRenderers) > 0 {
+		if err = verifyWindowsIDEProductChecksums(target, verifiedRenderers); err != nil {
+			return "", err
+		}
+	}
+	if len(verifiedRenderers) == 0 {
+		return fmt.Sprintf(
+			"%s 已安全连接本地代理。\n设置文件: %s\n当前版本的图片界面结构未被识别，已跳过可选界面增强；未修改 renderer、product.json、主进程、扩展或 Language Server。",
+			target.name, settingsPath,
+		), nil
 	}
 	return fmt.Sprintf(
 		"%s 已安全连接本地代理并启用实际生图模型标题。\n设置文件: %s\n已验证图片 renderer: %d 个\nIDE 完整性 checksum 已同步。\n未修改主进程、扩展或 Language Server。",

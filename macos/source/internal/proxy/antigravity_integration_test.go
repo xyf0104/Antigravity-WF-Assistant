@@ -205,6 +205,49 @@ func TestAntigravityOpenAIImageGenerationUsesSameUpstreamImageModel(t *testing.T
 	}
 }
 
+func TestAntigravityOpenAIImageGenerationFallsBackToSeparateSupplier(t *testing.T) {
+	var received map[string]any
+	imageUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/generations" {
+			t.Fatalf("cross-supplier image route = %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer image-key" {
+			t.Fatalf("cross-supplier image route used the wrong credential: %q", r.Header.Get("Authorization"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"Y3Jvc3Mtc3VwcGxpZXItaW1hZ2U=","mime_type":"image/png"}]}`)
+	}))
+	defer imageUpstream.Close()
+	chatUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("image generation must not be sent to the chat-only supplier: %s", r.URL.Path)
+	}))
+	defer chatUpstream.Close()
+
+	textModel := storage.CustomModel{
+		Name: "models/cross-sol", Provider: "openai", APIURL: chatUpstream.URL,
+		APIKey: "chat-key", ExternalModelName: "gpt-5.6-sol", APIStyle: "auto",
+	}
+	imageModel := storage.CustomModel{
+		Name: "models/cross-image-2", Provider: "openai", APIURL: imageUpstream.URL,
+		APIKey: "image-key", ExternalModelName: "gpt-image-2", APIStyle: "auto",
+	}
+	setupAntigravityIntegrationModels(t, textModel, imageModel)
+	request := textTurn("draw a rainbow spacecraft")
+	request["generationConfig"] = map[string]any{"responseModalities": []any{"TEXT", "IMAGE"}}
+	recorder := httptest.NewRecorder()
+	handleRequest(recorder, antigravityRequest(textModel.Name, "cross-supplier-image-request", request))
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "inlineData") || !strings.Contains(recorder.Body.String(), "Y3Jvc3Mtc3VwcGxpZXItaW1hZ2U=") {
+		t.Fatalf("cross-supplier image response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if received["model"] != "gpt-image-2" || received["prompt"] != "draw a rainbow spacecraft" {
+		t.Fatalf("cross-supplier image payload = %#v", received)
+	}
+}
+
 func TestNativeImageGenerationUsesLastCustomOpenAIModelForSameTrajectory(t *testing.T) {
 	resetImageGenerationSourcesForTest()
 	t.Cleanup(resetImageGenerationSourcesForTest)
@@ -280,6 +323,61 @@ func TestNativeImageGenerationUsesLastCustomOpenAIModelForSameTrajectory(t *test
 	}
 	if imageRequest["model"] != "gpt-image-2" || imageRequest["prompt"] != "draw a bright orange paper airplane" {
 		t.Fatalf("native image request = %#v", imageRequest)
+	}
+}
+
+func TestNativeImageGenerationFallsBackAcrossSuppliersForSameTrajectory(t *testing.T) {
+	resetImageGenerationSourcesForTest()
+	t.Cleanup(resetImageGenerationSourcesForTest)
+
+	var chatCalls, imageCalls atomic.Int32
+	chatUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatCalls.Add(1)
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer chat-key" {
+			t.Fatalf("chat request used wrong route or credential: %s %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		writeOpenAIChatStream(w, "planner-ok")
+	}))
+	defer chatUpstream.Close()
+	imageUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		imageCalls.Add(1)
+		if r.URL.Path != "/v1/images/generations" || r.Header.Get("Authorization") != "Bearer image-key" {
+			t.Fatalf("image request used wrong route or credential: %s %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"bmF0aXZlLWNyb3NzLXN1cHBsaWVy","mime_type":"image/png"}]}`)
+	}))
+	defer imageUpstream.Close()
+
+	sol := storage.CustomModel{
+		Name: "models/cross-native-sol", Provider: "openai", APIURL: chatUpstream.URL,
+		APIKey: "chat-key", ExternalModelName: "gpt-5.6-sol", APIStyle: "auto",
+	}
+	image := storage.CustomModel{
+		Name: "models/cross-native-image", Provider: "openai", APIURL: imageUpstream.URL,
+		APIKey: "image-key", ExternalModelName: "gpt-image-2", APIStyle: "auto",
+	}
+	setupAntigravityIntegrationModels(t, sol, image)
+
+	trajectoryID := "3cb41e69-dd17-4da8-a8eb-10d669737608"
+	first := httptest.NewRecorder()
+	handleRequest(first, antigravityRequest(sol.Name, "agent/agent-id/1785736368613/"+trajectoryID+"/20", textTurn("plan an illustration")))
+	if first.Code != http.StatusOK || chatCalls.Load() != 1 {
+		t.Fatalf("cross-supplier source turn = %d, chat calls = %d, body = %s", first.Code, chatCalls.Load(), first.Body.String())
+	}
+
+	second := httptest.NewRecorder()
+	handleRequest(second, antigravityRequestAtPath(
+		"/v1internal:generateContent",
+		"gemini-3.1-flash-image",
+		"image_gen/1785736374865/"+trajectoryID+"/21",
+		textTurn("draw a blue moon"),
+	))
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), "bmF0aXZlLWNyb3NzLXN1cHBsaWVy") {
+		t.Fatalf("cross-supplier native image response = %d %s", second.Code, second.Body.String())
+	}
+	if chatCalls.Load() != 1 || imageCalls.Load() != 1 {
+		t.Fatalf("cross-supplier native calls: chat=%d image=%d", chatCalls.Load(), imageCalls.Load())
 	}
 }
 
@@ -371,7 +469,7 @@ func TestLiveNativeImageGeneration(t *testing.T) {
 		}
 	}
 	if textModel == nil {
-		t.Fatal("no enabled text model with a same-upstream image model")
+		t.Fatal("no enabled text model with an available custom image model")
 	}
 
 	resetImageGenerationSourcesForTest()

@@ -25,6 +25,23 @@ func imagePreviewV3RendererFixture() string {
 	return `prefix;/*antigravity-wf:image-preview-fallback:v3*/a=e.generatedMedia||e.generatedImage,i;a?.uri?(i=n?.(a.uri),i=(i&&typeof i.getState==="function"?i.getState():i||void 0)):a?.payload?.case==="inlineData"&&(i=a?YI(a):void 0),!i&&a?.base64Data&&(i="data:"+(a.mimeType||"image/png")+";base64,"+(typeof a.base64Data==="string"?a.base64Data:btoa(Array.from(a.base64Data).map(i=>String.fromCharCode(i)).join("")))),!i&&a?.uri&&typeof a.uri==="string"&&a.uri.startsWith("file://")&&(i=decodeURIComponent(a.uri.replace(/^file:\/\//,"")));let s=Ia(t)&&!i;suffix`
 }
 
+func TestWindowsAcceptsNewerCrossPlatformImagePatchMarkers(t *testing.T) {
+	source := imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture() + imageArtifactMarkdownRendererFixture()
+	patched, result := patchImagePreviewRenderer(source)
+	if !result.Changed || !windowsImageRendererReady([]byte(patched)) {
+		t.Fatalf("baseline renderer did not produce a ready image patch: %#v", result)
+	}
+	newer := strings.ReplaceAll(patched, imageGenerationUIPatchMarker, imageGenerationUIPatchV3Marker)
+	newer = strings.ReplaceAll(newer, imageGenerationDedupePatchMarker, imageGenerationDedupePatchV2Marker)
+	updated, newerResult := patchImagePreviewRenderer(newer)
+	if newerResult.Changed || updated != newer {
+		t.Fatalf("newer cross-platform markers must not be downgraded or patched twice: %#v", newerResult)
+	}
+	if !newerResult.Recognized || !windowsImageRendererReady([]byte(updated)) {
+		t.Fatalf("newer cross-platform renderer was not accepted as ready: %#v", newerResult)
+	}
+}
+
 // imagePreviewV4RendererFixture is the v4 expression shipped in v1.4.20.
 // Its resolver branch retains any truthy value, including Promise.resolve(),
 // which React later stringifies into an unusable image source.

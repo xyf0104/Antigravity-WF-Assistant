@@ -110,7 +110,7 @@ onUnmounted(() => {
             <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
           </svg>
         </button>
-        <span class="version-pill">v1.5.3</span>
+        <span class="version-pill">v1.5.4</span>
       </div>
     </aside>
 

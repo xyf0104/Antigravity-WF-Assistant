@@ -209,9 +209,6 @@ func applyDarwinSafeIDETarget(target darwinTargets) (message string, err error) 
 	}
 
 	rendererPaths := darwinImageGenerationUIRendererPaths(target)
-	if len(rendererPaths) == 0 {
-		return "", fmt.Errorf("未找到已验证的 IDE 图片界面 renderer；未修改任何文件")
-	}
 	rendererPlans := make([]*patchPlan, 0, len(rendererPaths))
 	verifiedRenderers := make([]string, 0, len(rendererPaths))
 	for _, rendererPath := range rendererPaths {
@@ -225,12 +222,12 @@ func applyDarwinSafeIDETarget(target darwinTargets) (message string, err error) 
 		rendererPlans = append(rendererPlans, plan)
 		verifiedRenderers = append(verifiedRenderers, rendererPath)
 	}
-	if len(verifiedRenderers) == 0 {
-		return "", fmt.Errorf("当前 IDE 图片标题结构尚未通过安全匹配；未修改任何文件")
-	}
-	productPlan, err := prepareDarwinIDEProductChecksumPatch(target, rendererPlans)
-	if err != nil {
-		return "", err
+	var productPlan *patchPlan
+	if len(rendererPlans) > 0 {
+		productPlan, err = prepareDarwinIDEProductChecksumPatch(target, rendererPlans)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	backupPlans := make([]*patchPlan, 0, len(rendererPlans)+2)
@@ -254,7 +251,10 @@ func applyDarwinSafeIDETarget(target darwinTargets) (message string, err error) 
 		// one IDE state. Refresh every existing member now, including unchanged
 		// members, so an older .bak can never be mixed into this transaction.
 		statePaths := append([]string{}, verifiedRenderers...)
-		statePaths = append(statePaths, darwinIDEProductPath(target), settingsPath)
+		if len(verifiedRenderers) > 0 {
+			statePaths = append(statePaths, darwinIDEProductPath(target))
+		}
+		statePaths = append(statePaths, settingsPath)
 		for _, path := range statePaths {
 			if existingFile(path) == "" {
 				continue
@@ -289,8 +289,16 @@ func applyDarwinSafeIDETarget(target darwinTargets) (message string, err error) 
 	if !darwinCloudCodeSettingIsConfigured(settingsPath, endpoint) {
 		return "", fmt.Errorf("用户级代理设置写入后未通过校验")
 	}
-	if err = verifyDarwinIDEProductChecksums(target, verifiedRenderers); err != nil {
-		return "", err
+	if len(verifiedRenderers) > 0 {
+		if err = verifyDarwinIDEProductChecksums(target, verifiedRenderers); err != nil {
+			return "", err
+		}
+	}
+	if len(verifiedRenderers) == 0 {
+		return fmt.Sprintf(
+			"%s 已安全连接本地代理。\n设置文件: %s\n当前版本的图片界面结构未被识别，已跳过可选界面增强；未修改 renderer、product.json、主进程、扩展或 Language Server。",
+			target.name, settingsPath,
+		), nil
 	}
 	return fmt.Sprintf(
 		"%s 已安全连接本地代理并启用实际生图模型标题。\n设置文件: %s\n已验证图片 renderer: %d 个\nIDE 完整性 checksum 已同步。\n未修改主进程、扩展或 Language Server。",

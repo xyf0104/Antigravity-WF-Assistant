@@ -481,8 +481,8 @@ func resolveGenerationModel(modelID, requestID string) (customModel *storage.Cus
 	// The image tool's model field is not the user's selected chat model. In
 	// Antigravity 2.6 it can even contain the first helper-injected image-capable
 	// slug. The trajectory's preceding agent turn is the only authoritative
-	// source: a remembered custom turn routes to its same-upstream image model;
-	// a native/Gemini turn has no source and must remain Google-native.
+	// source: a remembered custom turn routes to the preferred enabled custom
+	// image model; a native/Gemini turn has no source and remains Google-native.
 	if isNativeImageGenerationRequestID(requestID) {
 		if source := imageGenerationSourceForRequest(requestID); source != nil {
 			return source, false, true
@@ -582,8 +582,8 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	}
 	if nativeImageSource {
 		// The remembered custom agent turn keeps this internal image tool request
-		// on the dedicated same-upstream Images route. A Gemini turn never reaches
-		// this branch and remains on Google's native image path.
+		// on the dedicated custom Images route. A Gemini turn never reaches this
+		// branch and remains on Google's native image path.
 		geminiReq["wfNativeImageGeneration"] = true
 	} else {
 		rememberImageGenerationSource(requestID, customModel)
@@ -627,11 +627,10 @@ func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.Cus
 		forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false)
 		return
 	}
-	// When the same API exposes a dedicated image model (for example
-	// gpt-image-2), route an explicit image-generation turn directly to
-	// /v1/images/generations. A directly selected image-only model also always
-	// uses this route: it cannot satisfy a Chat Completions request and native
-	// image_gen requests do not include a generationConfig marker.
+	// Route an explicit image-generation turn to the preferred enabled image
+	// model. The current supplier is preferred; if it has no image model, an
+	// independently configured image supplier provides its own endpoint and
+	// credentials. A directly selected image-only model always uses this route.
 	directImageRequest := requestsDirectImageGeneration(geminiReq)
 	directImageModelSelected := isDirectImageModelName(m.ExternalModelName)
 	if directImageRequest || directImageModelSelected {
