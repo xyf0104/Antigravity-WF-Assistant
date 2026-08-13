@@ -1399,6 +1399,64 @@ func TestPersistentTransientProvider403EndsTurnWithoutAgentError(t *testing.T) {
 	}
 }
 
+func TestTransientGatewayModelPool404WaitsForRefillThenCompletes(t *testing.T) {
+	previous := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: previous.enabled, MaxAttempts: previous.maxAttempts, MaxDelaySeconds: previous.maxDelaySeconds})
+
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"Model gpt-test is not supported by any configured account in this group","type":"model_not_found"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-refilled\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"补号后恢复\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	model := &storage.CustomModel{Provider: "openai", APIStyle: "chat_completions", APIURL: upstream.URL, APIKey: "test-key", ExternalModelName: "gpt-test"}
+	recorder := httptest.NewRecorder()
+	forwardOpenAIChat(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil), model, map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, "model-pool-refill")
+
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want one safe retry after pool refill", calls.Load())
+	}
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "补号后恢复") || !strings.Contains(recorder.Body.String(), `"finishReason":"STOP"`) {
+		t.Fatalf("unexpected recovered response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRejectedRetryAfterUsesBoundedProviderRefillDelays(t *testing.T) {
+	provider403 := `{"error":{"type":"permission_error","message":"provider Terms Of Service","error_type":"permission_denied"}}`
+	pool404 := `{"error":{"message":"not supported by any configured account in this group","type":"model_not_found"}}`
+	permanent403 := `{"error":{"message":"insufficient balance","type":"billing_error"}}`
+	cases := []struct {
+		name                     string
+		status, reconnect        int
+		body, upstream, expected string
+	}{
+		{name: "provider first", status: http.StatusForbidden, reconnect: 1, body: provider403, expected: "1.500"},
+		{name: "provider second", status: http.StatusForbidden, reconnect: 2, body: provider403, expected: "3.000"},
+		{name: "empty model pool", status: http.StatusNotFound, reconnect: 1, body: pool404, expected: "1.500"},
+		{name: "rate limit", status: http.StatusTooManyRequests, reconnect: 1, expected: "2.000"},
+		{name: "gateway second", status: http.StatusBadGateway, reconnect: 2, expected: "2.000"},
+		{name: "explicit header", status: http.StatusForbidden, reconnect: 1, body: provider403, upstream: "7", expected: "7"},
+		{name: "permanent balance", status: http.StatusForbidden, reconnect: 1, body: permanent403, expected: ""},
+		{name: "unknown model", status: http.StatusNotFound, reconnect: 1, body: `{"error":{"message":"model not found"}}`, expected: ""},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if got := rejectedRetryAfter(test.status, test.body, test.upstream, test.reconnect); got != test.expected {
+				t.Fatalf("rejectedRetryAfter() = %q, want %q", got, test.expected)
+			}
+		})
+	}
+}
+
 func TestPermanentUpstreamRejectionsEndTurnWithoutAutomaticReplay(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -1407,7 +1465,7 @@ func TestPermanentUpstreamRejectionsEndTurnWithoutAutomaticReplay(t *testing.T) 
 		want       string
 	}{
 		{name: "insufficient balance", statusCode: http.StatusForbidden, body: `{"error":{"message":"insufficient balance","type":"billing_error"}}`, want: "余额、额度或权限不足"},
-		{name: "model route missing", statusCode: http.StatusNotFound, body: `{"error":{"message":"Model \\"gpt-test\\" is not supported by any configured account in this group","type":"model_not_found"}}`, want: "没有为当前账户配置所选模型"},
+		{name: "model route missing", statusCode: http.StatusNotFound, body: `{"error":{"message":"Model \\"gpt-test\\" not found","type":"model_not_found"}}`, want: "没有为当前账户配置所选模型"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

@@ -850,7 +850,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 		if err != nil {
 			trace("openai-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			if lastRejectedStatus != 0 && !writer.committed {
-				if isRetryableStatus(lastRejectedStatus) || isTransientProviderRejection(lastRejectedStatus, lastRejectedBody) {
+				if isRetryableStatus(lastRejectedStatus) || isTransientProviderRejection(lastRejectedStatus, lastRejectedBody) || isTransientModelPoolRejection(lastRejectedStatus, lastRejectedBody) {
 					writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "第三方上游的可用账户均暂时不可用，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
 				} else {
 					writeRejectedTurnStop(writer, "openai", requestID, lastModelVersion, lastRejectedStatus, lastRejectedBody)
@@ -962,14 +962,14 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 						excludeFailedAttempt(excludedAccounts, lease)
 					}
 				}
-				if mayRetry && waitForRejectedRequestRetry(incoming.Context(), policy, "openai", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
+				if mayRetry && waitForRejectedRequestRetry(incoming.Context(), policy, "openai", requestID, fmt.Sprintf("http-%d", resp.StatusCode), rejectedRetryAfter(resp.StatusCode, string(errBody), retryAfter, reconnects), reconnects) {
 					requestBody = baseRequest
 					continue
 				}
 				if incoming.Context().Err() != nil {
 					return
 				}
-				if isRetryableStatus(resp.StatusCode) || isTransientProviderRejection(resp.StatusCode, string(errBody)) {
+				if isRetryableStatus(resp.StatusCode) || isTransientProviderRejection(resp.StatusCode, string(errBody)) || isTransientModelPoolRejection(resp.StatusCode, string(errBody)) {
 					writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "第三方上游暂时没有可用线路，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
 					return
 				}
@@ -1047,7 +1047,7 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 		if err != nil {
 			trace("responses-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			if lastRejectedStatus != 0 && !writer.committed {
-				if isRetryableStatus(lastRejectedStatus) || isTransientProviderRejection(lastRejectedStatus, lastRejectedBody) {
+				if isRetryableStatus(lastRejectedStatus) || isTransientProviderRejection(lastRejectedStatus, lastRejectedBody) || isTransientModelPoolRejection(lastRejectedStatus, lastRejectedBody) {
 					writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "第三方上游的可用账户均暂时不可用，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
 				} else {
 					writeRejectedTurnStop(writer, "responses", requestID, lastModelVersion, lastRejectedStatus, lastRejectedBody)
@@ -1167,13 +1167,13 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 						excludeFailedAttempt(excludedAccounts, lease)
 					}
 				}
-				if mayRetry && waitForRejectedRequestRetry(incoming.Context(), policy, "responses", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
+				if mayRetry && waitForRejectedRequestRetry(incoming.Context(), policy, "responses", requestID, fmt.Sprintf("http-%d", resp.StatusCode), rejectedRetryAfter(resp.StatusCode, string(errBody), retryAfter, reconnects), reconnects) {
 					continue
 				}
 				if incoming.Context().Err() != nil {
 					return false
 				}
-				if isRetryableStatus(resp.StatusCode) || isTransientProviderRejection(resp.StatusCode, string(errBody)) {
+				if isRetryableStatus(resp.StatusCode) || isTransientProviderRejection(resp.StatusCode, string(errBody)) || isTransientModelPoolRejection(resp.StatusCode, string(errBody)) {
 					writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "第三方上游暂时没有可用线路，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
 					return false
 				}
@@ -1383,7 +1383,7 @@ attemptLoop:
 		if err != nil {
 			trace("anthropic-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			if lastRejectedStatus != 0 && !writer.committed {
-				if isRetryableStatus(lastRejectedStatus) || isTransientProviderRejection(lastRejectedStatus, lastRejectedBody) {
+				if isRetryableStatus(lastRejectedStatus) || isTransientProviderRejection(lastRejectedStatus, lastRejectedBody) || isTransientModelPoolRejection(lastRejectedStatus, lastRejectedBody) {
 					writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "第三方上游的可用账户均暂时不可用，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
 				} else {
 					writeRejectedTurnStop(writer, "anthropic", requestID, lastModelVersion, lastRejectedStatus, lastRejectedBody)
@@ -1492,14 +1492,14 @@ attemptLoop:
 							excludeFailedAttempt(excludedAccounts, lease)
 						}
 					}
-					if mayRetry && waitForRejectedRequestRetry(incoming.Context(), policy, "anthropic", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
+					if mayRetry && waitForRejectedRequestRetry(incoming.Context(), policy, "anthropic", requestID, fmt.Sprintf("http-%d", resp.StatusCode), rejectedRetryAfter(resp.StatusCode, string(errBody), retryAfter, reconnects), reconnects) {
 						requestBody = baseRequest
 						continue attemptLoop
 					}
 					if incoming.Context().Err() != nil {
 						return
 					}
-					if isRetryableStatus(resp.StatusCode) || isTransientProviderRejection(resp.StatusCode, string(errBody)) {
+					if isRetryableStatus(resp.StatusCode) || isTransientProviderRejection(resp.StatusCode, string(errBody)) || isTransientModelPoolRejection(resp.StatusCode, string(errBody)) {
 						writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "第三方上游暂时没有可用线路，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
 						return
 					}

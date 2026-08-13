@@ -244,18 +244,28 @@ func forwardOpenAIImagesGeneration(w http.ResponseWriter, incoming *http.Request
 		}
 		observeAttemptQuota(lease, "images", resp)
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			_, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 			resp.Body.Close()
 			retryAfter := resp.Header.Get("Retry-After")
-			failureDetail := fmt.Sprintf("图片模型请求失败（HTTP %d）", resp.StatusCode)
-			trace("images-upstream-error-response", map[string]any{"requestId": requestID, "attempt": attempt, "statusCode": resp.StatusCode})
+			failureDetail := string(errBody)
+			if strings.TrimSpace(failureDetail) == "" {
+				failureDetail = fmt.Sprintf("图片模型请求失败（HTTP %d）", resp.StatusCode)
+			}
+			trace("images-upstream-error-response", map[string]any{"requestId": requestID, "attempt": attempt, "statusCode": resp.StatusCode, "body": failureDetail[:min(len(failureDetail), 500)]})
 			if shouldFailOverAccount(lease, resp.StatusCode, failureDetail) {
-				releaseAttemptFailure(lease, resp.StatusCode, retryAfter, failureDetail)
-				excludeFailedAttempt(excludedAccounts, lease)
 				reconnects++
+				mayRetry := policy.enabled && reconnects <= policy.maxAttempts
+				if mayRetry && shouldRetrySameAccount(lease, resp.StatusCode, failureDetail) {
+					if lease != nil {
+						lease.Release()
+					}
+				} else {
+					releaseAttemptFailure(lease, resp.StatusCode, retryAfter, failureDetail)
+					excludeFailedAttempt(excludedAccounts, lease)
+				}
 				// A non-2xx response proves this account rejected the request before
 				// generation, so trying a different healthy pooled account is safe.
-				if policy.enabled && reconnects <= policy.maxAttempts && waitForRejectedRequestRetry(incoming.Context(), policy, "images", requestID, fmt.Sprintf("http-%d", resp.StatusCode), retryAfter, reconnects) {
+				if mayRetry && waitForRejectedRequestRetry(incoming.Context(), policy, "images", requestID, fmt.Sprintf("http-%d", resp.StatusCode), rejectedRetryAfter(resp.StatusCode, failureDetail, retryAfter, reconnects), reconnects) {
 					continue
 				}
 				writeImageGenerationHTTPError(w, resp.StatusCode)

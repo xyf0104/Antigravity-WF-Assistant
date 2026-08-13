@@ -70,10 +70,10 @@ func shouldCooldownAccount(statusCode int, message string) bool {
 // legacy per-model API key still receives the upstream response directly.
 func shouldFailOverAccount(lease *storage.AccountLease, statusCode int, body string) bool {
 	if lease == nil {
-		return isRetryableStatus(statusCode) || isTransientProviderRejection(statusCode, body)
+		return isRetryableStatus(statusCode) || isTransientProviderRejection(statusCode, body) || isTransientModelPoolRejection(statusCode, body)
 	}
 	if statusCode == http.StatusNotFound && isModelRouteRejection(body) {
-		return lease.HasAlternatives
+		return lease.HasAlternatives || isTransientModelPoolRejection(statusCode, body)
 	}
 	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
 		return lease.HasAlternatives || isTransientProviderRejection(statusCode, body)
@@ -89,7 +89,7 @@ func shouldRetrySameAccount(lease *storage.AccountLease, statusCode int, body st
 	if lease != nil && lease.HasAlternatives {
 		return false
 	}
-	return isRetryableStatus(statusCode) || isTransientProviderRejection(statusCode, body)
+	return isRetryableStatus(statusCode) || isTransientProviderRejection(statusCode, body) || isTransientModelPoolRejection(statusCode, body)
 }
 
 func isAccountLevelForbidden(body string) bool {
@@ -134,6 +134,52 @@ func isModelRouteRejection(body string) bool {
 		}
 	}
 	return false
+}
+
+// isTransientModelPoolRejection distinguishes a relay whose account group is
+// temporarily empty from a genuinely unknown model ID. Some gateways report
+// pool depletion as HTTP 404 while they asynchronously replenish accounts.
+// A concrete rejection is safe to retry before any response has been emitted.
+func isTransientModelPoolRejection(statusCode int, body string) bool {
+	if statusCode != http.StatusNotFound {
+		return false
+	}
+	value := strings.ToLower(body)
+	for _, marker := range []string{
+		"not supported by any configured account", "no available channel for model",
+		"no provider available for model", "no available account for model",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// rejectedRetryAfter extends the retry window for gateway account replenishing.
+// Many third-party relays refill their provider pool within a few seconds; the
+// old 250/500ms backoff exhausted both retries before that refill could finish.
+// An explicit Retry-After header always remains authoritative.
+func rejectedRetryAfter(statusCode int, body, upstreamValue string, reconnect int) string {
+	if value := strings.TrimSpace(upstreamValue); value != "" {
+		return value
+	}
+	base := 0.0
+	switch {
+	case isTransientProviderRejection(statusCode, body):
+		base = 1.5
+	case isTransientModelPoolRejection(statusCode, body):
+		base = 1.5
+	case statusCode == http.StatusTooManyRequests:
+		base = 2
+	case statusCode == http.StatusBadGateway || statusCode == http.StatusServiceUnavailable || statusCode == http.StatusGatewayTimeout || statusCode == 524:
+		base = 1
+	}
+	if base == 0 {
+		return ""
+	}
+	multiplier := 1 << min(max(reconnect-1, 0), 2)
+	return fmt.Sprintf("%.3f", base*float64(multiplier))
 }
 
 func accountPoolError(provider string, err error) string {
