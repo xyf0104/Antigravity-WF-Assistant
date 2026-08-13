@@ -208,6 +208,25 @@ func TestAcquireAccountForModelUsesPeerWhileRefreshFailureCoolsDown(t *testing.T
 	}
 }
 
+func TestAcquireAccountForModelReportsTemporaryCooldownWithRetryTime(t *testing.T) {
+	Init(t.TempDir())
+	now := time.Now().UTC()
+	saveOAuthRefreshTestAccount(t, UpstreamAccount{
+		ID: "cooling", Name: "cooling", Provider: "openai", Type: "api_key",
+		APIURL: "https://example.test", APIKey: "token", AuthMode: "bearer", Enabled: true, MaxConcurrency: 1,
+		CooldownUntil: now.Add(2 * time.Second).Format(time.RFC3339),
+	})
+
+	_, lease, err := AcquireAccountForModel(CustomModel{Provider: "openai", AccountIDs: []string{"cooling"}}, nil)
+	if err == nil || lease != nil {
+		t.Fatalf("selected cooling account: lease=%#v err=%v", lease, err)
+	}
+	delay, temporary := AccountPoolRetryAfter(err)
+	if !temporary || delay <= 0 || delay > 3*time.Second {
+		t.Fatalf("temporary cooldown delay = %v, temporary=%v, err=%v", delay, temporary, err)
+	}
+}
+
 func TestEnsureAccountAccessTokenCoalescesConcurrentRefreshes(t *testing.T) {
 	Init(t.TempDir())
 

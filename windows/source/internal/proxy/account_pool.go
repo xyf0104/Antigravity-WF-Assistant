@@ -49,7 +49,7 @@ func releaseAttemptFailure(lease *storage.AccountLease, statusCode int, retryAft
 	if lease == nil {
 		return
 	}
-	if shouldCooldownAccount(statusCode) {
+	if shouldCooldownAccount(statusCode, message) {
 		lease.Finish(statusCode, retryAfter, message)
 		return
 	}
@@ -58,8 +58,9 @@ func releaseAttemptFailure(lease *storage.AccountLease, statusCode int, retryAft
 	lease.Finish(http.StatusOK, "", "")
 }
 
-func shouldCooldownAccount(statusCode int) bool {
-	return statusCode == 0 || statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden ||
+func shouldCooldownAccount(statusCode int, message string) bool {
+	return statusCode == 0 || statusCode == http.StatusUnauthorized ||
+		(statusCode == http.StatusForbidden && isAccountLevelForbidden(message)) ||
 		statusCode == http.StatusTooManyRequests || statusCode == http.StatusBadGateway ||
 		statusCode == http.StatusServiceUnavailable || statusCode == http.StatusGatewayTimeout || statusCode == 524
 }
@@ -67,11 +68,68 @@ func shouldCooldownAccount(statusCode int) bool {
 // shouldFailOverAccount adds credential failures to the normal transient
 // retry list, but only when a model is actually bound to an account pool. A
 // legacy per-model API key still receives the upstream response directly.
-func shouldFailOverAccount(lease *storage.AccountLease, statusCode int) bool {
+func shouldFailOverAccount(lease *storage.AccountLease, statusCode int, body string) bool {
 	if lease == nil {
-		return isRetryableStatus(statusCode)
+		return isRetryableStatus(statusCode) || isTransientProviderRejection(statusCode, body)
 	}
-	return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || isRetryableStatus(statusCode)
+	if statusCode == http.StatusNotFound && isModelRouteRejection(body) {
+		return lease.HasAlternatives
+	}
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return lease.HasAlternatives || isTransientProviderRejection(statusCode, body)
+	}
+	return isRetryableStatus(statusCode)
+}
+
+func shouldRetrySameAccount(lease *storage.AccountLease, statusCode int, body string) bool {
+	if lease != nil && lease.HasAlternatives {
+		return false
+	}
+	return isRetryableStatus(statusCode) || isTransientProviderRejection(statusCode, body)
+}
+
+func isAccountLevelForbidden(body string) bool {
+	value := strings.ToLower(body)
+	for _, marker := range []string{
+		"insufficient balance", "insufficient_balance", "billing_error", "payment required",
+		"quota exhausted", "quota_exhausted", "credit balance", "invalid api key",
+		"invalid_api_key", "authentication", "access token", "api key expired",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTransientProviderRejection(statusCode int, body string) bool {
+	if statusCode != http.StatusForbidden || isAccountLevelForbidden(body) {
+		return false
+	}
+	value := strings.ToLower(body)
+	for _, marker := range []string{
+		"provider terms of service", "provider terms", "provider unavailable",
+		"provider_name", "permission_denied", "permission_error",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isModelRouteRejection(body string) bool {
+	value := strings.ToLower(body)
+	for _, marker := range []string{
+		"model_not_found", "model not found", "model is not supported",
+		"not supported by any configured account", "no available channel for model",
+		"no provider available for model",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func accountPoolError(provider string, err error) string {

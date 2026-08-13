@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -169,8 +170,37 @@ type AccountImportResult struct {
 // called once the upstream response is complete or failed so concurrency and
 // cooldown state remain accurate.
 type AccountLease struct {
-	ID   string
-	once sync.Once
+	ID              string
+	HasAlternatives bool
+	once            sync.Once
+}
+
+// AccountPoolUnavailableError distinguishes a temporarily unavailable pool
+// from a permanently invalid model/account binding. The proxy can wait for a
+// short cooldown without turning a recoverable scheduler state into an
+// Antigravity "Agent terminated" loop.
+type AccountPoolUnavailableError struct {
+	RetryAfter time.Duration
+	Reason     string
+	Retryable  bool
+}
+
+func (err *AccountPoolUnavailableError) Error() string {
+	if err == nil || strings.TrimSpace(err.Reason) == "" {
+		return "绑定账户当前均不可调度：请检查额度、冷却时间或并发限制"
+	}
+	return err.Reason
+}
+
+// AccountPoolRetryAfter returns the minimum time until a temporarily blocked
+// account pool should be probed again. It deliberately exposes no account ID
+// or credential metadata.
+func AccountPoolRetryAfter(err error) (time.Duration, bool) {
+	var unavailable *AccountPoolUnavailableError
+	if !errors.As(err, &unavailable) || unavailable == nil {
+		return 0, false
+	}
+	return unavailable.RetryAfter, unavailable.Retryable
 }
 
 var (
@@ -1105,20 +1135,35 @@ func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (Cu
 	}
 	var candidates []candidate
 	incompatibleProtocol := false
+	eligibleCount := 0
+	var earliestCooldown time.Duration
+	poolBusy := false
 	accountRun.Lock()
 	for _, account := range accounts {
 		if _, ok := allowed[account.ID]; !ok {
 			continue
 		}
-		if _, skip := excluded[account.ID]; skip || !accountUsable(account, now) {
+		if _, skip := excluded[account.ID]; skip {
 			continue
 		}
 		if !accountMatchesModelRequestProtocol(account, model) {
 			incompatibleProtocol = true
 			continue
 		}
+		if !accountEnabledAndAuthorized(account, now) {
+			continue
+		}
+		eligibleCount++
+		if until, ok := parseAccountTime(account.CooldownUntil); ok && until.After(now) {
+			remaining := time.Until(until)
+			if earliestCooldown <= 0 || remaining < earliestCooldown {
+				earliestCooldown = remaining
+			}
+			continue
+		}
 		active := accountRun.active[account.ID]
 		if active >= account.MaxConcurrency {
+			poolBusy = true
 			continue
 		}
 		candidates = append(candidates, candidate{account: account, active: active})
@@ -1143,13 +1188,27 @@ func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (Cu
 		if incompatibleProtocol {
 			return model, nil, fmt.Errorf("绑定账户与当前模型的请求协议不兼容，请重新同步该账户的模型")
 		}
-		return model, nil, fmt.Errorf("绑定账户当前均不可调度：请检查额度、冷却时间或并发限制")
+		if earliestCooldown > 0 {
+			return model, nil, &AccountPoolUnavailableError{
+				RetryAfter: earliestCooldown,
+				Reason:     "绑定账户正在短暂冷却，WF助手会在可用后安全重试",
+				Retryable:  true,
+			}
+		}
+		if poolBusy {
+			return model, nil, &AccountPoolUnavailableError{
+				RetryAfter: 350 * time.Millisecond,
+				Reason:     "绑定账户当前并发已满，WF助手会在空闲后安全重试",
+				Retryable:  true,
+			}
+		}
+		return model, nil, fmt.Errorf("绑定账户当前均不可调度：请检查凭据、到期时间或账户状态")
 	}
 	selected := candidates[0].account
 	_ = updateUpstreamAccount(selected.ID, func(account *UpstreamAccount) {
 		account.LastUsedAt = now.UTC().Format(time.RFC3339)
 	})
-	return selected.ToModel(model), &AccountLease{ID: selected.ID}, nil
+	return selected.ToModel(model), &AccountLease{ID: selected.ID, HasAlternatives: eligibleCount > 1}, nil
 }
 
 func hasDirectModelCredential(model CustomModel) bool {
@@ -1174,6 +1233,16 @@ func normalizedAccountIDs(values []string) []string {
 }
 
 func accountUsable(account UpstreamAccount, now time.Time) bool {
+	if !accountEnabledAndAuthorized(account, now) {
+		return false
+	}
+	if until, ok := parseAccountTime(account.CooldownUntil); ok && until.After(now) {
+		return false
+	}
+	return true
+}
+
+func accountEnabledAndAuthorized(account UpstreamAccount, now time.Time) bool {
 	if !account.Enabled || account.EffectiveAPIKey() == "" {
 		return false
 	}
@@ -1181,9 +1250,6 @@ func accountUsable(account UpstreamAccount, now time.Time) bool {
 		return false
 	}
 	if expiresAt, ok := parseAccountTime(account.AuthExpiresAt); ok && !expiresAt.After(now) {
-		return false
-	}
-	if until, ok := parseAccountTime(account.CooldownUntil); ok && until.After(now) {
 		return false
 	}
 	return true
@@ -1225,6 +1291,25 @@ func (lease *AccountLease) Finish(statusCode int, retryAfter, failure string) {
 			account.LastError = shortAccountError(failure, statusCode)
 			account.CooldownUntil = now.Add(accountCooldown(statusCode, retryAfter, account.FailureCount)).Format(time.RFC3339)
 		})
+	})
+}
+
+// Release relinquishes only the in-flight concurrency reservation. It is used
+// immediately before a safe same-account retry: recording a cooldown at that
+// point would make the scheduler reject the very retry it just approved.
+// The final attempt still records success or failure through Finish.
+func (lease *AccountLease) Release() {
+	if lease == nil || lease.ID == "" {
+		return
+	}
+	lease.once.Do(func() {
+		accountRun.Lock()
+		if accountRun.active[lease.ID] <= 1 {
+			delete(accountRun.active, lease.ID)
+		} else {
+			accountRun.active[lease.ID]--
+		}
+		accountRun.Unlock()
 	})
 }
 

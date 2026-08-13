@@ -249,7 +249,7 @@ func forwardOpenAIImagesGeneration(w http.ResponseWriter, incoming *http.Request
 			retryAfter := resp.Header.Get("Retry-After")
 			failureDetail := fmt.Sprintf("图片模型请求失败（HTTP %d）", resp.StatusCode)
 			trace("images-upstream-error-response", map[string]any{"requestId": requestID, "attempt": attempt, "statusCode": resp.StatusCode})
-			if shouldFailOverAccount(lease, resp.StatusCode) {
+			if shouldFailOverAccount(lease, resp.StatusCode, failureDetail) {
 				releaseAttemptFailure(lease, resp.StatusCode, retryAfter, failureDetail)
 				excludeFailedAttempt(excludedAccounts, lease)
 				reconnects++

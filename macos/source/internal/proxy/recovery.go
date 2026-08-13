@@ -141,6 +141,79 @@ func waitForRejectedRequestRetry(ctx context.Context, policy streamRecoveryPolic
 	}
 }
 
+// waitForAccountPool retries a temporary scheduler state only before any
+// downstream output. The wait is bounded by the user's recovery settings and
+// does not consume an upstream request or token while the pool is cooling.
+func waitForAccountPool(ctx context.Context, writer *downstreamSSEWriter, policy streamRecoveryPolicy, provider, requestID string, err error, reconnect int) bool {
+	retryAfter, temporary := storage.AccountPoolRetryAfter(err)
+	if !temporary || writer == nil || writer.committed || !policy.enabled || reconnect <= 0 || reconnect > policy.maxAttempts || ctx.Err() != nil {
+		return false
+	}
+	maximum := time.Duration(policy.maxDelaySeconds) * time.Second
+	if maximum > 0 && retryAfter > maximum {
+		// A long quota/auth cooldown is not a useful in-request wait. Finish the
+		// turn immediately so the user can switch upstream without staring at a
+		// spinner for multiple capped intervals.
+		return false
+	}
+	if retryAfter < 100*time.Millisecond {
+		retryAfter = 100 * time.Millisecond
+	}
+	trace(provider+"-account-pool-wait", map[string]any{
+		"requestId": requestID, "reconnect": reconnect, "maxReconnects": policy.maxAttempts,
+		"delayMs": retryAfter.Milliseconds(), "reason": err.Error(),
+	})
+	timer := time.NewTimer(retryAfter)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// writeRecoverableTurnStop converts exhausted temporary upstream failures into
+// one ordinary completed Antigravity turn. This avoids the IDE's terminal
+// Retry loop while still telling the user that no model answer was produced.
+// It is never used for permanent credential, model or request errors.
+func writeRecoverableTurnStop(writer *downstreamSSEWriter, provider, requestID, modelVersion, message string, reconnects int) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "上游暂时不可用，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。"
+	}
+	trace(provider+"-recoverable-turn-stop", map[string]any{
+		"requestId": requestID, "reconnects": reconnects, "message": message,
+	})
+	response := map[string]any{
+		"candidates": []any{map[string]any{
+			"content":      map[string]any{"role": "model", "parts": []any{map[string]any{"text": message}}},
+			"finishReason": "STOP",
+		}},
+	}
+	if modelVersion != "" {
+		response["modelVersion"] = modelVersion
+	}
+	writer.write(encodeAntigravityStreamEvent(response, requestID))
+}
+
+func writeRejectedTurnStop(writer *downstreamSSEWriter, provider, requestID, modelVersion string, statusCode int, body string) {
+	message := fmt.Sprintf("第三方上游拒绝了当前请求（HTTP %d）。请检查所选模型和接口配置后重新发送。", statusCode)
+	switch {
+	case statusCode == http.StatusUnauthorized:
+		message = "第三方上游鉴权失败（HTTP 401）。请检查 API Key 或登录凭据后重新发送。"
+	case statusCode == http.StatusForbidden && isAccountLevelForbidden(body):
+		message = "第三方上游账户余额、额度或权限不足（HTTP 403）。请更换可用账户、补充额度或切换上游后重新发送。"
+	case statusCode == http.StatusForbidden:
+		message = "第三方上游拒绝了当前线路（HTTP 403）。请切换同模型的其他可用上游后重新发送。"
+	case statusCode == http.StatusNotFound && isModelRouteRejection(body):
+		message = "第三方上游没有为当前账户配置所选模型（HTTP 404）。请重新获取模型列表，或切换支持该模型的上游。"
+	case statusCode == http.StatusTooManyRequests:
+		message = "第三方上游当前请求过多或额度窗口已满（HTTP 429）。请稍后再发送，或切换同模型的其他可用上游。"
+	}
+	writeRecoverableTurnStop(writer, provider, requestID, modelVersion, message, 0)
+}
+
 func writeRecoveredStreamStop(writer *downstreamSSEWriter, requestID, modelVersion, responseID string, reconnects int, unsafe bool) {
 	// Do not append a synthetic assistant message here. It would be persisted in
 	// Antigravity's conversation and then sent back to the upstream on the next

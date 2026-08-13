@@ -1340,6 +1340,144 @@ func TestBoundAccountPoolFailsOverAfterQuotaResponse(t *testing.T) {
 	}
 }
 
+func TestTransientProvider403RetriesSameDirectUpstreamThenCompletes(t *testing.T) {
+	previous := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: previous.enabled, MaxAttempts: previous.maxAttempts, MaxDelaySeconds: previous.maxDelaySeconds})
+
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"permission_error","message":"The request is prohibited due to a violation of provider Terms Of Service.","error_type":"permission_denied"},"metadata":{"provider_name":null}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-ok\",\"model\":\"claude-test\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"恢复成功\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer upstream.Close()
+
+	model := &storage.CustomModel{Provider: "anthropic", APIStyle: "messages", APIURL: upstream.URL, APIKey: "test-key", ExternalModelName: "claude-test"}
+	recorder := httptest.NewRecorder()
+	forwardAnthropic(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil), model, map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, "provider-403-recovery")
+
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want one safe retry", calls.Load())
+	}
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "恢复成功") || !strings.Contains(recorder.Body.String(), `"finishReason":"STOP"`) {
+		t.Fatalf("unexpected recovered response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPersistentTransientProvider403EndsTurnWithoutAgentError(t *testing.T) {
+	previous := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: previous.enabled, MaxAttempts: previous.maxAttempts, MaxDelaySeconds: previous.maxDelaySeconds})
+
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"permission_error","message":"The request is prohibited due to a violation of provider Terms Of Service.","error_type":"permission_denied"},"metadata":{"provider_name":null}}`)
+	}))
+	defer upstream.Close()
+
+	model := &storage.CustomModel{Provider: "anthropic", APIStyle: "messages", APIURL: upstream.URL, APIKey: "test-key", ExternalModelName: "claude-test"}
+	recorder := httptest.NewRecorder()
+	forwardAnthropic(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil), model, map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, "provider-403-stop")
+
+	if calls.Load() != 3 {
+		t.Fatalf("upstream calls = %d, want initial request plus two bounded retries", calls.Load())
+	}
+	output := recorder.Body.String()
+	if recorder.Code != http.StatusOK || !strings.Contains(output, "第三方上游暂时没有可用线路") || !strings.Contains(output, `"finishReason":"STOP"`) {
+		t.Fatalf("temporary failure did not become a completed Antigravity turn: %d %s", recorder.Code, output)
+	}
+}
+
+func TestPermanentUpstreamRejectionsEndTurnWithoutAutomaticReplay(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       string
+	}{
+		{name: "insufficient balance", statusCode: http.StatusForbidden, body: `{"error":{"message":"insufficient balance","type":"billing_error"}}`, want: "余额、额度或权限不足"},
+		{name: "model route missing", statusCode: http.StatusNotFound, body: `{"error":{"message":"Model \\"gpt-test\\" is not supported by any configured account in this group","type":"model_not_found"}}`, want: "没有为当前账户配置所选模型"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(test.statusCode)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer upstream.Close()
+
+			model := &storage.CustomModel{Provider: "openai", APIStyle: "chat_completions", APIURL: upstream.URL, APIKey: "test-key", ExternalModelName: "gpt-test"}
+			recorder := httptest.NewRecorder()
+			forwardOpenAIChat(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil), model, map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+			}, "permanent-rejection")
+
+			if calls.Load() != 1 {
+				t.Fatalf("upstream calls = %d, permanent rejection must not be replayed", calls.Load())
+			}
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), test.want) || !strings.Contains(recorder.Body.String(), `"finishReason":"STOP"`) {
+				t.Fatalf("permanent rejection did not produce one actionable completed turn: %d %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestBoundAccountPoolExhaustionEndsTurnWithoutHTTP503(t *testing.T) {
+	storage.Init(t.TempDir())
+	previous := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: previous.enabled, MaxAttempts: previous.maxAttempts, MaxDelaySeconds: previous.maxDelaySeconds})
+
+	var firstCalls, secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"message":"insufficient balance","type":"billing_error"}}`)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"message":"insufficient balance","type":"billing_error"}}`)
+	}))
+	defer second.Close()
+
+	for _, account := range []storage.UpstreamAccount{
+		{ID: "first-exhausted", Name: "first", Provider: "openai", Type: "api_key", APIURL: first.URL, APIKey: "first-token", AuthMode: "bearer", Enabled: true, Priority: 1, MaxConcurrency: 1},
+		{ID: "second-exhausted", Name: "second", Provider: "openai", Type: "api_key", APIURL: second.URL, APIKey: "second-token", AuthMode: "bearer", Enabled: true, Priority: 2, MaxConcurrency: 1},
+	} {
+		if err := storage.SaveUpstreamAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	model := &storage.CustomModel{Provider: "openai", APIStyle: "chat_completions", ExternalModelName: "gpt-test", AccountIDs: []string{"first-exhausted", "second-exhausted"}}
+	recorder := httptest.NewRecorder()
+	forwardOpenAIChat(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil), model, map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, "pool-exhausted")
+
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("pool calls = first:%d second:%d, want one safe attempt per account", firstCalls.Load(), secondCalls.Load())
+	}
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "余额、额度或权限不足") || !strings.Contains(recorder.Body.String(), `"finishReason":"STOP"`) {
+		t.Fatalf("exhausted pool terminated Antigravity instead of completing the turn: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestCleanPatchedPath(t *testing.T) {
 	cases := map[string]string{
 		"/v1internal/antigravity-byok/v1internal:streamGenerateContent": "/v1internal:streamGenerateContent",
