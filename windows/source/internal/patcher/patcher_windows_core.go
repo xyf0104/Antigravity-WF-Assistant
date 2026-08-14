@@ -339,8 +339,10 @@ func windowsImageRendererReady(data []byte) bool {
 		bytes.Contains(data, []byte(imagePreviewNativeCompatibleMarker))
 	uiReady := bytes.Contains(data, []byte(imageGenerationUIPatchMarker)) ||
 		bytes.Contains(data, []byte(imageGenerationUIPatchV3Marker))
-	dedupeReady := bytes.Contains(data, []byte(imageGenerationDedupePatchMarker)) ||
-		bytes.Contains(data, []byte(imageGenerationDedupePatchV2Marker))
+	// Legacy dedupe markers must stay pending. Otherwise an assistant update
+	// can report success without migrating an installation that still renders
+	// the second large artifact image.
+	dedupeReady := bytes.Contains(data, []byte(imageGenerationDedupePatchMarker))
 	return previewReady && uiReady && dedupeReady
 }
 

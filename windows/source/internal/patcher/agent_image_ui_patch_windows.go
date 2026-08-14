@@ -17,7 +17,8 @@ import (
 )
 
 const agentImageGenerationUIPatchMarker = "antigravity-wf:agent-image-generation-ui:v1"
-const agentImageGenerationDedupePatchMarker = "antigravity-wf:agent-image-generation-dedupe:v1"
+const agentImageGenerationDedupePatchMarker = "antigravity-wf:agent-image-generation-dedupe:v2"
+const agentImageGenerationDedupePatchV1Marker = "antigravity-wf:agent-image-generation-dedupe:v1"
 
 var agentGeneratedImageComponentPattern = regexp.MustCompile(
 	`var (` + imagePreviewJavaScriptIdentifier + `)=\(\{step:(` + imagePreviewJavaScriptIdentifier + `),status:(` + imagePreviewJavaScriptIdentifier + `)\}\)=>\{var `,
@@ -54,16 +55,16 @@ func patchAgentImageUI(source string) (string, imagePreviewPatchResult) {
 	}
 
 	updated, titleRecognized, titleChanged := patchAgentImageGenerationTitle(source)
-	if !titleRecognized || !titleChanged {
+	if !titleRecognized {
 		return source, result
 	}
 
 	updated, dedupeRecognized, dedupeChanged := patchAgentDuplicateGeneratedImage(updated)
-	if !dedupeRecognized || !dedupeChanged {
+	if !dedupeRecognized {
 		return source, result
 	}
 	result.Recognized = true
-	result.Changed = true
+	result.Changed = titleChanged || dedupeChanged
 	return updated, result
 }
 
@@ -148,6 +149,15 @@ func patchAgentImageGenerationTitle(source string) (string, bool, bool) {
 func patchAgentDuplicateGeneratedImage(source string) (string, bool, bool) {
 	if strings.Contains(source, agentImageGenerationDedupePatchMarker) {
 		return source, true, false
+	}
+	if strings.Contains(source, agentImageGenerationDedupePatchV1Marker) {
+		legacy := agentGeneratedImageDedupeV1Registry()
+		if !strings.Contains(source, legacy) {
+			return source, true, false
+		}
+		updated := strings.ReplaceAll(source, legacy, agentGeneratedImageDedupeRegistry())
+		updated = strings.ReplaceAll(updated, agentImageGenerationDedupePatchV1Marker, agentImageGenerationDedupePatchMarker)
+		return updated, true, updated != source
 	}
 
 	previewNeedle := `alt:"Generated image preview"`
@@ -239,8 +249,7 @@ func patchAgentDuplicateGeneratedImage(source string) (string, bool, bool) {
 		return source, false, false
 	}
 
-	registry := `/*` + agentImageGenerationDedupePatchMarker + `*/` +
-		`const $wfGeneratedImageURIs=new Map,$wfGeneratedImageURIKey=value=>{if(typeof value!=="string"||!value||value.startsWith("data:"))return"";let text=value;try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\//i,"").replace(/\\/g,"/").replace(/[?#].*$/,"").toLowerCase()},$wfPruneGeneratedImageURIs=()=>{let now=Date.now();for(let[key,time]of $wfGeneratedImageURIs)now-time>6E5&&$wfGeneratedImageURIs.delete(key);return now},$wfRememberGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs();for(let value of values){let key=$wfGeneratedImageURIKey(value);key&&$wfGeneratedImageURIs.set(key,now)}},$wfIsDuplicateGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs();for(let value of values){let key=$wfGeneratedImageURIKey(value),time=$wfGeneratedImageURIs.get(key);if(time!==void 0&&now-time<=6E5)return!0}return!1};`
+	registry := `/*` + agentImageGenerationDedupePatchMarker + `*/` + agentGeneratedImageDedupeRegistry()
 
 	replacements := []imagePreviewRendererReplacement{
 		{start: registrationOffset, end: registrationOffset, value: registration},
@@ -260,6 +269,14 @@ func patchAgentDuplicateGeneratedImage(source string) (string, bool, bool) {
 		updated = updated[:replacement.start] + replacement.value + updated[replacement.end:]
 	}
 	return updated, true, true
+}
+
+func agentGeneratedImageDedupeV1Registry() string {
+	return `const $wfGeneratedImageURIs=new Map,$wfGeneratedImageURIKey=value=>{if(typeof value!=="string"||!value||value.startsWith("data:"))return"";let text=value;try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\//i,"").replace(/\\/g,"/").replace(/[?#].*$/,"").toLowerCase()},$wfPruneGeneratedImageURIs=()=>{let now=Date.now();for(let[key,time]of $wfGeneratedImageURIs)now-time>6E5&&$wfGeneratedImageURIs.delete(key);return now},$wfRememberGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs();for(let value of values){let key=$wfGeneratedImageURIKey(value);key&&$wfGeneratedImageURIs.set(key,now)}},$wfIsDuplicateGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs();for(let value of values){let key=$wfGeneratedImageURIKey(value),time=$wfGeneratedImageURIs.get(key);if(time!==void 0&&now-time<=6E5)return!0}return!1};`
+}
+
+func agentGeneratedImageDedupeRegistry() string {
+	return `const $wfGeneratedImageURIs=new Map,$wfGeneratedImageEvents=[],$wfGeneratedImageURIKey=value=>{if(typeof value!=="string"||!value||value.startsWith("data:"))return"";let text=value;try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\//i,"").replace(/\\/g,"/").replace(/[?#].*$/,"").toLowerCase()},$wfPruneGeneratedImageURIs=()=>{let now=Date.now();for(let[key,time]of $wfGeneratedImageURIs)now-time>6E5&&$wfGeneratedImageURIs.delete(key);for(let index=$wfGeneratedImageEvents.length-1;index>=0;index--)now-$wfGeneratedImageEvents[index].time>12E4&&$wfGeneratedImageEvents.splice(index,1);return now},$wfRememberGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs(),keys=values.map($wfGeneratedImageURIKey).filter(Boolean),recent=$wfGeneratedImageEvents.some(event=>!event.consumed&&now-event.time<5E3&&event.keys.some(key=>keys.includes(key)));for(let key of keys)$wfGeneratedImageURIs.set(key,now);keys.length&&!recent&&$wfGeneratedImageEvents.push({keys,time:now,consumed:!1})},$wfIsDuplicateGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs(),keys=values.map($wfGeneratedImageURIKey).filter(Boolean),event=$wfGeneratedImageEvents.find(candidate=>!candidate.consumed&&candidate.keys.some(key=>keys.includes(key))),exact=keys.some(key=>{let time=$wfGeneratedImageURIs.get(key);return time!==void 0&&now-time<=6E5});event||(event=$wfGeneratedImageEvents.find(candidate=>!candidate.consumed));if(event)event.consumed=!0;return exact||!!event};`
 }
 
 func agentMinifiedDeclarationEnd(source string, from, limit int) int {
@@ -310,6 +327,15 @@ func patchAgentEmbeddedUIArchive(data []byte) ([]byte, agentImageUIPatchResult, 
 	}
 
 	originalLength := archive.end - archive.start
+	// Previous WF revisions filled the fixed PE slot with trailing spaces in
+	// ZIP comments. Reclaim only that application-owned padding during a v1
+	// migration; otherwise the old padding and the larger v2 renderer are both
+	// counted and a valid forward upgrade appears to exceed the slot.
+	legacyPadding := bytes.Contains(mainData, []byte(agentImageGenerationDedupePatchV1Marker))
+	baseArchiveComment := archive.reader.Comment
+	if legacyPadding {
+		baseArchiveComment = strings.TrimRight(baseArchiveComment, " ")
+	}
 	build := func(comment, mainEntryCommentPadding string) ([]byte, error) {
 		var output bytes.Buffer
 		writer := zip.NewWriter(&output)
@@ -339,6 +365,9 @@ func patchAgentEmbeddedUIArchive(data []byte) ([]byte, agentImageUIPatchResult, 
 				}
 			}
 			header := entry.FileHeader
+			if legacyPadding && entry.Name == "main.js" {
+				header.Comment = strings.TrimRight(header.Comment, " ")
+			}
 			header.CRC32 = 0
 			header.CompressedSize = 0
 			header.CompressedSize64 = 0
@@ -379,7 +408,7 @@ func patchAgentEmbeddedUIArchive(data []byte) ([]byte, agentImageUIPatchResult, 
 		return output.Bytes(), nil
 	}
 
-	rebuilt, err := build(archive.reader.Comment, "")
+	rebuilt, err := build(baseArchiveComment, "")
 	if err != nil {
 		return nil, result, fmt.Errorf("重建 Antigravity 2.0 内嵌 UI 失败: %w", err)
 	}
@@ -389,7 +418,7 @@ func patchAgentEmbeddedUIArchive(data []byte) ([]byte, agentImageUIPatchResult, 
 	}
 	if padding > 0 {
 		archivePadding := padding
-		if available := 65535 - len(archive.reader.Comment); archivePadding > available {
+		if available := 65535 - len(baseArchiveComment); archivePadding > available {
 			archivePadding = available
 		}
 		entryPadding := padding - archivePadding
@@ -397,6 +426,9 @@ func patchAgentEmbeddedUIArchive(data []byte) ([]byte, agentImageUIPatchResult, 
 		for _, entry := range archive.reader.File {
 			if entry.Name == "main.js" {
 				mainEntryCommentLength = len(entry.Comment)
+				if legacyPadding {
+					mainEntryCommentLength = len(strings.TrimRight(entry.Comment, " "))
+				}
 				break
 			}
 		}
@@ -404,7 +436,7 @@ func patchAgentEmbeddedUIArchive(data []byte) ([]byte, agentImageUIPatchResult, 
 			return nil, result, fmt.Errorf("Antigravity 2.0 内嵌 UI 等长填充需要 %d 字节，超过 ZIP 安全上限；未修改任何文件", padding)
 		}
 		rebuilt, err = build(
-			archive.reader.Comment+strings.Repeat(" ", archivePadding),
+			baseArchiveComment+strings.Repeat(" ", archivePadding),
 			strings.Repeat(" ", entryPadding),
 		)
 		if err != nil {

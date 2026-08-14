@@ -71,7 +71,10 @@ const title=(modelName,status="done",hasMedia=true)=>tool.generateImage.renderer
 mcb({step:{generatedMedia:{uri:"file:///C:/Temp/generated.png"}},status:"done"});
 const matching=S4a({src:"vscode-file://vscode-app/C:/Temp/generated.png",alt:"duplicate",originalFilePath:"C:\\Temp\\generated.png"});
 const different=S4a({src:"file:///C:/Temp/normal.png",alt:"normal",originalFilePath:"C:\\Temp\\normal.png"});
-process.stdout.write(JSON.stringify({gpt:title("gpt-image-2"),gemini:title("gemini-3.1-flash-image"),unknown:title("image-alpha"),loading:title(void 0,` + loadingStatus + `,false),matching,differentAlt:different?.props?.children?.[1]?.props?.children?.[0]}));`
+$wfRememberGeneratedImageURI("file:///C:/Temp/generated-two.png");
+const renamed=S4a({src:"file:///C:/Temp/artifacts/saved-under-a-different-name.png",alt:"renamed",originalFilePath:"C:\\Temp\\artifacts\\saved-under-a-different-name.png"});
+const afterRenamed=S4a({src:"file:///C:/Temp/normal-after.png",alt:"normal after",originalFilePath:"C:\\Temp\\normal-after.png"});
+process.stdout.write(JSON.stringify({gpt:title("gpt-image-2"),gemini:title("gemini-3.1-flash-image"),unknown:title("image-alpha"),loading:title(void 0,` + loadingStatus + `,false),matching,differentAlt:different?.props?.children?.[1]?.props?.children?.[0],renamed,afterRenamedAlt:afterRenamed?.props?.children?.[1]?.props?.children?.[0]}));`
 	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -89,12 +92,36 @@ process.stdout.write(JSON.stringify({gpt:title("gpt-image-2"),gemini:title("gemi
 		Loading      string `json:"loading"`
 		Matching     any    `json:"matching"`
 		DifferentAlt string `json:"differentAlt"`
+		Renamed      any    `json:"renamed"`
+		AfterRenamed string `json:"afterRenamedAlt"`
 	}
 	if err := json.Unmarshal(output, &got); err != nil {
 		t.Fatalf("patched Agent image UI returned invalid JSON %q: %v", output, err)
 	}
 	if got.GPT != "Generated with GPT Image 2" || got.Gemini != "Generated with Gemini 3.1 Flash Image \U0001F34C" ||
-		got.Unknown != "Generated with image-alpha" || got.Loading != "Generating image" || got.Matching != nil || got.DifferentAlt != "normal" {
+		got.Unknown != "Generated with image-alpha" || got.Loading != "Generating image" || got.Matching != nil || got.DifferentAlt != "normal" ||
+		got.Renamed != nil || got.AfterRenamed != "normal after" {
 		t.Fatalf("unexpected patched Agent image UI state: %+v", got)
+	}
+}
+
+func TestPatchAgentImageUIMigratesLegacyDedupe(t *testing.T) {
+	current, result := patchAgentImageUI(agentImageUIFixture())
+	if !result.Changed {
+		t.Fatalf("failed to construct current Agent fixture: %+v", result)
+	}
+	legacy := strings.Replace(current, agentImageGenerationDedupePatchMarker, agentImageGenerationDedupePatchV1Marker, 1)
+	legacy = strings.Replace(legacy, agentGeneratedImageDedupeRegistry(), agentGeneratedImageDedupeV1Registry(), 1)
+	if legacy == current {
+		t.Fatal("failed to construct legacy Agent dedupe fixture")
+	}
+	updated, migration := patchAgentImageUI(legacy)
+	if !migration.Recognized || !migration.Changed || !strings.Contains(updated, agentImageGenerationDedupePatchMarker) ||
+		strings.Contains(updated, agentImageGenerationDedupePatchV1Marker) || !strings.Contains(updated, `$wfGeneratedImageEvents`) {
+		t.Fatalf("legacy Agent dedupe was not migrated: %+v", migration)
+	}
+	second, secondResult := patchAgentImageUI(updated)
+	if !secondResult.Recognized || secondResult.Changed || second != updated {
+		t.Fatalf("migrated Agent dedupe is not idempotent: %+v", secondResult)
 	}
 }

@@ -11,7 +11,7 @@ permissions:
 jobs:
   macos:
     name: Build macOS installer
-    # v1.6.0 is an explicitly Windows-only release. Keep the macOS source and
+    # This release line is explicitly Windows-only. Keep the macOS source and
     # published v1.5.9 installer untouched.
     if: ${{ false }}
     runs-on: macos-14
@@ -272,7 +272,7 @@ jobs:
           ## Antigravity WF助手 v${version}（Windows）
 
           - 本次只发布 Windows x64；macOS 保持 v1.5.9，不重新构建、不替换。
-          - 图片生成完成后只保留 Prompt 卡片图片；v3 去重可处理正文大图先挂载、Prompt 卡片后完成的渲染顺序。
+          - 图片生成完成后只保留 Prompt 卡片图片；v4 去重同时处理渲染竞态和同图不同 URI，IDE 与 Antigravity 2.0 均会迁移旧规则。
           - GPT Image 2 与原生 Gemini 图片链路显示各自的实际生图模型。
           - 推理等级使用原始值 \`auto / none / minimal / low / medium / high / xhigh / max\`，并按模型真实能力过滤。
           - 恢复代理商收起/展开、编辑、刷新和勾选模型、整组测试与单模型推理编辑。

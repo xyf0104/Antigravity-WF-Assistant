@@ -25,20 +25,35 @@ func imagePreviewV3RendererFixture() string {
 	return `prefix;/*antigravity-wf:image-preview-fallback:v3*/a=e.generatedMedia||e.generatedImage,i;a?.uri?(i=n?.(a.uri),i=(i&&typeof i.getState==="function"?i.getState():i||void 0)):a?.payload?.case==="inlineData"&&(i=a?YI(a):void 0),!i&&a?.base64Data&&(i="data:"+(a.mimeType||"image/png")+";base64,"+(typeof a.base64Data==="string"?a.base64Data:btoa(Array.from(a.base64Data).map(i=>String.fromCharCode(i)).join("")))),!i&&a?.uri&&typeof a.uri==="string"&&a.uri.startsWith("file://")&&(i=decodeURIComponent(a.uri.replace(/^file:\/\//,"")));let s=Ia(t)&&!i;suffix`
 }
 
-func TestWindowsAcceptsNewerCrossPlatformImagePatchMarkers(t *testing.T) {
+func TestWindowsMigratesLegacyCrossPlatformImageDedupe(t *testing.T) {
 	source := imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture() + imageArtifactMarkdownRendererFixture()
 	patched, result := patchImagePreviewRenderer(source)
 	if !result.Changed || !windowsImageRendererReady([]byte(patched)) {
 		t.Fatalf("baseline renderer did not produce a ready image patch: %#v", result)
 	}
-	newer := strings.ReplaceAll(patched, imageGenerationUIPatchMarker, imageGenerationUIPatchV3Marker)
-	newer = strings.ReplaceAll(newer, imageGenerationDedupePatchMarker, imageGenerationDedupePatchV2Marker)
-	updated, newerResult := patchImagePreviewRenderer(newer)
-	if newerResult.Changed || updated != newer {
-		t.Fatalf("newer cross-platform markers must not be downgraded or patched twice: %#v", newerResult)
+	currentRuntime := `globalThis.__antigravityWFGeneratedImageEventsV4??=[],` +
+		generatedImageMountedDuplicateHiderDefinition() + generatedImageRememberDefinition()
+	legacyRuntime := generatedImageV3MountedDuplicateHiderDefinition() + generatedImageV3RememberDefinition()
+	legacy := strings.Replace(patched, currentRuntime, legacyRuntime, 1)
+	legacy = strings.Replace(legacy, generatedImageConsumeDefinition(), "", 1)
+	legacy = strings.Replace(legacy, imageGenerationDedupePatchMarker, imageGenerationDedupePatchV3Marker, 1)
+	legacy = strings.Replace(legacy,
+		`$wfImageDuplicate=!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(e,u,r),`,
+		`$wfImageDuplicate=!!globalThis.__antigravityWFIsRecentGeneratedImageV2&&[e,u,r].some(value=>globalThis.__antigravityWFIsRecentGeneratedImageV2(value)),`, 1)
+	if legacy == patched || windowsImageRendererReady([]byte(legacy)) {
+		t.Fatal("legacy v3 fixture was not constructed as pending")
 	}
-	if !newerResult.Recognized || !windowsImageRendererReady([]byte(updated)) {
-		t.Fatalf("newer cross-platform renderer was not accepted as ready: %#v", newerResult)
+	if !strings.Contains(legacy, legacyRuntime) || len(imageGenerationLegacyDuplicateExpressionPattern.FindAllStringSubmatchIndex(legacy, -1)) != 1 {
+		t.Fatalf("legacy v3 fixture shape mismatch: runtime=%t expressions=%d", strings.Contains(legacy, legacyRuntime), len(imageGenerationLegacyDuplicateExpressionPattern.FindAllStringSubmatchIndex(legacy, -1)))
+	}
+	updated, migrationResult := patchImagePreviewRenderer(legacy)
+	if !migrationResult.Recognized || !migrationResult.Changed || !windowsImageRendererReady([]byte(updated)) {
+		t.Fatalf("legacy cross-platform renderer was not migrated: %#v", migrationResult)
+	}
+	for _, required := range []string{imageGenerationDedupePatchMarker, `__antigravityWFGeneratedImageEventsV4`, `__antigravityWFConsumeGeneratedImageV4`} {
+		if !strings.Contains(updated, required) {
+			t.Fatalf("migrated renderer is missing %q", required)
+		}
 	}
 }
 
@@ -317,9 +332,13 @@ func TestPatchDuplicateGeneratedImageRendererUpgradesV2MountedImageRace(t *testi
 	legacy := strings.ReplaceAll(fresh, imageGenerationDedupePatchMarker, imageGenerationDedupePatchV2Marker)
 	legacy = strings.ReplaceAll(
 		legacy,
-		generatedImageMountedDuplicateHiderDefinition()+generatedImageRememberDefinition(),
+		`globalThis.__antigravityWFGeneratedImageEventsV4??=[],`+generatedImageMountedDuplicateHiderDefinition()+generatedImageRememberDefinition(),
 		generatedImageLegacyRememberDefinition(),
 	)
+	legacy = strings.Replace(legacy, generatedImageConsumeDefinition(), "", 1)
+	legacy = strings.Replace(legacy,
+		`$wfImageDuplicate=!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(e,u,r),`,
+		`$wfImageDuplicate=!!globalThis.__antigravityWFIsRecentGeneratedImageV2&&[e,u,r].some(value=>globalThis.__antigravityWFIsRecentGeneratedImageV2(value)),`, 1)
 	updated, result := patchImagePreviewRenderer(legacy)
 	if !result.Recognized || !result.Changed {
 		t.Fatalf("v2 dedupe fixture was not upgraded: %#v", result)
@@ -327,6 +346,7 @@ func TestPatchDuplicateGeneratedImageRendererUpgradesV2MountedImageRace(t *testi
 	for _, required := range []string{
 		imageGenerationDedupePatchMarker,
 		`__antigravityWFHideGeneratedImageV2`,
+		`__antigravityWFConsumeGeneratedImageV4`,
 		`document.querySelectorAll("img")`,
 		`container.style.display="none"`,
 	} {
@@ -372,7 +392,10 @@ func TestPatchDuplicateGeneratedImageRendererHidesOnlyMatchingArtifact(t *testin
 	source := `"use strict";const prefix=0,suffix=0,e={generatedMedia:{uri:"file:///C:/Users/Test/Image.png"}},n=()=>void 0,YI=()=>void 0,Ia=()=>!1,t={};let a,i;` + updated + `
 const matching=_Ci({src:"vscode-file://vscode-app/C:/Users/Test/Image.png",alt:"Artifact image",originalFilePath:"C:\\\\Users\\\\Test\\\\Image.png"});
 const different=_Ci({src:"file:///C:/Users/Test/Other.png",alt:"Normal Markdown image",originalFilePath:"C:\\\\Users\\\\Test\\\\Other.png"});
-process.stdout.write(JSON.stringify({matching,different,differentAlt:different?.props?.alt}));`
+globalThis.__antigravityWFRememberGeneratedImageV2("file:///C:/Users/Test/Generated-Two.png");
+const renamed=_Ci({src:"file:///C:/Users/Test/artifacts/saved-under-a-different-name.png",alt:"renamed duplicate",originalFilePath:"C:\\\\Users\\\\Test\\\\artifacts\\\\saved-under-a-different-name.png"});
+const afterRenamed=_Ci({src:"file:///C:/Users/Test/Normal-After.png",alt:"normal after",originalFilePath:"C:\\\\Users\\\\Test\\\\Normal-After.png"});
+process.stdout.write(JSON.stringify({matching,different,differentAlt:different?.props?.alt,renamed,afterRenamedAlt:afterRenamed?.props?.alt}));`
 	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -387,6 +410,8 @@ process.stdout.write(JSON.stringify({matching,different,differentAlt:different?.
 		Matching     any    `json:"matching"`
 		Different    any    `json:"different"`
 		DifferentAlt string `json:"differentAlt"`
+		Renamed      any    `json:"renamed"`
+		AfterRenamed string `json:"afterRenamedAlt"`
 	}
 	if err := json.Unmarshal(output, &got); err != nil {
 		t.Fatalf("generated-image dedupe returned invalid JSON %q: %v", output, err)
@@ -396,6 +421,9 @@ process.stdout.write(JSON.stringify({matching,different,differentAlt:different?.
 	}
 	if got.Different == nil || got.DifferentAlt != "Normal Markdown image" {
 		t.Fatalf("different Markdown image was incorrectly hidden or changed: %#v", got)
+	}
+	if got.Renamed != nil || got.AfterRenamed != "normal after" {
+		t.Fatalf("single-use different-URI dedupe state is invalid: %#v", got)
 	}
 }
 
