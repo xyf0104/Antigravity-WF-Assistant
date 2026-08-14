@@ -8,7 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"unsafe"
+
+	winapi "golang.org/x/sys/windows"
 )
 
 const (
@@ -31,6 +35,7 @@ const (
 )
 
 var windowsCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.getCloudCodeUrl\(\)`)
+var windowsProductVersionPattern = regexp.MustCompile(`(?i)^\s*v?(\d+(?:\.\d+){1,3})`)
 var windowsFlexibleCloudCodeCallPattern = regexp.MustCompile(`await\s+[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*\??\.getCloudCodeUrl\(\)`)
 var windowsCloudCodeSettingPattern = regexp.MustCompile(`this\.[A-Za-z_$][\w$]*\.getValue\(["']jetski\.cloudCodeUrl["']\)`)
 var windowsCloudCodeURLPattern = regexp.MustCompile(`https://[A-Za-z0-9.-]*cloudcode-pa(?:\.sandbox)?\.googleapis\.com`)
@@ -330,11 +335,13 @@ func windowsASARUnpackedImagePreviewRendererPaths(target windowsTarget) []string
 }
 
 func windowsImageRendererReady(data []byte) bool {
+	previewReady := bytes.Contains(data, []byte(imagePreviewPatchMarker)) ||
+		bytes.Contains(data, []byte(imagePreviewNativeCompatibleMarker))
 	uiReady := bytes.Contains(data, []byte(imageGenerationUIPatchMarker)) ||
 		bytes.Contains(data, []byte(imageGenerationUIPatchV3Marker))
 	dedupeReady := bytes.Contains(data, []byte(imageGenerationDedupePatchMarker)) ||
 		bytes.Contains(data, []byte(imageGenerationDedupePatchV2Marker))
-	return bytes.Contains(data, []byte(imagePreviewPatchMarker)) && uiReady && dedupeReady
+	return previewReady && uiReady && dedupeReady
 }
 
 func prepareWindowsImagePreviewPatch(path string) (*windowsPatchPlan, error) {
@@ -455,7 +462,7 @@ func windowsContainsKnownPatch(data []byte) bool {
 		imagePreviewPatchV2Marker, imagePreviewPatchV3Marker,
 		imagePreviewPatchV4Marker, imagePreviewPatchV5Marker,
 		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
-		imagePreviewPatchMarker,
+		imagePreviewPatchMarker, imagePreviewNativeCompatibleMarker,
 		imageGenerationUIPatchV1Marker, imageGenerationUIPatchMarker,
 		imageGenerationDedupePatchMarker,
 		agentImageGenerationUIPatchMarker, agentImageGenerationDedupePatchMarker,
@@ -486,6 +493,13 @@ func windowsLegacyBackupPaths(sourcePath string) []string {
 }
 
 func windowsVersionFromTarget(target windowsTarget) string {
+	// Antigravity IDE currently embeds the VS Code OSS engine version in both
+	// resources/app/package.json and product.json. The Windows executable is
+	// the authoritative product artifact and carries the version shown by the
+	// official About dialog (for example 2.5.5 instead of 1.107.0).
+	if version := windowsExecutableProductVersion(target.executable); version != "" {
+		return version
+	}
 	var data []byte
 	if target.kind == "ide" {
 		data, _ = os.ReadFile(filepath.Join(target.root, "resources", "app", "package.json"))
@@ -501,4 +515,135 @@ func windowsVersionFromTarget(target windowsTarget) string {
 		return strings.TrimSpace(value.Version)
 	}
 	return ""
+}
+
+var (
+	windowsVersionDLL              = winapi.NewLazySystemDLL("version.dll")
+	windowsGetFileVersionInfoSizeW = windowsVersionDLL.NewProc("GetFileVersionInfoSizeW")
+	windowsGetFileVersionInfoW     = windowsVersionDLL.NewProc("GetFileVersionInfoW")
+	windowsVerQueryValueW          = windowsVersionDLL.NewProc("VerQueryValueW")
+)
+
+type windowsFixedFileInfo struct {
+	Signature        uint32
+	StructVersion    uint32
+	FileVersionMS    uint32
+	FileVersionLS    uint32
+	ProductVersionMS uint32
+	ProductVersionLS uint32
+	FileFlagsMask    uint32
+	FileFlags        uint32
+	FileOS           uint32
+	FileType         uint32
+	FileSubtype      uint32
+	FileDateMS       uint32
+	FileDateLS       uint32
+}
+
+func windowsExecutableProductVersion(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	widePath, err := winapi.UTF16PtrFromString(path)
+	if err != nil {
+		return ""
+	}
+	var ignored uint32
+	size, _, _ := windowsGetFileVersionInfoSizeW.Call(uintptr(unsafe.Pointer(widePath)), uintptr(unsafe.Pointer(&ignored)))
+	if size == 0 {
+		return ""
+	}
+	data := make([]byte, size)
+	ok, _, _ := windowsGetFileVersionInfoW.Call(
+		uintptr(unsafe.Pointer(widePath)), 0, size, uintptr(unsafe.Pointer(&data[0])),
+	)
+	if ok == 0 {
+		return ""
+	}
+	for _, field := range []string{"ProductVersion", "FileVersion"} {
+		if version := windowsVersionResourceString(data, field); version != "" {
+			return version
+		}
+	}
+
+	root, _ := winapi.UTF16PtrFromString(`\`)
+	var value unsafe.Pointer
+	var valueSize uint32
+	ok, _, _ = windowsVerQueryValueW.Call(
+		uintptr(unsafe.Pointer(&data[0])), uintptr(unsafe.Pointer(root)),
+		uintptr(unsafe.Pointer(&value)), uintptr(unsafe.Pointer(&valueSize)),
+	)
+	if ok == 0 || value == nil || valueSize < uint32(unsafe.Sizeof(windowsFixedFileInfo{})) {
+		return ""
+	}
+	info := (*windowsFixedFileInfo)(value)
+	if info.Signature != 0xFEEF04BD {
+		return ""
+	}
+	// Some Electron distributions leave only the fixed file version usable.
+	// Never prefer ProductVersionMS here: Antigravity 2.5.5 is known to store
+	// its VS Code engine version (1.107) in that fixed product field.
+	return windowsFormatVersionWords(info.FileVersionMS, info.FileVersionLS)
+}
+
+func windowsVersionResourceString(data []byte, field string) string {
+	if len(data) == 0 {
+		return ""
+	}
+	translations := [][2]uint16{}
+	translationPath, _ := winapi.UTF16PtrFromString(`\VarFileInfo\Translation`)
+	var translationValue unsafe.Pointer
+	var translationSize uint32
+	ok, _, _ := windowsVerQueryValueW.Call(
+		uintptr(unsafe.Pointer(&data[0])), uintptr(unsafe.Pointer(translationPath)),
+		uintptr(unsafe.Pointer(&translationValue)), uintptr(unsafe.Pointer(&translationSize)),
+	)
+	if ok != 0 && translationValue != nil && translationSize >= 4 {
+		words := unsafe.Slice((*uint16)(translationValue), int(translationSize/2))
+		for index := 0; index+1 < len(words); index += 2 {
+			translations = append(translations, [2]uint16{words[index], words[index+1]})
+		}
+	}
+	// Electron packages commonly use one of these even when the translation
+	// table is missing or incomplete.
+	translations = append(translations, [2]uint16{0x0409, 0x04B0}, [2]uint16{0x0000, 0x04B0})
+	seen := map[[2]uint16]bool{}
+	for _, translation := range translations {
+		if seen[translation] {
+			continue
+		}
+		seen[translation] = true
+		query := fmt.Sprintf(`\StringFileInfo\%04x%04x\%s`, translation[0], translation[1], field)
+		wideQuery, err := winapi.UTF16PtrFromString(query)
+		if err != nil {
+			continue
+		}
+		var value unsafe.Pointer
+		var valueSize uint32
+		ok, _, _ := windowsVerQueryValueW.Call(
+			uintptr(unsafe.Pointer(&data[0])), uintptr(unsafe.Pointer(wideQuery)),
+			uintptr(unsafe.Pointer(&value)), uintptr(unsafe.Pointer(&valueSize)),
+		)
+		if ok == 0 || value == nil || valueSize == 0 {
+			continue
+		}
+		text := winapi.UTF16ToString(unsafe.Slice((*uint16)(value), int(valueSize)))
+		if match := windowsProductVersionPattern.FindStringSubmatch(text); len(match) == 2 {
+			return match[1]
+		}
+	}
+	return ""
+}
+
+func windowsFormatVersionWords(ms, ls uint32) string {
+	parts := []uint32{ms >> 16, ms & 0xffff, ls >> 16, ls & 0xffff}
+	last := len(parts) - 1
+	for last > 1 && parts[last] == 0 {
+		last--
+	}
+	values := make([]string, 0, last+1)
+	for _, part := range parts[:last+1] {
+		values = append(values, strconv.FormatUint(uint64(part), 10))
+	}
+	return strings.Join(values, ".")
 }

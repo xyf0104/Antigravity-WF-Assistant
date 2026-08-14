@@ -12,6 +12,7 @@ import {
   formatK,
   loadStats,
   loadPatchStatus,
+	refreshDashboard,
   applyPatch,
   applyIDEPatch,
   applyAgentPatch,
@@ -25,20 +26,21 @@ import {
 
 const patchError = ref("");
 const successDialogOpen = ref(false);
-const successMessage = ref("");
-const successTargets = ref([]);
-const successLaunchError = ref("");
+const successMode = ref("all");
 let pollTimer = null;
 
 const patchProgressPercent = computed(() => Math.min(100, Math.max(0, Number(state.patchProgress?.percent) || 0)));
 
-function showPatchSuccess(mode, result) {
-	const allowedKinds = mode === "all" ? ["ide", "agent"] : [mode];
-	successTargets.value = (state.patch.targets || []).filter((target) =>
+const successTargets = computed(() => {
+	const allowedKinds = successMode.value === "all" ? ["ide", "agent"] : [successMode.value];
+	return (state.patch.targets || []).filter((target) =>
 		allowedKinds.includes(target.kind) && target.supported && target.patched && target.launchable !== false
 	);
-	successMessage.value = result?.message || "Antigravity 已安全连接本地代理。";
-	successLaunchError.value = "";
+});
+
+function showPatchSuccess(mode) {
+	const allowedKinds = mode === "all" ? ["ide", "agent"] : [mode];
+	successMode.value = allowedKinds.length > 1 ? "all" : allowedKinds[0];
 	successDialogOpen.value = true;
 }
 
@@ -49,34 +51,35 @@ function successTargetLabel(target) {
 }
 
 async function handleSuccessLaunch(target) {
-	successLaunchError.value = "";
+	// The user's click has completed its modal interaction. Close immediately;
+	// startup/history verification continues with any error shown on Home.
+	successDialogOpen.value = false;
+	patchError.value = "";
 	const res = await launchOrRestartAntigravity(target.appPath);
 	if (!res?.ok) {
-		successLaunchError.value = res?.message || "打开 Antigravity 失败";
-		return;
+		patchError.value = res?.message || "打开 Antigravity 失败";
 	}
-	successDialogOpen.value = false;
 }
 
 async function handleApply() {
 	patchError.value = "";
 	const res = await applyPatch();
 	if (!res?.ok) patchError.value = res?.message || "连接失败";
-	else showPatchSuccess("all", res);
+	else showPatchSuccess("all");
 }
 
 async function handleApplyIDE() {
 	patchError.value = "";
 	const res = await applyIDEPatch();
 	if (!res?.ok) patchError.value = res?.message || "IDE 连接失败";
-	else showPatchSuccess("ide", res);
+	else showPatchSuccess("ide");
 }
 
 async function handleApplyAgent() {
 	patchError.value = "";
 	const res = await applyAgentPatch();
 	if (!res?.ok) patchError.value = res?.message || "Antigravity 2.0 连接失败";
-	else showPatchSuccess("agent", res);
+	else showPatchSuccess("agent");
 }
 
 async function handleRestore() {
@@ -177,6 +180,9 @@ function targetKindLabel(kind) {
 }
 
 onMounted(() => {
+	// The first paint uses the fast standard-path snapshot. Complete the deep
+	// compatibility scan after the Home page is already interactive.
+	void refreshDashboard({ forcePatch: !state.dashboardDeepScanComplete });
   pollTimer = setInterval(() => {
     loadPatchStatus().catch(() => {});
     loadStats().catch(() => {});
@@ -293,13 +299,21 @@ onUnmounted(() => {
 
       <!-- 刷新 -->
       <div class="metric-card" style="justify-content:center;align-items:center">
-        <button class="refresh-btn" :class="{ spinning: state.statsLoading }" @click="loadStats">
+        <button
+			class="refresh-btn"
+			:class="{ spinning: state.dashboardRefreshing }"
+			:disabled="state.dashboardRefreshing"
+			title="刷新安装路径、真实版本、运行状态、连接状态和统计"
+			@click="refreshDashboard()"
+		>
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
             <path d="M15 9A6 6 0 1 1 9 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
             <path d="M9 1L12.5 3.5L9 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
-        <div class="t-caption" style="margin-top:8px">刷新统计</div>
+        <div class="t-caption" style="margin-top:8px">
+			{{ state.dashboardRefreshing ? "正在刷新首页" : "刷新首页" }}
+		</div>
       </div>
     </div>
 
@@ -391,10 +405,9 @@ onUnmounted(() => {
 		<div class="success-icon">✓</div>
 		<div>
 		  <div class="t-headline">补丁已安全应用</div>
-		  <div class="t-caption success-summary">{{ successMessage }}</div>
+		  <div class="t-caption success-summary">已成功连接本地代理，现在可以启动 Antigravity。</div>
 		</div>
 	  </div>
-	  <div v-if="successLaunchError" class="err-box success-launch-error">{{ successLaunchError }}</div>
 	  <template #footer>
 		<Button variant="plain" @click="successDialogOpen = false">确定</Button>
 		<Button

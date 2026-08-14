@@ -118,6 +118,7 @@ func (a *App) showMainWindow() {
 	}
 	runtime.WindowUnminimise(a.ctx)
 	runtime.WindowShow(a.ctx)
+	runtime.EventsEmit(a.ctx, "wf:main-window-shown")
 }
 
 func (a *App) hideMainWindow() {

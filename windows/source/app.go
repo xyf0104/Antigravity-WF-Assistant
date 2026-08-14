@@ -35,6 +35,7 @@ type App struct {
 	historyStatus         HistorySyncStatus
 	launchMu              sync.Mutex
 	patchMu               sync.Mutex
+	installStateMu        sync.Mutex
 	updateMu              sync.Mutex
 	updateCheckMu         sync.Mutex
 	updateCheckCancel     context.CancelFunc
@@ -197,6 +198,8 @@ type PatchStatus struct {
 	ProxyManaged             bool                `json:"proxyManaged"`
 	ProxyOwned               bool                `json:"proxyOwned"`
 	ProxyRepatchRequired     bool                `json:"proxyRepatchRequired"`
+	ProductRepatchRequired   bool                `json:"productRepatchRequired"`
+	ProductRepatchMessage    string              `json:"productRepatchMessage"`
 	LastRequestAt            string              `json:"lastRequestAt"`
 	LastRequestPath          string              `json:"lastRequestPath"`
 	LastModelFetchAt         string              `json:"lastModelFetchAt"`
@@ -533,6 +536,17 @@ func (a *App) setHistoryStatus(state, message string) {
 	a.historyStatus = HistorySyncStatus{State: state, Message: message, LastRunAt: time.Now().Format(time.RFC3339)}
 }
 
+func (a *App) historySyncIsRecent(maxAge time.Duration) bool {
+	a.historyMu.RLock()
+	status := a.historyStatus
+	a.historyMu.RUnlock()
+	if status.State != "success" || strings.TrimSpace(status.LastRunAt) == "" {
+		return false
+	}
+	lastRun, err := time.Parse(time.RFC3339, status.LastRunAt)
+	return err == nil && time.Since(lastRun) >= 0 && time.Since(lastRun) <= maxAge
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 func (a *App) GetModels() []storage.CustomModel {
@@ -613,6 +627,7 @@ func (a *App) TestUpstreamModelDetailed(config upstream.Config, request upstream
 // model list. The default UI selects all discovered models; callers may pass a
 // narrowed list to respect manual selection.
 func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) BatchModelResult {
+	upstreamName := strings.TrimSpace(config.UpstreamName)
 	boundAccountIDs := configuredAccountIDs(config)
 	if config.AccountID == "" && len(boundAccountIDs) > 0 {
 		config.AccountID = boundAccountIDs[0]
@@ -621,6 +636,7 @@ func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) Bat
 	if err != nil {
 		return BatchModelResult{Message: err.Error()}
 	}
+	resolved.UpstreamName = upstreamName
 	if err := upstream.ValidateConfig(resolved); err != nil {
 		return BatchModelResult{Message: err.Error()}
 	}
@@ -645,6 +661,7 @@ func (a *App) saveDiscoveredModels(resolved upstream.Config, boundAccountIDs, mo
 		}
 		seen[modelID] = struct{}{}
 		model := storage.NewDiscoveredModel(provider, resolved.APIURL, resolved.APIKey, modelID)
+		model.UpstreamName = resolved.UpstreamName
 		model.APIStyle = upstream.EffectiveAPIStyle(resolved)
 		model.EndpointMode = upstream.NormalizedEndpointMode(resolved.EndpointMode)
 		model.MessagePathMode = resolved.MessagePathMode
@@ -1073,11 +1090,28 @@ func (a *App) DeleteModel(name string) Result {
 // ─── Patch ────────────────────────────────────────────────────────────────────
 
 func (a *App) GetPatchStatus() PatchStatus {
-	s := patcher.GetStatus()
+	return a.patchStatusFrom(patcher.GetStatus())
+}
+
+// GetQuickPatchStatus keeps the first dashboard paint responsive. It reports
+// standard-path installations and their authoritative product versions while
+// the UI starts a full compatibility refresh in the background.
+func (a *App) GetQuickPatchStatus() PatchStatus {
+	return a.patchStatusFrom(patcher.GetQuickStatus())
+}
+
+// RefreshPatchStatus explicitly re-runs process/registry discovery and all
+// compatibility checks. The dashboard's Refresh button calls this method.
+func (a *App) RefreshPatchStatus() PatchStatus {
+	return a.patchStatusFrom(patcher.RefreshStatus())
+}
+
+func (a *App) patchStatusFrom(s patcher.Status) PatchStatus {
 	diagnostics := proxy.GetDiagnostics()
 	agentPatched := s.AgentPatched != nil && *s.AgentPatched
 	idePatched := s.IDEPatched != nil && *s.IDEPatched
 	proxyRepatchRequired := currentProxyRepatchRequired()
+	productRepatchRequired, productRepatchMessage := a.antigravityProductRepatchState(s)
 	targets := make([]PatchTargetStatus, 0, len(s.Targets))
 	for _, target := range s.Targets {
 		running := false
@@ -1100,6 +1134,8 @@ func (a *App) GetPatchStatus() PatchStatus {
 		ProxyManaged:             proxy.IsManagedListener(),
 		ProxyOwned:               proxy.OwnsListener(),
 		ProxyRepatchRequired:     proxyRepatchRequired,
+		ProductRepatchRequired:   productRepatchRequired,
+		ProductRepatchMessage:    productRepatchMessage,
 		LastRequestAt:            diagnostics.LastRequestAt,
 		LastRequestPath:          diagnostics.LastRequestPath,
 		LastModelFetchAt:         diagnostics.LastModelFetchAt,
@@ -1163,7 +1199,10 @@ func (a *App) LaunchOrRestartAntigravity(appPath string) Result {
 	defer a.launchMu.Unlock()
 
 	selectedRoot, selectedExecutable, selectedName := "", "", "Antigravity"
-	for _, target := range patcher.GetStatus().Targets {
+	// The dashboard already gives us a detected app path. Reuse the quick
+	// standard/saved-path snapshot instead of triggering a deep compatibility
+	// scan merely to resolve the executable before launch.
+	for _, target := range patcher.GetQuickStatus().Targets {
 		if strings.EqualFold(filepath.Clean(target.AppPath), filepath.Clean(appPath)) {
 			selectedRoot = target.AppPath
 			selectedExecutable = target.ExecutablePath
@@ -1185,8 +1224,10 @@ func (a *App) LaunchOrRestartAntigravity(appPath string) Result {
 	if err != nil {
 		return Result{OK: false, Message: err.Error()}
 	}
-	if history := a.syncHistory(); !history.OK {
-		return Result{OK: false, Message: "为保护聊天历史，本次启动/重启已停止：" + history.Message}
+	if running || !a.historySyncIsRecent(2*time.Minute) {
+		if history := a.syncHistory(); !history.OK {
+			return Result{OK: false, Message: "为保护聊天历史，本次启动/重启已停止：" + history.Message}
+		}
 	}
 
 	verb := "启动"
@@ -1285,7 +1326,7 @@ func (a *App) ApplyAgentPatch() Result {
 	})
 }
 
-func (a *App) runPatchAction(_ string, operation string, action func() Result) Result {
+func (a *App) runPatchAction(actionName string, operation string, action func() Result) Result {
 	if !a.patchMu.TryLock() {
 		return Result{OK: false, Message: "已有连接任务正在进行，请等待当前任务完成。"}
 	}
@@ -1319,6 +1360,9 @@ func (a *App) runPatchAction(_ string, operation string, action func() Result) R
 		a.emitPatchProgress(PatchProgress{Phase: "error", Operation: operation, Percent: 100, Message: result.Message})
 		return result
 	}
+	if err := a.recordConnectedAntigravityTargets(actionName); err != nil {
+		log.Printf("[wf] 无法保存已连接的 Antigravity 安装路径: %v", err)
+	}
 	a.emitPatchProgress(PatchProgress{Phase: "verifying", Operation: operation, Percent: 90, Message: "正在核验补丁状态与安装完整性"})
 	a.emitPatchProgress(PatchProgress{Phase: "complete", Operation: operation, Percent: 100, Message: "连接成功，可以打开 Antigravity"})
 	return result
@@ -1334,6 +1378,9 @@ func (a *App) RestorePatch() Result {
 	out, err := patcher.Run("restore")
 	if err != nil {
 		return Result{OK: false, Message: fmt.Sprintf("%s\n%s", err.Error(), out)}
+	}
+	if err := a.clearConnectedAntigravityTargets(); err != nil {
+		log.Printf("[wf] 无法清除 Antigravity 连接基线: %v", err)
 	}
 	return Result{OK: true, Message: out}
 }

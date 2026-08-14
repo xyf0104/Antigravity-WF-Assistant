@@ -6,6 +6,8 @@ const targets = [
   { kind: "ide", appPath: "C:/IDE", supported: true, patched: true, launchable: true },
   { kind: "agent", appPath: "C:/Agent", supported: true, patched: true, launchable: true },
 ];
+let resolveStatusRefresh;
+let statusRefreshStarted = false;
 
 globalThis.window = {
   runtime: {
@@ -32,7 +34,10 @@ globalThis.window = {
           return { ok: true, message: "连接成功" };
         },
         async GetPatchStatus() {
-          return { proxyManaged: true, targets };
+			statusRefreshStarted = true;
+			return new Promise((resolve) => {
+				resolveStatusRefresh = () => resolve({ proxyManaged: true, targets });
+			});
         },
       },
     },
@@ -41,7 +46,7 @@ globalThis.window = {
 
 const { applyPatch, bindPatchEvents, state } = await import("../src/state/appState.js");
 
-test("all-connect exposes live progress and refreshes both launch targets", async () => {
+test("all-connect returns immediately while target verification refreshes in background", async () => {
   bindPatchEvents();
   const result = await applyPatch();
 
@@ -50,5 +55,9 @@ test("all-connect exposes live progress and refreshes both launch targets", asyn
   assert.equal(state.patchProgress.phase, "complete");
   assert.equal(state.patchProgress.percent, 100);
   assert.equal(state.patchProgress.operation, "全部连接");
+	assert.equal(statusRefreshStarted, true);
+	assert.deepEqual(state.patch.targets, []);
+	resolveStatusRefresh();
+	await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(state.patch.targets.map((target) => target.kind), ["ide", "agent"]);
 });

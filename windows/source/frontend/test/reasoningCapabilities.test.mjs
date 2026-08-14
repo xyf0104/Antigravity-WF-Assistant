@@ -9,10 +9,17 @@ function values(input) {
   return resolveReasoningProfile(input).options.map((option) => option.value);
 }
 
+function labels(input) {
+	return resolveReasoningProfile(input).options.map((option) => option.label);
+}
+
 test("GPT-5.6 exposes its published discrete reasoning levels", () => {
   assert.deepEqual(values({ provider: "openai", model: "gpt-5.6-sol" }), [
     "auto", "none", "low", "medium", "high", "xhigh", "max",
   ]);
+	assert.deepEqual(labels({ provider: "openai", model: "gpt-5.6-sol" }), [
+		"auto", "none", "low", "medium", "high", "xhigh", "max",
+	]);
 });
 
 test("DeepSeek V4 only exposes its native high and max efforts", () => {

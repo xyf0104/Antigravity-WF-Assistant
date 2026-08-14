@@ -10,4 +10,8 @@ func runWindows(string) (string, error) {
 
 func getWindowsStatus() Status { return Status{} }
 
+func getWindowsQuickStatus() Status { return Status{} }
+
+func refreshWindowsStatus() Status { return Status{} }
+
 func mergeWindowsHistoryOnStartup() error { return nil }

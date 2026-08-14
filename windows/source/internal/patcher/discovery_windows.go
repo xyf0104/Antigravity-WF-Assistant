@@ -4,12 +4,14 @@ package patcher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	winapi "golang.org/x/sys/windows"
@@ -17,8 +19,65 @@ import (
 
 const windowsShellDiscoveryTimeout = 2 * time.Second
 
+const windowsDiscoveryCacheTTL = 2 * time.Minute
+
+var windowsDiscoveryCache = struct {
+	sync.Mutex
+	targets []windowsTarget
+	at      time.Time
+	deep    bool
+}{}
+
 func locateWindowsInstallations() []windowsTarget {
-	candidates, explicit := windowsInstallCandidates()
+	// Normal status/apply calls use deterministic standard and previously
+	// confirmed paths. PowerShell/CIM discovery is reserved for an explicit
+	// refresh so reopening the assistant or reconnecting an unchanged install
+	// never waits on process and registry enumeration.
+	return locateWindowsInstallationsCached(false, false)
+}
+
+func locateWindowsInstallationsFast() []windowsTarget {
+	return locateWindowsInstallationsCached(false, false)
+}
+
+func refreshWindowsInstallations() []windowsTarget {
+	return locateWindowsInstallationsCached(true, true)
+}
+
+func locateWindowsInstallationsCached(includeShell, force bool) []windowsTarget {
+	windowsDiscoveryCache.Lock()
+	if !force && time.Since(windowsDiscoveryCache.at) < windowsDiscoveryCacheTTL &&
+		len(windowsDiscoveryCache.targets) > 0 && (!includeShell || windowsDiscoveryCache.deep) {
+		targets := append([]windowsTarget(nil), windowsDiscoveryCache.targets...)
+		windowsDiscoveryCache.Unlock()
+		return targets
+	}
+	windowsDiscoveryCache.Unlock()
+
+	targets := inspectWindowsInstallCandidates(includeShell)
+	windowsDiscoveryCache.Lock()
+	// A fast scan must not replace a newer deep result. It is only the
+	// responsive startup snapshot shown while the full refresh runs.
+	if includeShell || !windowsDiscoveryCache.deep || time.Since(windowsDiscoveryCache.at) >= windowsDiscoveryCacheTTL {
+		windowsDiscoveryCache.targets = append([]windowsTarget(nil), targets...)
+		windowsDiscoveryCache.at = time.Now()
+		windowsDiscoveryCache.deep = includeShell
+	}
+	result := append([]windowsTarget(nil), windowsDiscoveryCache.targets...)
+	windowsDiscoveryCache.Unlock()
+	return result
+}
+
+func invalidateWindowsDiscoveryCache() {
+	windowsDiscoveryCache.Lock()
+	windowsDiscoveryCache.targets = nil
+	windowsDiscoveryCache.at = time.Time{}
+	windowsDiscoveryCache.deep = false
+	windowsDiscoveryCache.Unlock()
+}
+
+func inspectWindowsInstallCandidates(includeShell bool) []windowsTarget {
+	candidates, explicit := windowsInstallCandidates(includeShell)
 	seenRoots := map[string]bool{}
 	seenTargets := map[string]bool{}
 	var targets []windowsTarget
@@ -51,7 +110,7 @@ func locateWindowsInstallations() []windowsTarget {
 	return targets
 }
 
-func windowsInstallCandidates() ([]string, bool) {
+func windowsInstallCandidates(includeShell bool) ([]string, bool) {
 	var candidates []string
 	add := func(values ...string) {
 		for _, value := range values {
@@ -68,6 +127,7 @@ func windowsInstallCandidates() ([]string, bool) {
 	if len(candidates) > 0 {
 		return candidates, true
 	}
+	add(windowsSavedInstallPaths()...)
 
 	for _, base := range []string{
 		os.Getenv("LOCALAPPDATA"), os.Getenv("PROGRAMFILES"), os.Getenv("ProgramFiles"),
@@ -123,8 +183,49 @@ func windowsInstallCandidates() ([]string, bool) {
 			add(filepath.Join(root, relative))
 		}
 	}
-	add(windowsShellDiscoveredPaths()...)
+	if includeShell {
+		add(windowsShellDiscoveredPaths()...)
+	}
 	return candidates, false
+}
+
+// windowsSavedInstallPaths reuses only the non-secret installation paths
+// recorded after a successful connection. The state file never contains
+// accounts, model credentials, chat history or user configuration.
+func windowsSavedInstallPaths() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".antigravity-byok", "antigravity-install-state.json"))
+	if err != nil {
+		return nil
+	}
+	return windowsSavedInstallPathsFromData(data)
+}
+
+func windowsSavedInstallPathsFromData(data []byte) []string {
+	var state struct {
+		Schema  int `json:"schema"`
+		Targets []struct {
+			AppPath string `json:"appPath"`
+		} `json:"targets"`
+	}
+	if json.Unmarshal(data, &state) != nil || state.Schema != 1 {
+		return nil
+	}
+	paths := make([]string, 0, len(state.Targets))
+	seen := make(map[string]bool, len(state.Targets))
+	for _, target := range state.Targets {
+		path := strings.TrimSpace(target.AppPath)
+		key := strings.ToLower(filepath.Clean(path))
+		if path == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 // windowsFixedDriveRoots returns only currently mounted local fixed volumes.

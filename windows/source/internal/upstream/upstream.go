@@ -33,6 +33,9 @@ type Config struct {
 	AccountIDs []string `json:"accountIds,omitempty"`
 	Provider   string   `json:"provider"`
 	APIURL     string   `json:"apiUrl"`
+	// UpstreamName is carried through discovery so newly imported models can
+	// retain the user-facing card label. It does not affect endpoint routing.
+	UpstreamName string `json:"upstreamName,omitempty"`
 	// EndpointMode is "auto" for a base domain/path that WF expands to the
 	// provider endpoint, or "manual" for an exact endpoint entered by the user.
 	// It intentionally remains a separate setting from APIStyle: a user may send
@@ -88,6 +91,7 @@ var blockedHeaderNames = map[string]struct{}{
 func ConfigFromModel(model storage.CustomModel) Config {
 	return Config{
 		Provider: model.Provider, APIURL: model.APIURL, APIKey: model.APIKey,
+		UpstreamName: model.UpstreamName,
 		EndpointMode: model.EndpointMode, APIStyle: model.APIStyle, MessagePathMode: model.MessagePathMode, AuthMode: model.AuthMode, AuthHeader: model.AuthHeader,
 		Headers: model.Headers, OAuthUpstream: model.RuntimeOAuthUpstream, ChatGPTAccountID: model.RuntimeChatGPTAccountID,
 	}

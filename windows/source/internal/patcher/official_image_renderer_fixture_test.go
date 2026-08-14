@@ -22,19 +22,31 @@ func TestOfficialIDEImageRendererWhenFixturePresent(t *testing.T) {
 		filepath.Join(root, "out", "jetskiAgent", "main.js"),
 		filepath.Join(root, "out", "vs", "workbench", "workbench.desktop.main.js"),
 	}
+	dedupeSeen := false
 	for _, path := range paths {
 		original, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		updated, result := patchImagePreviewRenderer(string(original))
-		if !result.Recognized || !result.Changed {
-			t.Fatalf("official IDE renderer is not safely patchable: %s %#v", path, result)
+		if !result.Recognized {
+			t.Fatalf("official IDE renderer is not safely recognized: %s %#v", path, result)
 		}
-		for _, marker := range []string{imagePreviewPatchMarker, imageGenerationUIPatchMarker, imageGenerationDedupePatchMarker} {
-			if !strings.Contains(updated, marker) {
-				t.Fatalf("official IDE renderer is missing %s after patch: %s", marker, path)
-			}
+		// A user's real installation may already contain this exact current
+		// patch. Idempotent no-change is a valid fixture state; readiness and
+		// syntax are still checked below against a temporary candidate.
+		if !windowsImageRendererReady([]byte(updated)) {
+			t.Fatalf("official IDE renderer is not ready after patch planning: %s %#v", path, result)
+		}
+		t.Logf("%s changed=%t markers: preview=%t native=%t ui=%t dedupe=%t", filepath.Base(path), result.Changed,
+			strings.Contains(updated, imagePreviewPatchMarker), strings.Contains(updated, imagePreviewNativeCompatibleMarker),
+			strings.Contains(updated, imageGenerationUIPatchMarker), strings.Contains(updated, imageGenerationDedupePatchMarker))
+		if !strings.Contains(updated, imageGenerationUIPatchMarker) {
+			t.Fatalf("official IDE renderer is missing %s after patch: %s", imageGenerationUIPatchMarker, path)
+		}
+		dedupeSeen = dedupeSeen || strings.Contains(updated, imageGenerationDedupePatchMarker)
+		if !strings.Contains(updated, imagePreviewPatchMarker) && !strings.Contains(updated, imagePreviewNativeCompatibleMarker) {
+			t.Fatalf("official IDE renderer has neither a fallback nor a validated native preview after patch: %s", path)
 		}
 		if !bytes.Equal(original, mustReadOfficialImageRendererFixture(t, path)) {
 			t.Fatalf("read-only renderer validation modified the fixture: %s", path)
@@ -48,6 +60,9 @@ func TestOfficialIDEImageRendererWhenFixturePresent(t *testing.T) {
 				t.Fatalf("patched official renderer failed node --check: %s: %v", output, err)
 			}
 		}
+	}
+	if !dedupeSeen {
+		t.Fatal("official IDE renderer set did not expose a safe duplicate-image suppression component")
 	}
 }
 

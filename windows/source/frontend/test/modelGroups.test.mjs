@@ -34,3 +34,13 @@ test("legacy models default to enabled while explicit false is preserved", () =>
   assert.equal(modelIsEnabled({ name: "models/legacy" }), true);
   assert.equal(modelIsEnabled({ name: "models/off", enabled: false }), false);
 });
+
+test("a shared upstream keeps the first non-empty user-managed card name", () => {
+  const models = [
+    { name: "models/a", provider: "openai", apiUrl: "https://api.example.test/v1", apiKey: "same", externalModelName: "gpt-a" },
+    { name: "models/b", provider: "openai", apiUrl: "https://api.example.test/v1", apiKey: "same", externalModelName: "gpt-b", upstreamName: "XIASS 主线路" },
+  ];
+  const groups = groupModelsByUpstream(models);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].upstreamName, "XIASS 主线路");
+});

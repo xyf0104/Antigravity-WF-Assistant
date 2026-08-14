@@ -103,10 +103,12 @@ export function groupModelsByUpstream(models) {
         key,
         provider: normalizedProvider(model?.provider),
         apiUrl: canonicalModelAPIURL(model),
+        upstreamName: text(model?.upstreamName),
         models: [],
       };
       groups.set(key, group);
     }
+    if (!group.upstreamName) group.upstreamName = text(model?.upstreamName);
     group.models.push(model);
   }
   return [...groups.values()].map((group) => ({

@@ -24,6 +24,14 @@ import (
 // generic Gemini model names such as gemini-3.6-flash.
 const imagePreviewPatchMarker = "antigravity-wf:image-preview-fallback:v8"
 
+// Newer IDE renderers already resolve generatedMedia through the workbench
+// artifact resolver and render a visible "Generated image preview". They do
+// not contain the legacy expression that needs imagePreviewPatchMarker. Mark
+// only the fully validated native component so Windows status can distinguish
+// a compatible renderer from an unknown future layout without injecting a
+// fake fallback block.
+const imagePreviewNativeCompatibleMarker = "antigravity-wf:image-preview-native:v1"
+
 const imagePreviewPatchV7Marker = "antigravity-wf:image-preview-fallback:v7"
 
 const imagePreviewPatchV6Marker = "antigravity-wf:image-preview-fallback:v6"
@@ -47,13 +55,15 @@ const imageGenerationUIPatchV1Marker = "antigravity-wf:image-generation-ui:v1"
 // image-generation UI marker. The native image-tool card remains intact (and
 // therefore keeps the user's prompt); this marker applies only to the
 // duplicate Markdown artifact image that some IDE builds append to the same
-// chat turn. v2 records a URI timestamp rather than a permanent Set entry, so
-// the same URI is hidden only during the ten-minute generated-image window.
-const imageGenerationDedupePatchMarker = "antigravity-wf:image-generation-dedupe:v2"
+// chat turn. v2 records a URI timestamp rather than a permanent Set entry.
+// v3 also hides an already-mounted matching artifact node: in some renderer
+// schedules Markdown mounts before the native Prompt card registers its URI,
+// so a render-time check alone leaves the large duplicate visible forever.
+const imageGenerationDedupePatchMarker = "antigravity-wf:image-generation-dedupe:v3"
 
 // Windows previously called the current timestamped registry revision v2.
 // Retain the alias for idempotence checks and older test/restore paths.
-const imageGenerationDedupePatchV2Marker = imageGenerationDedupePatchMarker
+const imageGenerationDedupePatchV2Marker = "antigravity-wf:image-generation-dedupe:v2"
 
 const imagePreviewPatchV5Marker = "antigravity-wf:image-preview-fallback:v5"
 
@@ -283,19 +293,36 @@ var imageArtifactMarkdownRendererPrefixPattern = regexp.MustCompile(
 	`(` + imagePreviewJavaScriptIdentifier + `)=\(\{src:(` + imagePreviewJavaScriptIdentifier + `),alt:(` + imagePreviewJavaScriptIdentifier + `),originalFilePath:(` + imagePreviewJavaScriptIdentifier + `),popout:(` + imagePreviewJavaScriptIdentifier + `)=!0,className:(` + imagePreviewJavaScriptIdentifier + `)="",openUri:(` + imagePreviewJavaScriptIdentifier + `)\}\)=>\{let\[(` + imagePreviewJavaScriptIdentifier + `),(` + imagePreviewJavaScriptIdentifier + `)\]=(` + imagePreviewJavaScriptIdentifier + `)\(!1\),(` + imagePreviewJavaScriptIdentifier + `)=(` + imagePreviewJavaScriptIdentifier + `)\((` + imagePreviewJavaScriptIdentifier + `)\),`,
 )
 
+var imagePreviewNativeRendererPrefixPattern = regexp.MustCompile(
+	`(` + imagePreviewJavaScriptIdentifier + `)=\(\{step:(` + imagePreviewJavaScriptIdentifier + `),status:(` + imagePreviewJavaScriptIdentifier + `)\}\)=>\{`,
+)
+
+type imagePreviewNativeRendererMatch struct {
+	start     int
+	prefixEnd int
+	end       int
+	step      string
+	media     string
+}
+
 type imagePreviewPatchResult struct {
 	Recognized bool
 	Changed    bool
 }
 
 func patchImagePreviewRenderer(source string) (string, imagePreviewPatchResult) {
-	result := imagePreviewPatchResult{Recognized: strings.Contains(source, imagePreviewPatchMarker)}
+	result := imagePreviewPatchResult{Recognized: strings.Contains(source, imagePreviewPatchMarker) || strings.Contains(source, imagePreviewNativeCompatibleMarker)}
 
 	var changed bool
 	source, result.Recognized, changed = upgradeLegacyImagePreviewRenderers(source, result.Recognized)
 	result.Changed = changed
 
 	updated, recognized, changed := patchOriginalImagePreviewRenderers(source)
+	source = updated
+	result.Recognized = result.Recognized || recognized
+	result.Changed = result.Changed || changed
+
+	updated, recognized, changed = markNativeImagePreviewRenderers(source)
 	source = updated
 	result.Recognized = result.Recognized || recognized
 	result.Changed = result.Changed || changed
@@ -312,12 +339,72 @@ func patchImagePreviewRenderer(source string) (string, imagePreviewPatchResult) 
 	return source, result
 }
 
+func markNativeImagePreviewRenderers(source string) (string, bool, bool) {
+	matches := findNativeImagePreviewRendererMatches(source)
+	if len(matches) != 1 {
+		return source, strings.Contains(source, imagePreviewNativeCompatibleMarker), false
+	}
+	match := matches[0]
+	marker := "/*" + imagePreviewNativeCompatibleMarker + "*/"
+	if match.start >= len(marker) && source[match.start-len(marker):match.start] == marker {
+		return source, true, false
+	}
+	return source[:match.start] + marker + source[match.start:], true, true
+}
+
+func findNativeImagePreviewRendererMatches(source string) []imagePreviewNativeRendererMatch {
+	var matches []imagePreviewNativeRendererMatch
+	for _, match := range imagePreviewNativeRendererPrefixPattern.FindAllStringSubmatchIndex(source, -1) {
+		step := imagePreviewSubmatch(source, match, 2)
+		if step == "" || match[1] <= 0 || source[match[1]-1] != '{' {
+			continue
+		}
+		end, ok := imagePreviewJavaScriptBalancedBlockEnd(source, match[1]-1)
+		if !ok || end-match[0] > 16*1024 {
+			continue
+		}
+		component := source[match[0]:end]
+		mediaPattern := regexp.MustCompile(`(` + imagePreviewJavaScriptIdentifier + `)=` + regexp.QuoteMeta(step) + `\.generatedMedia,`)
+		mediaMatches := mediaPattern.FindAllStringSubmatch(component, -1)
+		if len(mediaMatches) != 1 {
+			continue
+		}
+		media := mediaMatches[0][1]
+		required := []string{
+			"stepHandler:{openFile:", "resolveArtifactUrl:",
+			media + `?.uri`, `payload.case==="inlineData"`,
+			`alt:"Generated image preview"`, `children:"Prompt"`,
+		}
+		valid := true
+		for _, token := range required {
+			if !strings.Contains(component, token) {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		matches = append(matches, imagePreviewNativeRendererMatch{
+			start: match[0], prefixEnd: match[1], end: end, step: step, media: media,
+		})
+	}
+	return matches
+}
+
 // patchDuplicateGeneratedImageRenderers keeps the native generated-image card
 // (including its prompt) and hides only the matching duplicate rendered by
 // the verified Markdown artifact component. It is deliberately all-or-nothing
 // for this optional behaviour: an unknown or ambiguous component is left
 // untouched rather than guessing where a normal Markdown image begins.
 func patchDuplicateGeneratedImageRenderers(source string) (string, bool, bool) {
+	if upgraded, recognized, changed := upgradeLegacyImageDedupeRenderers(source); recognized {
+		source = upgraded
+		if strings.Contains(source, imageGenerationDedupePatchMarker) {
+			return source, true, changed
+		}
+		return source, true, false
+	}
 	if strings.Contains(source, imageGenerationDedupePatchMarker) {
 		return source, true, false
 	}
@@ -342,6 +429,23 @@ func patchDuplicateGeneratedImageRenderers(source string) (string, bool, bool) {
 	}
 	output.WriteString(source[last:])
 	return output.String(), true, true
+}
+
+// upgradeLegacyImageDedupeRenderers migrates only the exact v2 runtime emitted
+// by this project. It does not remove or replace arbitrary JavaScript around a
+// marker. The component continues using the stable V2 global ABI while the
+// remember function gains the mounted-node cleanup needed by v3.
+func upgradeLegacyImageDedupeRenderers(source string) (string, bool, bool) {
+	if !strings.Contains(source, imageGenerationDedupePatchV2Marker) {
+		return source, false, false
+	}
+	legacy := generatedImageLegacyRememberDefinition()
+	if !strings.Contains(source, legacy) {
+		return source, true, false
+	}
+	updated := strings.ReplaceAll(source, legacy, generatedImageMountedDuplicateHiderDefinition()+generatedImageRememberDefinition())
+	updated = strings.ReplaceAll(updated, imageGenerationDedupePatchV2Marker, imageGenerationDedupePatchMarker)
+	return updated, true, updated != source
 }
 
 // generatedImageRegistrationReplacements adds a short-lived record for every
@@ -377,51 +481,116 @@ func generatedImageRegistrationReplacements(source string) []imagePreviewRendere
 			searchFrom = start + len(marker)
 			continue
 		}
-		registration := `globalThis.__antigravityWFImageKeyV2??=(value=>{let text=typeof value==="string"?value:"";if(!text)return"";try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\/(?:localhost)?/i,"").replace(/\\/g,"/")}),` +
-			`globalThis.__antigravityWFGeneratedImageTimesV2??=new Map,` +
-			`globalThis.__antigravityWFRememberGeneratedImageV2??=(value=>{let key=globalThis.__antigravityWFImageKeyV2(value);if(!key)return;let now=Date.now(),images=globalThis.__antigravityWFGeneratedImageTimesV2;images instanceof Map||(images=globalThis.__antigravityWFGeneratedImageTimesV2=new Map),images.set(key,now);if(images.size>128)for(let[candidate,seen]of images)if(typeof seen!=="number"||now-seen>=600000||images.size>128)images.delete(candidate)}),` +
-			`globalThis.__antigravityWFIsRecentGeneratedImageV2??=(value=>{let key=globalThis.__antigravityWFImageKeyV2(value),images=globalThis.__antigravityWFGeneratedImageTimesV2;if(!key||!(images instanceof Map))return!1;let now=Date.now(),seen=images.get(key);return typeof seen==="number"&&now>=seen&&now-seen<600000||(images.delete(key),!1)}),` +
-			image + `&&globalThis.__antigravityWFRememberGeneratedImageV2(` + image + `),` +
-			media + `?.uri&&globalThis.__antigravityWFRememberGeneratedImageV2(` + media + `.uri);`
+		registration := generatedImageRegistrationRuntime(image, media+`?.uri`)
 		replacements = append(replacements, imagePreviewRendererReplacement{start: end, end: end, value: registration})
 		searchFrom = end
+	}
+	if len(replacements) == 0 {
+		replacements = nativeGeneratedImageRegistrationReplacements(source)
 	}
 	return replacements
 }
 
+func nativeGeneratedImageRegistrationReplacements(source string) []imagePreviewRendererReplacement {
+	marker := "/*" + imagePreviewNativeCompatibleMarker + "*/"
+	var replacements []imagePreviewRendererReplacement
+	for _, match := range findNativeImagePreviewRendererMatches(source) {
+		if match.start < len(marker) || source[match.start-len(marker):match.start] != marker {
+			continue
+		}
+		value := match.step + `.generatedMedia?.uri`
+		replacements = append(replacements, imagePreviewRendererReplacement{
+			start: match.prefixEnd, end: match.prefixEnd, value: generatedImageRegistrationRuntime(value),
+		})
+	}
+	return replacements
+}
+
+func generatedImageRegistrationRuntime(values ...string) string {
+	registration := `globalThis.__antigravityWFImageKeyV2??=(value=>{let text=typeof value==="string"?value:"";if(!text)return"";try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\/(?:localhost)?/i,"").replace(/\\/g,"/")}),` +
+		`globalThis.__antigravityWFGeneratedImageTimesV2??=new Map,` +
+		generatedImageMountedDuplicateHiderDefinition() + generatedImageRememberDefinition() +
+		`globalThis.__antigravityWFIsRecentGeneratedImageV2??=(value=>{let key=globalThis.__antigravityWFImageKeyV2(value),images=globalThis.__antigravityWFGeneratedImageTimesV2;if(!key||!(images instanceof Map))return!1;let now=Date.now(),seen=images.get(key);return typeof seen==="number"&&now>=seen&&now-seen<600000||(images.delete(key),!1)}),`
+	for index, value := range values {
+		if index > 0 {
+			registration += ","
+		}
+		registration += value + `&&globalThis.__antigravityWFRememberGeneratedImageV2(` + value + `)`
+	}
+	return registration + ";"
+}
+
+func generatedImageLegacyRememberDefinition() string {
+	return `globalThis.__antigravityWFRememberGeneratedImageV2??=(value=>{let key=globalThis.__antigravityWFImageKeyV2(value);if(!key)return;let now=Date.now(),images=globalThis.__antigravityWFGeneratedImageTimesV2;images instanceof Map||(images=globalThis.__antigravityWFGeneratedImageTimesV2=new Map),images.set(key,now);if(images.size>128)for(let[candidate,seen]of images)if(typeof seen!=="number"||now-seen>=600000||images.size>128)images.delete(candidate)}),`
+}
+
+func generatedImageMountedDuplicateHiderDefinition() string {
+	return `globalThis.__antigravityWFHideGeneratedImageV2??=(key=>{if(!key||typeof document==="undefined"||typeof document.querySelectorAll!=="function")return;let hide=()=>{for(let image of document.querySelectorAll("img")){let imageKey=globalThis.__antigravityWFImageKeyV2(image.currentSrc||image.src);if(imageKey!==key)continue;let container=typeof image.closest==="function"?image.closest('[class~="group/media"]'):null;if(container){container.hidden=!0,container.style&&(container.style.display="none"),container.setAttribute?.("data-antigravity-wf-generated-duplicate","true")}}};hide(),typeof queueMicrotask==="function"&&queueMicrotask(hide),typeof setTimeout==="function"&&(setTimeout(hide,0),setTimeout(hide,120))}),`
+}
+
+func generatedImageRememberDefinition() string {
+	// Assignment (rather than ??=) deliberately upgrades an already-loaded v2
+	// function in renderer bundles that share a global execution context.
+	return `globalThis.__antigravityWFRememberGeneratedImageV2=(value=>{let key=globalThis.__antigravityWFImageKeyV2(value);if(!key)return;let now=Date.now(),images=globalThis.__antigravityWFGeneratedImageTimesV2;images instanceof Map||(images=globalThis.__antigravityWFGeneratedImageTimesV2=new Map),images.set(key,now);if(images.size>128)for(let[candidate,seen]of images)if(typeof seen!=="number"||now-seen>=600000||images.size>128)images.delete(candidate);globalThis.__antigravityWFHideGeneratedImageV2?.(key)}),`
+}
+
 func imageArtifactMarkdownReplacement(source string) *imagePreviewRendererReplacement {
 	matches := imageArtifactMarkdownRendererPrefixPattern.FindAllStringSubmatchIndex(source, -1)
-	if len(matches) != 1 {
+	candidates := make([]imagePreviewRendererReplacement, 0, 1)
+	for _, match := range matches {
+		sourceValue := imagePreviewSubmatch(source, match, 2)
+		altValue := imagePreviewSubmatch(source, match, 3)
+		originalPath := imagePreviewSubmatch(source, match, 4)
+		errorState := imagePreviewSubmatch(source, match, 8)
+		resolvedValue := imagePreviewSubmatch(source, match, 11)
+		if sourceValue == "" || altValue == "" || originalPath == "" || errorState == "" || resolvedValue == "" || sourceValue != imagePreviewSubmatch(source, match, 13) {
+			continue
+		}
+		end, ok := imageArtifactMarkdownRendererEnd(source, match[0], match[1])
+		if !ok || end-match[0] > 16*1024 {
+			continue
+		}
+		component := source[match[0]:end]
+		// Antigravity 2.5.5 places image, audio, and video components next to
+		// each other with the same prop/state prefix. Select only the exact image
+		// component instead of rejecting the bundle because all three match.
+		if !strings.Contains(component, `alt:`+altValue+`||"Artifact image"`) ||
+			strings.Contains(component, `("audio",{`) || strings.Contains(component, `("video",{`) {
+			continue
+		}
+		returnNeedle := `;return!` + sourceValue + `||` + errorState + `?`
+		ifNeedle := `;if(!` + sourceValue + `||` + errorState + `)return`
+		returnCount := strings.Count(component, returnNeedle)
+		ifCount := strings.Count(component, ifNeedle)
+		if returnCount+ifCount != 1 {
+			continue
+		}
+		needle := returnNeedle
+		if ifCount == 1 {
+			needle = ifNeedle
+		}
+		returnOffset := strings.Index(component[match[1]-match[0]:], needle)
+		if returnOffset < 0 {
+			continue
+		}
+		returnStart := match[1] + returnOffset
+		duplicate := `$wfImageDuplicate=!!globalThis.__antigravityWFIsRecentGeneratedImageV2&&[` + sourceValue + `,` + resolvedValue + `,` + originalPath + `].some(value=>globalThis.__antigravityWFIsRecentGeneratedImageV2(value)),`
+		beforeReturn := source[match[0]:match[1]] + duplicate + source[match[1]:returnStart]
+		afterReturn := source[returnStart:end]
+		if returnCount == 1 {
+			afterReturn = strings.Replace(afterReturn, returnNeedle, `;return $wfImageDuplicate?null:!`+sourceValue+`||`+errorState+`?`, 1)
+		} else {
+			afterReturn = strings.Replace(afterReturn, ifNeedle, `;if($wfImageDuplicate)return null;if(!`+sourceValue+`||`+errorState+`)return`, 1)
+		}
+		candidates = append(candidates, imagePreviewRendererReplacement{
+			start: match[0], end: end,
+			value: "/*" + imageGenerationDedupePatchMarker + "*/" + beforeReturn + afterReturn,
+		})
+	}
+	if len(candidates) != 1 {
 		return nil
 	}
-	match := matches[0]
-	sourceValue := imagePreviewSubmatch(source, match, 2)
-	originalPath := imagePreviewSubmatch(source, match, 4)
-	errorState := imagePreviewSubmatch(source, match, 8)
-	resolvedValue := imagePreviewSubmatch(source, match, 11)
-	if sourceValue == "" || originalPath == "" || errorState == "" || resolvedValue == "" || sourceValue != imagePreviewSubmatch(source, match, 13) {
-		return nil
-	}
-	end, ok := imageArtifactMarkdownRendererEnd(source, match[0], match[1])
-	if !ok || end-match[0] > 16*1024 {
-		return nil
-	}
-	component := source[match[0]:end]
-	returnNeedle := `;return!` + sourceValue + `||` + errorState + `?`
-	returnOffset := strings.Index(component[match[1]-match[0]:], returnNeedle)
-	if returnOffset < 0 || strings.Count(component, returnNeedle) != 1 {
-		return nil
-	}
-	returnStart := match[1] + returnOffset
-	duplicate := `$wfImageDuplicate=!!globalThis.__antigravityWFIsRecentGeneratedImageV2&&[` + sourceValue + `,` + resolvedValue + `,` + originalPath + `].some(value=>globalThis.__antigravityWFIsRecentGeneratedImageV2(value)),`
-	beforeReturn := source[match[0]:match[1]] + duplicate + source[match[1]:returnStart]
-	afterReturn := source[returnStart:end]
-	afterReturn = strings.Replace(afterReturn, returnNeedle, `;return $wfImageDuplicate?null:!`+sourceValue+`||`+errorState+`?`, 1)
-	return &imagePreviewRendererReplacement{
-		start: match[0],
-		end:   end,
-		value: "/*" + imageGenerationDedupePatchMarker + "*/" + beforeReturn + afterReturn,
-	}
+	return &candidates[0]
 }
 
 // imageArtifactMarkdownRendererEnd finds the end of the complete arrow

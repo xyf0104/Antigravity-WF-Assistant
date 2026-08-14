@@ -22,6 +22,16 @@ import (
 
 var windowsOperationMu sync.Mutex
 
+const windowsStatusCacheTTL = 2 * time.Minute
+
+var windowsStatusCache = struct {
+	sync.Mutex
+	status       Status
+	fingerprints map[string]string
+	at           time.Time
+	valid        bool
+}{fingerprints: map[string]string{}}
+
 // windowsASARPostReplaceHook is deliberately nil in production. Windows-only
 // regression tests use it to force a validation failure after app.asar has
 // been replaced, proving that a migration rolls back to the user's immediate
@@ -31,6 +41,16 @@ var windowsASARPostReplaceHook func()
 func runWindows(action string) (message string, err error) {
 	windowsOperationMu.Lock()
 	defer windowsOperationMu.Unlock()
+	if action != "status" {
+		defer func() {
+			// A metadata-verified no-op keeps the expensive full status cache.
+			// Actual writes, restore attempts, and failures always invalidate it.
+			if err != nil || action == "restore" || !strings.Contains(message, "文件未变化，无需重复扫描") ||
+				strings.Contains(message, "补丁应用成功") || strings.Contains(message, "启用实际生图模型标题") {
+				invalidateWindowsStatusCache()
+			}
+		}()
+	}
 	// Restore only consumes snapshots captured before the most recent upgrade;
 	// it must remain available even when a hand-edited runtime port state is
 	// corrupt.
@@ -41,10 +61,10 @@ func runWindows(action string) (message string, err error) {
 			return "", err
 		}
 	}
-	targets := locateWindowsInstallations()
 	if action == "status" {
-		return windowsStatusText(buildWindowsStatus(targets)), nil
+		return windowsStatusText(refreshWindowsStatus()), nil
 	}
+	targets := locateWindowsInstallations()
 	if len(targets) == 0 {
 		return "", fmt.Errorf("未找到可支持的 Antigravity 安装（已检查环境变量、LocalAppData、Program Files、运行中进程、注册表和各磁盘常用目录）")
 	}
@@ -68,10 +88,190 @@ func runWindows(action string) (message string, err error) {
 }
 
 func getWindowsStatus() Status {
+	windowsStatusCache.Lock()
+	if windowsStatusCache.valid && time.Since(windowsStatusCache.at) < windowsStatusCacheTTL {
+		status := cloneWindowsStatus(windowsStatusCache.status)
+		windowsStatusCache.Unlock()
+		return status
+	}
+	windowsStatusCache.Unlock()
+
 	// Status remains available even if a hand-edited runtime state is invalid;
 	// apply will surface that error and refuse to write an inconsistent patch.
 	_ = refreshPatchProxyEndpoint()
-	return buildWindowsStatus(locateWindowsInstallations())
+	return cacheWindowsStatus(buildWindowsStatus(locateWindowsInstallations()))
+}
+
+func getWindowsQuickStatus() Status {
+	windowsStatusCache.Lock()
+	if windowsStatusCache.valid {
+		status := cloneWindowsStatus(windowsStatusCache.status)
+		windowsStatusCache.Unlock()
+		return status
+	}
+	windowsStatusCache.Unlock()
+	_ = refreshPatchProxyEndpoint()
+	return buildWindowsQuickStatus(locateWindowsInstallationsFast())
+}
+
+func refreshWindowsStatus() Status {
+	_ = refreshPatchProxyEndpoint()
+	return cacheWindowsStatus(buildWindowsStatus(refreshWindowsInstallations()))
+}
+
+func buildWindowsQuickStatus(targets []windowsTarget) Status {
+	status := Status{ProxyListening: windowsProxyListening()}
+	for _, target := range targets {
+		status.Targets = append(status.Targets, TargetStatus{
+			Name: target.name, Kind: target.kind, Version: target.version, AppPath: target.root,
+			ExecutablePath: target.executable,
+			MainPath:       target.main, ASARPath: target.asar, ExtensionPath: target.extensionEntry,
+			LanguageServerPath: target.language, Reason: "正在后台核验兼容结构",
+		})
+		if status.AsarPath == "" {
+			status.AsarPath = firstWindowsValue(target.asar, target.main)
+			status.LSPath = target.language
+		}
+		if target.kind == "ide" && status.IDEExtensionPath == "" {
+			status.IDEExtensionPath = target.extensionEntry
+			status.IDELSPath = target.language
+		}
+	}
+	return status
+}
+
+func cacheWindowsStatus(status Status) Status {
+	windowsStatusCache.Lock()
+	windowsStatusCache.status = cloneWindowsStatus(status)
+	windowsStatusCache.fingerprints = make(map[string]string, len(status.Targets))
+	for _, target := range status.Targets {
+		windowsStatusCache.fingerprints[strings.ToLower(filepath.Clean(target.AppPath))] = windowsStatusTargetFingerprint(target)
+	}
+	windowsStatusCache.at = time.Now()
+	windowsStatusCache.valid = true
+	windowsStatusCache.Unlock()
+	return cloneWindowsStatus(status)
+}
+
+func invalidateWindowsStatusCache() {
+	windowsStatusCache.Lock()
+	windowsStatusCache.status = Status{}
+	windowsStatusCache.fingerprints = map[string]string{}
+	windowsStatusCache.at = time.Time{}
+	windowsStatusCache.valid = false
+	windowsStatusCache.Unlock()
+}
+
+func windowsStatusTargetFingerprint(target TargetStatus) string {
+	paths := []string{
+		target.ExecutablePath, target.MainPath, target.ASARPath, target.ExtensionPath,
+		target.LanguageServerPath, filepath.Join(target.AppPath, "resources", "app", "product.json"),
+	}
+	if target.Kind == "ide" {
+		paths = append(paths, imagePreviewRendererPaths(filepath.Join(target.AppPath, "resources", "app"))...)
+		if settingsPath, _, err := windowsTargetSettingsPathFromProduct(windowsTarget{root: target.AppPath, kind: "ide"}); err == nil {
+			paths = append(paths, settingsPath)
+		}
+	} else if target.ASARPath != "" {
+		for _, relative := range imagePreviewASARRelativePaths {
+			paths = append(paths, filepath.Join(target.ASARPath+".unpacked", filepath.FromSlash(relative)))
+		}
+	}
+	sort.Strings(paths)
+	var fingerprint strings.Builder
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			fmt.Fprintf(&fingerprint, "%s|missing;", strings.ToLower(filepath.Clean(path)))
+			continue
+		}
+		fmt.Fprintf(&fingerprint, "%s|%d|%d;", strings.ToLower(filepath.Clean(path)), info.Size(), info.ModTime().UnixNano())
+	}
+	return fingerprint.String()
+}
+
+func windowsCachedTargetConnected(target windowsTarget) bool {
+	key := strings.ToLower(filepath.Clean(target.root))
+	windowsStatusCache.Lock()
+	if !windowsStatusCache.valid || time.Since(windowsStatusCache.at) >= windowsStatusCacheTTL {
+		windowsStatusCache.Unlock()
+		return false
+	}
+	cachedFingerprint, ok := windowsStatusCache.fingerprints[key]
+	cachedPatched := false
+	for _, item := range windowsStatusCache.status.Targets {
+		if strings.EqualFold(filepath.Clean(item.AppPath), filepath.Clean(target.root)) {
+			cachedPatched = item.Supported && item.Patched
+			break
+		}
+	}
+	windowsStatusCache.Unlock()
+	if !ok || !cachedPatched {
+		return false
+	}
+	current := TargetStatus{
+		Kind: target.kind, AppPath: target.root, ExecutablePath: target.executable,
+		MainPath: target.main, ASARPath: target.asar, ExtensionPath: target.extensionEntry,
+		LanguageServerPath: target.language,
+	}
+	return cachedFingerprint == windowsStatusTargetFingerprint(current)
+}
+
+// windowsCachedTargetSupport reuses a recent structural verification only
+// while every relevant executable, bundle, renderer, product and settings
+// file still has the exact same metadata fingerprint. Version upgrades and
+// manual file edits therefore fall back to the full compatibility validator.
+func windowsCachedTargetSupport(target windowsTarget) (bool, string, string, bool) {
+	key := strings.ToLower(filepath.Clean(target.root))
+	windowsStatusCache.Lock()
+	if !windowsStatusCache.valid || time.Since(windowsStatusCache.at) >= windowsStatusCacheTTL {
+		windowsStatusCache.Unlock()
+		return false, "", "", false
+	}
+	cachedFingerprint, hasFingerprint := windowsStatusCache.fingerprints[key]
+	var cached TargetStatus
+	found := false
+	for _, item := range windowsStatusCache.status.Targets {
+		if strings.EqualFold(filepath.Clean(item.AppPath), filepath.Clean(target.root)) {
+			cached = item
+			found = true
+			break
+		}
+	}
+	windowsStatusCache.Unlock()
+	if !hasFingerprint || !found {
+		return false, "", "", false
+	}
+	current := TargetStatus{
+		Kind: target.kind, AppPath: target.root, ExecutablePath: target.executable,
+		MainPath: target.main, ASARPath: target.asar, ExtensionPath: target.extensionEntry,
+		LanguageServerPath: target.language,
+	}
+	if cachedFingerprint != windowsStatusTargetFingerprint(current) {
+		return false, "", "", false
+	}
+	return cached.Supported, cached.ConnectionMode, cached.Reason, true
+}
+
+func cloneWindowsStatus(status Status) Status {
+	result := status
+	result.Targets = append([]TargetStatus(nil), status.Targets...)
+	if status.AgentPatched != nil {
+		value := *status.AgentPatched
+		result.AgentPatched = &value
+	}
+	if status.IDEPatched != nil {
+		value := *status.IDEPatched
+		result.IDEPatched = &value
+	}
+	if status.IdeMainPatched != nil {
+		value := *status.IdeMainPatched
+		result.IdeMainPatched = &value
+	}
+	return result
 }
 
 func buildWindowsStatus(targets []windowsTarget) Status {
@@ -185,8 +385,21 @@ func applyWindowsTargetsForKind(targets []windowsTarget, targetKind string) (str
 	// connecting, and it must never be treated as a reason to write its bundle.
 	compatible := make([]windowsTarget, 0, len(selected))
 	messages := make([]string, 0, len(selected))
+	alreadyConnected := 0
 	for _, target := range selected {
-		supported, _, reason := windowsTargetConnectionSupport(target)
+		// A full dashboard verification stores a metadata fingerprint for every
+		// connected target. If none of its executable, bundle, renderer, product
+		// or settings files changed, avoid reparsing tens or hundreds of MB on a
+		// repeated click. Any product update or manual edit invalidates this path.
+		if windowsCachedTargetConnected(target) {
+			messages = append(messages, fmt.Sprintf("%s 已处于连接状态，文件未变化，无需重复扫描。", target.name))
+			alreadyConnected++
+			continue
+		}
+		supported, _, reason, cached := windowsCachedTargetSupport(target)
+		if !cached {
+			supported, _, reason = windowsTargetConnectionSupport(target)
+		}
 		if !supported {
 			messages = append(messages, fmt.Sprintf("%s 未连接：%s", target.name, reason))
 			continue
@@ -194,6 +407,9 @@ func applyWindowsTargetsForKind(targets []windowsTarget, targetKind string) (str
 		compatible = append(compatible, target)
 	}
 	if len(compatible) == 0 {
+		if alreadyConnected > 0 {
+			return strings.Join(messages, "\n\n") + "\n\n请保持本工具运行，然后打开对应的 Antigravity。", nil
+		}
 		return strings.Join(messages, "\n\n"), fmt.Errorf("未找到可安全连接的 Antigravity 安装；助手没有修改任何安装文件")
 	}
 	if windowsTargetsRunning(compatible) {

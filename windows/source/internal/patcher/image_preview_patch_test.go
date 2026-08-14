@@ -66,6 +66,21 @@ func imageGenerationCombinedUIRendererFixture() string {
 	return `const Za=status=>status==="loading",m=(component,props)=>({component,props}),co=()=>{},es=()=>{},UEi=()=>{};let GEi,XEi;GEi={"gemini-3.1-flash-image":{displayName:"Gemini 3.1 Flash Image",isNewModel:!0}},XEi=({step:e,status:t,error:r})=>{let n=!!e.generatedMedia?.uri,a=e.modelName?GEi[e.modelName]:void 0,i=a?.displayName||"Gemini",s=a?.isNewModel??!1,o=Za(t)?` + "`Generating with ${i} \\u{1F34C}`" + `:n?` + "`Generated with ${i} \\u{1F34C}`" + `:` + "`Generate with ${i} \\u{1F34C}`" + `;return m(co,{loading:Za(t),title:m(es,{prefix:s?m("span",{children:"New"}):void 0,content:o}),supplementaryView:r?null:m(UEi,{step:e,status:t}),cta:null})};`
 }
 
+// imageNativePreviewRendererFixture mirrors the validated native preview
+// component first observed in Antigravity IDE 2.5.5. It already resolves and
+// displays generatedMedia correctly, so it needs a compatibility marker and
+// short-lived URI registration rather than the legacy preview fallback.
+func imageNativePreviewRendererFixture() string {
+	return `;const ctx=()=>({stepHandler:{openFile:()=>{},resolveArtifactUrl:value=>value}}),remote=()=>({isRemoteControl:false}),remoteBlob=()=>({blobUrl:void 0}),inlineData=value=>value,loading=()=>false;let NativePreview;NativePreview=({step:e,status:t})=>{let{stepHandler:{openFile:r,resolveArtifactUrl:n}={}}=ctx(),{isRemoteControl:a}=remote(),i=e.generatedMedia,{blobUrl:s}=remoteBlob(a&&i?.uri?i.uri:void 0),o;a&&i?.uri?o=s:i?.uri?o=n?.(i.uri)||void 0:i?.payload.case==="inlineData"&&(o=i?inlineData(i):void 0);let l=loading(t)&&!o,d=()=>{i?.uri&&r?.(i.uri)};return m("div",{children:[e.prompt&&m("div",{children:m("div",{children:"Prompt"})}),l?null:m("img",{src:o,alt:"Generated image preview",onClick:d})]})};`
+}
+
+// IDE 2.5.5 changed the Markdown image component from a ternary return to an
+// early if-return. Keep a dedicated fixture so exact generated-image dedupe
+// does not regress when the normal artifact component evolves again.
+func imageArtifactMarkdownIfRendererFixture() string {
+	return `;const ke=initial=>[initial,()=>{}],bun=value=>value,F=(component,props)=>({component,props}),modal=()=>({open:()=>{},modal:null});let _Ci;_Ci=({src:e,alt:t,originalFilePath:r,popout:n=!0,className:a="",openUri:i})=>{let[s,o]=ke(!1),u=bun(e),{open:d,modal:h}=modal(u),m=()=>{};if(!e||s)return F("fallback",{});let p=!!(i&&r);return F("div",{src:u,alt:t||"Artifact image",originalFilePath:r,popout:n,className:a,openUri:i,open:d,modal:h,canOpen:p,onError:()=>o(!0),noop:m})};`
+}
+
 // imageArtifactMarkdownRendererFixture mirrors the dedicated Markdown image
 // component used by IDE 2.1.1. The patch is deliberately anchored to this
 // complete prop/state/resolver shape, not to the generic "Artifact image" alt.
@@ -222,6 +237,109 @@ process.stdout.write(JSON.stringify({
 	}
 	if got.GPT != "Generated with GPT Image 2" || got.Gemini != "Generated with Gemini 3.1 Flash Image \U0001F34C" || got.GenericGemini != "Generated with Gemini 3.6 Flash \U0001F34C" || got.Unknown != "Generated with image-alpha" || got.Loading != "Generating image" {
 		t.Fatalf("unexpected patched combined image-generation UI state: %#v", got)
+	}
+}
+
+func TestPatchIDE255NativePreviewUsesActualModelAndHidesDuplicate(t *testing.T) {
+	source := imageGenerationCombinedUIRendererFixture() + imageNativePreviewRendererFixture() + imageArtifactMarkdownIfRendererFixture()
+	updated, result := patchImagePreviewRenderer(source)
+	if !result.Recognized || !result.Changed {
+		t.Fatalf("Antigravity IDE 2.5.5 renderer was not patched: %#v", result)
+	}
+	for _, required := range []string{
+		imagePreviewNativeCompatibleMarker,
+		imageGenerationUIPatchMarker,
+		imageGenerationDedupePatchMarker,
+		`/^gpt-image-(\d+)$/i.exec(modelName||"")`,
+		`globalThis.__antigravityWFRememberGeneratedImageV2`,
+		`if($wfImageDuplicate)return null`,
+	} {
+		if !strings.Contains(updated, required) {
+			t.Fatalf("patched IDE 2.5.5 renderer is missing %q: %s", required, updated)
+		}
+	}
+	if strings.Contains(updated, imagePreviewPatchMarker) {
+		t.Fatal("native IDE 2.5.5 preview must not receive the legacy fallback")
+	}
+	if !windowsImageRendererReady([]byte(updated)) {
+		t.Fatal("native IDE 2.5.5 renderer was not accepted as fully ready")
+	}
+	second, secondResult := patchImagePreviewRenderer(updated)
+	if !secondResult.Recognized || secondResult.Changed || second != updated {
+		t.Fatalf("patched IDE 2.5.5 renderer must be idempotent: %#v", secondResult)
+	}
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable; IDE 2.5.5 runtime check skipped")
+	}
+	path := filepath.Join(t.TempDir(), "ide-2.5.5-image-ui.js")
+	runtimeSource := `"use strict";` + updated + `
+const duplicateContainer={hidden:false,style:{},setAttribute:(name,value)=>{duplicateContainer.attribute=name+"="+value}};
+const alreadyMountedImage={src:"vscode-file://vscode-app/C:/Users/Test/Image.png",closest:selector=>selector==='[class~="group/media"]'?duplicateContainer:null};
+globalThis.document={querySelectorAll:selector=>selector==="img"?[alreadyMountedImage]:[]};
+const preRendered=_Ci({src:"vscode-file://vscode-app/C:/Users/Test/Image.png",alt:"Artifact image",originalFilePath:"C:\\Users\\Test\\Image.png"});
+NativePreview({step:{prompt:"portrait",generatedMedia:{uri:"file:///C:/Users/Test/Image.png"}},status:"done"});
+const title=XEi({step:{modelName:"gpt-image-2",generatedMedia:{uri:"file:///C:/Users/Test/Image.png"}},status:"done"}).props.title.props.content;
+const matching=_Ci({src:"vscode-file://vscode-app/C:/Users/Test/Image.png",alt:"Artifact image",originalFilePath:"C:\\Users\\Test\\Image.png"});
+const different=_Ci({src:"file:///C:/Users/Test/Other.png",alt:"Normal Markdown image",originalFilePath:"C:\\Users\\Test\\Other.png"});
+process.stdout.write(JSON.stringify({title,preRendered:!!preRendered,matching,differentAlt:different?.props?.alt,alreadyMountedHidden:duplicateContainer.hidden&&duplicateContainer.style.display==="none"}));`
+	if err := os.WriteFile(path, []byte(runtimeSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
+		t.Fatalf("patched IDE 2.5.5 renderer failed node --check: %s: %v", output, err)
+	}
+	output, err := exec.Command(node, path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("patched IDE 2.5.5 renderer failed at runtime: %s: %v", output, err)
+	}
+	var got struct {
+		Title                string `json:"title"`
+		PreRendered          bool   `json:"preRendered"`
+		Matching             any    `json:"matching"`
+		DifferentAlt         string `json:"differentAlt"`
+		AlreadyMountedHidden bool   `json:"alreadyMountedHidden"`
+	}
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("patched IDE 2.5.5 renderer returned invalid JSON %q: %v", output, err)
+	}
+	if got.Title != "Generated with GPT Image 2" || !got.PreRendered || got.Matching != nil || got.DifferentAlt != "Normal Markdown image" || !got.AlreadyMountedHidden {
+		t.Fatalf("unexpected IDE 2.5.5 image UI state: %#v", got)
+	}
+}
+
+func TestPatchDuplicateGeneratedImageRendererUpgradesV2MountedImageRace(t *testing.T) {
+	fresh, result := patchImagePreviewRenderer(imageNativePreviewRendererFixture() + imageArtifactMarkdownIfRendererFixture())
+	if !result.Changed || !strings.Contains(fresh, imageGenerationDedupePatchMarker) {
+		t.Fatalf("failed to create current dedupe fixture: %#v", result)
+	}
+	legacy := strings.ReplaceAll(fresh, imageGenerationDedupePatchMarker, imageGenerationDedupePatchV2Marker)
+	legacy = strings.ReplaceAll(
+		legacy,
+		generatedImageMountedDuplicateHiderDefinition()+generatedImageRememberDefinition(),
+		generatedImageLegacyRememberDefinition(),
+	)
+	updated, result := patchImagePreviewRenderer(legacy)
+	if !result.Recognized || !result.Changed {
+		t.Fatalf("v2 dedupe fixture was not upgraded: %#v", result)
+	}
+	for _, required := range []string{
+		imageGenerationDedupePatchMarker,
+		`__antigravityWFHideGeneratedImageV2`,
+		`document.querySelectorAll("img")`,
+		`container.style.display="none"`,
+	} {
+		if !strings.Contains(updated, required) {
+			t.Fatalf("v3 dedupe upgrade is missing %q", required)
+		}
+	}
+	if strings.Contains(updated, imageGenerationDedupePatchV2Marker) || strings.Contains(updated, generatedImageLegacyRememberDefinition()) {
+		t.Fatal("v2 dedupe runtime remained after upgrade")
+	}
+	second, secondResult := patchImagePreviewRenderer(updated)
+	if !secondResult.Recognized || secondResult.Changed || second != updated {
+		t.Fatalf("v3 dedupe upgrade is not idempotent: %#v", secondResult)
 	}
 }
 

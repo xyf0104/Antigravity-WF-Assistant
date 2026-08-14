@@ -15,7 +15,6 @@ import {
 import {
   state,
   saveModel,
-  deleteModel,
   discoverUpstreamModels,
   testUpstreamModelDetailed,
   cancelUpstreamAccountTest,
@@ -37,7 +36,12 @@ const editorNotice = ref("");
 const saving = ref(false);
 const discovering = ref(false);
 const isNew = ref(false);
-const confirmDelete = ref(null);
+const editingGroup = ref(null);
+const reasoningEditorOpen = ref(false);
+const reasoningEditorModel = ref(null);
+const reasoningEditorEffort = ref("auto");
+const reasoningEditorSaving = ref(false);
+const reasoningEditorError = ref("");
 const discoveredModels = ref([]);
 const selectedModelIds = ref([]);
 const discoveredReasoningEfforts = ref({});
@@ -46,8 +50,14 @@ const modelEnableBusy = ref({});
 const groupEnableBusy = ref({});
 const modelActionMessage = ref("");
 const modelActionError = ref("");
+const expandedGroupKeys = ref(new Set());
 const modelTestOpen = ref(false);
 const modelTestConfig = ref(null);
+const modelTestConfigByID = ref({});
+const modelTestModelsOverride = ref([]);
+const modelTestDefaultModelIDOverride = ref("");
+const modelTestAccountOverride = ref(null);
+const modelTestTitle = ref("测试账号连接");
 const modelTestStatus = ref("idle");
 const modelTestOutputLines = ref([]);
 const modelTestContent = ref("");
@@ -93,6 +103,7 @@ function emptyForm() {
   return {
     name: "",
     displayName: "",
+    upstreamName: "",
     description: "",
     provider: "openai",
     apiKey: "",
@@ -189,6 +200,7 @@ const allDiscoveredSelected = computed(() =>
 );
 const selectedCount = computed(() => selectedModelIds.value.length);
 const modelGroups = computed(() => groupModelsByUpstream(state.models));
+const editorTitle = computed(() => editingGroup.value ? "编辑上游 / 代理商" : (isNew.value ? "添加上游模型" : "编辑上游模型"));
 function uniqueTestModels(models) {
   const seen = new Set();
   const unique = [];
@@ -201,6 +213,7 @@ function uniqueTestModels(models) {
   return unique;
 }
 const testModalModels = computed(() => {
+  if (modelTestModelsOverride.value.length) return uniqueTestModels(modelTestModelsOverride.value);
   const models = discoveredModels.value.length
     ? discoveredModels.value
     : testTarget.value
@@ -208,12 +221,12 @@ const testModalModels = computed(() => {
       : [];
   return uniqueTestModels(models);
 });
-const testModalDefaultModelID = computed(() => testTarget.value || testModalModels.value[0]?.id || "");
-const testModalAccount = computed(() => ({
+const testModalDefaultModelID = computed(() => modelTestDefaultModelIDOverride.value || testTarget.value || testModalModels.value[0]?.id || "");
+const testModalAccount = computed(() => modelTestAccountOverride.value || ({
   // Deliberately omit API key, headers, and endpoint details. AccountTestModal
   // only needs neutral display metadata; the sensitive config remains local to
   // the native test call and is never rendered.
-  name: form.value.displayName?.trim() || form.value.externalModelName?.trim() || `${providerLabel(form.value.provider)} 临时上游`,
+  name: form.value.upstreamName?.trim() || form.value.displayName?.trim() || form.value.externalModelName?.trim() || `${providerLabel(form.value.provider)} 临时上游`,
   provider: form.value.provider,
   type: "api_key",
   enabled: true,
@@ -244,6 +257,10 @@ function providerLabel(provider) {
   return provider === "anthropic" ? "Claude" : provider === "grok" ? "Grok" : provider === "openai" ? "OpenAI" : "兼容";
 }
 
+function groupDisplayName(group) {
+  return String(group?.upstreamName || "").trim() || `${providerLabel(group?.provider)} 上游`;
+}
+
 function modelReasoningProfile(model, fallbackProvider = form.value.provider, fallbackAPIStyle = form.value.apiStyle) {
   return resolveReasoningProfile({
     ...(model && typeof model === "object" ? model : {}),
@@ -264,7 +281,7 @@ function discoveredModelID(model) {
     .replace(/^models\//, "");
 }
 
-function resetDiscoveredModelSelection(models = []) {
+function resetDiscoveredModelSelection(models = [], selectedIDs = null) {
   const list = Array.isArray(models) ? models : [];
   const efforts = {};
   for (const model of list) {
@@ -273,7 +290,10 @@ function resetDiscoveredModelSelection(models = []) {
     efforts[id] = normalizeReasoningEffort(model?.reasoningEffort, modelReasoningProfile(model));
   }
   discoveredModels.value = list;
-  selectedModelIds.value = list.map(discoveredModelID).filter(Boolean);
+  const availableIDs = list.map(discoveredModelID).filter(Boolean);
+  selectedModelIds.value = selectedIDs === null
+    ? availableIDs
+    : availableIDs.filter((id) => new Set(selectedIDs).has(id));
   discoveredReasoningEfforts.value = efforts;
   discoveredReasoningTouched.value = {};
 }
@@ -330,6 +350,75 @@ function groupBindingLabel(group) {
     for (const accountID of Array.isArray(model?.accountIds) ? model.accountIds : []) accountIDs.add(accountID);
   }
   return accountIDs.size ? `账户池 ${accountIDs.size} 个` : "直接 API 凭据";
+}
+
+function isGroupExpanded(group) {
+  return Boolean(group?.key) && expandedGroupKeys.value.has(group.key);
+}
+
+function toggleGroupExpanded(group) {
+  if (!group?.key) return;
+  const next = new Set(expandedGroupKeys.value);
+  if (next.has(group.key)) next.delete(group.key);
+  else next.add(group.key);
+  expandedGroupKeys.value = next;
+}
+
+function storedModelID(model) {
+  return String(model?.externalModelName || model?.id || model?.name || "")
+    .trim()
+    .replace(/^models\//i, "");
+}
+
+function storedModelTestConfig(model) {
+  const accountIds = [...new Set((Array.isArray(model?.accountIds) ? model.accountIds : [])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean))];
+  return {
+    provider: model?.provider || "openai",
+    upstreamName: String(model?.upstreamName || "").trim(),
+    apiUrl: model?.apiUrl || "",
+    endpointMode: model?.endpointMode || (model?.messagePathMode === "manual" ? "manual" : "auto"),
+    apiKey: model?.apiKey || "",
+    apiStyle: model?.apiStyle || "chat_completions",
+    messagePathMode: model?.messagePathMode || "auto",
+    authMode: model?.authMode || "bearer",
+    authHeader: model?.authHeader || "",
+    headers: model?.headers && typeof model.headers === "object" ? { ...model.headers } : {},
+    accountIds,
+    accountId: accountIds[0] || "",
+  };
+}
+
+function groupTestModels(group) {
+  return (group?.models || [])
+    .map((model) => ({
+      id: storedModelID(model),
+      name: String(model?.displayName || model?.externalModelName || model?.name || "").trim(),
+      config: storedModelTestConfig(model),
+    }))
+    .filter((model) => model.id);
+}
+
+function openGroupModelTest(group) {
+  const models = groupTestModels(group);
+  const preferred = models.find((entry) => modelIsEnabled(
+    (group?.models || []).find((model) => storedModelID(model) === entry.id)
+  )) || models[0];
+  const configByID = Object.fromEntries(models.map((model) => [model.id, model.config]));
+  openModelTest({
+    config: preferred?.config,
+    models,
+    defaultModelID: preferred?.id || "",
+    configByID,
+    title: `${groupDisplayName(group)} 测试 · ${groupHost(group)}`,
+    account: {
+      name: `${groupDisplayName(group)} · ${groupHost(group)}`,
+      provider: group?.provider || "openai",
+      type: "upstream",
+      enabled: true,
+    },
+  });
 }
 
 function enabledModelCount(group) {
@@ -400,8 +489,10 @@ function capabilityLabels(model) {
 
 function visibleModelName(model) {
   const base = String(model?.displayName || model?.externalModelName || model?.name || "").trim();
+  const upstream = String(model?.upstreamName || "").trim();
   const pool = String(model?.accountPoolLabel || "").trim();
-  return pool ? `${base} · ${pool}` : base;
+  const named = upstream ? `${base}（${upstream}）` : base;
+	return pool && pool.toLowerCase() !== upstream.toLowerCase() ? `${named} · ${pool}` : named;
 }
 
 function modelToForm(model) {
@@ -434,21 +525,58 @@ function modelToForm(model) {
 function openNew() {
   form.value = emptyForm();
   isNew.value = true;
+  editingGroup.value = null;
   editorError.value = "";
   editorNotice.value = "默认只需填写 XIASS 域名；如上游要求完整接口地址，可随时切换到“完整路径（手动）”。";
   resetDiscoveredModelSelection();
   editorOpen.value = true;
 }
 
-function openEdit(model) {
-  form.value = modelToForm(model);
+function openModelReasoningEditor(model) {
+  reasoningEditorModel.value = model;
+  reasoningEditorEffort.value = normalizeReasoningEffort(model?.reasoningEffort, modelReasoningProfile(model));
+  reasoningEditorError.value = "";
+  reasoningEditorOpen.value = true;
+}
+
+async function saveModelReasoning() {
+  const model = reasoningEditorModel.value;
+  if (!model?.name || reasoningEditorSaving.value) return;
+  const profile = modelReasoningProfile(model);
+  reasoningEditorSaving.value = true;
+  reasoningEditorError.value = "";
+  try {
+    const result = await saveModel({
+      ...model,
+      reasoningEffort: normalizeReasoningEffort(reasoningEditorEffort.value, profile),
+    });
+    if (!result?.ok) throw new Error(result?.message || "保存推理强度失败");
+    reasoningEditorOpen.value = false;
+    reasoningEditorModel.value = null;
+  } catch (error) {
+    reasoningEditorError.value = sanitizeModelMessage(error);
+  } finally {
+    reasoningEditorSaving.value = false;
+  }
+}
+
+function openEditGroup(group) {
+  const firstModel = group?.models?.[0];
+  if (!group?.key || !firstModel) return;
+  form.value = modelToForm(firstModel);
   isNew.value = false;
+  editingGroup.value = group;
   editorError.value = "";
-  const originalURL = String(model.apiUrl || "").trim();
-  editorNotice.value = form.value.endpointMode === "auto" && originalURL && form.value.apiUrl !== originalURL
-    ? "已将旧版保存的完整接口尾缀收敛为基础地址；智能补全会自动选择正确路径。"
-    : "";
-  resetDiscoveredModelSelection();
+  editorNotice.value = `保存后会同步更新此代理商下 ${group.models.length} 个模型的名称、协议、地址、认证、账户绑定和 API 模式；各模型的模型名、启用状态与推理强度会保留。`;
+  const currentModels = (group.models || []).map((model) => ({
+    id: storedModelID(model),
+    name: model.externalModelName || model.displayName || model.name,
+    provider: model.provider,
+    apiStyle: model.apiStyle,
+    reasoningEffort: model.reasoningEffort,
+  }));
+  const enabledIDs = (group.models || []).filter(modelIsEnabled).map(storedModelID);
+  resetDiscoveredModelSelection(currentModels, enabledIDs);
   editorOpen.value = true;
 }
 
@@ -525,6 +653,7 @@ function upstreamConfig() {
     : form.value.apiUrl?.trim();
   return {
     provider: form.value.provider,
+    upstreamName: form.value.upstreamName?.trim(),
     apiUrl,
     endpointMode,
     apiKey: form.value.apiKey?.trim(),
@@ -564,7 +693,16 @@ async function fetchModels() {
       editorError.value = sanitizeModelMessage(result?.message || "无法获取上游模型列表", config);
       return;
     }
-    resetDiscoveredModelSelection(result.models || []);
+    const models = result.models || [];
+    if (editingGroup.value) {
+      const existing = new Map((editingGroup.value.models || []).map((model) => [storedModelID(model), model]));
+      const selected = models
+        .map(discoveredModelID)
+        .filter((id) => !existing.has(id) || modelIsEnabled(existing.get(id)));
+      resetDiscoveredModelSelection(models, selected);
+    } else {
+      resetDiscoveredModelSelection(models);
+    }
     editorNotice.value = result.message || `已发现 ${selectedModelIds.value.length} 个模型，默认已全部选中。`;
   } catch (error) {
     editorError.value = sanitizeModelMessage(error, config);
@@ -588,6 +726,7 @@ function toggleAllModels() {
 function modelTestSteps(steps, config) {
   if (!Array.isArray(steps)) return [];
   return steps
+    .filter((step) => String(step?.type || "").toLowerCase() !== "complete")
     .map((step) => ({
       text: sanitizeModelMessage(step?.text, config),
       tone: String(step?.tone || "muted"),
@@ -609,6 +748,30 @@ function cancelActiveModelTest() {
   void cancelUpstreamAccountTest(requestID).catch(() => {});
 }
 
+function openModelTest({ config, models, defaultModelID, configByID = {}, account = null, title = "测试账号连接" }) {
+  const uniqueModels = uniqueTestModels(models || []);
+  if (!config || !uniqueModels.length) {
+    modelActionError.value = "没有可测试的模型配置，请先编辑或重新添加该上游。";
+    return;
+  }
+  cancelActiveModelTest();
+  modelTestGeneration += 1;
+  modelTestConfig.value = config;
+  modelTestConfigByID.value = { ...configByID };
+  modelTestModelsOverride.value = uniqueModels;
+  modelTestDefaultModelIDOverride.value = uniqueModels.some((model) => model.id === defaultModelID)
+    ? defaultModelID
+    : (uniqueModels[0]?.id || "");
+  modelTestAccountOverride.value = account;
+  modelTestTitle.value = String(title || "测试账号连接");
+  modelTestStatus.value = "idle";
+  modelTestError.value = "";
+  modelTestContent.value = "";
+  modelTestImages.value = [];
+  modelTestOutputLines.value = [{ text: "已准备详细测试；可选择模型与测试提示词。", tone: "info" }];
+  modelTestOpen.value = true;
+}
+
 function openDetailedModelTest() {
   editorError.value = "";
   let config;
@@ -622,19 +785,16 @@ function openDetailedModelTest() {
     editorError.value = "请先获取模型列表并选择一个模型，或填写上游模型名。";
     return;
   }
-  cancelActiveModelTest();
-  modelTestGeneration += 1;
-  modelTestConfig.value = config;
-  modelTestStatus.value = "idle";
-  modelTestError.value = "";
-  modelTestContent.value = "";
-  modelTestImages.value = [];
-  modelTestOutputLines.value = [{ text: "已准备详细测试；可选择模型与测试提示词。", tone: "info" }];
-  modelTestOpen.value = true;
+  openModelTest({
+    config,
+    models: testModalModels.value,
+    defaultModelID: testTarget.value,
+    account: testModalAccount.value,
+  });
 }
 
 async function runDetailedModelTest(payload) {
-  const config = modelTestConfig.value;
+  const config = modelTestConfigByID.value[String(payload?.modelId || "")] || modelTestConfig.value;
   if (!config || !payload?.modelId || modelTestStatus.value === "connecting") return;
   const generation = ++modelTestGeneration;
   const requestID = nextModelTestRequestID();
@@ -653,7 +813,8 @@ async function runDetailedModelTest(payload) {
     });
     if (generation !== modelTestGeneration) return;
     modelTestOutputLines.value = modelTestSteps(result?.steps, config);
-    modelTestContent.value = sanitizeModelMessage(result?.content || "", config);
+    const content = sanitizeModelMessage(result?.content || "", config);
+    modelTestContent.value = content && !modelTestOutputLines.value.some((line) => line.text.includes(content)) ? content : "";
     modelTestImages.value = Array.isArray(result?.images) ? result.images : [];
     if (result?.ok) {
       modelTestStatus.value = "success";
@@ -684,6 +845,11 @@ function closeDetailedModelTest() {
   cancelDetailedModelTest();
   modelTestOpen.value = false;
   modelTestConfig.value = null;
+  modelTestConfigByID.value = {};
+  modelTestModelsOverride.value = [];
+  modelTestDefaultModelIDOverride.value = "";
+  modelTestAccountOverride.value = null;
+  modelTestTitle.value = "测试账号连接";
 }
 
 function previewModelTestImage(image) {
@@ -737,6 +903,76 @@ async function setGroupEnabled(group, enabled) {
     const next = { ...groupEnableBusy.value };
     delete next[group.key];
     groupEnableBusy.value = next;
+  }
+}
+
+function modelWithUpdatedUpstream(model, config) {
+  const accountIds = [...new Set((Array.isArray(config?.accountIds) ? config.accountIds : [])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean))];
+  const updated = {
+    ...model,
+    provider: config.provider,
+    upstreamName: String(config.upstreamName || "").trim(),
+    apiUrl: config.apiUrl,
+    endpointMode: config.endpointMode,
+    apiKey: accountIds.length ? "" : config.apiKey,
+    apiStyle: config.apiStyle,
+    messagePathMode: config.messagePathMode,
+    authMode: config.authMode,
+    authHeader: config.authHeader,
+    headers: config.headers,
+    accountIds,
+    capabilities: automaticCapabilities(config.provider, model.externalModelName, model.capabilities, config.apiStyle),
+  };
+  delete updated.accountPoolLabel;
+  return updated;
+}
+
+async function saveUpstreamGroup() {
+  const group = editingGroup.value;
+  if (!group?.key || saving.value) return;
+  let config;
+  try {
+    config = validateConnection();
+  } catch (error) {
+    editorError.value = sanitizeModelMessage(error);
+    return;
+  }
+  const models = [...(group.models || [])];
+  if (!models.length) {
+    editorError.value = "此代理商下没有可更新的模型。";
+    return;
+  }
+  saving.value = true;
+  editorError.value = "";
+  try {
+    const selected = new Set(selectedModelIds.value);
+    const discoveredIDs = new Set(discoveredModels.value.map(discoveredModelID).filter(Boolean));
+    const existingIDs = new Set(models.map(storedModelID));
+    for (const model of models) {
+      const modelID = storedModelID(model);
+      const updated = modelWithUpdatedUpstream(model, config);
+      if (discoveredIDs.has(modelID)) updated.enabled = selected.has(modelID);
+      const result = await saveModel(updated);
+      if (!result?.ok) throw new Error(sanitizeModelMessage(result?.message || "保存代理商信息失败", config));
+    }
+    const newSelectedIDs = selectedModelIds.value.filter((id) => !existingIDs.has(id));
+    if (newSelectedIDs.length) {
+      const imported = await addDiscoveredModels(config, newSelectedIDs);
+      if (!imported?.ok) throw new Error(sanitizeModelMessage(imported?.message || "导入新模型失败", config));
+      const persisted = await persistTouchedDiscoveredReasoning(config);
+      if (persisted.failures.length) throw new Error(`模型已导入，但推理强度未完全保存：${persisted.failures.join("；")}`);
+    }
+    const name = String(config.upstreamName || "").trim() || `${providerLabel(config.provider)} 上游`;
+    modelActionMessage.value = `已更新“${name}”的代理商信息；启用 ${selected.size} 个模型${newSelectedIDs.length ? `，新增 ${newSelectedIDs.length} 个` : ""}。`;
+    modelActionError.value = "";
+    editorOpen.value = false;
+    editingGroup.value = null;
+  } catch (error) {
+    editorError.value = sanitizeModelMessage(error, config);
+  } finally {
+    saving.value = false;
   }
 }
 
@@ -878,13 +1114,6 @@ async function addSelectedModels() {
   }
 }
 
-async function handleDelete() {
-  const target = confirmDelete.value;
-  if (!target) return;
-  const result = await deleteModel(target.name);
-  if (!result?.ok) modelActionError.value = sanitizeModelMessage(result?.message || "删除失败");
-  confirmDelete.value = null;
-}
 </script>
 
 <template>
@@ -912,19 +1141,35 @@ async function handleDelete() {
       <article v-for="group in modelGroups" :key="group.key" class="model-card model-group-card">
         <div class="row between group-heading">
           <div class="grow col" style="gap: 2px; min-width: 0">
-            <div class="t-headline truncate">{{ providerLabel(group.provider) }} 上游</div>
+            <div class="t-headline truncate">{{ groupDisplayName(group) }}</div>
             <div class="mono truncate model-id">{{ groupHost(group) }} · {{ group.models.length }} 个模型 · {{ groupBindingLabel(group) }}</div>
           </div>
           <Badge :tone="providerTone(group.provider)" :label="providerLabel(group.provider)" />
         </div>
         <div class="group-toolbar">
-          <span class="group-count">{{ enabledModelCount(group) }}/{{ group.models.length }} 个模型已启用</span>
-          <div class="group-enable-actions">
-            <Button variant="tinted" size="sm" :disabled="isGroupEnableBusy(group)" @click="setGroupEnabled(group, true)">全部启用</Button>
-            <Button variant="plain" size="sm" :disabled="isGroupEnableBusy(group)" @click="setGroupEnabled(group, false)">全部停用</Button>
+          <div class="group-summary">
+            <span class="group-count">{{ enabledModelCount(group) }}/{{ group.models.length }} 个模型已启用</span>
+            <span class="group-summary-note">{{ isGroupExpanded(group) ? '正在显示模型明细' : `已折叠 ${group.models.length} 个模型` }}</span>
+          </div>
+          <div class="group-actions">
+            <Button class="group-test-button" variant="tinted" size="sm" @click="openGroupModelTest(group)">测试连接</Button>
+            <div class="group-utility-actions">
+              <div class="group-enable-actions">
+                <Button variant="tinted" size="sm" :disabled="isGroupEnableBusy(group)" @click="setGroupEnabled(group, true)">全部启用</Button>
+                <Button variant="plain" size="sm" :disabled="isGroupEnableBusy(group)" @click="setGroupEnabled(group, false)">全部停用</Button>
+                <Button variant="plain" size="sm" @click="openEditGroup(group)">编辑代理商</Button>
+              </div>
+              <button
+                type="button"
+                class="group-expand-toggle"
+                :aria-expanded="isGroupExpanded(group)"
+                :title="isGroupExpanded(group) ? '收起该上游的模型明细' : '展开查看该上游的模型明细'"
+                @click="toggleGroupExpanded(group)"
+              >{{ isGroupExpanded(group) ? '收起模型' : '展开模型' }}</button>
+            </div>
           </div>
         </div>
-        <div class="group-model-list">
+        <div v-if="isGroupExpanded(group)" class="group-model-list">
           <div v-for="model in group.models" :key="model.name" class="group-model-row" :class="{ disabled: !modelIsEnabled(model) }">
             <div class="model-row-main">
               <label class="model-enable-control" :title="modelIsEnabled(model) ? '停用该模型' : '启用该模型'">
@@ -941,8 +1186,7 @@ async function handleDelete() {
                 <div class="mono truncate model-id">{{ model.externalModelName || model.name }}</div>
               </div>
               <div class="model-row-actions">
-                <Button variant="plain" size="sm" @click="openEdit(model)">编辑</Button>
-                <Button variant="danger" size="sm" @click="confirmDelete = model">删除</Button>
+                <Button variant="plain" size="sm" @click="openModelReasoningEditor(model)">编辑推理</Button>
               </div>
             </div>
             <div class="cap-row model-cap-row">
@@ -955,11 +1199,13 @@ async function handleDelete() {
       </article>
     </div>
 
-    <Modal :open="editorOpen" :title="isNew ? '添加上游模型' : '编辑上游模型'" wide persistent @close="editorOpen = false">
+    <Modal :open="editorOpen" :title="editorTitle" wide persistent @close="editorOpen = false">
       <div class="col editor" style="gap: 15px">
         <section class="section">
+          <div v-if="editingGroup" class="t-caption">正在编辑 {{ editingGroup.models.length }} 个模型共用的代理商连接信息；模型名、启用状态与推理强度不会被覆盖。</div>
           <span class="t-footnote">供应商与协议</span>
           <SegmentedControl :options="providerOptions" :model-value="form.provider" @update:model-value="onProviderChange" />
+          <Field label="上游 / 代理商名称" hint="仅用于本页上游卡片显示；右侧仍会保留 OpenAI、Claude 等平台标识。" v-model="form.upstreamName" placeholder="例如 XIASS、公司代理或自定义名称" />
           <div class="compact-label">接口地址输入方式</div>
           <SegmentedControl :options="endpointModeOptions" :model-value="form.endpointMode" @update:model-value="onEndpointModeChange" />
           <div class="two-col">
@@ -987,10 +1233,14 @@ async function handleDelete() {
         <section class="section discover-box">
           <div class="row between" style="gap: 8px">
             <div>
-              <div class="t-headline">发现并批量导入</div>
-              <div class="t-caption">点击后读取上游 <code>/models</code>；发现结果默认全选，不会自动保存。</div>
+              <div class="t-headline">{{ editingGroup ? '获取并管理代理商模型' : '发现并批量导入' }}</div>
+              <div class="t-caption">
+                {{ editingGroup
+                  ? '勾选决定哪些模型注入 Antigravity；取消勾选只会停用，不会删除本地配置。点击按钮可重新读取上游 /models。'
+                  : '点击后读取上游 /models；发现结果默认全选，不会自动保存。' }}
+              </div>
             </div>
-            <Button variant="tinted" :loading="discovering" @click="fetchModels">获取全部模型</Button>
+            <Button variant="tinted" :loading="discovering" @click="fetchModels">{{ editingGroup ? '刷新上游模型' : '获取全部模型' }}</Button>
           </div>
           <div v-if="discoveredModels.length" class="selection-list">
             <label class="select-all"><input type="checkbox" :checked="allDiscoveredSelected" @change="toggleAllModels" /> 全选 {{ discoveredModels.length }} 个模型</label>
@@ -1017,7 +1267,7 @@ async function handleDelete() {
           </div>
         </section>
 
-        <section v-if="!discoveredModels.length" class="section manual-box">
+        <section v-if="!editingGroup && !discoveredModels.length" class="section manual-box">
           <div class="t-headline">手动添加单个模型</div>
           <Field label="上游模型名" hint="例如 gpt-5.6 / claude-sonnet / grok-4" v-model="form.externalModelName" placeholder="gpt-5.6" mono />
           <Field label="显示名称" hint="留空时使用上游模型名" v-model="form.displayName" :placeholder="form.externalModelName || '自动使用上游模型名'" />
@@ -1038,7 +1288,7 @@ async function handleDelete() {
           </div>
         </section>
 
-        <section class="section">
+        <section v-if="!editingGroup" class="section">
           <div class="t-headline">全能力自动适配</div>
           <div class="t-caption">能力按协议和 API 模式自动声明，不需要手动勾选。图片、文本文件、函数工具和推理走 Chat/Claude 转换；生图使用独立 Images API；只有上游明确选择 Responses 时才声明其托管联网能力。</div>
           <div class="capability-grid">
@@ -1050,7 +1300,7 @@ async function handleDelete() {
           <div v-if="automaticCapabilityItems.some((capability) => !capability.enabled)" class="t-caption">嵌入、语音等非聊天模型会保守关闭不适用的能力。</div>
         </section>
 
-        <section class="section">
+        <section v-if="!editingGroup" class="section">
           <label class="select-field reasoning-select-field">
             <span class="t-footnote">思考强度</span>
             <select :value="selectedFormReasoningEffort" @change="setFormReasoningEffort($event.target.value)">
@@ -1066,13 +1316,44 @@ async function handleDelete() {
       </div>
       <template #footer>
         <Button variant="plain" @click="editorOpen = false">取消</Button>
-        <Button v-if="discoveredModels.length" variant="filled" :loading="saving" @click="addSelectedModels">添加已选 {{ selectedCount }} 个</Button>
+        <Button v-if="editingGroup" variant="filled" :loading="saving" @click="saveUpstreamGroup">保存代理商信息</Button>
+        <Button v-else-if="discoveredModels.length" variant="filled" :loading="saving" @click="addSelectedModels">添加已选 {{ selectedCount }} 个</Button>
         <Button v-else variant="filled" :loading="saving" @click="saveManualModel">{{ isNew ? '添加模型' : '保存' }}</Button>
+      </template>
+    </Modal>
+
+    <Modal
+      :open="reasoningEditorOpen"
+      title="调整模型推理强度"
+      @close="reasoningEditorOpen = false"
+    >
+      <div class="col" style="gap: 13px">
+        <div class="reasoning-model-summary">
+          <div class="t-headline">{{ visibleModelName(reasoningEditorModel) }}</div>
+          <div class="mono model-id">{{ reasoningEditorModel?.externalModelName || reasoningEditorModel?.name }}</div>
+        </div>
+        <label class="select-field reasoning-select-field">
+          <span class="t-footnote">注入时使用的推理强度</span>
+          <select v-model="reasoningEditorEffort">
+            <option
+              v-for="option in modelReasoningProfile(reasoningEditorModel, reasoningEditorModel?.provider, reasoningEditorModel?.apiStyle).options"
+              :key="option.value"
+              :value="option.value"
+            >{{ option.label }}</option>
+          </select>
+          <span class="t-caption">{{ modelReasoningProfile(reasoningEditorModel, reasoningEditorModel?.provider, reasoningEditorModel?.apiStyle).note }}</span>
+        </label>
+        <div v-if="reasoningEditorError" class="err-box">{{ reasoningEditorError }}</div>
+      </div>
+      <template #footer>
+        <Button variant="plain" @click="reasoningEditorOpen = false">取消</Button>
+        <Button variant="filled" :loading="reasoningEditorSaving" @click="saveModelReasoning">保存推理强度</Button>
       </template>
     </Modal>
 
     <AccountTestModal
       :open="modelTestOpen"
+      :title="modelTestTitle"
       :account="testModalAccount"
       :models="testModalModels"
       :status="modelTestStatus"
@@ -1087,13 +1368,6 @@ async function handleDelete() {
       @preview-image="previewModelTestImage"
     />
 
-    <Modal :open="!!confirmDelete" title="确认删除" @close="confirmDelete = null">
-      <div class="t-body">确定删除 <strong>{{ confirmDelete?.displayName || confirmDelete?.name }}</strong> 吗？此操作不可撤销。</div>
-      <template #footer>
-        <Button variant="plain" @click="confirmDelete = null">取消</Button>
-        <Button variant="danger" @click="handleDelete">删除</Button>
-      </template>
-    </Modal>
   </div>
 </template>
 
@@ -1105,9 +1379,18 @@ async function handleDelete() {
 .model-card:hover { transform: translateY(-1px); border-color: var(--separator-strong); }
 .model-group-card { min-width: 0; }
 .group-heading { align-items: flex-start; gap: 10px; }
-.group-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding: 8px 9px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-inset); }
+.group-toolbar { display: flex; flex-direction: column; gap: 9px; margin-top: 12px; padding: 9px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-inset); }
+.group-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; }
 .group-count { color: var(--text-secondary); font-size: 11px; }
-.group-enable-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.group-summary-note { color: var(--text-tertiary); font-size: 10px; }
+.group-actions { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.group-test-button { align-self: flex-start; }
+.group-utility-actions { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.group-enable-actions { display: contents; }
+.group-utility-actions :deep(button) { width: 100%; justify-content: center; }
+.group-expand-toggle { min-height: 28px; padding: 0 9px; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); color: var(--text-secondary); background: var(--bg-card); font-size: 11px; cursor: pointer; }
+.group-expand-toggle:hover { color: var(--text-primary); border-color: var(--accent-border); background: var(--accent-soft); }
+.group-expand-toggle[aria-expanded="true"] { color: var(--accent-strong); border-color: var(--accent-border); }
 .group-model-list { display: flex; flex-direction: column; margin-top: 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); overflow: hidden; background: var(--bg-inset); }
 .group-model-row { min-width: 0; padding: 10px; border-bottom: 1px solid var(--separator); transition: background .16s var(--ease), opacity .16s var(--ease); }
 .group-model-row:last-child { border-bottom: 0; }
@@ -1168,6 +1451,7 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .capability-item.disabled .capability-mark { color: var(--text-tertiary); }
 .select-field { display: flex; flex-direction: column; gap: 6px; }
 .reasoning-select-field select { width: min(100%, 260px); height: 34px; font-size: 12px; }
+.reasoning-model-summary { padding: 11px 12px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-inset); }
 .notice-box, .err-box { padding: 10px 11px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.45; }
 .notice-box { color: var(--accent-strong); background: var(--accent-soft); border: 1px solid var(--accent-border); }
 .err-box { color: var(--red); background: rgba(255,69,58,.1); border: 1px solid rgba(255,69,58,.25); }

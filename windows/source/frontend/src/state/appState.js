@@ -31,6 +31,8 @@ export const state = reactive({
     cacheHitRate: 0,
   },
   statsLoading: false,
+	dashboardRefreshing: false,
+	dashboardDeepScanComplete: false,
 
   // 补丁状态
   patch: {
@@ -39,6 +41,9 @@ export const state = reactive({
     proxyListening: false,
     proxyManaged: false,
     proxyOwned: false,
+		proxyRepatchRequired: false,
+		productRepatchRequired: false,
+		productRepatchMessage: "",
     lastRequestAt: "",
     lastRequestPath: "",
     lastModelFetchAt: "",
@@ -359,17 +364,45 @@ export async function loadStats() {
   }
 }
 
-export async function loadPatchStatus() {
+export async function loadPatchStatus(options = {}) {
   state.patchLoading = true;
   try {
-    const s = await call("GetPatchStatus");
+	const method = options.quick
+		? "GetQuickPatchStatus"
+		: options.refresh
+			? "RefreshPatchStatus"
+			: "GetPatchStatus";
+    const s = await call(method);
     state.patch = { ...state.patch, ...(s || {}), targets: s?.targets || [] };
-    state.proxyRunning = s.proxyManaged;
+	state.proxyRunning = !!s?.proxyManaged;
+	return s;
   } catch (e) {
     if (go()) console.error("loadPatchStatus", e);
   } finally {
     state.patchLoading = false;
   }
+}
+
+let dashboardRefreshPromise = null;
+
+// Refresh every value shown on the dashboard as one operation. Manual refresh
+// forces registry/process discovery; the background startup pass can reuse a
+// recent deep result so navigating back to Home remains instant.
+export async function refreshDashboard({ forcePatch = true } = {}) {
+	if (dashboardRefreshPromise) return dashboardRefreshPromise;
+	state.dashboardRefreshing = true;
+	dashboardRefreshPromise = Promise.all([
+		loadPatchStatus(forcePatch ? { refresh: true } : {}),
+		loadStats(),
+		loadHistorySync(),
+	]).then((result) => {
+		if (forcePatch) state.dashboardDeepScanComplete = true;
+		return result;
+	}).finally(() => {
+		state.dashboardRefreshing = false;
+		dashboardRefreshPromise = null;
+	});
+	return dashboardRefreshPromise;
 }
 
 export async function applyPatch() {
@@ -379,7 +412,10 @@ export async function applyPatch() {
   try {
     const res = await call("ApplyPatch");
     state.patchLog = res?.message || "";
-    if (res?.ok) await loadPatchStatus();
+		if (res?.ok) {
+			markPatchTargetsConnected(["ide", "agent"]);
+			void loadPatchStatus();
+		}
     return res;
   } finally {
     state.patchBusy = false;
@@ -393,7 +429,10 @@ export async function applyIDEPatch() {
   try {
     const res = await call("ApplyIDEPatch");
     state.patchLog = res?.message || "";
-    if (res?.ok) await loadPatchStatus();
+		if (res?.ok) {
+			markPatchTargetsConnected(["ide"]);
+			void loadPatchStatus();
+		}
     return res;
   } finally {
     state.patchBusy = false;
@@ -407,7 +446,10 @@ export async function applyAgentPatch() {
   try {
     const res = await call("ApplyAgentPatch");
     state.patchLog = res?.message || "";
-    if (res?.ok) await loadPatchStatus();
+		if (res?.ok) {
+			markPatchTargetsConnected(["agent"]);
+			void loadPatchStatus();
+		}
     return res;
   } finally {
     state.patchBusy = false;
@@ -433,11 +475,24 @@ export async function launchOrRestartAntigravity(appPath) {
   try {
     const res = await call("LaunchOrRestartAntigravity", appPath);
     state.antigravityActionMessage = res?.message || "";
-    await Promise.all([loadPatchStatus(), loadHistorySync()]);
+		void Promise.all([loadPatchStatus(), loadHistorySync()]);
     return res;
   } finally {
     state.antigravityActionBusy[appPath] = false;
   }
+}
+
+function markPatchTargetsConnected(kinds) {
+	const selected = new Set(kinds);
+	state.patch.targets = (state.patch.targets || []).map((target) =>
+		selected.has(target.kind) && target.supported
+			? { ...target, patched: true }
+			: target
+	);
+	if (selected.has("ide")) state.patch.idePatched = true;
+	if (selected.has("agent")) state.patch.agentPatched = true;
+	state.patch.productRepatchRequired = false;
+	state.patch.productRepatchMessage = "";
 }
 
 export async function startProxy() {
@@ -636,7 +691,7 @@ async function waitForStartupHistorySync() {
 export async function bootstrap() {
 	bindPatchEvents();
 	const [, , , , , , settings] = await Promise.all([
-		loadPatchStatus(), loadStats(), loadModels(), loadAccounts(), loadAutoApproval(), waitForStartupHistorySync(), loadSettings(),
+		loadPatchStatus({ quick: true }), loadStats(), loadModels(), loadAccounts(), loadAutoApproval(), waitForStartupHistorySync(), loadSettings(),
 	]);
 	bindUpdateEvents();
 	if (settings?.updates?.autoCheck) void checkForUpdates();

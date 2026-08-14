@@ -55,6 +55,31 @@ func TestEmptyDisplayNameUsesUpstreamModelName(t *testing.T) {
 	}
 }
 
+func TestUpstreamNameRoundTripsAsTrimmedPresentationMetadata(t *testing.T) {
+	dir := t.TempDir()
+	Init(dir)
+	model := NewDiscoveredModel("openai", "https://example.com/v1", "secret", "gpt-test")
+	model.UpstreamName = "  XIASS 主线路  "
+	if err := AddOrUpdateModel(model); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadModels()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("load failed: %#v, %v", loaded, err)
+	}
+	if loaded[0].UpstreamName != "XIASS 主线路" {
+		t.Fatalf("upstreamName = %q", loaded[0].UpstreamName)
+	}
+}
+
+func TestVisibleModelDisplayNameIncludesUpstreamName(t *testing.T) {
+	model := NewDiscoveredModel("openai", "https://api.example.test", "secret", "gpt-5.6-sol")
+	model.UpstreamName = "XIASS"
+	if got, want := VisibleModelDisplayName(model), "gpt-5.6-sol（XIASS）"; got != want {
+		t.Fatalf("visible display name = %q, want %q", got, want)
+	}
+}
+
 func TestLoadedModelDisplayNameIncludesCurrentAccountPoolNamesWithoutPersistingThem(t *testing.T) {
 	dir := t.TempDir()
 	Init(dir)

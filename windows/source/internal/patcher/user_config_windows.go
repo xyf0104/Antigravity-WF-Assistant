@@ -105,6 +105,13 @@ func windowsTargetUserSettingsPath(target windowsTarget) (string, string, error)
 		!strings.Contains(string(extensionSource), "--cloud_code_endpoint") {
 		return "", "", fmt.Errorf("未找到可验证的 %s 配置链路；助手已保持现有文件不变，请导出诊断日志以适配该安装结构", windowsCloudCodeSetting)
 	}
+	return windowsTargetSettingsPathFromProduct(target)
+}
+
+// windowsTargetSettingsPathFromProduct resolves only the lightweight product
+// metadata. Callers may use it after a compatibility result was cached without
+// rereading the 15 MB main process and extension bundles.
+func windowsTargetSettingsPathFromProduct(target windowsTarget) (string, string, error) {
 	productPath := filepath.Join(target.root, "resources", "app", "product.json")
 	productData, err := os.ReadFile(productPath)
 	if err != nil {
