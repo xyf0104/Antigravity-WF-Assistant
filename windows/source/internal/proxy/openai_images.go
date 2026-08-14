@@ -96,15 +96,11 @@ func directOpenAIImageModel(model *storage.CustomModel) *storage.CustomModel {
 	return &selected
 }
 
-func directOpenAIImageExecutionModel(textModel, imageModel *storage.CustomModel) *storage.CustomModel {
-	if textModel == nil || imageModel == nil {
-		return imageModel
-	}
-	textEndpoint, textErr := upstream.ResolveImagesGenerationsURLForConfig(upstream.ConfigFromModel(*textModel))
-	imageEndpoint, imageErr := upstream.ResolveImagesGenerationsURLForConfig(upstream.ConfigFromModel(*imageModel))
-	if textErr == nil && imageErr == nil && textEndpoint != "" && textEndpoint == imageEndpoint {
-		return textModel
-	}
+func directOpenAIImageExecutionModel(_ *storage.CustomModel, imageModel *storage.CustomModel) *storage.CustomModel {
+	// The image model owns the image request, including its credential and
+	// account pool. Two independently configured supplier cards can share the
+	// same base URL while using different keys; endpoint equality alone must
+	// never make WF borrow the chat model's credential.
 	return imageModel
 }
 
@@ -301,9 +297,14 @@ func forwardOpenAIImagesGeneration(w http.ResponseWriter, incoming *http.Request
 		}
 		imageData, mimeType, err := openAIImageDataFromResponse(body)
 		if err != nil {
+			if remoteURL := openAIImageRemoteURL(body); remoteURL != "" {
+				imageData, mimeType, err = downloadOpenAIImage(incoming.Context(), remoteURL)
+			}
+		}
+		if err != nil {
 			releaseAttemptSuccess(lease)
 			trace("images-upstream-invalid-response", map[string]any{"requestId": requestID, "attempt": attempt, "reason": err.Error()})
-			http.Error(w, "上游图片响应未返回可嵌入的 Base64 图片", http.StatusBadGateway)
+			http.Error(w, "上游图片响应未返回可安全嵌入的图片数据", http.StatusBadGateway)
 			return
 		}
 		releaseAttemptSuccess(lease)
@@ -488,6 +489,17 @@ func imageDataFromValue(value map[string]any) (string, string, bool) {
 			mimeType = directImageMimeType(detectedMime)
 		}
 		return data, mimeType, true
+	}
+	for _, key := range []string{"url", "image_url", "imageUrl"} {
+		raw, _ := value[key].(string)
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(raw)), "data:") {
+			continue
+		}
+		data, detectedMime, err := normaliseAttachmentData(raw, mimeType)
+		if err != nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(detectedMime)), "image/") {
+			continue
+		}
+		return data, directImageMimeType(detectedMime), true
 	}
 	return "", "", false
 }

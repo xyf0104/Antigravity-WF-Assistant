@@ -57,15 +57,13 @@ const modelTestRequestID = ref("");
 let modelTestGeneration = 0;
 let modelTestRequestSerial = 0;
 
-function defaultCapabilities(provider = "openai", modelName = "", apiStyle = "auto") {
+function defaultCapabilities(provider = "openai", modelName = "", apiStyle = "chat_completions") {
   const name = String(modelName).toLowerCase();
   const nonChat = /embedding|whisper|tts/.test(name);
   const normalizedProvider = String(provider || "openai").toLowerCase();
-  const normalizedStyle = String(apiStyle || "auto").toLowerCase();
-  // Hosted web search and image generation are OpenAI Responses features. Do
-  // not advertise them for Claude, Chat Completions, or generic compatibility
-  // gateways unless WF has a real translation path for them.
-  const supportsResponsesTools = !nonChat && normalizedProvider === "openai" && normalizedStyle !== "chat_completions" && normalizedStyle !== "messages";
+  const normalizedStyle = String(apiStyle || "chat_completions").toLowerCase();
+  const supportsHostedWebSearch = !nonChat && normalizedProvider === "openai" && normalizedStyle === "responses";
+  const supportsDirectImageGeneration = !nonChat && normalizedStyle !== "messages" && ["openai", "grok", "custom"].includes(normalizedProvider);
   return {
     configured: true,
     supportsImages: !nonChat,
@@ -73,8 +71,8 @@ function defaultCapabilities(provider = "openai", modelName = "", apiStyle = "au
     supportsAudio: false,
     supportsVideo: false,
     supportsToolCalls: !nonChat,
-    supportsWebSearch: supportsResponsesTools,
-    supportsImageGeneration: supportsResponsesTools,
+    supportsWebSearch: supportsHostedWebSearch,
+    supportsImageGeneration: supportsDirectImageGeneration,
     supportsThinking: !nonChat,
   };
 }
@@ -82,7 +80,7 @@ function defaultCapabilities(provider = "openai", modelName = "", apiStyle = "au
 // Models are exposed to Antigravity as full chat-capable by default.  The proxy
 // downgrades an individual request when an upstream endpoint does not implement
 // an optional feature, so users never need to guess capability checkboxes.
-function automaticCapabilities(provider = "openai", modelName = "", previous = {}, apiStyle = "auto") {
+function automaticCapabilities(provider = "openai", modelName = "", previous = {}, apiStyle = "chat_completions") {
   const saved = previous && typeof previous === "object" ? previous : {};
   return {
     ...saved,
@@ -103,7 +101,7 @@ function emptyForm() {
     accountIds: [],
     externalModelName: "",
     reasoningEffort: "auto",
-    apiStyle: "auto",
+    apiStyle: "chat_completions",
     messagePathMode: "auto",
     authMode: "bearer",
     authHeader: "",
@@ -127,11 +125,14 @@ const authOptions = [
   { label: "自定义请求头", value: "custom_header" },
 ];
 const apiStyleOptions = [
-  { label: "自动", value: "auto" },
-  { label: "Chat", value: "chat_completions" },
+  { label: "Chat（推荐）", value: "chat_completions" },
+  { label: "自动（按 Chat）", value: "auto" },
   { label: "Responses", value: "responses" },
   { label: "Messages", value: "messages" },
 ];
+function apiStyleLabel(value) {
+  return apiStyleOptions.find((option) => option.value === value)?.label || "Chat（推荐）";
+}
 const endpointModeOptions = [
   { label: "智能补全", value: "auto" },
   { label: "完整路径（手动）", value: "manual" },
@@ -176,7 +177,7 @@ const automaticCapabilityItems = computed(() => {
   );
   return [
     { label: "图片/截图", enabled: capabilities.supportsImages },
-    { label: "文件/PDF", enabled: capabilities.supportsFiles },
+    { label: form.value.provider === "anthropic" || ["messages", "responses"].includes(form.value.apiStyle) ? "文件/PDF" : "文本文件", enabled: capabilities.supportsFiles },
     { label: "原生工具调用", enabled: capabilities.supportsToolCalls },
     { label: "推理强度", enabled: capabilities.supportsThinking },
     { label: "上游联网搜索", enabled: capabilities.supportsWebSearch },
@@ -412,7 +413,7 @@ function modelToForm(model) {
     apiUrl: endpointMode === "auto" ? normalizeAutoBaseURL(model.apiUrl) : model.apiUrl,
     endpointMode,
     accountIds: Array.isArray(model.accountIds) ? [...model.accountIds] : [],
-    apiStyle: model.apiStyle || (model.provider === "anthropic" ? "messages" : "auto"),
+    apiStyle: model.apiStyle || (model.provider === "anthropic" ? "messages" : "chat_completions"),
     messagePathMode: model.messagePathMode === "manual" ? "auto" : (model.messagePathMode || "auto"),
     authMode: model.authMode || (model.provider === "anthropic" ? "x_api_key" : "bearer"),
     authHeader: model.authHeader || "",
@@ -458,7 +459,7 @@ function onProviderChange(provider) {
     form.value.apiStyle = "messages";
   } else if (form.value.authMode === "x_api_key") {
     form.value.authMode = "bearer";
-    if (form.value.apiStyle === "messages") form.value.apiStyle = "auto";
+    if (form.value.apiStyle === "messages") form.value.apiStyle = "chat_completions";
   }
   form.value.capabilities = automaticCapabilities(provider, form.value.externalModelName, form.value.capabilities, form.value.apiStyle);
   form.value.reasoningEffort = normalizeReasoningEffort(
@@ -947,7 +948,7 @@ async function handleDelete() {
             <div class="cap-row model-cap-row">
               <span v-for="label in capabilityLabels(model)" :key="label" class="cap">{{ label }}</span>
               <span v-if="!capabilityLabels(model).length" class="cap muted">文本</span>
-              <span class="model-style">{{ model.apiStyle || "兼容" }} · {{ modelReasoningLabel(model) }}</span>
+              <span class="model-style">{{ apiStyleLabel(model.apiStyle || "chat_completions") }} · {{ modelReasoningLabel(model) }}</span>
             </div>
           </div>
         </div>
@@ -980,7 +981,7 @@ async function handleDelete() {
           </label>
           <div class="compact-label">上游 API 模式</div>
           <SegmentedControl :options="apiStyleOptions" :model-value="form.apiStyle" @update:model-value="form.apiStyle = $event" />
-          <div class="t-caption">自动模式：图片/文本附件可兼容 Chat；PDF、通用文件、联网与生图会优先走 Responses。手动选 Chat 或 Claude Messages 时，不会声明 OpenAI 专属联网/生图能力。</div>
+          <div class="t-caption">默认使用 <code>/v1/chat/completions</code>；自动模式也按 Chat 处理。识图、文本附件和函数工具走 Chat，生图单独调用已配置的 Images API。只有手动选择 Responses 或使用 Codex OAuth 才会请求 <code>/v1/responses</code>。</div>
         </section>
 
         <section class="section discover-box">
@@ -1025,7 +1026,7 @@ async function handleDelete() {
 
         <section class="section account-binding">
           <div class="t-headline">账户池绑定（可选）</div>
-          <div class="t-caption">绑定后，发现与测试使用首个账户；保存后的模型会从整组账户按优先级、并发和健康状态调度，额度不足或连接中断时自动切换。</div>
+          <div class="t-caption">绑定后，发现与测试使用首个账户；每个新请求按优先级和并发选择一次账户，同一次请求遇到瞬时波动只重试当前账户，不会自动切换其他账户。</div>
           <div v-if="!state.accounts.length" class="t-caption">尚未添加账户。可先在“账户池”中添加 API Key、Token 或导入账户 JSON；未绑定时继续使用本页直接填写的 API Key。</div>
           <div v-else class="account-binding-list">
             <label v-for="account in state.accounts" :key="account.id" class="account-binding-row" :class="{ paused: !account.enabled }">
@@ -1039,7 +1040,7 @@ async function handleDelete() {
 
         <section class="section">
           <div class="t-headline">全能力自动适配</div>
-          <div class="t-caption">能力按协议和 API 模式自动声明，不需要手动勾选。图片、文件、工具和推理走已实现的转换；联网与生图仅在 OpenAI Responses 路径可用时显示。</div>
+          <div class="t-caption">能力按协议和 API 模式自动声明，不需要手动勾选。图片、文本文件、函数工具和推理走 Chat/Claude 转换；生图使用独立 Images API；只有上游明确选择 Responses 时才声明其托管联网能力。</div>
           <div class="capability-grid">
             <span v-for="capability in automaticCapabilityItems" :key="capability.label" class="capability-item" :class="{ disabled: !capability.enabled }">
               <span class="capability-mark">{{ capability.enabled ? '✓' : '—' }}</span>

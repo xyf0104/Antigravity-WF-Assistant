@@ -244,7 +244,7 @@ func TestInjectCustomModelsSupportsNestedResponseIndexesAndSlugCollisions(t *tes
 	}
 }
 
-func TestInjectCustomModelsAddsOnlyImageCapableModelsToImageGenerationIndex(t *testing.T) {
+func TestInjectCustomModelsAddsOnlyDirectImageModelsToImageGenerationIndex(t *testing.T) {
 	imageModel := storage.CustomModel{
 		Name: "models/image", DisplayName: "Image model", ExternalModelName: "gpt-image-2",
 		Provider: "openai", APIStyle: "responses",
@@ -291,8 +291,8 @@ func TestInjectCustomModelsAddsOnlyImageCapableModelsToImageGenerationIndex(t *t
 	if models[imageSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != true {
 		t.Fatalf("image model is missing image-output presentation capability: %#v", models[imageSlug])
 	}
-	if models[textSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != false {
-		t.Fatalf("text model must not claim an image-output presentation capability: %#v", models[textSlug])
+	if models[textSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != true {
+		t.Fatalf("OpenAI Chat model must expose the proxy's dedicated Images bridge: %#v", models[textSlug])
 	}
 	imageIndexDiagnosed := false
 	for _, path := range summary.indexPaths {
@@ -472,7 +472,7 @@ func TestHandleFetchAvailableModelsInjectsIntoCompressedJSONWithoutChangingNativ
 		t.Fatalf("picker indexes = %#v", ids)
 	}
 	imageIDs := root["imageGenerationModelIds"].([]any)
-	if len(imageIDs) != 2 || imageIDs[0] != "custom-gpt-wf" || imageIDs[1] != "native-gemini" {
+	if len(imageIDs) != 1 || imageIDs[0] != "native-gemini" {
 		t.Fatalf("image-generation indexes = %#v", imageIDs)
 	}
 
@@ -1211,6 +1211,36 @@ func TestForwardOpenAIChatDoesNotReplayAfterPartialStreamDisconnect(t *testing.T
 	}
 	if strings.Contains(output, "上游连接已自动重连") || strings.Contains(output, "上游流式连接刚刚中断") {
 		t.Fatalf("recovery metadata leaked into the conversation: %s", output)
+	}
+}
+
+func TestForwardAnthropicDoesNotReplayAfterPartialStreamDisconnect(t *testing.T) {
+	previous := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: previous.enabled, MaxAttempts: previous.maxAttempts, MaxDelaySeconds: previous.maxDelaySeconds})
+
+	requests := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-partial\",\"model\":\"claude-test\"}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"第一段\"}}\n\n")
+		// End before message_stop to simulate a dropped upstream stream.
+	}))
+	defer upstream.Close()
+
+	model := &storage.CustomModel{Provider: "anthropic", APIStyle: "messages", APIURL: upstream.URL, APIKey: "test-key", ExternalModelName: "claude-test"}
+	recorder := httptest.NewRecorder()
+	forwardAnthropic(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil), model, map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "请回答"}}}},
+	}, "claude-partial-stream")
+
+	if requests != 1 {
+		t.Fatalf("Claude partial stream was replayed %d times", requests)
+	}
+	output := recorder.Body.String()
+	if recorder.Code != http.StatusOK || strings.Count(output, "第一段") != 1 || !strings.Contains(output, `"finishReason":"STOP"`) {
+		t.Fatalf("Claude partial stream did not finish safely: %d %s", recorder.Code, output)
 	}
 }
 

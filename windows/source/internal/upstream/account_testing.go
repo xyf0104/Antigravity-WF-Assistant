@@ -199,7 +199,7 @@ func (r *accountTestRunner) runOpenAITest() {
 	if r.request.Mode == "compact" {
 		style = "responses"
 	}
-	if style == "auto" || style == "responses" {
+	if style == "responses" {
 		endpoint, err := ResolveResponsesURLForConfig(r.config)
 		if err != nil {
 			r.fail("error", sanitizeAccountTestText(err.Error(), accountTestMaxErrorBytes))
@@ -218,14 +218,8 @@ func (r *accountTestRunner) runOpenAITest() {
 			r.finishTextProbe(probe, "responses")
 			return
 		}
-		// Explicit Responses style and Compact mode must not silently change a
-		// test to another contract. Only automatic OpenAI gets XIASS's narrow
-		// endpoint-availability fallback.
-		if style != "auto" || r.request.Mode == "compact" || !CanFallbackToChatResponse(probe.StatusCode, string(probe.Body)) {
-			r.finishTextProbe(probe, "responses")
-			return
-		}
-		r.step("fallback", "warning", "Responses 端点不可用，正在通过 Chat Completions 重试")
+		r.finishTextProbe(probe, "responses")
+		return
 	}
 
 	endpoint, err := ResolveChatCompletionsURLForConfig(r.config)

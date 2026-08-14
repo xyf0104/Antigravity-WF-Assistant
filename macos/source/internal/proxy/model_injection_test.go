@@ -57,7 +57,7 @@ func TestInjectCustomModelsKeepsWrappedNativeShapeAndPickerIndexes(t *testing.T)
 		entry, _ := raw.(map[string]any)
 		if entry["name"] == "models/"+modelSlug {
 			found = true
-			if entry["displayName"] != "gpt-custom" || entry["supportsImages"] != true || entry["supportsAudio"] != false || entry["supportsVideo"] != false || entry["supportsWebSearch"] != true {
+			if entry["displayName"] != "gpt-custom" || entry["supportsImages"] != true || entry["supportsAudio"] != false || entry["supportsVideo"] != false || entry["supportsWebSearch"] != false || entry["supportsImageGeneration"] != true {
 				t.Fatalf("injected capability/name fields are incomplete: %#v", entry)
 			}
 		}
@@ -296,8 +296,8 @@ func TestInjectCustomModelsPreservesNativeImageGenerationIndex(t *testing.T) {
 	if models[imageSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != true {
 		t.Fatalf("image model is missing image-output presentation capability: %#v", models[imageSlug])
 	}
-	if models[textSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != false {
-		t.Fatalf("text model must not claim an image-output presentation capability: %#v", models[textSlug])
+	if models[textSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != true {
+		t.Fatalf("OpenAI Chat model must expose the proxy's dedicated Images bridge: %#v", models[textSlug])
 	}
 	imageIndexModified := false
 	for _, path := range summary.indexPaths {

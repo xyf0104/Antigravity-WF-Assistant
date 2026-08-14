@@ -1,8 +1,8 @@
-# Antigravity WF助手 macOS v1.5.2
+# Antigravity WF助手 macOS v1.5.9
 
 ## 安装
 
-1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.5.2-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
+1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.5.9-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
 2. 当前发布包未使用 Apple Developer ID 签名或公证。若 macOS 阻止打开安装包，请在 Finder 中按住 Control 点按该 `.pkg` 后选择“打开”，或在“系统设置 → 隐私与安全性”中确认继续；安装完成后首次打开 App 遇到相同提示时也按此方式处理。安装前请先用发布页的 `SHA256SUMS.txt` 核验下载文件。
 
 App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时不需要 Python、Node.js 或外置补丁脚本。
@@ -21,13 +21,14 @@ App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时�
 2. 使用 ChatGPT / Codex 时，在“OAuth 授权登录”中选择“OpenAI / Codex”，点击“浏览器登录”。助手会显示并自动打开完整授权链接；在浏览器选择 ChatGPT 账户后会自动回到助手，账户卡可显示 OAuth 类型、邮箱、套餐、令牌到期和本机用量。自动回调同时保留手动兜底：复制浏览器跳转后的完整回调 URL，或只复制 `code` 值粘贴即可自动识别并完成；本机回调端口被占用时也会自动切换到此方式。
 3. 已有 `auth.json`、OAuth JSON 或 XIASS 风格账户导出时，使用“导入账户 JSON”；Refresh Token / Mobile RT 使用专门的兑换入口，不能当作 API Key 直接保存。
 4. 保存或登录成功后，直接在该账户卡片点击“同步全部模型”。它会读取当前账户的真实模型列表并添加到 Antigravity；与已有模型的协议、上游地址和模型名都一致时，会追加该账户到同一个账户池，不会覆盖其他账户或模型设置。
-5. 每个账户卡的“测试连接”只测试该账户；运行时同一个模型会按优先级、并发与健康状态从已绑定账户中调度，遇到可重试的故障时尝试其他可用账户。
+5. 每个账户卡的“测试连接”只测试该账户；每个新请求会按优先级与并发选择一次账户，同一请求遇到可安全重试的瞬时故障时只重试该账户，不切换账户，也不建立影响下一次请求的失败冷却。
 
 ## 模型与图片
 
 - 相同协议、地址与凭据绑定的上游模型会在“模型”页合并为一张卡片，可勾选每个模型是否注入 Antigravity。
 - 自定义上游可在添加窗口直接打开完整测试流程，测试文字或图片模型，不会显示 API Key、认证头或原始响应。
-- 当 Antigravity 请求生成图片时，已启用的同上游图片模型会使用当前文字模型的账户池和凭据执行 `/v1/images/generations`，不会改用 Gemini。
+- 当自定义聊天模型请求生成图片时，助手优先选择同供应商已启用的 `gpt-image-2` 等图片模型；该供应商没有图片模型时，可选择另一张供应商卡中的图片模型，并始终使用图片供应商自己的地址、凭据和账户池执行 `/v1/images/generations`。
+- 使用 Antigravity 原生 Gemini 模型时仍保持 Gemini 原生生图链路；切换回自定义模型后才使用自定义 Images API，两条链路不会互相串用。
 - 图片生成结果会在已识别的 Antigravity renderer 中默认展开并显示实际的图片模型标题；同一会话从自定义图片模型切回原生 Gemini 后，后续原生图片请求不会继续复用先前的自定义图片来源。
 
 ## 启动与重启保护

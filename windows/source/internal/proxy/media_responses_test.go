@@ -31,6 +31,28 @@ func TestOpenAIChatKeepsImageAttachment(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatKeepsTextAttachment(t *testing.T) {
+	gemini := map[string]any{"contents": []any{map[string]any{
+		"role": "user", "parts": []any{
+			map[string]any{"text": "分析附件"},
+			map[string]any{"inlineData": map[string]any{"mimeType": "text/markdown", "data": "IyBUaXRsZQ==", "displayName": "notes.md"}},
+		},
+	}}}
+	request, err := toOpenAIRequestWithMedia(gemini, "gpt-test")
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	messages := request["messages"].([]map[string]any)
+	content, ok := messages[0]["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("expected prompt and text attachment blocks, got %#v", messages[0]["content"])
+	}
+	attachment := content[1].(map[string]any)
+	if attachment["type"] != "text" || attachment["text"] != "[附件 notes.md]\n# Title" {
+		t.Fatalf("text attachment was not preserved: %#v", attachment)
+	}
+}
+
 func TestAnthropicKeepsPDF(t *testing.T) {
 	gemini := map[string]any{"contents": []any{map[string]any{
 		"role": "user", "parts": []any{inlinePart("application/pdf", "cGRm")},
@@ -58,7 +80,7 @@ func TestResponsesKeepsGeneralFileAndTools(t *testing.T) {
 		"webSearch":       true,
 		"imageGeneration": true,
 	}
-	model := &storage.CustomModel{Capabilities: storage.ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true}}
+	model := &storage.CustomModel{Provider: "openai", APIStyle: "responses", Capabilities: storage.ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true}}
 	request, err := toOpenAIResponsesRequest(gemini, "gpt-test", model)
 	if err != nil {
 		t.Fatalf("conversion failed: %v", err)
@@ -79,7 +101,7 @@ func TestResponsesAttachmentDoesNotImplicitlyAttachHostedTools(t *testing.T) {
 	gemini := map[string]any{"contents": []any{map[string]any{
 		"role": "user", "parts": []any{inlinePart("application/pdf", "cGRm")},
 	}}}
-	model := &storage.CustomModel{Capabilities: storage.ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true}}
+	model := &storage.CustomModel{Provider: "openai", APIStyle: "responses", Capabilities: storage.ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true}}
 	request, err := toOpenAIResponsesRequest(gemini, "gpt-test", model)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +112,7 @@ func TestResponsesAttachmentDoesNotImplicitlyAttachHostedTools(t *testing.T) {
 }
 
 func TestResponsesAddsOnlyTheHostedToolRequestedByThisTurn(t *testing.T) {
-	model := &storage.CustomModel{Capabilities: storage.ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true}}
+	model := &storage.CustomModel{Provider: "openai", APIStyle: "responses", Capabilities: storage.ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true}}
 	web, err := toOpenAIResponsesRequest(map[string]any{"webSearch": true}, "gpt-test", model)
 	if err != nil {
 		t.Fatal(err)

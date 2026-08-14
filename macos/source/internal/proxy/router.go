@@ -614,11 +614,12 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	}
 }
 
-// forwardOpenAI chooses the configured API surface. In automatic mode Chat
-// Completions is deliberately the default: advertising a feature in the model
-// picker must not silently attach hosted web/image tools to every ordinary
-// chat turn. Responses is selected only for an actual attachment or an
-// explicit native/locally requested Responses feature.
+// forwardOpenAI chooses the configured API surface. Antigravity's ordinary
+// OpenAI-compatible contract is Chat Completions, so both automatic and Chat
+// modes stay on Chat for text, vision and function tools. Responses is used
+// only when the user explicitly selected it or the credential is Codex OAuth.
+// Dedicated image generation is intercepted above the Chat/Responses choice
+// and continues to use the configured Images API.
 func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string) {
 	// A Codex OAuth access token is valid only against ChatGPT's Responses
 	// surface. Account-pool metadata is copied into the selected model later,
@@ -649,42 +650,11 @@ func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.Cus
 	}
 	config := upstream.ConfigFromModel(*m)
 	style := upstream.EffectiveAPIStyle(config)
-	needsResponses := requiresOpenAIResponses(geminiReq)
-	if style == "responses" || (style == "auto" && needsResponses) {
-		// A native image turn must never silently downgrade to text Chat
-		// Completions, because the IDE then reports "no image generated".
-		fallbackAccountID := ""
-		if fallback := forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, style == "auto" && !directImageRequest, &fallbackAccountID); !fallback {
-			return
-		}
-		// The Responses compatibility probe already selected a concrete
-		// account. Keep Chat Completions on that exact account so one
-		// Antigravity request never switches credentials or suppliers.
-		if fallbackAccountID != "" {
-			copied := *m
-			copied.AccountIDs = []string{fallbackAccountID}
-			m = &copied
-		}
+	if style == "responses" {
+		forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false, nil)
+		return
 	}
 	forwardOpenAIChat(w, incoming, m, geminiReq, requestID)
-}
-
-func requiresOpenAIResponses(gemini map[string]any) bool {
-	if hasGeminiAttachment(gemini) {
-		return true
-	}
-	if len(requestedResponsesBuiltinTools(gemini)) > 0 {
-		return true
-	}
-	if explicitResponsesFeatureMap(gemini) {
-		return true
-	}
-	for _, key := range []string{"generationConfig", "toolConfig", "responseConfig", "wfConfig"} {
-		if config, ok := gemini[key].(map[string]any); ok && explicitResponsesFeatureMap(config) {
-			return true
-		}
-	}
-	return nativeResponsesToolRequested(gemini["tools"])
 }
 
 // requestedResponsesBuiltinTools identifies a concrete request to invoke a
@@ -891,8 +861,12 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 			// decision. This second guard is intentionally immediately before
 			// URL/credential construction: a Codex OAuth token must never reach
 			// a Chat Completions endpoint.
+			pinnedModel := *attemptModel
+			if lease != nil && strings.TrimSpace(lease.ID) != "" {
+				pinnedModel.AccountIDs = []string{lease.ID}
+			}
 			releaseAttemptSuccess(lease)
-			forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false, nil)
+			forwardOpenAIResponses(w, incoming, &pinnedModel, geminiReq, requestID, false, nil)
 			return
 		}
 		apiURL, err := upstream.ResolveChatCompletionsURLForConfig(attemptConfig)

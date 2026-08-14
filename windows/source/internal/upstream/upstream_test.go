@@ -173,12 +173,15 @@ func TestOpenAICodexOAuthQuotaUsesWHAMWithoutConfiguredQuotaURL(t *testing.T) {
 	}
 }
 
-func TestAutoModelTestFallsBackOnlyForMissingResponsesEndpoint(t *testing.T) {
+func TestAutoModelTestUsesChatWithoutProbingResponses(t *testing.T) {
+	var responsesCalls, chatCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/responses":
+			responsesCalls.Add(1)
 			http.NotFound(w, r)
 		case "/v1/chat/completions":
+			chatCalls.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-test"}`))
 		default:
@@ -189,11 +192,14 @@ func TestAutoModelTestFallsBackOnlyForMissingResponsesEndpoint(t *testing.T) {
 
 	result := TestModel(context.Background(), Config{Provider: "openai", APIURL: server.URL + "/v1", APIKey: "token", APIStyle: "auto"}, "gpt-test")
 	if !result.OK || result.APIStyle != "chat_completions" {
-		t.Fatalf("expected Responses fallback to chat, got %#v", result)
+		t.Fatalf("expected automatic Chat test, got %#v", result)
+	}
+	if responsesCalls.Load() != 0 || chatCalls.Load() != 1 {
+		t.Fatalf("automatic model test calls responses=%d chat=%d, want 0/1", responsesCalls.Load(), chatCalls.Load())
 	}
 }
 
-func TestAutoModelTestFallsBackForGenericGateway400(t *testing.T) {
+func TestExplicitResponsesModelTestDoesNotFallbackForGenericGateway400(t *testing.T) {
 	var chatCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -211,9 +217,9 @@ func TestAutoModelTestFallsBackForGenericGateway400(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result := TestModel(context.Background(), Config{Provider: "openai", APIURL: server.URL + "/v1", APIKey: "token", APIStyle: "auto"}, "gpt-5.6-sol")
-	if !result.OK || result.APIStyle != "chat_completions" || chatCalls.Load() != 1 {
-		t.Fatalf("expected generic Responses 400 to fall back to chat, got %#v", result)
+	result := TestModel(context.Background(), Config{Provider: "openai", APIURL: server.URL + "/v1", APIKey: "token", APIStyle: "responses"}, "gpt-5.6-sol")
+	if result.OK || result.APIStyle != "responses" || result.StatusCode != http.StatusBadRequest || chatCalls.Load() != 0 {
+		t.Fatalf("explicit Responses error was hidden by Chat fallback: %#v", result)
 	}
 }
 

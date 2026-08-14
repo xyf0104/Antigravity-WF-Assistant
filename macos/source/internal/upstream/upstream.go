@@ -142,8 +142,10 @@ func UsesManualEndpoint(config Config) bool {
 		strings.EqualFold(strings.TrimSpace(config.MessagePathMode), "manual")
 }
 
-// EffectiveAPIStyle preserves legacy configs (which were Chat Completions)
-// while letting newly-created models opt into automatic Responses detection.
+// EffectiveAPIStyle preserves legacy configs as Chat Completions. "auto" is
+// retained as a persisted compatibility value, but Antigravity routing treats
+// it as Chat unless the caller explicitly selected Responses or uses Codex
+// OAuth, whose credential is Responses-only.
 func EffectiveAPIStyle(config Config) string {
 	if IsOpenAICodexOAuth(config) {
 		return "responses"
@@ -502,10 +504,6 @@ func TestModel(ctx context.Context, config Config, model string) TestResult {
 	}
 	style := EffectiveAPIStyle(config)
 	if style == "auto" {
-		result := testResponses(ctx, config, model)
-		if result.OK || !CanFallbackToChatResponse(result.StatusCode, result.Message) {
-			return finish(result)
-		}
 		return finish(testChatCompletions(ctx, config, model))
 	}
 	switch style {

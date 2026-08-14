@@ -45,10 +45,11 @@ var videoMimeTypes = []string{"video/mp4", "video/webm", "video/quicktime"}
 // DefaultCapabilities advertises only the features with a concrete conversion
 // path. Audio and video are deliberately unavailable because OpenAI Chat,
 // Responses and Anthropic Messages do not share a safe common attachment
-// format. Hosted web search and image generation are OpenAI Responses tools,
-// so they are not claimed for Claude or generic compatibility gateways.
+// format. Hosted web search is exposed only for explicit OpenAI Responses.
+// Image generation remains available to OpenAI-compatible Chat models because
+// the proxy routes that operation through a separate Images API model.
 func DefaultCapabilities(provider, modelName string) ModelCapabilities {
-	return defaultCapabilities(provider, modelName, "auto")
+	return defaultCapabilities(provider, modelName, "chat_completions")
 }
 
 // DefaultCapabilitiesForAPIStyle is used when a discovered model already has
@@ -66,16 +67,17 @@ func defaultCapabilities(provider, modelName, apiStyle string) ModelCapabilities
 		provider = "openai"
 	}
 	apiStyle = strings.ToLower(strings.TrimSpace(apiStyle))
-	supportsResponsesTools := !nonChat && provider == "openai" && apiStyle != "chat_completions" && apiStyle != "messages"
+	supportsHostedWebSearch := !nonChat && provider == "openai" && apiStyle == "responses"
+	supportsDirectImageGeneration := !nonChat && apiStyle != "messages" && (provider == "openai" || provider == "grok" || provider == "custom")
 	capabilities := ModelCapabilities{
 		SupportsImages:          !nonChat,
 		SupportsFiles:           !nonChat,
 		SupportsToolCalls:       !nonChat,
 		SupportsThinking:        !nonChat,
-		SupportsWebSearch:       supportsResponsesTools,
-		SupportsImageGeneration: supportsResponsesTools,
+		SupportsWebSearch:       supportsHostedWebSearch,
+		SupportsImageGeneration: supportsDirectImageGeneration,
 	}
-	capabilities.SupportedMimeTypes = capabilityMimeTypes(capabilities)
+	capabilities.SupportedMimeTypes = capabilityMimeTypesForProtocol(capabilities, provider, apiStyle)
 	return capabilities
 }
 
@@ -102,6 +104,29 @@ func capabilityMimeTypes(capabilities ModelCapabilities) []string {
 		}
 	}
 	return normalizeMimeTypes(result)
+}
+
+// capabilityMimeTypesForProtocol keeps Antigravity's attachment picker in
+// lockstep with the converter that will actually handle the request. OpenAI
+// Chat has no general PDF input contract, while explicit Responses and Claude
+// Messages do. SVG is not advertised as a vision format because the supported
+// upstream image inputs are raster images even though SVG has an image/* MIME.
+func capabilityMimeTypesForProtocol(capabilities ModelCapabilities, provider, apiStyle string) []string {
+	values := capabilityMimeTypes(capabilities)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	apiStyle = strings.ToLower(strings.TrimSpace(apiStyle))
+	allowsPDF := capabilities.SupportsFiles && (provider == "anthropic" || apiStyle == "messages" || apiStyle == "responses")
+	if allowsPDF {
+		values = append(values, "application/pdf")
+	}
+	filtered := make([]string, 0, len(values))
+	for _, mimeType := range normalizeMimeTypes(values) {
+		if mimeType == "image/svg+xml" || (mimeType == "application/pdf" && !allowsPDF) {
+			continue
+		}
+		filtered = append(filtered, mimeType)
+	}
+	return filtered
 }
 
 func capabilityAllowsMimeType(capabilities ModelCapabilities, mimeType string) bool {
@@ -145,21 +170,37 @@ func EffectiveCapabilities(model CustomModel) ModelCapabilities {
 	// the runtime cannot reliably forward.
 	capabilities.SupportsAudio = false
 	capabilities.SupportsVideo = false
-	if !capabilitySupportsResponsesTools(model) {
+	if !capabilitySupportsHostedWebSearch(model) {
 		capabilities.SupportsWebSearch = false
-		capabilities.SupportsImageGeneration = false
 	}
-	capabilities.SupportedMimeTypes = capabilityMimeTypes(capabilities)
+	capabilities.SupportsImageGeneration = capabilitySupportsDirectImageGeneration(model)
+	capabilities.SupportedMimeTypes = capabilityMimeTypesForProtocol(capabilities, model.Provider, model.APIStyle)
 	return capabilities
 }
 
-func capabilitySupportsResponsesTools(model CustomModel) bool {
+func capabilitySupportsHostedWebSearch(model CustomModel) bool {
 	provider := strings.ToLower(strings.TrimSpace(model.Provider))
 	if provider == "" {
 		provider = "openai"
 	}
 	style := strings.ToLower(strings.TrimSpace(model.APIStyle))
-	return provider == "openai" && style != "chat_completions" && style != "messages"
+	return provider == "openai" && style == "responses"
+}
+
+func capabilitySupportsDirectImageGeneration(model CustomModel) bool {
+	provider := strings.ToLower(strings.TrimSpace(model.Provider))
+	if provider == "" {
+		provider = "openai"
+	}
+	style := strings.ToLower(strings.TrimSpace(model.APIStyle))
+	if style == "messages" {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(model.ExternalModelName))
+	if strings.Contains(name, "embedding") || strings.Contains(name, "tts") || strings.Contains(name, "whisper") {
+		return false
+	}
+	return provider == "openai" || provider == "grok" || provider == "custom"
 }
 
 // CustomModel represents a third-party model configuration.
@@ -731,7 +772,7 @@ func NewDiscoveredModel(provider, apiURL, apiKey, externalModelName string) Cust
 		APIKey:            apiKey,
 		APIURL:            apiURL,
 		ExternalModelName: externalModelName,
-		APIStyle:          "auto",
+		APIStyle:          "chat_completions",
 		EndpointMode:      "auto",
 		MessagePathMode:   "auto",
 		AuthMode:          "bearer",

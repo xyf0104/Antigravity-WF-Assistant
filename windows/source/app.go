@@ -558,7 +558,7 @@ func (a *App) SaveModel(m storage.CustomModel) Result {
 // embedding any credentials. The user still supplies their own API key.
 func (a *App) DefaultUpstreamConfig() upstream.Config {
 	return upstream.Config{
-		Provider: "openai", APIURL: upstream.DefaultXIASSBaseURL, EndpointMode: "auto", APIStyle: "auto", MessagePathMode: "auto", AuthMode: "bearer",
+		Provider: "openai", APIURL: upstream.DefaultXIASSBaseURL, EndpointMode: "auto", APIStyle: "chat_completions", MessagePathMode: "auto", AuthMode: "bearer",
 	}
 }
 
@@ -737,7 +737,7 @@ func (a *App) GetUpstreamAccounts() []UpstreamAccountView {
 func (a *App) DefaultUpstreamAccount() storage.UpstreamAccount {
 	return storage.UpstreamAccount{
 		Name: "", Provider: "openai", Type: "api_key", APIURL: upstream.DefaultXIASSBaseURL,
-		EndpointMode: "auto", APIStyle: "auto", MessagePathMode: "auto", AuthMode: "bearer", Enabled: true,
+		EndpointMode: "auto", APIStyle: "chat_completions", MessagePathMode: "auto", AuthMode: "bearer", Enabled: true,
 		Priority: 50, MaxConcurrency: 2,
 		OAuth: storage.OAuthConfiguration{RedirectURI: "http://localhost:1455/auth/callback", Scopes: "openid profile email offline_access"},
 	}

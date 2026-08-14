@@ -90,17 +90,16 @@ func TestAntigravityOpenAITextUsesChatCompletions(t *testing.T) {
 	}
 }
 
-func TestAntigravityOpenAIImageInputUsesResponses(t *testing.T) {
+func TestAntigravityOpenAIImageInputUsesChatCompletions(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/responses" {
+		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("OpenAI image input path = %s", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 			t.Fatal(err)
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-image-input","model":"gpt-integration","output":[{"type":"message","content":[{"type":"output_text","text":"vision-ok"}]}]}}`+"\n\n")
+		writeOpenAIChatStream(w, "vision-ok")
 	}))
 	defer upstream.Close()
 
@@ -117,17 +116,18 @@ func TestAntigravityOpenAIImageInputUsesResponses(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "vision-ok") {
 		t.Fatalf("downstream image response = %d %s", recorder.Code, recorder.Body.String())
 	}
-	input, _ := received["input"].([]any)
-	if len(input) != 1 {
-		t.Fatalf("Responses input = %#v", received)
+	messages, _ := received["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("Chat messages = %#v", received)
 	}
-	blocks, _ := input[0].(map[string]any)["content"].([]any)
-	if len(blocks) != 2 || blocks[1].(map[string]any)["type"] != "input_image" || !strings.Contains(blocks[1].(map[string]any)["image_url"].(string), "aGVsbG8=") {
-		t.Fatalf("image was not preserved as a Responses input_image: %#v", input)
+	blocks, _ := messages[0].(map[string]any)["content"].([]any)
+	imageURL, _ := blocks[1].(map[string]any)["image_url"].(map[string]any)
+	if len(blocks) != 2 || blocks[1].(map[string]any)["type"] != "image_url" || imageURL["url"] != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("image was not preserved as a Chat image_url: %#v", messages)
 	}
 }
 
-func TestAntigravityOpenAIImageGenerationUsesResponsesAndReturnsImage(t *testing.T) {
+func TestAntigravityExplicitResponsesImageGenerationReturnsImage(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {
@@ -142,7 +142,7 @@ func TestAntigravityOpenAIImageGenerationUsesResponsesAndReturnsImage(t *testing
 	}))
 	defer upstream.Close()
 
-	model := storage.CustomModel{Name: "models/integration-image-gen", Provider: "openai", APIURL: upstream.URL, APIKey: "test-key", ExternalModelName: "gpt-integration", APIStyle: "auto"}
+	model := storage.CustomModel{Name: "models/integration-image-gen", Provider: "openai", APIURL: upstream.URL, APIKey: "test-key", ExternalModelName: "gpt-integration", APIStyle: "responses"}
 	setupAntigravityIntegrationModel(t, model)
 	request := textTurn("generate an image")
 	request["generationConfig"] = map[string]any{"responseModalities": []any{"TEXT", "IMAGE"}}
@@ -170,8 +170,8 @@ func TestAntigravityOpenAIImageGenerationUsesSameUpstreamImageModel(t *testing.T
 		if r.URL.Path != "/v1/images/generations" {
 			t.Fatalf("dedicated image route = %s", r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer test-key" {
-			t.Fatalf("dedicated image route lost credentials: %q", r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != "Bearer image-key" {
+			t.Fatalf("dedicated image route used the wrong supplier credential: %q", r.Header.Get("Authorization"))
 		}
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 			t.Fatal(err)
@@ -187,7 +187,7 @@ func TestAntigravityOpenAIImageGenerationUsesSameUpstreamImageModel(t *testing.T
 	}
 	imageModel := storage.CustomModel{
 		Name: "models/integration-image-2", Provider: "openai", APIURL: upstream.URL,
-		APIKey: "different-image-key-is-not-used", ExternalModelName: "gpt-image-2", APIStyle: "auto",
+		APIKey: "image-key", ExternalModelName: "gpt-image-2", APIStyle: "auto",
 	}
 	setupAntigravityIntegrationModels(t, textModel, imageModel)
 	request := textTurn("draw a tiny orange astronaut")
@@ -259,8 +259,8 @@ func TestNativeImageGenerationUsesLastCustomOpenAIModelForSameTrajectory(t *test
 			writeOpenAIChatStream(w, "planner-ok")
 		case "/v1/images/generations":
 			imageCalls.Add(1)
-			if r.Header.Get("Authorization") != "Bearer sol-key" {
-				t.Fatalf("native image route lost source credentials: %q", r.Header.Get("Authorization"))
+			if r.Header.Get("Authorization") != "Bearer image-key" {
+				t.Fatalf("native image route used the wrong image supplier credential: %q", r.Header.Get("Authorization"))
 			}
 			if err := json.NewDecoder(r.Body).Decode(&imageRequest); err != nil {
 				t.Fatal(err)
@@ -279,7 +279,7 @@ func TestNativeImageGenerationUsesLastCustomOpenAIModelForSameTrajectory(t *test
 	}
 	image := storage.CustomModel{
 		Name: "models/image-2", Provider: "openai", APIURL: upstream.URL,
-		APIKey: "unused-image-key", ExternalModelName: "gpt-image-2", APIStyle: "auto",
+		APIKey: "image-key", ExternalModelName: "gpt-image-2", APIStyle: "auto",
 	}
 	setupAntigravityIntegrationModels(t, sol, image)
 
@@ -489,6 +489,42 @@ func TestAntigravityClaudeTextAndImageUseMessages(t *testing.T) {
 	blocks, _ := messages[0].(map[string]any)["content"].([]any)
 	if len(blocks) != 2 || blocks[1].(map[string]any)["type"] != "image" {
 		t.Fatalf("image was not preserved in Claude Messages payload: %#v", messages)
+	}
+}
+
+func TestAntigravityClaudePDFUsesMessages(t *testing.T) {
+	var received map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("Claude PDF path = %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"message_start","message":{"id":"msg-pdf","model":"claude-integration"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"pdf-ok"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	model := storage.CustomModel{Name: "models/integration-claude-pdf", Provider: "anthropic", APIURL: upstream.URL, APIKey: "claude-key", ExternalModelName: "claude-integration", APIStyle: "messages", AuthMode: "x_api_key"}
+	setupAntigravityIntegrationModel(t, model)
+	request := textTurn("summarize pdf")
+	request["contents"].([]any)[0].(map[string]any)["parts"] = []any{
+		map[string]any{"text": "summarize pdf"},
+		map[string]any{"inlineData": map[string]any{"mimeType": "application/pdf", "data": "cGRm"}},
+	}
+	recorder := httptest.NewRecorder()
+	handleRequest(recorder, antigravityRequest(model.Name, "claude-pdf-request", request))
+
+	if recorder.Code != http.StatusOK || strings.Count(recorder.Body.String(), "pdf-ok") != 1 {
+		t.Fatalf("downstream Claude PDF response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	messages, _ := received["messages"].([]any)
+	blocks, _ := messages[0].(map[string]any)["content"].([]any)
+	if len(blocks) != 2 || blocks[1].(map[string]any)["type"] != "document" {
+		t.Fatalf("PDF was not preserved in Claude Messages payload: %#v", messages)
 	}
 }
 

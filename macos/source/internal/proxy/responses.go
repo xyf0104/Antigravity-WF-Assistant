@@ -30,8 +30,9 @@ var responsesBuiltinToolCompatibility = struct {
 }
 
 // OpenAI Responses is the upstream surface that can represent general file
-// inputs, hosted web search and image generation. It is selected explicitly,
-// or automatically when a request needs one of those capabilities.
+// inputs, hosted web search and image generation. It is selected only when the
+// user explicitly chooses Responses or when a Codex OAuth credential requires
+// that surface; generic automatic routing remains on Chat Completions.
 func toOpenAIResponsesRequest(gemini map[string]any, modelName string, model *storage.CustomModel) (map[string]any, error) {
 	out := map[string]any{
 		"model":  modelName,

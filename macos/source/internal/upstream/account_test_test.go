@@ -48,7 +48,7 @@ func TestRunAccountTestDirectCodexOAuthNeverFallsBackToChat(t *testing.T) {
 	}
 }
 
-func TestRunAccountTestOpenAIAutoFallsBackOnlyForMissingResponsesRoute(t *testing.T) {
+func TestRunAccountTestOpenAIAutoUsesChatDirectly(t *testing.T) {
 	var responsesCalls, chatCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -75,15 +75,15 @@ func TestRunAccountTestOpenAIAutoFallsBackOnlyForMissingResponsesRoute(t *testin
 	if !result.OK || result.APIStyle != "chat_completions" || result.Content != "OK" {
 		t.Fatalf("unexpected fallback result: %#v", result)
 	}
-	if responsesCalls.Load() != 1 || chatCalls.Load() != 1 {
-		t.Fatalf("fallback calls responses=%d chat=%d", responsesCalls.Load(), chatCalls.Load())
+	if responsesCalls.Load() != 0 || chatCalls.Load() != 1 {
+		t.Fatalf("automatic test calls responses=%d chat=%d, want 0/1", responsesCalls.Load(), chatCalls.Load())
 	}
-	if !strings.Contains(accountTestResultText(result), "Responses 端点不可用") {
-		t.Fatalf("fallback was not represented in detailed log: %#v", result.Steps)
+	if strings.Contains(accountTestResultText(result), "Responses") {
+		t.Fatalf("automatic Chat test unexpectedly mentioned Responses: %#v", result.Steps)
 	}
 }
 
-func TestRunAccountTestOpenAIAutoFallsBackForGenericGateway400(t *testing.T) {
+func TestRunAccountTestExplicitResponsesDoesNotFallbackForGateway400(t *testing.T) {
 	var responsesCalls, chatCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -103,18 +103,18 @@ func TestRunAccountTestOpenAIAutoFallsBackForGenericGateway400(t *testing.T) {
 	defer server.Close()
 
 	result := RunAccountTest(context.Background(), Config{
-		Provider: "openai", APIURL: server.URL, APIKey: "api-test-token", AuthMode: "bearer", APIStyle: "auto",
+		Provider: "openai", APIURL: server.URL, APIKey: "api-test-token", AuthMode: "bearer", APIStyle: "responses",
 	}, AccountTestRequest{AccountID: "openai-account", Model: "gpt-5.6-sol"})
 
-	if !result.OK || result.APIStyle != "chat_completions" || result.Content != "Chat OK" {
-		t.Fatalf("unexpected generic-400 fallback result: %#v", result)
+	if result.OK || result.APIStyle != "responses" || result.StatusCode != http.StatusBadRequest {
+		t.Fatalf("explicit Responses error was hidden: %#v", result)
 	}
-	if responsesCalls.Load() != 1 || chatCalls.Load() != 1 {
-		t.Fatalf("fallback calls responses=%d chat=%d", responsesCalls.Load(), chatCalls.Load())
+	if responsesCalls.Load() != 1 || chatCalls.Load() != 0 {
+		t.Fatalf("explicit Responses calls responses=%d chat=%d, want 1/0", responsesCalls.Load(), chatCalls.Load())
 	}
 }
 
-func TestRunAccountTestOpenAIAutoDoesNotHideSemantic400(t *testing.T) {
+func TestRunAccountTestOpenAIAutoReportsChatSemantic400(t *testing.T) {
 	var chatCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/chat/completions" {
@@ -130,8 +130,8 @@ func TestRunAccountTestOpenAIAutoDoesNotHideSemantic400(t *testing.T) {
 		Provider: "openai", APIURL: server.URL, APIKey: "api-test-token", AuthMode: "bearer", APIStyle: "auto",
 	}, AccountTestRequest{AccountID: "openai-account", Model: "gpt-5.6-sol"})
 
-	if result.OK || result.StatusCode != http.StatusBadRequest || chatCalls.Load() != 0 {
-		t.Fatalf("semantic 400 was incorrectly hidden by Chat fallback: %#v; chat calls=%d", result, chatCalls.Load())
+	if result.OK || result.StatusCode != http.StatusBadRequest || result.APIStyle != "chat_completions" || chatCalls.Load() != 1 {
+		t.Fatalf("automatic Chat semantic 400 was not reported: %#v; chat calls=%d", result, chatCalls.Load())
 	}
 }
 

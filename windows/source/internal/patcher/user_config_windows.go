@@ -103,7 +103,7 @@ func windowsTargetUserSettingsPath(target windowsTarget) (string, string, error)
 	if !strings.Contains(string(mainSource), windowsCloudCodeSetting) ||
 		!strings.Contains(string(extensionSource), windowsCloudCodeSetting) ||
 		!strings.Contains(string(extensionSource), "--cloud_code_endpoint") {
-		return "", "", fmt.Errorf("未找到官方 %s 配置链路；若此前使用过 v1.4.23，请先用官方安装器覆盖重装后再连接", windowsCloudCodeSetting)
+		return "", "", fmt.Errorf("未找到可验证的 %s 配置链路；助手已保持现有文件不变，请导出诊断日志以适配该安装结构", windowsCloudCodeSetting)
 	}
 	productPath := filepath.Join(target.root, "resources", "app", "product.json")
 	productData, err := os.ReadFile(productPath)

@@ -301,7 +301,7 @@ func TestMergeDiscoveredAccountModelsSeparatesIncompatibleRouteContracts(t *test
 func TestDefaultCapabilitiesExposeCompleteChatSurface(t *testing.T) {
 	capabilities := DefaultCapabilities("openai", "gpt-5")
 	if !capabilities.SupportsImages || !capabilities.SupportsFiles || capabilities.SupportsAudio || capabilities.SupportsVideo ||
-		!capabilities.SupportsToolCalls || !capabilities.SupportsThinking || !capabilities.SupportsWebSearch || !capabilities.SupportsImageGeneration {
+		!capabilities.SupportsToolCalls || !capabilities.SupportsThinking || capabilities.SupportsWebSearch || !capabilities.SupportsImageGeneration {
 		t.Fatalf("normal chat model must receive the full default surface: %+v", capabilities)
 	}
 	if len(capabilities.SupportedMimeTypes) == 0 {
@@ -336,20 +336,57 @@ func TestEffectiveCapabilitiesDoNotReExposeUnsupportedLegacyMediaOrTools(t *test
 	}
 }
 
-func TestEffectiveCapabilitiesKeepResponsesToolsForOpenAIAuto(t *testing.T) {
+func TestEffectiveCapabilitiesKeepChatImageGenerationWithoutHostedResponsesWebSearch(t *testing.T) {
 	capabilities := EffectiveCapabilities(CustomModel{
 		Provider: "openai", APIStyle: "auto", ExternalModelName: "gpt-test",
 		Capabilities: ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true},
 	})
-	if !capabilities.SupportsWebSearch || !capabilities.SupportsImageGeneration {
-		t.Fatalf("OpenAI automatic routing must retain Responses tools: %+v", capabilities)
+	if capabilities.SupportsWebSearch || !capabilities.SupportsImageGeneration {
+		t.Fatalf("OpenAI automatic routing must use Chat plus the direct Images bridge: %+v", capabilities)
 	}
 
 	chatOnly := EffectiveCapabilities(CustomModel{
 		Provider: "openai", APIStyle: "chat_completions", ExternalModelName: "gpt-test",
 		Capabilities: ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true},
 	})
-	if chatOnly.SupportsWebSearch || chatOnly.SupportsImageGeneration {
-		t.Fatalf("Chat-only endpoint must not advertise Responses tools: %+v", chatOnly)
+	if chatOnly.SupportsWebSearch || !chatOnly.SupportsImageGeneration {
+		t.Fatalf("Chat must hide hosted web search but keep the direct Images bridge: %+v", chatOnly)
+	}
+
+	responses := EffectiveCapabilities(CustomModel{
+		Provider: "openai", APIStyle: "responses", ExternalModelName: "gpt-test",
+		Capabilities: ModelCapabilities{Configured: true, SupportsWebSearch: true, SupportsImageGeneration: true},
+	})
+	if !responses.SupportsWebSearch || !responses.SupportsImageGeneration {
+		t.Fatalf("explicit Responses must retain hosted web search and image generation: %+v", responses)
+	}
+}
+
+func TestAttachmentCapabilitiesMatchConfiguredProtocol(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    CustomModel
+		wantsPDF bool
+	}{
+		{name: "OpenAI Chat", model: CustomModel{Provider: "openai", APIStyle: "chat_completions", ExternalModelName: "gpt-test"}},
+		{name: "OpenAI auto uses Chat", model: CustomModel{Provider: "openai", APIStyle: "auto", ExternalModelName: "gpt-test"}},
+		{name: "OpenAI Responses", model: CustomModel{Provider: "openai", APIStyle: "responses", ExternalModelName: "gpt-test"}, wantsPDF: true},
+		{name: "Claude Messages", model: CustomModel{Provider: "anthropic", APIStyle: "messages", ExternalModelName: "claude-test"}, wantsPDF: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			capabilities := EffectiveCapabilities(test.model)
+			hasPDF, hasSVG := false, false
+			for _, mimeType := range capabilities.SupportedMimeTypes {
+				hasPDF = hasPDF || mimeType == "application/pdf"
+				hasSVG = hasSVG || mimeType == "image/svg+xml"
+			}
+			if hasPDF != test.wantsPDF {
+				t.Fatalf("PDF capability = %v, want %v: %+v", hasPDF, test.wantsPDF, capabilities)
+			}
+			if hasSVG {
+				t.Fatalf("unsupported SVG vision capability was advertised: %+v", capabilities)
+			}
+		})
 	}
 }

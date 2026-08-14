@@ -34,6 +34,16 @@ jobs:
           grep -Fq "\"productVersion\": \"$version\"" wails.json
           grep -Fq "CurrentVersion = \"$version\"" internal/updater/updater.go
           grep -Fq "v$version" frontend/src/App.vue
+          grep -Fq "v$version" ../../README.md
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          version = Path("VERSION").read_text().strip()
+          lock = json.loads(Path("frontend/package-lock.json").read_text())
+          if lock.get("packages", {}).get("", {}).get("version") != version:
+              raise SystemExit("frontend lockfile root package differs from VERSION")
+          PY
+          test "$(md5 -q frontend/package.json)" = "$(tr -d '\r\n' < frontend/package.json.md5)"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -125,6 +135,7 @@ jobs:
           $updaterNeedle = 'CurrentVersion = "' + $version + '"'
           if (-not (Get-Content internal/updater/updater.go -Raw).Contains($updaterNeedle)) { throw "updater version differs from VERSION" }
           if (-not (Get-Content frontend/src/App.vue -Raw).Contains("v$version")) { throw "visible application version differs from VERSION" }
+          if (-not (Get-Content ../../README.md -Raw).Contains("v$version")) { throw "README release version differs from VERSION" }
 
           # package.json.md5 is Wails' dependency-install cache sentinel, not
           # a release integrity hash. The checked-in Windows sentinel tracks
@@ -263,7 +274,8 @@ jobs:
           - 自定义 GPT 生图优先使用同一上游的 \`gpt-image-2\`；当前供应商没有图片模型时自动使用另一个已启用图片上游，切换回原生 Gemini 后继续使用 Gemini 图片链路。
           - 同名模型会附带账户池/供应商名称显示，真实上游模型 ID 保持不变，便于在 WF助手和 Antigravity 下拉框中准确区分线路。
           - 第三方上游瞬时波动会按设置固定重试本次选中的账户，不会自动切换账户，也不会把该账户放入跨请求冷却；已可能送达、已输出文字、工具或附件的请求不会整段重放。
-          - OpenAI 自动协议遇到兼容网关明确拒绝 Responses 路由时，会在同一账户安全回退到 Chat Completions；鉴权、余额、模型及参数错误仍原样显示。
+          - OpenAI 兼容接口默认直接使用 Chat Completions；识图、文本附件和函数工具不会再把自动模式提升为 Responses。生图仍通过独立 Images API，显式 Responses 与 Codex OAuth 保持原协议。
+          - Chat 只声明实际可转发的图片和文本附件；PDF 保留给显式 Responses 与 Claude Messages。Images API 的 Base64、图片 Data URL 及安全 HTTPS 图片结果都会转换为 Antigravity 可直接展示的图片。
           - 未识别的 Antigravity 结构会被安全跳过并显示原因，不会全局替换未知 JavaScript。
           - \`SHA256SUMS.txt\` 供客户端软件内更新和手动下载校验使用。
 

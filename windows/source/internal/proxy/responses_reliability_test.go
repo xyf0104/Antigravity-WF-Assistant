@@ -12,44 +12,6 @@ import (
 	"antigravity-byok/internal/storage"
 )
 
-func TestAutomaticResponsesRoutingUsesChatForOrdinaryTurns(t *testing.T) {
-	normalChat := map[string]any{
-		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "普通聊天"}}}},
-		// The IDE commonly supplies function declarations on normal turns.
-		// Chat Completions supports these, so they alone must not promote every
-		// turn to Responses or attach hosted web/image tools.
-		"tools": []any{map[string]any{"functionDeclarations": []any{map[string]any{"name": "run_terminal"}}}},
-	}
-	if requiresOpenAIResponses(normalChat) {
-		t.Fatal("ordinary chat with function declarations unexpectedly selected Responses")
-	}
-
-	for name, request := range map[string]map[string]any{
-		"attachment": {
-			"contents": []any{map[string]any{"role": "user", "parts": []any{inlinePart("image/png", "aGVsbG8=")}}},
-		},
-		"native-web-tool": {
-			"tools": []any{map[string]any{"type": "web_search"}},
-		},
-		"empty-native-web-tool": {
-			"tools": []any{map[string]any{"googleSearch": map[string]any{}}},
-		},
-		"native-image-tool": {
-			"tools": []any{map[string]any{"imageGeneration": map[string]any{"enabled": true}}},
-		},
-		"local-override": {
-			"wfUseResponses": true,
-		},
-		"image-modality": {
-			"generationConfig": map[string]any{"responseModalities": []any{"TEXT", "IMAGE"}},
-		},
-	} {
-		if !requiresOpenAIResponses(request) {
-			t.Fatalf("%s did not select Responses", name)
-		}
-	}
-}
-
 func TestForwardOpenAIAutoRoutesOrdinaryChatToChatCompletions(t *testing.T) {
 	var paths []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +39,7 @@ func TestForwardOpenAIAutoRoutesOrdinaryChatToChatCompletions(t *testing.T) {
 	}
 }
 
-func TestForwardOpenAIAutoFallsBackAfterGenericResponses400(t *testing.T) {
+func TestForwardOpenAIAutoUsesChatEvenWhenAntigravityRequestsResponsesFeatures(t *testing.T) {
 	var paths []string
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -102,15 +64,15 @@ func TestForwardOpenAIAutoFallsBackAfterGenericResponses400(t *testing.T) {
 		"wfUseResponses": true,
 	}, "generic-400-chat-fallback")
 
-	if len(paths) != 2 || paths[0] != "/v1/responses" || paths[1] != "/v1/chat/completions" {
-		t.Fatalf("upstream paths = %#v, want Responses then Chat Completions", paths)
+	if len(paths) != 1 || paths[0] != "/v1/chat/completions" {
+		t.Fatalf("upstream paths = %#v, automatic mode must use only Chat Completions", paths)
 	}
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"text":"fallback ok"`) || !strings.Contains(recorder.Body.String(), `"finishReason":"STOP"`) {
 		t.Fatalf("unexpected fallback response: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
-func TestForwardOpenAIAutoFallbackKeepsTheResponsesAccountPinned(t *testing.T) {
+func TestForwardOpenAIAutoUsesChatWithoutProbingAnotherPooledAccount(t *testing.T) {
 	storage.Init(t.TempDir())
 
 	var firstResponses, firstChat, secondCalls atomic.Int32
@@ -158,8 +120,8 @@ func TestForwardOpenAIAutoFallbackKeepsTheResponsesAccountPinned(t *testing.T) {
 		"wfUseResponses": true,
 	}, "responses-chat-pinned-account")
 
-	if firstResponses.Load() != 1 || firstChat.Load() != 1 || secondCalls.Load() != 0 {
-		t.Fatalf("account calls = first responses:%d chat:%d second:%d, want 1/1/0", firstResponses.Load(), firstChat.Load(), secondCalls.Load())
+	if firstResponses.Load() != 0 || firstChat.Load() != 1 || secondCalls.Load() != 0 {
+		t.Fatalf("account calls = first responses:%d chat:%d second:%d, want 0/1/0", firstResponses.Load(), firstChat.Load(), secondCalls.Load())
 	}
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"text":"same account"`) {
 		t.Fatalf("unexpected fallback response: %d %s", recorder.Code, recorder.Body.String())

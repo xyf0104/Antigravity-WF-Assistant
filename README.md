@@ -25,12 +25,12 @@
 
 ## 下载与安装
 
-请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与系统对应的 v1.5.8 安装包。Release 只上传两个标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与系统对应的 v1.5.9 安装包。Release 只上传两个标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
 
 | 系统 | 安装包 | 支持范围 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.5.8-Installer.pkg` | Apple Silicon 与 Intel Mac |
-| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.5.8-Setup.exe` | Windows 10/11 x64 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.5.9-Installer.pkg` | Apple Silicon 与 Intel Mac |
+| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.5.9-Setup.exe` | Windows 10/11 x64 |
 
 手动下载时可使用同一 Release 中的 `SHA256SUMS.txt` 校验文件完整性；软件内更新会自动完成该校验。
 
@@ -53,7 +53,7 @@ Windows 安装时可以勾选创建桌面快捷方式。macOS 安装完成后可
 
 - 每个账户卡片都可以单独测试、查看可解析的账号信息和本机转发用量，并直接同步该账户的全部模型。
 - 同协议、同上游地址、同模型名的多个账户会绑定到同一个模型，不会重复创建大量模型卡片。
-- 运行时遇到可重试的网络、限流或认证故障时，会在该模型绑定的可用账户之间切换；不会为普通成功请求重复发送完整对话。
+- 每个新请求按优先级和并发选择一次账户；运行中遇到可安全重试的瞬时网络或线路故障时，只重试本次选中的账户，不切换账户、不建立跨请求冷却，也不会重放已经可能送达或已开始输出的完整对话。
 - API 地址可以只填写基础域名并由助手补全，也可以切换到完整路径手动编辑。
 - 模型能力以实际上游响应为准；上游不支持的 Responses 工具会安全降级，不会伪造模型能力。
 

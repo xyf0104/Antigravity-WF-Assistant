@@ -219,9 +219,9 @@ func appendOpenAIChatAttachment(blocks *[]any, attachment *geminiAttachment) err
 		return nil
 	}
 	if attachment.isPDF() {
-		return fmt.Errorf("PDF 附件需要将该模型的 API 模式设为 Responses 或自动")
+		return fmt.Errorf("PDF 附件需要明确将该模型的 API 模式设为 Responses")
 	}
-	return fmt.Errorf("%s 附件需要将该模型的 API 模式设为 Responses 或自动", attachment.MimeType)
+	return fmt.Errorf("%s 附件需要明确将该模型的 API 模式设为 Responses", attachment.MimeType)
 }
 
 func geminiToolsToOpenAI(gemini map[string]any) []map[string]any {

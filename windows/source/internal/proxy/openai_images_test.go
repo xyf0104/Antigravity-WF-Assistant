@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"context"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +31,35 @@ func TestDirectOpenAIImageModelUsesOnlyEnabledModelsFromSameUpstream(t *testing.
 	image := directOpenAIImageModel(&selected)
 	if image == nil || image.ExternalModelName != "gpt-image-1" {
 		t.Fatalf("selected image model = %#v, want enabled same-upstream gpt-image-1", image)
+	}
+}
+
+func TestRemoteOpenAIImageFallbackIsBoundedAndImageOnly(t *testing.T) {
+	client := &http.Client{Transport: modelFetchRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://cdn.example.test/generated.png" {
+			t.Fatalf("remote image URL = %s", request.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+			Body:       io.NopCloser(strings.NewReader("image-bytes")),
+			Request:    request,
+		}, nil
+	})}
+	data, mimeType, err := downloadOpenAIImageWithClient(context.Background(), "https://cdn.example.test/generated.png", client)
+	if err != nil || data != "aW1hZ2UtYnl0ZXM=" || mimeType != "image/png" {
+		t.Fatalf("downloaded image = %q, %q, %v", data, mimeType, err)
+	}
+	if _, _, err := downloadOpenAIImageWithClient(context.Background(), "http://cdn.example.test/generated.png", client); err == nil {
+		t.Fatal("plain HTTP image URL must be rejected")
+	}
+	for _, blocked := range []string{"127.0.0.1", "10.0.0.1", "169.254.1.2", "100.64.0.1", "::1"} {
+		if isPublicRemoteImageIP(net.ParseIP(blocked)) {
+			t.Fatalf("protected address %s was accepted", blocked)
+		}
+	}
+	if !isPublicRemoteImageIP(net.ParseIP("8.8.8.8")) {
+		t.Fatal("public address was rejected")
 	}
 }
 
@@ -87,6 +119,13 @@ func TestOpenAIImageDataFromResponseSupportsOpenAIBase64Shape(t *testing.T) {
 		t.Fatalf("parsed image = %q, %q, %v", data, mimeType, err)
 	}
 
+	data, mimeType, err = openAIImageDataFromResponse([]byte(`{"data":[{"url":"data:image/png;base64,aW1hZ2U="}]}`))
+	if err != nil || data != "aW1hZ2U=" || mimeType != "image/png" {
+		t.Fatalf("parsed data URL image = %q, %q, %v", data, mimeType, err)
+	}
+	if _, _, err := openAIImageDataFromResponse([]byte(`{"data":[{"url":"data:text/plain;base64,aGVsbG8="}]}`)); err == nil || !strings.Contains(err.Error(), "Base64") {
+		t.Fatalf("non-image data URL must be rejected, err = %v", err)
+	}
 	if _, _, err := openAIImageDataFromResponse([]byte(`{"data":[{"url":"https://example.test/generated.png"}]}`)); err == nil || !strings.Contains(err.Error(), "Base64") {
 		t.Fatalf("URL-only response should require requested Base64 output, err = %v", err)
 	}

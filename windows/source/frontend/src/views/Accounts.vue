@@ -266,7 +266,7 @@ function emptyForm() {
     type: "api_key",
     apiUrl: DEFAULT_XIASS_URL,
     endpointMode: "auto",
-    apiStyle: "auto",
+    apiStyle: "chat_completions",
     messagePathMode: "auto",
     authMode: "bearer",
     authHeader: "",
@@ -597,7 +597,7 @@ function onProviderChange(provider) {
     form.value.apiStyle = "messages";
   } else if (form.value.authMode === "x_api_key") {
     form.value.authMode = "bearer";
-    if (form.value.apiStyle === "messages") form.value.apiStyle = "auto";
+    if (form.value.apiStyle === "messages") form.value.apiStyle = "chat_completions";
   }
 }
 
