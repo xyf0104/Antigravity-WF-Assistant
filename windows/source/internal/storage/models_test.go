@@ -72,11 +72,23 @@ func TestUpstreamNameRoundTripsAsTrimmedPresentationMetadata(t *testing.T) {
 	}
 }
 
-func TestVisibleModelDisplayNameIncludesUpstreamName(t *testing.T) {
+func TestVisibleModelDisplayNameUsesMacStyleSupplierSuffix(t *testing.T) {
 	model := NewDiscoveredModel("openai", "https://api.example.test", "secret", "gpt-5.6-sol")
 	model.UpstreamName = "XIASS"
-	if got, want := VisibleModelDisplayName(model), "gpt-5.6-sol（XIASS）"; got != want {
+	if got, want := VisibleModelDisplayName(model), "gpt-5.6-sol · XIASS"; got != want {
 		t.Fatalf("visible display name = %q, want %q", got, want)
+	}
+}
+
+func TestVisibleModelDisplayNamePrefersLiveAccountPoolLabel(t *testing.T) {
+	model := NewDiscoveredModel("openai", "https://api.example.test", "secret", "gpt-5.6-sol")
+	model.UpstreamName = "旧供应商名称"
+	model.AccountPoolLabel = "无风"
+	if got, want := VisibleModelDisplayName(model), "gpt-5.6-sol · 无风"; got != want {
+		t.Fatalf("visible display name = %q, want %q", got, want)
+	}
+	if model.DisplayName != "gpt-5.6-sol" || model.ExternalModelName != "gpt-5.6-sol" {
+		t.Fatalf("visible suffix polluted routing fields: %#v", model)
 	}
 }
 

@@ -150,6 +150,42 @@ func TestInstalledDarwinAgentConnectionSupportWhenFixturePresent(t *testing.T) {
 	}
 }
 
+func TestInspectDarwinAppUsesBundleProductVersionInsteadOfInternalPackageVersion(t *testing.T) {
+	ideApp := filepath.Join(t.TempDir(), "Antigravity IDE.app")
+	writeDarwinUnpackedDiscoveryFixture(t, ideApp, "com.google.antigravity-ide")
+	ideRoot := filepath.Join(ideApp, "Contents", "Resources", "app")
+	if err := os.WriteFile(filepath.Join(ideRoot, "package.json"), []byte(`{"version":"1.107.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeDarwinProductVersionPlist(t, ideApp, "com.google.antigravity-ide", "2.5.5")
+	ide, ok := inspectDarwinApp(ideApp)
+	if !ok || ide.kind != "ide" || ide.version != "2.5.5" {
+		t.Fatalf("IDE product version must come from Info.plist, not package.json: ok=%t target=%+v", ok, ide)
+	}
+
+	agentApp := filepath.Join(t.TempDir(), "Antigravity 2.app")
+	resources := filepath.Join(agentApp, "Contents", "Resources")
+	if err := os.MkdirAll(filepath.Join(resources, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archive := &asarArchive{root: &asarNode{Files: map[string]*asarNode{}}}
+	if err := archive.write(filepath.Join(resources, "app.asar"), map[string][]byte{
+		"package.json":           []byte(`{"version":"1.107.0"}`),
+		"dist/main.js":           []byte(`"use strict";const keep=true;`),
+		"dist/languageServer.js": []byte(`const endpoint="` + productionEndpoint + `";`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(resources, "bin", "language_server"), []byte("Mach-O fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeDarwinProductVersionPlist(t, agentApp, "com.google.antigravity", "2.8.1")
+	agent, ok := inspectDarwinApp(agentApp)
+	if !ok || agent.kind != "agent" || agent.version != "2.8.1" {
+		t.Fatalf("Agent product version must come from Info.plist, not package.json: ok=%t target=%+v", ok, agent)
+	}
+}
+
 func TestNormalizeAppBundlePathHandlesQuotedProcessPath(t *testing.T) {
 	app := filepath.Join(t.TempDir(), "Antigravity IDE.app")
 	input := `"` + filepath.Join(app, "Contents", "MacOS", "Electron") + `"`
@@ -195,6 +231,24 @@ func writeDarwinUnpackedDiscoveryFixture(t *testing.T, app, bundleIdentifier str
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>` + bundleIdentifier + `</string></dict></plist>`
 	path := filepath.Join(app, "Contents", "Info.plist")
+	if err := os.WriteFile(path, []byte(plist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeDarwinProductVersionPlist(t *testing.T, app, bundleIdentifier, version string) {
+	t.Helper()
+	plist := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>` +
+		`<key>CFBundleIdentifier</key><string>` + bundleIdentifier + `</string>` +
+		`<key>CFBundleShortVersionString</key><string>` + version + `</string>` +
+		`<key>CFBundleVersion</key><string>` + version + `</string>` +
+		`</dict></plist>`
+	path := filepath.Join(app, "Contents", "Info.plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(plist), 0o644); err != nil {
 		t.Fatal(err)
 	}

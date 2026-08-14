@@ -55,6 +55,43 @@ func TestEmptyDisplayNameUsesUpstreamModelName(t *testing.T) {
 	}
 }
 
+func TestUpstreamNameRoundTripsAsTrimmedPresentationMetadata(t *testing.T) {
+	dir := t.TempDir()
+	Init(dir)
+	model := NewDiscoveredModel("openai", "https://example.com/v1", "secret", "gpt-test")
+	model.UpstreamName = "  XIASS 主线路  "
+	if err := AddOrUpdateModel(model); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadModels()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("load failed: %#v, %v", loaded, err)
+	}
+	if loaded[0].UpstreamName != "XIASS 主线路" {
+		t.Fatalf("upstreamName = %q", loaded[0].UpstreamName)
+	}
+}
+
+func TestVisibleModelDisplayNameUsesSupplierSuffixForDirectModel(t *testing.T) {
+	model := NewDiscoveredModel("openai", "https://api.example.test", "secret", "gpt-5.6-sol")
+	model.UpstreamName = "无风"
+	if got, want := VisibleModelDisplayName(model), "gpt-5.6-sol · 无风"; got != want {
+		t.Fatalf("visible display name = %q, want %q", got, want)
+	}
+	if model.DisplayName != "gpt-5.6-sol" || model.ExternalModelName != "gpt-5.6-sol" {
+		t.Fatalf("visible suffix polluted routing fields: %#v", model)
+	}
+}
+
+func TestVisibleModelDisplayNamePrefersLiveAccountPoolLabel(t *testing.T) {
+	model := NewDiscoveredModel("openai", "https://api.example.test", "secret", "gpt-5.6-sol")
+	model.UpstreamName = "旧供应商名称"
+	model.AccountPoolLabel = "无风"
+	if got, want := VisibleModelDisplayName(model), "gpt-5.6-sol · 无风"; got != want {
+		t.Fatalf("visible display name = %q, want %q", got, want)
+	}
+}
+
 func TestLoadedModelDisplayNameIncludesCurrentAccountPoolNamesWithoutPersistingThem(t *testing.T) {
 	dir := t.TempDir()
 	Init(dir)

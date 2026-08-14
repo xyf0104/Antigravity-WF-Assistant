@@ -124,7 +124,7 @@ func TestAddAgentModelID(t *testing.T) {
 
 func TestInjectCustomModelsSupportsMapAndEverySortGroup(t *testing.T) {
 	models := []storage.CustomModel{{
-		Name: "models/gpt-test", DisplayName: "GPT Test", ExternalModelName: "gpt-test",
+		Name: "models/gpt-test", DisplayName: "gpt-5.6-sol", UpstreamName: "无风", ExternalModelName: "gpt-test",
 	}}
 	parsed := map[string]any{
 		"models": map[string]any{
@@ -147,7 +147,7 @@ func TestInjectCustomModelsSupportsMapAndEverySortGroup(t *testing.T) {
 	}
 	modelMap := parsed["models"].(map[string]any)
 	entry, ok := modelMap["custom-gpt-test"].(map[string]any)
-	if !ok || entry["displayName"] != "GPT Test" {
+	if !ok || entry["displayName"] != "gpt-5.6-sol · 无风" {
 		t.Fatalf("custom map entry missing: %v", modelMap)
 	}
 	for _, rawSort := range parsed["agentModelSorts"].([]any) {
@@ -162,7 +162,7 @@ func TestInjectCustomModelsSupportsMapAndEverySortGroup(t *testing.T) {
 
 func TestInjectCustomModelsSupportsArrayAndAlternateContainer(t *testing.T) {
 	models := []storage.CustomModel{{
-		Name: "models/claude-test", DisplayName: "Claude Test", ExternalModelName: "claude-test",
+		Name: "models/claude-test", DisplayName: "gpt-5.6-sol", UpstreamName: "无风", ExternalModelName: "claude-test",
 	}}
 	parsed := map[string]any{
 		"availableModels": []any{map[string]any{
@@ -182,7 +182,7 @@ func TestInjectCustomModelsSupportsArrayAndAlternateContainer(t *testing.T) {
 		t.Fatalf("expected injected and official array models: %v", entries)
 	}
 	custom := entries[0].(map[string]any)
-	if custom["name"] != "models/custom-claude-test" || custom["displayName"] != "Claude Test" {
+	if custom["name"] != "models/custom-claude-test" || custom["displayName"] != "gpt-5.6-sol · 无风" {
 		t.Fatalf("unexpected custom array entry: %v", custom)
 	}
 	sorts := parsed["agentModelSorts"].([]any)

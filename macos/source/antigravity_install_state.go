@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/patcher"
+	"antigravity-wf-assistant/internal/patcher"
 )
 
 const antigravityInstallStateFile = "antigravity-install-state.json"
@@ -18,7 +18,7 @@ const antigravityInstallStateFile = "antigravity-install-state.json"
 // must be run through Apply again to receive a newer on-disk compatibility
 // rule. Storing it per target lets IDE-only and Agent-only operations migrate
 // independently on computers that have both products installed.
-const antigravityPatchRevision = "windows-image-ui-v6"
+const antigravityPatchRevision = "macos-image-ui-v6"
 
 type antigravityInstallRecord struct {
 	Kind              string `json:"kind"`

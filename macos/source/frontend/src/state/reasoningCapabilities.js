@@ -9,14 +9,14 @@ export const AUTO_REASONING_EFFORT = "auto";
 const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 const EFFORT_LABELS = Object.freeze({
-  auto: "自动",
-  none: "无",
-  minimal: "最小",
-  low: "低",
-  medium: "中",
-  high: "高",
-  xhigh: "超高",
-  max: "最大",
+	auto: "auto",
+	none: "none",
+	minimal: "minimal",
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "xhigh",
+	max: "max",
 });
 
 function text(value) {

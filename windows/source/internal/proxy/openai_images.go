@@ -20,15 +20,14 @@ import (
 const maxOpenAIImageGenerationResponseBytes int64 = (maxForwardedAttachmentBytes * 4 / 3) + (2 << 20)
 
 // directOpenAIImageModel returns the best enabled image-only model for the
-// active text model. A same-upstream model is always preferred; when that
-// supplier has no image model, WF falls back to an enabled image model from a
-// separately configured OpenAI-compatible supplier. This lets a GPT-5.6 chat
+// active text model. A model from the current supplier card is always
+// preferred; when that supplier has no image model, WF falls back to an enabled
+// image model from a separately configured OpenAI-compatible supplier. This lets a GPT-5.6 chat
 // model and gpt-image-2 live on two independent supplier cards.
 //
-// A same-upstream image keeps the text model's credential/account pool for
-// backward compatibility. A cross-upstream fallback uses the selected image
-// model's own endpoint, credential and account pool; secrets are never copied
-// into logs or the Antigravity response.
+// The selected image model always owns its endpoint, credential and account
+// pool, including when it belongs to the current supplier card. Secrets are
+// never copied into logs or the Antigravity response.
 func directOpenAIImageModel(model *storage.CustomModel) *storage.CustomModel {
 	if model == nil || !isOpenAICompatibleImageProvider(model.Provider) {
 		return nil
@@ -38,7 +37,7 @@ func directOpenAIImageModel(model *storage.CustomModel) *storage.CustomModel {
 		// image endpoint and must stay on the existing Responses route.
 		return nil
 	}
-	selectedEndpoint, _ := upstream.ResolveImagesGenerationsURLForConfig(upstream.ConfigFromModel(*model))
+	selectedSupplier, selectedSupplierOK := directImageSupplierIdentityFor(*model)
 
 	candidates := []storage.CustomModel{*model}
 	configured, loadErr := storage.LoadEnabledModels()
@@ -49,7 +48,7 @@ func directOpenAIImageModel(model *storage.CustomModel) *storage.CustomModel {
 	type imageCandidate struct {
 		model        storage.CustomModel
 		endpoint     string
-		sameUpstream bool
+		sameSupplier bool
 	}
 	valid := make([]imageCandidate, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
@@ -70,18 +69,19 @@ func directOpenAIImageModel(model *storage.CustomModel) *storage.CustomModel {
 			continue
 		}
 		seen[key] = struct{}{}
+		candidateSupplier, candidateSupplierOK := directImageSupplierIdentityFor(candidate)
 		valid = append(valid, imageCandidate{
 			model:        candidate,
 			endpoint:     candidateEndpoint,
-			sameUpstream: selectedEndpoint != "" && candidateEndpoint == selectedEndpoint,
+			sameSupplier: selectedSupplierOK && candidateSupplierOK && selectedSupplier.equal(candidateSupplier),
 		})
 	}
 	if len(valid) == 0 {
 		return nil
 	}
 	sort.SliceStable(valid, func(i, j int) bool {
-		if valid[i].sameUpstream != valid[j].sameUpstream {
-			return valid[i].sameUpstream
+		if valid[i].sameSupplier != valid[j].sameSupplier {
+			return valid[i].sameSupplier
 		}
 		left, right := directImageModelPriority(valid[i].model.ExternalModelName), directImageModelPriority(valid[j].model.ExternalModelName)
 		if left != right {
@@ -94,6 +94,100 @@ func directOpenAIImageModel(model *storage.CustomModel) *storage.CustomModel {
 	})
 	selected := valid[0].model
 	return &selected
+}
+
+// directImageSupplierIdentity mirrors the supplier-card boundary used by the
+// renderer. Endpoint equality alone is insufficient: two suppliers may expose
+// the same domain while using different API keys, account pools or headers.
+// The values below are used only for in-memory equality and are never logged.
+type directImageSupplierIdentity struct {
+	provider     string
+	endpointMode string
+	endpoint     string
+	accountIDs   []string
+	apiKey       string
+	authMode     string
+	authHeader   string
+	headers      []string
+}
+
+func directImageSupplierIdentityFor(model storage.CustomModel) (directImageSupplierIdentity, bool) {
+	config := upstream.ConfigFromModel(model)
+	endpoint, err := upstream.ResolveImagesGenerationsURLForConfig(config)
+	if err != nil || endpoint == "" {
+		return directImageSupplierIdentity{}, false
+	}
+	mode := upstream.NormalizedEndpointMode(config.EndpointMode)
+	if upstream.UsesManualEndpoint(config) {
+		mode = "manual"
+	}
+	accountIDs := normalizedDirectImageAccountIDs(model.AccountIDs)
+	identity := directImageSupplierIdentity{
+		provider:     upstream.NormalizedProvider(model.Provider),
+		endpointMode: mode,
+		endpoint:     endpoint,
+		accountIDs:   accountIDs,
+	}
+	if len(accountIDs) == 0 {
+		identity.apiKey = strings.TrimSpace(model.APIKey)
+		identity.authMode = strings.ToLower(strings.TrimSpace(model.AuthMode))
+		if identity.authMode == "" {
+			identity.authMode = "bearer"
+		}
+		identity.authHeader = strings.ToLower(strings.TrimSpace(model.AuthHeader))
+		identity.headers = normalizedDirectImageHeaders(model.Headers)
+	}
+	return identity, true
+}
+
+func normalizedDirectImageAccountIDs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func normalizedDirectImageHeaders(values map[string]string) []string {
+	result := make([]string, 0, len(values))
+	for name, value := range values {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		result = append(result, name+"\x00"+value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (left directImageSupplierIdentity) equal(right directImageSupplierIdentity) bool {
+	if left.provider != right.provider || left.endpointMode != right.endpointMode || left.endpoint != right.endpoint ||
+		left.apiKey != right.apiKey || left.authMode != right.authMode || left.authHeader != right.authHeader ||
+		len(left.accountIDs) != len(right.accountIDs) || len(left.headers) != len(right.headers) {
+		return false
+	}
+	for index := range left.accountIDs {
+		if left.accountIDs[index] != right.accountIDs[index] {
+			return false
+		}
+	}
+	for index := range left.headers {
+		if left.headers[index] != right.headers[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func directOpenAIImageExecutionModel(_ *storage.CustomModel, imageModel *storage.CustomModel) *storage.CustomModel {

@@ -8,10 +8,24 @@ import Settings from "@/views/Settings.vue";
 import Button from "@/components/ui/Button.vue";
 import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
-import { bootstrap, requestQuit } from "@/state/appState";
+import {
+	state,
+	bootstrap,
+	requestQuit,
+	checkForUpdates,
+	installLatestUpdate,
+	applyPatch,
+	loadPatchStatus,
+} from "@/state/appState";
 
 const tab = ref("dashboard");
 const exitDialogOpen = ref(false);
+const updateDialogOpen = ref(false);
+const updateDialogError = ref("");
+const dismissedUpdateVersion = ref("");
+const repatchDialogOpen = ref(false);
+const repatchError = ref("");
+let removeMainWindowShownListener = null;
 const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 const tabs = [
   { label: "总览", value: "dashboard", hint: "运行状态与快捷操作" },
@@ -30,6 +44,7 @@ const themeMode = ref(["light", "dark", "system"].includes(storedTheme) ? stored
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 const currentTab = computed(() => tabs.find((item) => item.value === tab.value) || tabs[0]);
+const updateProgressPercent = computed(() => Math.min(100, Math.max(0, Number(state.update.progress?.percent) || 0)));
 
 function applyTheme() {
   const resolved = themeMode.value === "system"
@@ -47,18 +62,83 @@ function quitAssistant() {
   requestQuit().catch(console.error);
 }
 
+function dismissUpdateDialog() {
+	dismissedUpdateVersion.value = state.update.info?.latestVersion || "";
+	updateDialogOpen.value = false;
+}
+
+async function handleInstallUpdate() {
+	updateDialogError.value = "";
+	const res = await installLatestUpdate();
+	if (!res?.ok) updateDialogError.value = res?.message || "下载更新失败";
+}
+
+async function handleRequiredReconnect() {
+	repatchError.value = "";
+	const res = await applyPatch();
+	if (!res?.ok) {
+		repatchError.value = res?.message || "重新连接失败";
+		return;
+	}
+	repatchDialogOpen.value = false;
+}
+
+function dismissRepatchDialog() {
+	if (state.patchBusy) return;
+	repatchError.value = "";
+	repatchDialogOpen.value = false;
+}
+
+function handleMainWindowShown() {
+	tab.value = "dashboard";
+	void loadPatchStatus();
+	if (state.settings?.updates?.autoCheck !== false) void checkForUpdates();
+}
+
 watch(themeMode, (value) => {
   localStorage.setItem("wf-theme", value);
   applyTheme();
 }, { immediate: true });
 
+watch(
+	() => [state.update.info?.available, state.update.info?.skipped, state.update.info?.latestVersion],
+	([available, skipped, version]) => {
+		if (available && !skipped && version && version !== dismissedUpdateVersion.value && !repatchDialogOpen.value) {
+			updateDialogOpen.value = true;
+		}
+	},
+);
+
+watch(
+	() => state.patch.productRepatchRequired,
+	(required) => {
+		if (!required) {
+			repatchDialogOpen.value = false;
+			return;
+		}
+		tab.value = "dashboard";
+		updateDialogOpen.value = false;
+		repatchError.value = "";
+		repatchDialogOpen.value = true;
+	},
+);
+
 onMounted(() => {
   systemTheme.addEventListener?.("change", handleSystemThemeChange);
   bootstrap().catch(console.error);
+	const runtime = window.runtime;
+	if (typeof runtime?.EventsOn === "function") {
+		const unsubscribe = runtime.EventsOn("wf:main-window-shown", handleMainWindowShown);
+		if (typeof unsubscribe === "function") removeMainWindowShownListener = unsubscribe;
+		else if (typeof runtime.EventsOff === "function") {
+			removeMainWindowShownListener = () => runtime.EventsOff("wf:main-window-shown");
+		}
+	}
 });
 
 onUnmounted(() => {
   systemTheme.removeEventListener?.("change", handleSystemThemeChange);
+	removeMainWindowShownListener?.();
 });
 </script>
 
@@ -101,8 +181,8 @@ onUnmounted(() => {
         <button
           class="exit-trigger"
           type="button"
-          title="退出助手"
-          aria-label="退出助手"
+          title="退出助手并停止本地代理"
+          aria-label="退出助手并停止本地代理"
           style="--wails-draggable: no-drag"
           @click="exitDialogOpen = true"
         >
@@ -110,7 +190,7 @@ onUnmounted(() => {
             <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
           </svg>
         </button>
-        <span class="version-pill">v1.5.9</span>
+        <span class="version-pill">v1.6.3</span>
       </div>
     </aside>
 
@@ -143,12 +223,43 @@ onUnmounted(() => {
     </section>
 
     <Modal :open="exitDialogOpen" title="退出助手？" @close="exitDialogOpen = false">
-      <p class="exit-copy">退出后会停止本地代理。点击窗口叉号只会最小化到 Dock/任务栏；也可从系统菜单栏或托盘图标退出。</p>
+      <p class="exit-copy">退出后会停止本地代理。点击窗口叉号只会隐藏主窗口；也可从系统菜单栏或托盘图标退出。</p>
       <template #footer>
         <Button variant="plain" @click="exitDialogOpen = false">取消</Button>
         <Button variant="danger" @click="quitAssistant">退出助手</Button>
       </template>
     </Modal>
+
+	<Modal :open="updateDialogOpen" title="发现新版本" @close="dismissUpdateDialog">
+	  <div class="global-dialog-copy">
+		<strong>Antigravity WF助手 v{{ state.update.info.latestVersion }}</strong>
+		<span>当前为 v{{ state.update.info.currentVersion || '—' }}，可以直接下载、校验并启动新版安装程序。</span>
+		<span v-if="state.update.info.notes" class="update-notes">{{ state.update.info.notes }}</span>
+	  </div>
+	  <div v-if="state.update.installing" class="global-progress">
+		<div><span>{{ state.update.progress?.message || '正在下载更新' }}</span><strong>{{ updateProgressPercent }}%</strong></div>
+		<div class="global-progress-track"><span :style="{ width: `${updateProgressPercent}%` }"></span></div>
+	  </div>
+	  <div v-if="updateDialogError" class="global-error">{{ updateDialogError }}</div>
+	  <template #footer>
+		<Button variant="plain" :disabled="state.update.installing" @click="dismissUpdateDialog">稍后</Button>
+		<Button variant="filled" :loading="state.update.installing" :disabled="state.update.installing" @click="handleInstallUpdate">一键下载安装</Button>
+	  </template>
+	</Modal>
+
+	<Modal :open="repatchDialogOpen" title="Antigravity 需要重新连接" :closable="!state.patchBusy" persistent @close="dismissRepatchDialog">
+	  <div class="global-dialog-copy">
+		<strong>检测到安装版本或连接规则已更新</strong>
+		<span>{{ state.patch.productRepatchMessage || '检测到 Antigravity 安装发生变化，请重新连接后继续使用。' }}</span>
+		<span>请先完全退出正在运行的 Antigravity。助手会按当前安装结构自动选择兼容注入方式。</span>
+		<span>也可以暂时跳过，之后随时在首页手动连接并升级到最新补丁规则。</span>
+	  </div>
+	  <div v-if="repatchError" class="global-error">{{ repatchError }}</div>
+	  <template #footer>
+		<Button variant="plain" :disabled="state.patchBusy" @click="dismissRepatchDialog">稍后再说</Button>
+		<Button variant="filled" :loading="state.patchBusy" :disabled="state.patchBusy" @click="handleRequiredReconnect">立即重新连接</Button>
+	  </template>
+	</Modal>
   </div>
 </template>
 
@@ -282,6 +393,67 @@ onUnmounted(() => {
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.65;
+}
+
+.global-dialog-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.global-dialog-copy strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.update-notes {
+  max-height: 96px;
+  overflow: auto;
+  padding: 9px 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-fill);
+  white-space: pre-wrap;
+}
+
+.global-progress {
+  margin-top: 14px;
+}
+
+.global-progress > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.global-progress-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-fill);
+}
+
+.global-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-strong);
+  transition: width 0.18s var(--ease);
+}
+
+.global-error {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border-radius: var(--r-md);
+  color: var(--red);
+  background: rgba(255, 69, 58, 0.1);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .version-pill {

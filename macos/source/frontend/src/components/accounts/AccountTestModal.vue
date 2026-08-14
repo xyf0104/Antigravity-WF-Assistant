@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
 
@@ -7,6 +7,7 @@ const DEFAULT_IMAGE_PROMPT = "Generate a cute orange cat astronaut sticker on a 
 
 const props = defineProps({
   open: Boolean,
+  title: { type: String, default: "测试账号连接" },
   account: { type: Object, default: null },
   // A model can be a string or an object with id/name/displayName/display_name.
   models: { type: Array, default: () => [] },
@@ -52,6 +53,9 @@ const selectedModelId = ref("");
 const testPrompt = ref("hi");
 const testMode = ref("default");
 const copied = ref(false);
+const modelPickerRef = ref(null);
+const modelMenuOpen = ref(false);
+const modelSearch = ref("");
 
 function modelID(model) {
   if (typeof model === "string") return model;
@@ -73,6 +77,11 @@ const normalizedModels = computed(() => props.models
   .filter((model) => model.id));
 
 const selectedModel = computed(() => normalizedModels.value.find((model) => model.id === selectedModelId.value));
+const filteredModels = computed(() => {
+  const query = modelSearch.value.trim().toLowerCase();
+  if (!query) return normalizedModels.value;
+  return normalizedModels.value.filter((model) => `${model.label} ${model.id}`.toLowerCase().includes(query));
+});
 const selectedModelLooksLikeImage = computed(() => looksLikeImageModel(selectedModelId.value));
 const isOpenAI = computed(() => /openai|codex/i.test(String(props.account?.provider ?? props.account?.platform ?? "")));
 const shouldShowTestMode = computed(() => props.showTestMode === null ? isOpenAI.value : Boolean(props.showTestMode));
@@ -102,6 +111,8 @@ function initialize() {
     ? props.defaultTestMode
     : (props.testModes[0]?.value || "default");
   copied.value = false;
+  modelMenuOpen.value = false;
+  modelSearch.value = "";
 }
 
 async function scrollTerminalToBottom() {
@@ -130,7 +141,25 @@ function setModel(value) {
   testPrompt.value = normalizePrompt(value, testPrompt.value);
   emit("update:model-id", value);
   emit("update:prompt", testPrompt.value);
+  modelMenuOpen.value = false;
+  modelSearch.value = "";
 }
+
+function toggleModelMenu() {
+  if (busy.value || props.loadingModels || !normalizedModels.value.length) return;
+  modelMenuOpen.value = !modelMenuOpen.value;
+  if (!modelMenuOpen.value) modelSearch.value = "";
+}
+
+function handleDocumentPointerDown(event) {
+  if (modelMenuOpen.value && !modelPickerRef.value?.contains(event.target)) {
+    modelMenuOpen.value = false;
+    modelSearch.value = "";
+  }
+}
+
+onMounted(() => document.addEventListener("pointerdown", handleDocumentPointerDown));
+onUnmounted(() => document.removeEventListener("pointerdown", handleDocumentPointerDown));
 
 function setPrompt(value) {
   testPrompt.value = value;
@@ -200,7 +229,7 @@ async function copyOutput() {
 </script>
 
 <template>
-  <Modal :open="open" title="测试账号连接" wide persistent @close="close">
+  <Modal :open="open" :title="title" wide persistent @close="close">
     <section class="account-test" aria-live="polite">
       <div v-if="account" class="account-card">
         <div class="play-icon" aria-hidden="true">
@@ -219,17 +248,43 @@ async function copyOutput() {
       </div>
 
       <label class="form-label" for="account-test-model">选择测试模型</label>
-      <div class="select-shell" :class="{ disabled: busy || loadingModels }">
-        <select
+      <div ref="modelPickerRef" class="model-picker" :class="{ disabled: busy || loadingModels, open: modelMenuOpen }">
+        <button
           id="account-test-model"
-          :value="selectedModelId"
+          class="model-picker-trigger"
+          type="button"
           :disabled="busy || loadingModels || !normalizedModels.length"
-          @change="setModel($event.target.value)"
+          :aria-expanded="modelMenuOpen"
+          aria-haspopup="listbox"
+          @click="toggleModelMenu"
+          @keydown.esc.stop="modelMenuOpen = false"
         >
-          <option value="" disabled>{{ loadingModels ? "正在读取可用模型…" : "请选择测试模型" }}</option>
-          <option v-for="model in normalizedModels" :key="model.id" :value="model.id">{{ model.label }}</option>
-        </select>
-        <svg class="chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m4 7 6 6 6-6" /></svg>
+          <span class="truncate">{{ loadingModels ? "正在读取可用模型…" : selectedModel?.label || "请选择测试模型" }}</span>
+          <svg class="picker-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m4 7 6 6 6-6" /></svg>
+        </button>
+        <div v-if="modelMenuOpen" class="model-picker-menu" role="listbox" :aria-activedescendant="selectedModelId ? `test-model-${selectedModelId}` : undefined">
+          <div v-if="normalizedModels.length > 6" class="model-search-row">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg>
+            <input v-model="modelSearch" type="search" placeholder="搜索模型…" @keydown.esc.stop="modelMenuOpen = false" />
+          </div>
+          <div class="model-picker-options">
+            <button
+              v-for="model in filteredModels"
+              :id="`test-model-${model.id}`"
+              :key="model.id"
+              type="button"
+              class="model-picker-option"
+              :class="{ selected: model.id === selectedModelId }"
+              role="option"
+              :aria-selected="model.id === selectedModelId"
+              @click="setModel(model.id)"
+            >
+              <span class="truncate">{{ model.label }}</span>
+              <svg v-if="model.id === selectedModelId" viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-9"/></svg>
+            </button>
+            <div v-if="!filteredModels.length" class="model-picker-empty">没有匹配的模型</div>
+          </div>
+        </div>
       </div>
 
       <template v-if="shouldShowTestMode">
@@ -327,6 +382,23 @@ textarea { resize: vertical; min-height: 58px; padding: 11px 13px; line-height: 
 .select-shell select:focus, textarea:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(93,165,255,.13); }
 .select-shell.disabled { opacity: .58; }
 .chevron { position: absolute; right: 16px; top: 50%; width: 21px; height: 21px; pointer-events: none; fill: none; stroke: var(--text-secondary); stroke-width: 1.8; transform: translateY(-50%); }
+.model-picker { position: relative; }
+.model-picker.disabled { opacity: .58; }
+.model-picker-trigger { width: 100%; height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 17px 0 18px; border: 1px solid rgba(130,152,184,.36); border-radius: 16px; color: var(--text-primary); background: rgba(4,15,33,.44); font-size: 16px; font-weight: 650; text-align: left; transition: border-color .16s var(--ease), box-shadow .16s var(--ease); }
+.model-picker-trigger:hover:not(:disabled), .model-picker.open .model-picker-trigger { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(93,165,255,.13); }
+.picker-chevron { width: 21px; height: 21px; flex: 0 0 auto; fill: none; stroke: var(--text-secondary); stroke-width: 1.8; transition: transform .18s var(--ease); }
+.model-picker.open .picker-chevron { transform: rotate(180deg); }
+.model-picker-menu { position: absolute; z-index: 20; top: calc(100% + 7px); left: 0; right: 0; overflow: hidden; border: 1px solid rgba(130,152,184,.36); border-radius: 16px; background: color-mix(in srgb, var(--modal-bg) 96%, #061227); box-shadow: 0 18px 42px rgba(0,0,0,.34); }
+.model-search-row { height: 48px; display: flex; align-items: center; gap: 9px; padding: 0 14px; border-bottom: 1px solid var(--separator); }
+.model-search-row svg { width: 19px; height: 19px; flex: 0 0 auto; fill: none; stroke: var(--text-secondary); stroke-width: 1.5; }
+.model-search-row input { min-width: 0; width: 100%; border: 0; outline: 0; color: var(--text-primary); background: transparent; font: inherit; }
+.model-picker-options { max-height: 280px; overflow-y: auto; padding: 9px; }
+.model-picker-option { width: 100%; min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px; border: 1px solid transparent; border-radius: 13px; color: var(--text-primary); background: transparent; font-size: 15px; font-weight: 620; text-align: left; }
+.model-picker-option + .model-picker-option { margin-top: 7px; }
+.model-picker-option:hover { background: var(--bg-fill); }
+.model-picker-option.selected { border-color: var(--blue); background: color-mix(in srgb, var(--blue-soft) 48%, var(--bg-card)); }
+.model-picker-option svg { width: 20px; height: 20px; flex: 0 0 auto; fill: none; stroke: var(--blue); stroke-width: 1.7; }
+.model-picker-empty { padding: 18px; color: var(--text-tertiary); text-align: center; font-size: 13px; }
 .input-hint { margin: -8px 3px 0; color: var(--text-tertiary); font-size: 11.5px; line-height: 1.45; }
 .terminal-wrap { position: relative; }
 .terminal { max-height: 246px; min-height: 137px; overflow-y: auto; padding: 15px 16px; border: 1px solid rgba(80, 105, 137, .72); border-radius: 18px; color: #cbd5e1; background: #030608; box-shadow: inset 0 1px 0 rgba(255,255,255,.04); font-family: var(--font-num); font-size: 13px; line-height: 1.55; }

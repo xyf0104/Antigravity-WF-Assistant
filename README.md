@@ -14,7 +14,7 @@
 - 自动检测 Antigravity、Antigravity IDE 和 Antigravity 2.x；多个安装可以分别连接、启动或重启。
 - 支持 OpenAI Chat Completions、OpenAI Responses、OpenAI 兼容接口和 Anthropic Messages API。
 - 支持 API Key、Bearer / Access Token、x-api-key、Setup Token、Codex PAT、自定义认证头、账户 JSON、Refresh Token，以及 OpenAI / Codex 浏览器 OAuth 登录。
-- 从账户或 API 获取真实可用模型，一键同步到 Antigravity；同一模型可绑定多个账户并按优先级、并发和健康状态调度。
+- 从账户或 API 获取真实可用模型，一键同步到 Antigravity；同一模型可绑定多个账户并按优先级、并发和健康状态调度。模型下拉框统一显示为“模型名 · 账户池名/供应商名”，例如 `gpt-5.6-sol · 无风`，显示后缀不会改变真实模型 ID。
 - 模型支持自定义显示名、完整 API 路径、推理等级、连接测试与可用性测试。
 - 支持文字、截图、图片识别、文件、PDF、工具调用、推理、联网搜索和上游支持的图片生成能力；当前聊天供应商没有图片模型时，可自动使用另一个已启用供应商的 `gpt-image-2`，不改变当前聊天模型。
 - 已识别的图片界面可显示实际图片模型名、默认展开生成结果、保留 Prompt 缩略图，并隐藏同一结果的正文重复大图。
@@ -25,12 +25,12 @@
 
 ## 下载与安装
 
-请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载 Windows v1.6.2 安装包。本次只更新 Windows；macOS 继续使用 v1.5.9。Release 提供标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载 v1.6.3 安装包。Release 只提供两个系统的标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
 
 | 系统 | 安装包 | 支持范围 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.5.9-Installer.pkg` | Apple Silicon 与 Intel Mac（本次未修改） |
-| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.6.2-Setup.exe` | Windows 10/11 x64 |
+| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.6.3-Installer.pkg` | Apple Silicon 与 Intel Mac |
+| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.6.3-Setup.exe` | Windows 10/11 x64 |
 
 手动下载时可使用同一 Release 中的 `SHA256SUMS.txt` 校验文件完整性；软件内更新会自动完成该校验。
 
@@ -59,7 +59,9 @@ Windows 安装时可以勾选创建桌面快捷方式。macOS 安装完成后可
 
 ## 自动检测与数据
 
-macOS 会检查 `/Applications`、`/System/Applications`、`~/Applications`、运行中的应用和 Spotlight。Windows 会检查常见安装目录、运行进程、卸载注册表及各磁盘常用目录。
+macOS 会优先检查 `/Applications`、`/System/Applications`、`~/Applications` 和上次成功连接的安装路径，后台完整刷新时再检查运行中的应用与 Spotlight；Windows 会检查常见安装目录、上次成功连接的路径、运行进程、卸载注册表及各磁盘常用目录。两端都会缓存已经验证的发现结果，并在产品版本、主程序、Language Server、renderer、ASAR 或安装目录发生变化时立即失效，避免每次打开首页都重复扫描大型安装文件。
+
+助手显示的是 Antigravity 产品版本，而不是内置 VS Code/Electron 版本。macOS 只从 App Bundle 的 `Info.plist` 读取 `CFBundleShortVersionString`（缺失时回退到 `CFBundleVersion`）；Windows 从 Antigravity 主程序的 PE 版本资源读取产品版本。`package.json` / `product.json` 中类似 `1.107.0` 的内部版本不会作为 Antigravity 版本显示，也不会参与产品更新判断。
 
 如需指定安装位置，可设置：
 
@@ -74,10 +76,13 @@ macOS 会检查 `/Applications`、`/System/Applications`、`~/Applications`、�
 
 助手按安装结构而不是仅按版本号判断兼容性。已识别的连接链、renderer 和完整性字段会进入可恢复事务；图片 renderer 未识别时会保持原文件不变并跳过可选界面增强，不会阻断已验证的用户级代理设置。必要的连接链本身无法识别时仍保持零写入；助手不会全局替换未知 JavaScript，也不会把其他版本文件强行复制到当前安装。
 
+当前回归包含 Antigravity IDE 2.5.5 的原生图片预览结构和 Antigravity 2.0 2.8.1 的 Agent renderer 家族；macOS 使用对应的 App Bundle、Mach-O、ASAR/内嵌 ZIP 与完整性校验流程，Windows 使用对应的 PE 与安装结构流程。
+
 更多说明：
 
 - [macOS 安装与使用说明](docs/macOS使用说明.md)
 - [Windows 安装与使用说明](docs/Windows使用说明.md)
+- [Windows v1.6.3 与 macOS v1.6.3 对照审计](docs/Windows-v1.6.3与macOS-v1.6.3对照审计.md)
 
 ## 许可证与声明
 

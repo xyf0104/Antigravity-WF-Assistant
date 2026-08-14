@@ -26,6 +26,29 @@ func imagePreviewV3RendererFixture() string {
 }
 
 func TestWindowsMigratesLegacyCrossPlatformImageDedupe(t *testing.T) {
+	legacy := imageGenerationDedupeV3RendererFixture(t)
+	if windowsImageRendererReady([]byte(legacy)) {
+		t.Fatal("legacy v3 fixture was not constructed as pending")
+	}
+	currentRuntime := `globalThis.__antigravityWFGeneratedImageEventsV4??=[],` +
+		generatedImageMountedDuplicateHiderDefinition() + generatedImageRememberDefinition()
+	legacyRuntime := generatedImageV3MountedDuplicateHiderDefinition() + generatedImageV3RememberDefinition()
+	if !strings.Contains(legacy, legacyRuntime) || strings.Contains(legacy, currentRuntime) || len(imageGenerationLegacyDuplicateExpressionPattern.FindAllStringSubmatchIndex(legacy, -1)) != 1 {
+		t.Fatalf("legacy v3 fixture shape mismatch: legacy=%t current=%t expressions=%d", strings.Contains(legacy, legacyRuntime), strings.Contains(legacy, currentRuntime), len(imageGenerationLegacyDuplicateExpressionPattern.FindAllStringSubmatchIndex(legacy, -1)))
+	}
+	updated, migrationResult := patchImagePreviewRenderer(legacy)
+	if !migrationResult.Recognized || !migrationResult.Changed || !windowsImageRendererReady([]byte(updated)) {
+		t.Fatalf("legacy cross-platform renderer was not migrated: %#v", migrationResult)
+	}
+	for _, required := range []string{imageGenerationDedupePatchMarker, `__antigravityWFGeneratedImageEventsV4`, `__antigravityWFConsumeGeneratedImageV4`} {
+		if !strings.Contains(updated, required) {
+			t.Fatalf("migrated renderer is missing %q", required)
+		}
+	}
+}
+
+func imageGenerationDedupeV3RendererFixture(t testing.TB) string {
+	t.Helper()
 	source := imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture() + imageArtifactMarkdownRendererFixture()
 	patched, result := patchImagePreviewRenderer(source)
 	if !result.Changed || !windowsImageRendererReady([]byte(patched)) {
@@ -37,23 +60,135 @@ func TestWindowsMigratesLegacyCrossPlatformImageDedupe(t *testing.T) {
 	legacy := strings.Replace(patched, currentRuntime, legacyRuntime, 1)
 	legacy = strings.Replace(legacy, generatedImageConsumeDefinition(), "", 1)
 	legacy = strings.Replace(legacy, imageGenerationDedupePatchMarker, imageGenerationDedupePatchV3Marker, 1)
-	legacy = strings.Replace(legacy,
-		`$wfImageDuplicate=!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(e,u,r),`,
-		`$wfImageDuplicate=!!globalThis.__antigravityWFIsRecentGeneratedImageV2&&[e,u,r].some(value=>globalThis.__antigravityWFIsRecentGeneratedImageV2(value)),`, 1)
-	if legacy == patched || windowsImageRendererReady([]byte(legacy)) {
-		t.Fatal("legacy v3 fixture was not constructed as pending")
+	currentExpression := `$wfImageDuplicate=(` + generatedImageConsumerRuntime() + `!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(e,u,r)),`
+	legacyExpression := `$wfImageDuplicate=!!globalThis.__antigravityWFIsRecentGeneratedImageV2&&[e,u,r].some(value=>globalThis.__antigravityWFIsRecentGeneratedImageV2(value)),`
+	legacy = strings.Replace(legacy, currentExpression, legacyExpression, 1)
+	legacy = strings.Replace(legacy, imageArtifactThumbnailStyle, "", 1)
+	if legacy == patched {
+		t.Fatal("legacy v3 fixture replacements did not change the current renderer")
 	}
-	if !strings.Contains(legacy, legacyRuntime) || len(imageGenerationLegacyDuplicateExpressionPattern.FindAllStringSubmatchIndex(legacy, -1)) != 1 {
-		t.Fatalf("legacy v3 fixture shape mismatch: runtime=%t expressions=%d", strings.Contains(legacy, legacyRuntime), len(imageGenerationLegacyDuplicateExpressionPattern.FindAllStringSubmatchIndex(legacy, -1)))
+	return legacy
+}
+
+func imageGenerationDedupeV4RendererFixture(t testing.TB) string {
+	t.Helper()
+	source := imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture() + imageArtifactMarkdownRendererFixture()
+	patched, result := patchImagePreviewRenderer(source)
+	if !result.Changed || !windowsImageRendererReady([]byte(patched)) {
+		t.Fatalf("baseline renderer did not produce a ready image patch: %#v", result)
 	}
-	updated, migrationResult := patchImagePreviewRenderer(legacy)
-	if !migrationResult.Recognized || !migrationResult.Changed || !windowsImageRendererReady([]byte(updated)) {
-		t.Fatalf("legacy cross-platform renderer was not migrated: %#v", migrationResult)
+	currentRuntime := `globalThis.__antigravityWFGeneratedImageEventsV4??=[],` +
+		generatedImageMountedDuplicateHiderDefinition() + generatedImageRememberDefinition() +
+		generatedImageIsRecentDefinition() + generatedImageConsumeDefinition()
+	legacyRuntime := `globalThis.__antigravityWFGeneratedImageEventsV4??=[],` +
+		generatedImageMountedDuplicateHiderDefinition() + generatedImageV4RememberDefinition() +
+		generatedImageIsRecentDefinition() + generatedImageV4ConsumeDefinition()
+	legacy := strings.Replace(patched, currentRuntime, legacyRuntime, 1)
+	currentExpression := `$wfImageDuplicate=(` + generatedImageConsumerRuntime() + `!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(e,u,r)),`
+	legacyExpression := `$wfImageDuplicate=!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(e,u,r),`
+	legacy = strings.Replace(legacy, currentExpression, legacyExpression, 1)
+	legacy = strings.Replace(legacy, imageArtifactThumbnailStyle, "", 1)
+	legacy = strings.Replace(legacy, imageGenerationDedupePatchMarker, imageGenerationDedupePatchV4Marker, 1)
+	if legacy == patched || !strings.Contains(legacy, legacyRuntime) || !strings.Contains(legacy, legacyExpression) || strings.Contains(legacy, currentExpression) {
+		t.Fatal("legacy v4 fixture replacements did not reproduce the released runtime")
 	}
-	for _, required := range []string{imageGenerationDedupePatchMarker, `__antigravityWFGeneratedImageEventsV4`, `__antigravityWFConsumeGeneratedImageV4`} {
+	return legacy
+}
+
+func imageGenerationDedupeV5RendererFixture(t testing.TB) string {
+	t.Helper()
+	source := imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture() + imageArtifactMarkdownRendererFixture()
+	patched, result := patchImagePreviewRenderer(source)
+	if !result.Changed || !windowsImageRendererReady([]byte(patched)) {
+		t.Fatalf("baseline renderer did not produce a ready image patch: %#v", result)
+	}
+	legacy := strings.Replace(patched, imageGenerationDedupePatchMarker, imageGenerationDedupePatchV5Marker, 1)
+	legacy = strings.Replace(legacy, imageArtifactThumbnailStyle, "", 1)
+	if legacy == patched || !strings.Contains(legacy, imageGenerationDedupePatchV5Marker) || strings.Contains(legacy, imageArtifactThumbnailStyle) {
+		t.Fatal("legacy v5 fixture replacements did not reproduce the released runtime")
+	}
+	return legacy
+}
+
+func TestWindowsMigratesV5ArtifactToThumbnail(t *testing.T) {
+	legacy := imageGenerationDedupeV5RendererFixture(t)
+	if windowsImageRendererReady([]byte(legacy)) {
+		t.Fatal("v5 renderer must remain pending until the thumbnail migration")
+	}
+	updated, result := patchImagePreviewRenderer(legacy)
+	if !result.Recognized || !result.Changed || !windowsImageRendererReady([]byte(updated)) {
+		t.Fatalf("v5 renderer was not migrated to v6: %#v", result)
+	}
+	if !strings.Contains(updated, imageArtifactThumbnailStyle) || strings.Contains(updated, imageGenerationDedupePatchV5Marker) {
+		t.Fatal("v6 renderer is missing the 320px artifact thumbnail constraint")
+	}
+	second, secondResult := patchImagePreviewRenderer(updated)
+	if !secondResult.Recognized || secondResult.Changed || second != updated {
+		t.Fatalf("v6 thumbnail migration is not idempotent: %#v", secondResult)
+	}
+}
+
+func TestWindowsMigratesV4ImageDedupeAcrossRendererGlobals(t *testing.T) {
+	legacy := imageGenerationDedupeV4RendererFixture(t)
+	if windowsImageRendererReady([]byte(legacy)) {
+		t.Fatal("v4 renderer must remain pending until the cross-global v5 migration")
+	}
+	updated, result := patchImagePreviewRenderer(legacy)
+	if !result.Recognized || !result.Changed || !windowsImageRendererReady([]byte(updated)) {
+		t.Fatalf("v4 renderer was not migrated to v5: %#v", result)
+	}
+	for _, required := range []string{imageGenerationDedupePatchMarker, `antigravity-wf-generated-image-events-v5`, generatedImageConsumerRuntime()} {
 		if !strings.Contains(updated, required) {
-			t.Fatalf("migrated renderer is missing %q", required)
+			t.Fatalf("v5 renderer is missing %q", required)
 		}
+	}
+	for _, removed := range []string{imageGenerationDedupePatchV4Marker, generatedImageV4RememberDefinition(), generatedImageV4ConsumeDefinition()} {
+		if strings.Contains(updated, removed) {
+			t.Fatalf("v4 renderer fragment remained after migration: %q", removed)
+		}
+	}
+}
+
+func TestGeneratedImageDedupeSharesSingleUseEventAcrossRendererGlobals(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable; cross-renderer generated-image dedupe check skipped")
+	}
+	path := filepath.Join(t.TempDir(), "generated-image-cross-global-dedupe.js")
+	source := `"use strict";
+const vm=require("vm"),values=new Map;
+const localStorage={getItem:key=>values.has(key)?values.get(key):null,setItem:(key,value)=>values.set(key,String(value))};
+const card=vm.createContext({localStorage});
+vm.runInContext(` + strconv.Quote(generatedImageRegistrationRuntime(`"file:///C:/Users/Test/generated-card.png"`)) + `,card);
+let queue=JSON.parse(values.get("antigravity-wf-generated-image-events-v5"));
+queue[0].time=Date.now()-300000;
+values.set("antigravity-wf-generated-image-events-v5",JSON.stringify(queue));
+const artifact=vm.createContext({localStorage});
+const first=vm.runInContext(` + strconv.Quote(generatedImageConsumerRuntime()+`globalThis.__antigravityWFConsumeGeneratedImageV4("file:///C:/Users/Test/artifacts/renamed.png")`) + `,artifact);
+const second=vm.runInContext(` + strconv.Quote(`globalThis.__antigravityWFConsumeGeneratedImageV4("file:///C:/Users/Test/normal.png")`) + `,artifact);
+process.stdout.write(JSON.stringify({first,second,stored:JSON.parse(values.get("antigravity-wf-generated-image-events-v5"))}));`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
+		t.Fatalf("cross-renderer dedupe failed node --check: %s: %v", output, err)
+	}
+	output, err := exec.Command(node, path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("cross-renderer dedupe failed at runtime: %s: %v", output, err)
+	}
+	var got struct {
+		First  bool `json:"first"`
+		Second bool `json:"second"`
+		Stored []struct {
+			Consumed bool `json:"consumed"`
+		} `json:"stored"`
+	}
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("cross-renderer dedupe returned invalid JSON %q: %v", output, err)
+	}
+	if !got.First || got.Second || len(got.Stored) != 1 || !got.Stored[0].Consumed {
+		t.Fatalf("cross-renderer event was not single-use after a five-minute UI delay: %#v", got)
 	}
 }
 
@@ -336,9 +471,9 @@ func TestPatchDuplicateGeneratedImageRendererUpgradesV2MountedImageRace(t *testi
 		generatedImageLegacyRememberDefinition(),
 	)
 	legacy = strings.Replace(legacy, generatedImageConsumeDefinition(), "", 1)
-	legacy = strings.Replace(legacy,
-		`$wfImageDuplicate=!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(e,u,r),`,
-		`$wfImageDuplicate=!!globalThis.__antigravityWFIsRecentGeneratedImageV2&&[e,u,r].some(value=>globalThis.__antigravityWFIsRecentGeneratedImageV2(value)),`, 1)
+	currentExpression := `$wfImageDuplicate=(` + generatedImageConsumerRuntime() + `!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(e,u,r)),`
+	legacyExpression := `$wfImageDuplicate=!!globalThis.__antigravityWFIsRecentGeneratedImageV2&&[e,u,r].some(value=>globalThis.__antigravityWFIsRecentGeneratedImageV2(value)),`
+	legacy = strings.Replace(legacy, currentExpression, legacyExpression, 1)
 	updated, result := patchImagePreviewRenderer(legacy)
 	if !result.Recognized || !result.Changed {
 		t.Fatalf("v2 dedupe fixture was not upgraded: %#v", result)
@@ -566,7 +701,10 @@ func TestPatchImagePreviewRendererUpgradesOptionalInstalledRenderers(t *testing.
 				t.Fatal(err)
 			}
 			updated, result := patchImagePreviewRenderer(string(original))
-			if !result.Recognized || !result.Changed || strings.Contains(updated, imagePreviewPatchV3Marker) || strings.Contains(updated, imagePreviewPatchV6Marker) || !strings.Contains(updated, imagePreviewPatchMarker) || !strings.Contains(updated, imageGenerationUIPatchMarker) {
+			if !result.Recognized || !result.Changed || strings.Contains(updated, imagePreviewPatchV3Marker) || strings.Contains(updated, imagePreviewPatchV6Marker) ||
+				(!strings.Contains(updated, imagePreviewPatchMarker) && !strings.Contains(updated, imagePreviewNativeCompatibleMarker)) ||
+				!strings.Contains(updated, imageGenerationUIPatchMarker) || !strings.Contains(updated, imageGenerationDedupePatchMarker) ||
+				strings.Contains(updated, imageGenerationDedupePatchV4Marker) {
 				t.Fatalf("installed renderer was not safely migrated: %#v", result)
 			}
 			// Backup fixtures commonly end in .bak; Node 24 refuses --check on

@@ -18,7 +18,9 @@ func TestAntigravityProductRepatchStateTracksVersionAndExecutable(t *testing.T) 
 	}
 	app := &App{storageDir: dir}
 	target := patcher.TargetStatus{Kind: "ide", AppPath: dir, ExecutablePath: executable, Version: "2.5.5"}
-	baseline := antigravityInstallState{Schema: 1, Targets: []antigravityInstallRecord{antigravityInstallRecordFromTarget(target)}}
+	record := antigravityInstallRecordFromTarget(target)
+	record.PatchRevision = antigravityPatchRevision
+	baseline := antigravityInstallState{Schema: 1, Targets: []antigravityInstallRecord{record}}
 	if err := app.saveAntigravityInstallState(baseline); err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +39,32 @@ func TestAntigravityProductRepatchStateTracksVersionAndExecutable(t *testing.T) 
 	}
 	if required, message := app.antigravityProductRepatchState(patcher.Status{Targets: []patcher.TargetStatus{target}}); !required || !strings.Contains(message, "程序文件") {
 		t.Fatalf("executable change not detected: required=%t message=%q", required, message)
+	}
+}
+
+func TestAntigravityProductRepatchStateRequiresCurrentPatchRevision(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "Antigravity IDE.exe")
+	if err := os.WriteFile(executable, []byte("same-build"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{storageDir: dir}
+	target := patcher.TargetStatus{Kind: "ide", AppPath: dir, ExecutablePath: executable, Version: "2.5.5"}
+	legacy := antigravityInstallState{Schema: 1, Targets: []antigravityInstallRecord{antigravityInstallRecordFromTarget(target)}}
+	if err := app.saveAntigravityInstallState(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if required, message := app.antigravityProductRepatchState(patcher.Status{Targets: []patcher.TargetStatus{target}}); !required || !strings.Contains(message, "旧版连接规则") {
+		t.Fatalf("legacy helper rule did not request reconnect: required=%t message=%q", required, message)
+	}
+
+	record := antigravityInstallRecordFromTarget(target)
+	record.PatchRevision = antigravityPatchRevision
+	if err := app.saveAntigravityInstallState(antigravityInstallState{Schema: 1, Targets: []antigravityInstallRecord{record}}); err != nil {
+		t.Fatal(err)
+	}
+	if required, message := app.antigravityProductRepatchState(patcher.Status{Targets: []patcher.TargetStatus{target}}); required || message != "" {
+		t.Fatalf("current helper rule requested reconnect: required=%t message=%q", required, message)
 	}
 }
 

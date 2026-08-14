@@ -5,6 +5,8 @@ package patcher
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,10 +14,31 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"antigravity-wf-assistant/internal/storage"
 )
 
-const darwinDiscoveryCommandTimeout = 2 * time.Second
+const (
+	darwinDiscoveryCommandTimeout = 2 * time.Second
+	darwinDiscoveryCacheTTL       = 2 * time.Minute
+	darwinInstallStateFileName    = "antigravity-install-state.json"
+)
+
+// Discovery caches only structurally inspected bundle targets. Patch/support
+// state is deliberately rebuilt by buildDarwinStatus, so a two-minute cache
+// can never turn an old renderer rule into a connected result. Every reuse is
+// additionally guarded by metadata fingerprints for the bundle identity,
+// executable, product metadata, renderer, ASAR and Language Server files.
+var darwinDiscoveryCache = struct {
+	sync.Mutex
+	targets         []darwinTargets
+	fingerprints    map[string]string
+	rootFingerprint string
+	at              time.Time
+	deep            bool
+}{fingerprints: map[string]string{}}
 
 // Keep the process expression deliberately narrow: the captured bundle must
 // itself have an Antigravity/Agent Window-looking name.  A parent directory
@@ -24,8 +47,35 @@ const darwinDiscoveryCommandTimeout = 2 * time.Second
 var runningAppPattern = regexp.MustCompile(`(?i)(/[^\n]*?(?:antigravity|agent[^\n/]*window)[^\n/]*\.app)/Contents/`)
 
 func locateDarwinInstallations() []darwinTargets {
-	candidates, explicit := darwinAppCandidates()
-	return selectDarwinInstallations(candidates, explicit, trustedDarwinInstallLocation)
+	return locateDarwinInstallationsCached(false, false)
+}
+
+// locateDarwinInstallationsQuick performs no process/Spotlight discovery and
+// never opens app.asar. A recent, metadata-valid full discovery is preferred;
+// otherwise only standard roots, saved successful paths and explicit recovery
+// paths are inspected using the lightweight bundle shape validator.
+func locateDarwinInstallationsQuick() []darwinTargets {
+	if targets, ok := cachedDarwinInstallations(false); ok {
+		return targets
+	}
+	candidates, explicit := darwinAppCandidates(false)
+	return selectDarwinInstallationsQuick(candidates, explicit, trustedDarwinInstallLocation)
+}
+
+func refreshDarwinInstallations() []darwinTargets {
+	return locateDarwinInstallationsCached(true, true)
+}
+
+func locateDarwinInstallationsCached(includeDeep, force bool) []darwinTargets {
+	if !force {
+		if targets, ok := cachedDarwinInstallations(includeDeep); ok {
+			return targets
+		}
+	}
+	candidates, explicit := darwinAppCandidates(includeDeep)
+	targets := selectDarwinInstallations(candidates, explicit, trustedDarwinInstallLocation)
+	cacheDarwinInstallations(targets, includeDeep)
+	return cloneDarwinTargets(targets)
 }
 
 // selectDarwinInstallations separates candidate gathering from structural
@@ -80,7 +130,48 @@ func selectDarwinInstallations(candidates []string, explicit map[string]bool, is
 	return targets
 }
 
-func darwinAppCandidates() ([]string, map[string]bool) {
+// selectDarwinInstallationsQuick mirrors the identity boundary of the full
+// selector but uses only file existence and plist metadata. Saved paths never
+// become implicit authority: a non-standard saved bundle still has to present
+// an Antigravity bundle identifier and a known IDE/Agent directory shape.
+func selectDarwinInstallationsQuick(candidates []string, explicit map[string]bool, isTrusted func(string) bool) []darwinTargets {
+	seen := map[string]bool{}
+	targets := make([]darwinTargets, 0)
+	for _, candidate := range candidates {
+		candidate = normalizeAppBundlePath(candidate)
+		canonical := darwinCanonicalAppKey(candidate)
+		if candidate == "" || seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
+		trusted := isTrusted(candidate)
+		if !explicit[candidate] {
+			if trusted {
+				if !darwinTrustedCandidateHasExpectedIdentity(candidate) {
+					continue
+				}
+			} else if !darwinBundleIdentifierIsAntigravity(candidate) {
+				continue
+			}
+		}
+		if target, ok := inspectDarwinAppQuick(candidate); ok {
+			targets = append(targets, target)
+		}
+	}
+	sort.SliceStable(targets, func(i, j int) bool {
+		left, right := darwinCandidateRank(targets[i].app), darwinCandidateRank(targets[j].app)
+		if left != right {
+			return left < right
+		}
+		if targets[i].kind != targets[j].kind {
+			return targets[i].kind < targets[j].kind
+		}
+		return targets[i].app < targets[j].app
+	})
+	return targets
+}
+
+func darwinAppCandidates(includeDeep bool) ([]string, map[string]bool) {
 	var candidates []string
 	explicit := map[string]bool{}
 	addExplicit := func(value string) {
@@ -99,12 +190,21 @@ func darwinAppCandidates() ([]string, map[string]bool) {
 		return candidates, explicit
 	}
 
+	// Paths recorded only after a successful connection are the first normal
+	// candidates. They are hints, not trust grants: both selectors revalidate
+	// the current bundle identifier and product structure before returning one.
+	candidates = append(candidates, darwinSavedInstallPaths()...)
+
 	roots := []string{"/Applications", "/System/Applications"}
 	if home, err := os.UserHomeDir(); err == nil {
 		roots = append(roots, filepath.Join(home, "Applications"))
 	}
 	for _, root := range roots {
 		candidates = append(candidates, darwinApplicationsInRoot(root)...)
+	}
+
+	if !includeDeep {
+		return candidates, explicit
 	}
 
 	if output, err := darwinDiscoveryOutput("ps", "-axo", "command="); err == nil {
@@ -130,6 +230,42 @@ func darwinAppCandidates() ([]string, map[string]bool) {
 		}
 	}
 	return candidates, explicit
+}
+
+func darwinSavedInstallPaths() []string {
+	dir := strings.TrimSpace(storage.StorageDir())
+	if dir == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(dir, darwinInstallStateFileName))
+	if err != nil {
+		return nil
+	}
+	return darwinSavedInstallPathsFromData(data)
+}
+
+func darwinSavedInstallPathsFromData(data []byte) []string {
+	var state struct {
+		Schema  int `json:"schema"`
+		Targets []struct {
+			AppPath string `json:"appPath"`
+		} `json:"targets"`
+	}
+	if json.Unmarshal(data, &state) != nil || state.Schema != 1 {
+		return nil
+	}
+	paths := make([]string, 0, len(state.Targets))
+	seen := make(map[string]bool, len(state.Targets))
+	for _, target := range state.Targets {
+		path := normalizeAppBundlePath(target.AppPath)
+		key := darwinCanonicalAppKey(path)
+		if path == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 // darwinApplicationsInRoot performs only a one-level directory read.  It
@@ -227,6 +363,174 @@ func darwinCandidateRank(path string) int {
 	return 3
 }
 
+func cloneDarwinTargets(targets []darwinTargets) []darwinTargets {
+	return append([]darwinTargets(nil), targets...)
+}
+
+func invalidateDarwinDiscoveryCache() {
+	darwinDiscoveryCache.Lock()
+	darwinDiscoveryCache.targets = nil
+	darwinDiscoveryCache.fingerprints = map[string]string{}
+	darwinDiscoveryCache.rootFingerprint = ""
+	darwinDiscoveryCache.at = time.Time{}
+	darwinDiscoveryCache.deep = false
+	darwinDiscoveryCache.Unlock()
+}
+
+func cacheDarwinInstallations(targets []darwinTargets, deep bool) {
+	fingerprints := make(map[string]string, len(targets))
+	for _, target := range targets {
+		fingerprints[darwinCanonicalAppKey(target.app)] = darwinTargetMetadataFingerprint(target)
+	}
+	darwinDiscoveryCache.Lock()
+	darwinDiscoveryCache.targets = cloneDarwinTargets(targets)
+	darwinDiscoveryCache.fingerprints = fingerprints
+	darwinDiscoveryCache.rootFingerprint = darwinDiscoveryRootFingerprint()
+	darwinDiscoveryCache.at = time.Now()
+	darwinDiscoveryCache.deep = deep
+	darwinDiscoveryCache.Unlock()
+}
+
+func cachedDarwinInstallations(requireDeep bool) ([]darwinTargets, bool) {
+	// Explicit recovery paths are a hard, mutable caller boundary. Reinspect
+	// them on every call rather than allowing a previous environment value to
+	// leak through the cache.
+	if strings.TrimSpace(os.Getenv("ANTIGRAVITY_APP_PATH")) != "" ||
+		strings.TrimSpace(os.Getenv("ANTIGRAVITY_APP_PATHS")) != "" {
+		return nil, false
+	}
+	darwinDiscoveryCache.Lock()
+	if len(darwinDiscoveryCache.targets) == 0 || time.Since(darwinDiscoveryCache.at) >= darwinDiscoveryCacheTTL ||
+		(requireDeep && !darwinDiscoveryCache.deep) {
+		darwinDiscoveryCache.Unlock()
+		return nil, false
+	}
+	targets := cloneDarwinTargets(darwinDiscoveryCache.targets)
+	fingerprints := make(map[string]string, len(darwinDiscoveryCache.fingerprints))
+	for key, value := range darwinDiscoveryCache.fingerprints {
+		fingerprints[key] = value
+	}
+	rootFingerprint := darwinDiscoveryCache.rootFingerprint
+	darwinDiscoveryCache.Unlock()
+
+	if rootFingerprint != darwinDiscoveryRootFingerprint() {
+		return nil, false
+	}
+	for index, cached := range targets {
+		// Re-read bundle identity and minimum structure every time. This makes a
+		// remembered path harmless after replacement by an unrelated .app while
+		// avoiding the expensive ASAR/renderer content scan on the quick path.
+		current, ok := inspectDarwinAppQuick(cached.app)
+		if !ok || current.kind != cached.kind ||
+			(!trustedDarwinInstallLocation(cached.app) && !darwinBundleIdentifierIsAntigravity(cached.app)) {
+			return nil, false
+		}
+		key := darwinCanonicalAppKey(cached.app)
+		if fingerprints[key] == "" || fingerprints[key] != darwinTargetMetadataFingerprint(current) {
+			return nil, false
+		}
+		// Use freshly read product metadata even when the file fingerprint is
+		// unchanged (for example on a restored filesystem timestamp).
+		current.name = cached.name
+		targets[index] = current
+	}
+	return targets, true
+}
+
+func darwinDiscoveryRootFingerprint() string {
+	paths := []string{"/Applications", "/System/Applications"}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, "Applications"))
+	}
+	if dir := strings.TrimSpace(storage.StorageDir()); dir != "" {
+		paths = append(paths, filepath.Join(dir, darwinInstallStateFileName))
+	}
+	sort.Strings(paths)
+	var fingerprint strings.Builder
+	for _, path := range paths {
+		darwinAppendPathMetadata(&fingerprint, path)
+	}
+	return fingerprint.String()
+}
+
+func darwinTargetMetadataFingerprint(target darwinTargets) string {
+	paths := []string{
+		filepath.Join(target.app, "Contents", "Info.plist"),
+		filepath.Join(target.app, "Contents", "MacOS"),
+		darwinAppExecutablePath(target.app),
+		target.main, target.asar, target.extensionEntry, target.language,
+		filepath.Join(target.app, "Contents", "Resources", "app", "product.json"),
+		filepath.Join(target.app, "Contents", "Resources", "app", "out"),
+	}
+	paths = append(paths, darwinImagePreviewRendererPaths(target)...)
+	// Do not open app.asar while validating the discovery cache. The archive
+	// itself is fingerprinted above; optional unpacked renderers have fixed
+	// relative paths and can be stat'ed directly without parsing its header.
+	if target.kind == "agent" && target.asar != "" {
+		for _, relative := range imagePreviewASARRelativePaths {
+			paths = append(paths, filepath.Join(target.asar+".unpacked", filepath.FromSlash(relative)))
+		}
+	}
+	sort.Strings(paths)
+	var fingerprint strings.Builder
+	fmt.Fprintf(&fingerprint, "kind=%s;version=%s;bundle=%s;", target.kind, darwinBundleProductVersion(target.app), darwinBundleValue(target.app, "CFBundleIdentifier"))
+	for _, path := range paths {
+		if strings.TrimSpace(path) != "" {
+			darwinAppendPathMetadata(&fingerprint, path)
+		}
+	}
+	return fingerprint.String()
+}
+
+func darwinAppendPathMetadata(fingerprint *strings.Builder, path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		fmt.Fprintf(fingerprint, "%s|missing;", filepath.Clean(path))
+		return
+	}
+	fmt.Fprintf(fingerprint, "%s|%d|%d|%d|%t;", filepath.Clean(path), info.Size(), info.ModTime().UnixNano(), info.Mode(), info.IsDir())
+}
+
+// inspectDarwinAppQuick intentionally does not read app.asar or renderer
+// contents. It establishes only enough verified shape for the first dashboard
+// paint and launch-target resolution; full status/refresh/apply perform the
+// authoritative compatibility and connected-state checks.
+func inspectDarwinAppQuick(appPath string) (darwinTargets, bool) {
+	info, err := os.Stat(appPath)
+	if err != nil || !info.IsDir() {
+		return darwinTargets{}, false
+	}
+	resources := filepath.Join(appPath, "Contents", "Resources")
+	unpacked := filepath.Join(resources, "app")
+	mainPath := existingFile(filepath.Join(unpacked, "out", "main.js"))
+	extensionRoot := filepath.Join(unpacked, "extensions", "antigravity")
+	extensionEntry := existingFile(filepath.Join(extensionRoot, "dist", "extension.js"))
+	languagePath := locateDarwinLanguageServer(filepath.Join(extensionRoot, "bin"))
+	extensionDir := extensionRoot
+	if extensionEntry == "" {
+		extensionDir = ""
+	}
+	name := strings.TrimSuffix(filepath.Base(appPath), filepath.Ext(appPath))
+	version := darwinBundleProductVersion(appPath)
+	if mainPath != "" && (extensionEntry != "" || languagePath != "") {
+		return darwinTargets{
+			app: appPath, name: name, kind: "ide", version: version,
+			main: mainPath, extension: extensionDir, extensionEntry: extensionEntry, language: languagePath,
+		}, true
+	}
+
+	asarPath := existingFile(filepath.Join(resources, "app.asar"))
+	if asarPath == "" {
+		return darwinTargets{}, false
+	}
+	for _, binDir := range []string{filepath.Join(resources, "bin"), filepath.Join(resources, "app.asar.unpacked", "bin")} {
+		if languagePath = locateDarwinLanguageServer(binDir); languagePath != "" {
+			break
+		}
+	}
+	return darwinTargets{app: appPath, name: name, kind: "agent", version: version, asar: asarPath, language: languagePath}, true
+}
+
 func inspectDarwinApp(appPath string) (darwinTargets, bool) {
 	info, err := os.Stat(appPath)
 	if err != nil || !info.IsDir() {
@@ -254,7 +558,7 @@ func inspectDarwinApp(appPath string) (darwinTargets, bool) {
 	if mainPath != "" && (extensionEntry != "" || languagePath != "") {
 		return darwinTargets{
 			app: appPath, name: strings.TrimSuffix(filepath.Base(appPath), filepath.Ext(appPath)),
-			kind: "ide", version: darwinBundleValue(appPath, "CFBundleShortVersionString"),
+			kind: "ide", version: darwinBundleProductVersion(appPath),
 			main: mainPath, extension: extensionDir, extensionEntry: extensionEntry, language: languagePath,
 		}, true
 	}
@@ -278,7 +582,7 @@ func inspectDarwinApp(appPath string) (darwinTargets, bool) {
 	}
 	return darwinTargets{
 		app: appPath, name: strings.TrimSuffix(filepath.Base(appPath), filepath.Ext(appPath)),
-		kind: "agent", version: darwinBundleValue(appPath, "CFBundleShortVersionString"),
+		kind: "agent", version: darwinBundleProductVersion(appPath),
 		asar: asarPath, language: languagePath,
 	}, true
 }
@@ -319,6 +623,16 @@ func darwinBundleValue(appPath, key string) string {
 		return strings.TrimSpace(string(output))
 	}
 	return ""
+}
+
+// Product version comes exclusively from the application bundle. Internal
+// Electron/VS Code package.json or product.json versions describe framework
+// components and must never be presented as the Antigravity release.
+func darwinBundleProductVersion(appPath string) string {
+	if version := strings.TrimSpace(darwinBundleValue(appPath, "CFBundleShortVersionString")); version != "" {
+		return version
+	}
+	return strings.TrimSpace(darwinBundleValue(appPath, "CFBundleVersion"))
 }
 
 func locateDarwinLanguageServer(binDir string) string {

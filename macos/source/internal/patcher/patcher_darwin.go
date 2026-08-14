@@ -225,27 +225,48 @@ func runDarwin(action string) (string, error) {
 		}
 	}
 
-	targets := locateDarwinInstallations()
 	if action == "status" {
-		return darwinStatusAll(targets), nil
+		return darwinStatusAll(locateDarwinInstallations()), nil
 	}
+	// Mutating actions retain the complete discovery contract. A valid recent
+	// deep cache may be reused, otherwise process and Spotlight discovery run
+	// before any target is compatibility-checked or written.
+	targets := locateDarwinInstallationsCached(true, false)
 
 	if len(targets) == 0 {
 		return "", fmt.Errorf("未找到可支持的 Antigravity 安装（已检查环境变量、/Applications、~/Applications、正在运行的应用和 Spotlight）")
 	}
 
+	var message string
+	var err error
 	switch action {
 	case "apply":
-		return applyDarwinTargetsForKind(targets, "")
+		message, err = applyDarwinTargetsForKind(targets, "")
 	case "apply-ide":
-		return applyDarwinTargetsForKind(targets, "ide")
+		message, err = applyDarwinTargetsForKind(targets, "ide")
 	case "apply-agent":
-		return applyDarwinTargetsForKind(targets, "agent")
+		message, err = applyDarwinTargetsForKind(targets, "agent")
 	case "restore":
-		return restoreDarwinTargets(targets)
+		message, err = restoreDarwinTargets(targets)
 	default:
 		return "", fmt.Errorf("未知补丁操作: %s", action)
 	}
+	if err != nil {
+		invalidateDarwinDiscoveryCache()
+		return message, err
+	}
+	// The operation may have changed renderer/ASAR metadata. Refresh the
+	// target fingerprints immediately so the post-success install-state write
+	// can still resolve a newly discovered non-standard bundle before its path
+	// has been persisted for the first time.
+	refreshed := make([]darwinTargets, 0, len(targets))
+	for _, target := range targets {
+		if current, ok := inspectDarwinApp(target.app); ok {
+			refreshed = append(refreshed, current)
+		}
+	}
+	cacheDarwinInstallations(refreshed, false)
+	return message, nil
 }
 
 func locateDarwinTargets() darwinTargets {
@@ -295,6 +316,38 @@ func getDarwinStatus() Status {
 	return buildDarwinStatus(locateDarwinInstallations())
 }
 
+func getDarwinQuickStatus() Status {
+	_ = refreshPatchProxyEndpoint()
+	return buildDarwinQuickStatus(locateDarwinInstallationsQuick())
+}
+
+func refreshDarwinStatus() Status {
+	_ = refreshPatchProxyEndpoint()
+	return buildDarwinStatus(refreshDarwinInstallations())
+}
+
+func buildDarwinQuickStatus(targets []darwinTargets) Status {
+	status := Status{ProxyListening: proxyPortListening()}
+	for _, target := range targets {
+		entry := TargetStatus{
+			Name: target.name, Kind: target.kind, Version: target.version, AppPath: target.app,
+			ExecutablePath: darwinAppExecutablePath(target.app),
+			MainPath:       target.main, ASARPath: target.asar, ExtensionPath: target.extensionEntry,
+			LanguageServerPath: target.language, Reason: "正在后台核验兼容结构",
+		}
+		status.Targets = append(status.Targets, entry)
+		if status.AsarPath == "" {
+			status.AsarPath = firstNonEmpty(target.asar, target.main)
+			status.LSPath = target.language
+		}
+		if target.kind == "ide" && status.IDEExtensionPath == "" {
+			status.IDEExtensionPath = target.extensionEntry
+			status.IDELSPath = target.language
+		}
+	}
+	return status
+}
+
 func buildDarwinStatus(targets []darwinTargets) Status {
 	status := Status{ProxyListening: proxyPortListening()}
 	agentInstalled, ideInstalled := false, false
@@ -308,12 +361,15 @@ func buildDarwinStatus(targets []darwinTargets) Status {
 		// Keep the legacy inspection helper for migration/restore fixtures, but
 		// make the live status reflect the production connection contract.
 		if target.kind == "ide" {
-			patched = supported && darwinCloudCodeSettingIsConfigured(darwinSettingsPathForStatus(target), currentPatchProxyEndpoint().Base)
+			patched = supported &&
+				darwinCloudCodeSettingIsConfigured(darwinSettingsPathForStatus(target), currentPatchProxyEndpoint().Base) &&
+				!darwinImagePreviewNeedsPatch(target)
 			mainPatched = patched
 		}
 		entry := TargetStatus{
 			Name: target.name, Kind: target.kind, Version: target.version, AppPath: target.app,
-			MainPath: target.main, ASARPath: target.asar, ExtensionPath: target.extensionEntry,
+			ExecutablePath: darwinAppExecutablePath(target.app),
+			MainPath:       target.main, ASARPath: target.asar, ExtensionPath: target.extensionEntry,
 			LanguageServerPath: target.language, Supported: supported, ConnectionMode: mode, Reason: reason, Patched: patched,
 		}
 		status.Targets = append(status.Targets, entry)
@@ -352,6 +408,14 @@ func buildDarwinStatus(targets []darwinTargets) Status {
 		status.IdeMainPatched = boolPointer(agentPatched)
 	}
 	return status
+}
+
+func darwinAppExecutablePath(appPath string) string {
+	name := strings.TrimSpace(darwinBundleValue(appPath, "CFBundleExecutable"))
+	if name == "" {
+		return ""
+	}
+	return existingFile(filepath.Join(appPath, "Contents", "MacOS", name))
 }
 
 func darwinTargetPatchState(target darwinTargets) (main, extension, language, fully bool) {
@@ -1403,10 +1467,15 @@ func containsKnownDarwinPatch(data []byte) bool {
 		[]byte(imagePreviewPatchV2Marker), []byte(imagePreviewPatchV3Marker),
 		[]byte(imagePreviewPatchV4Marker), []byte(imagePreviewPatchV5Marker),
 		[]byte(imagePreviewPatchV6Marker), []byte(imagePreviewPatchV7Marker),
-		[]byte(imagePreviewPatchMarker),
+		[]byte(imagePreviewPatchMarker), []byte(imagePreviewNativeCompatibleMarker),
 		[]byte(imageGenerationUIPatchV1Marker), []byte(imageGenerationUIPatchV2Marker),
-		[]byte(imageGenerationUIPatchMarker), []byte(imageGenerationDedupePatchMarker),
-		[]byte(agentImageGenerationUIPatchMarker), []byte(agentImageGenerationDedupePatchMarker),
+		[]byte(imageGenerationUIPatchMarker),
+		[]byte(imageGenerationDedupePatchV2Marker), []byte(imageGenerationDedupePatchV3Marker),
+		[]byte(imageGenerationDedupePatchV4Marker), []byte(imageGenerationDedupePatchV5Marker),
+		[]byte(imageGenerationDedupePatchMarker),
+		[]byte(agentImageGenerationUIPatchMarker), []byte(agentImageGenerationDedupePatchV1Marker),
+		[]byte(agentImageGenerationDedupePatchV2Marker), []byte(agentImageGenerationDedupePatchV3Marker),
+		[]byte(agentImageGenerationDedupePatchMarker),
 	} {
 		if bytes.Contains(data, marker) {
 			return true

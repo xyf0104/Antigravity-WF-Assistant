@@ -215,6 +215,9 @@ type CustomModel struct {
 	Provider string `json:"provider"` // "openai" | "anthropic" | "grok" | "custom"
 	APIKey   string `json:"apiKey"`
 	APIURL   string `json:"apiUrl"`
+	// UpstreamName is a user-managed label for the shared upstream card. It is
+	// presentation metadata only and never participates in request routing.
+	UpstreamName string `json:"upstreamName,omitempty"`
 	// EndpointMode is "auto" for a base domain/path that WF expands, or
 	// "manual" to send requests to APIURL exactly as entered by the user.
 	EndpointMode      string `json:"endpointMode,omitempty"`
@@ -383,7 +386,15 @@ func VisibleModelDisplayName(model CustomModel) string {
 	if base == "" {
 		base = strings.TrimPrefix(strings.TrimSpace(model.Name), "models/")
 	}
-	if label := strings.TrimSpace(model.AccountPoolLabel); label != "" {
+	// An account-backed model follows the live account-pool name so renames are
+	// reflected immediately. Direct-credential models fall back to the saved
+	// supplier-card label. Neither label is ever folded into DisplayName or the
+	// real ExternalModelName used for routing.
+	label := strings.TrimSpace(model.AccountPoolLabel)
+	if label == "" {
+		label = strings.TrimSpace(model.UpstreamName)
+	}
+	if label != "" {
 		return base + " · " + label
 	}
 	return base
@@ -734,6 +745,7 @@ func normalizeModelDisplayName(model CustomModel) CustomModel {
 	model.MessagePathMode = normalizeMessagePathMode(model.MessagePathMode)
 	model.AuthMode = strings.ToLower(strings.TrimSpace(model.AuthMode))
 	model.AuthHeader = strings.TrimSpace(model.AuthHeader)
+	model.UpstreamName = strings.TrimSpace(model.UpstreamName)
 	model.ExternalModelName = strings.TrimSpace(model.ExternalModelName)
 	model.Name = strings.TrimSpace(model.Name)
 	if strings.TrimSpace(model.DisplayName) == "" {

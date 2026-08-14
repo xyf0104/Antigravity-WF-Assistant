@@ -281,8 +281,16 @@ func buildWindowsStatus(targets []windowsTarget) Status {
 	for _, target := range targets {
 		supported, mode, reason := windowsTargetConnectionSupport(target)
 		mainPatched, _, _, patched := windowsTargetPatchState(target)
-		if target.kind == "ide" && target.version != "" {
-			patched = supported && windowsCloudCodeSettingIsConfigured(windowsSettingsPathForStatus(target), windowsBaseProxyEndpoint)
+		if target.kind == "ide" {
+			// Current IDE builds use the official user-level Cloud Code setting
+			// for the proxy endpoint, but that setting is only one member of the
+			// connected state. In particular, an older recognised renderer (for
+			// example dedupe v3) must remain pending until it is migrated to the
+			// current image UI revision. Treating the setting alone as complete
+			// would let the status cache skip that migration as "files unchanged".
+			patched = supported &&
+				windowsCloudCodeSettingIsConfigured(windowsSettingsPathForStatus(target), windowsBaseProxyEndpoint) &&
+				!windowsImagePreviewNeedsPatch(target)
 			mainPatched = patched
 		}
 		status.Targets = append(status.Targets, TargetStatus{

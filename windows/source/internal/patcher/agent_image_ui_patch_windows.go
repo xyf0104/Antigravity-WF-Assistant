@@ -17,7 +17,9 @@ import (
 )
 
 const agentImageGenerationUIPatchMarker = "antigravity-wf:agent-image-generation-ui:v1"
-const agentImageGenerationDedupePatchMarker = "antigravity-wf:agent-image-generation-dedupe:v2"
+const agentImageGenerationDedupePatchMarker = "antigravity-wf:agent-image-generation-dedupe:v4"
+const agentImageGenerationDedupePatchV3Marker = "antigravity-wf:agent-image-generation-dedupe:v3"
+const agentImageGenerationDedupePatchV2Marker = "antigravity-wf:agent-image-generation-dedupe:v2"
 const agentImageGenerationDedupePatchV1Marker = "antigravity-wf:agent-image-generation-dedupe:v1"
 
 var agentGeneratedImageComponentPattern = regexp.MustCompile(
@@ -150,6 +152,27 @@ func patchAgentDuplicateGeneratedImage(source string) (string, bool, bool) {
 	if strings.Contains(source, agentImageGenerationDedupePatchMarker) {
 		return source, true, false
 	}
+	if strings.Contains(source, agentImageGenerationDedupePatchV3Marker) {
+		updated := strings.ReplaceAll(source, agentImageGenerationDedupePatchV3Marker, agentImageGenerationDedupePatchMarker)
+		updated, ok := addAgentImageArtifactThumbnail(updated)
+		if !ok {
+			return source, true, false
+		}
+		return updated, true, updated != source
+	}
+	if strings.Contains(source, agentImageGenerationDedupePatchV2Marker) {
+		legacy := agentGeneratedImageDedupeV2Registry()
+		if !strings.Contains(source, legacy) {
+			return source, true, false
+		}
+		updated := strings.ReplaceAll(source, legacy, agentGeneratedImageDedupeRegistry())
+		updated = strings.ReplaceAll(updated, agentImageGenerationDedupePatchV2Marker, agentImageGenerationDedupePatchMarker)
+		updated, ok := addAgentImageArtifactThumbnail(updated)
+		if !ok {
+			return source, true, false
+		}
+		return updated, true, updated != source
+	}
 	if strings.Contains(source, agentImageGenerationDedupePatchV1Marker) {
 		legacy := agentGeneratedImageDedupeV1Registry()
 		if !strings.Contains(source, legacy) {
@@ -157,6 +180,10 @@ func patchAgentDuplicateGeneratedImage(source string) (string, bool, bool) {
 		}
 		updated := strings.ReplaceAll(source, legacy, agentGeneratedImageDedupeRegistry())
 		updated = strings.ReplaceAll(updated, agentImageGenerationDedupePatchV1Marker, agentImageGenerationDedupePatchMarker)
+		updated, ok := addAgentImageArtifactThumbnail(updated)
+		if !ok {
+			return source, true, false
+		}
 		return updated, true, updated != source
 	}
 
@@ -229,6 +256,12 @@ func patchAgentDuplicateGeneratedImage(source string) (string, bool, bool) {
 		return source, false, false
 	}
 	markdownSegment := source[markdownMatch[1]:markdownEnd]
+	thumbnailNeedle := `alt:` + imagePreviewSubmatch(source, markdownMatch, 3) + `||"Artifact image",`
+	thumbnailCount := strings.Count(source[markdownMatch[0]:markdownEnd], thumbnailNeedle)
+	if thumbnailCount != 1 {
+		return source, false, false
+	}
+	thumbnailOffset := markdownMatch[0] + strings.Index(source[markdownMatch[0]:markdownEnd], thumbnailNeedle) + len(thumbnailNeedle)
 	duplicateExpression := `$wfIsDuplicateGeneratedImageURI(` + sourceValue + `,` + resolvedValue + `,` + originalPath + `)`
 	var duplicateReplacement imagePreviewRendererReplacement
 	if returnNeedle := `;if(!` + sourceValue + `||` + errorState + `)return `; strings.Count(markdownSegment, returnNeedle) == 1 {
@@ -254,6 +287,7 @@ func patchAgentDuplicateGeneratedImage(source string) (string, bool, bool) {
 	replacements := []imagePreviewRendererReplacement{
 		{start: registrationOffset, end: registrationOffset, value: registration},
 		{start: markdownMatch[0], end: markdownMatch[0], value: registry},
+		{start: thumbnailOffset, end: thumbnailOffset, value: imageArtifactThumbnailStyle},
 		duplicateReplacement,
 	}
 	// Apply from the end so the offsets remain valid.
@@ -271,11 +305,49 @@ func patchAgentDuplicateGeneratedImage(source string) (string, bool, bool) {
 	return updated, true, true
 }
 
+func addAgentImageArtifactThumbnail(source string) (string, bool) {
+	marker := "/*" + agentImageGenerationDedupePatchMarker + "*/"
+	if strings.Count(source, marker) != 1 {
+		return source, false
+	}
+	var matches [][]int
+	for _, candidate := range agentImageArtifactMarkdownRendererPrefixPattern.FindAllStringSubmatchIndex(source, -1) {
+		end := agentMinifiedDeclarationEnd(source, candidate[1], 8*1024)
+		if end < 0 {
+			continue
+		}
+		alt := imagePreviewSubmatch(source, candidate, 3)
+		segment := source[candidate[0]:end]
+		if strings.Contains(segment, `alt:`+alt+`||"Artifact image"`) && strings.Contains(segment, `$wfIsDuplicateGeneratedImageURI`) {
+			matches = append(matches, candidate)
+		}
+	}
+	if len(matches) != 1 {
+		return source, false
+	}
+	match := matches[0]
+	end := agentMinifiedDeclarationEnd(source, match[1], 8*1024)
+	component := source[match[0]:end]
+	if strings.Contains(component, imageArtifactThumbnailStyle) {
+		return source, true
+	}
+	needle := `alt:` + imagePreviewSubmatch(source, match, 3) + `||"Artifact image",`
+	if strings.Count(component, needle) != 1 {
+		return source, false
+	}
+	insert := match[0] + strings.Index(component, needle) + len(needle)
+	return source[:insert] + imageArtifactThumbnailStyle + source[insert:], true
+}
+
 func agentGeneratedImageDedupeV1Registry() string {
 	return `const $wfGeneratedImageURIs=new Map,$wfGeneratedImageURIKey=value=>{if(typeof value!=="string"||!value||value.startsWith("data:"))return"";let text=value;try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\//i,"").replace(/\\/g,"/").replace(/[?#].*$/,"").toLowerCase()},$wfPruneGeneratedImageURIs=()=>{let now=Date.now();for(let[key,time]of $wfGeneratedImageURIs)now-time>6E5&&$wfGeneratedImageURIs.delete(key);return now},$wfRememberGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs();for(let value of values){let key=$wfGeneratedImageURIKey(value);key&&$wfGeneratedImageURIs.set(key,now)}},$wfIsDuplicateGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs();for(let value of values){let key=$wfGeneratedImageURIKey(value),time=$wfGeneratedImageURIs.get(key);if(time!==void 0&&now-time<=6E5)return!0}return!1};`
 }
 
 func agentGeneratedImageDedupeRegistry() string {
+	return `const $wfGeneratedImageURIs=new Map,$wfGeneratedImageEvents=[],$wfGeneratedImageURIKey=value=>{if(typeof value!=="string"||!value||value.startsWith("data:"))return"";let text=value;try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\//i,"").replace(/\\/g,"/").replace(/[?#].*$/,"").toLowerCase()},$wfPruneGeneratedImageURIs=()=>{let now=Date.now();for(let[key,time]of $wfGeneratedImageURIs)now-time>6E5&&$wfGeneratedImageURIs.delete(key);for(let index=$wfGeneratedImageEvents.length-1;index>=0;index--)now-$wfGeneratedImageEvents[index].time>6E5&&$wfGeneratedImageEvents.splice(index,1);return now},$wfRememberGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs(),keys=values.map($wfGeneratedImageURIKey).filter(Boolean),recent=$wfGeneratedImageEvents.some(event=>now-event.time<6E5&&event.keys.some(key=>keys.includes(key)));for(let key of keys)$wfGeneratedImageURIs.set(key,now);keys.length&&!recent&&$wfGeneratedImageEvents.push({keys,time:now,consumed:!1})},$wfIsDuplicateGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs(),keys=values.map($wfGeneratedImageURIKey).filter(Boolean),event=$wfGeneratedImageEvents.find(candidate=>!candidate.consumed&&candidate.keys.some(key=>keys.includes(key))),exact=keys.some(key=>{let time=$wfGeneratedImageURIs.get(key);return time!==void 0&&now-time<=6E5});event||(event=$wfGeneratedImageEvents.find(candidate=>!candidate.consumed));if(event)event.consumed=!0;return exact||!!event};`
+}
+
+func agentGeneratedImageDedupeV2Registry() string {
 	return `const $wfGeneratedImageURIs=new Map,$wfGeneratedImageEvents=[],$wfGeneratedImageURIKey=value=>{if(typeof value!=="string"||!value||value.startsWith("data:"))return"";let text=value;try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\//i,"").replace(/\\/g,"/").replace(/[?#].*$/,"").toLowerCase()},$wfPruneGeneratedImageURIs=()=>{let now=Date.now();for(let[key,time]of $wfGeneratedImageURIs)now-time>6E5&&$wfGeneratedImageURIs.delete(key);for(let index=$wfGeneratedImageEvents.length-1;index>=0;index--)now-$wfGeneratedImageEvents[index].time>12E4&&$wfGeneratedImageEvents.splice(index,1);return now},$wfRememberGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs(),keys=values.map($wfGeneratedImageURIKey).filter(Boolean),recent=$wfGeneratedImageEvents.some(event=>!event.consumed&&now-event.time<5E3&&event.keys.some(key=>keys.includes(key)));for(let key of keys)$wfGeneratedImageURIs.set(key,now);keys.length&&!recent&&$wfGeneratedImageEvents.push({keys,time:now,consumed:!1})},$wfIsDuplicateGeneratedImageURI=(...values)=>{let now=$wfPruneGeneratedImageURIs(),keys=values.map($wfGeneratedImageURIKey).filter(Boolean),event=$wfGeneratedImageEvents.find(candidate=>!candidate.consumed&&candidate.keys.some(key=>keys.includes(key))),exact=keys.some(key=>{let time=$wfGeneratedImageURIs.get(key);return time!==void 0&&now-time<=6E5});event||(event=$wfGeneratedImageEvents.find(candidate=>!candidate.consumed));if(event)event.consumed=!0;return exact||!!event};`
 }
 
@@ -331,7 +403,9 @@ func patchAgentEmbeddedUIArchive(data []byte) ([]byte, agentImageUIPatchResult, 
 	// ZIP comments. Reclaim only that application-owned padding during a v1
 	// migration; otherwise the old padding and the larger v2 renderer are both
 	// counted and a valid forward upgrade appears to exceed the slot.
-	legacyPadding := bytes.Contains(mainData, []byte(agentImageGenerationDedupePatchV1Marker))
+	legacyPadding := bytes.Contains(mainData, []byte(agentImageGenerationDedupePatchV1Marker)) ||
+		bytes.Contains(mainData, []byte(agentImageGenerationDedupePatchV3Marker)) ||
+		bytes.Contains(mainData, []byte(agentImageGenerationDedupePatchV2Marker))
 	baseArchiveComment := archive.reader.Comment
 	if legacyPadding {
 		baseArchiveComment = strings.TrimRight(baseArchiveComment, " ")

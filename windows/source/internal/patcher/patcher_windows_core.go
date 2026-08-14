@@ -3,7 +3,6 @@ package patcher
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -466,8 +465,8 @@ func windowsContainsKnownPatch(data []byte) bool {
 		imagePreviewPatchV6Marker, imagePreviewPatchV7Marker,
 		imagePreviewPatchMarker, imagePreviewNativeCompatibleMarker,
 		imageGenerationUIPatchV1Marker, imageGenerationUIPatchMarker,
-		imageGenerationDedupePatchMarker,
-		agentImageGenerationUIPatchMarker, agentImageGenerationDedupePatchMarker,
+		imageGenerationDedupePatchV4Marker, imageGenerationDedupePatchV5Marker, imageGenerationDedupePatchMarker,
+		agentImageGenerationUIPatchMarker, agentImageGenerationDedupePatchV2Marker, agentImageGenerationDedupePatchV3Marker, agentImageGenerationDedupePatchMarker,
 	}
 	for _, marker := range markers {
 		if bytes.Contains(data, []byte(marker)) {
@@ -499,24 +498,11 @@ func windowsVersionFromTarget(target windowsTarget) string {
 	// resources/app/package.json and product.json. The Windows executable is
 	// the authoritative product artifact and carries the version shown by the
 	// official About dialog (for example 2.5.5 instead of 1.107.0).
-	if version := windowsExecutableProductVersion(target.executable); version != "" {
-		return version
-	}
-	var data []byte
-	if target.kind == "ide" {
-		data, _ = os.ReadFile(filepath.Join(target.root, "resources", "app", "package.json"))
-	} else if target.asar != "" {
-		if archive, err := readASAR(target.asar); err == nil {
-			data, _ = archive.readFile("package.json")
-		}
-	}
-	var value struct {
-		Version string `json:"version"`
-	}
-	if len(data) > 0 && json.Unmarshal(data, &value) == nil {
-		return strings.TrimSpace(value.Version)
-	}
-	return ""
+	// If a local/debug executable has no usable version resource, return an
+	// unknown product version. Falling back to package.json would be worse: it
+	// would present the embedded VS Code/Electron release as Antigravity and
+	// could also trigger a false product-upgrade/reconnect prompt.
+	return windowsExecutableProductVersion(target.executable)
 }
 
 var (
@@ -562,7 +548,11 @@ func windowsExecutableProductVersion(path string) string {
 	if ok == 0 {
 		return ""
 	}
-	for _, field := range []string{"ProductVersion", "FileVersion"} {
+	// Antigravity's FileVersion follows the product shown in About. Some
+	// Electron packages expose the embedded engine version through a product
+	// field, so FileVersion must remain authoritative here as well as in the
+	// fixed-info fallback below.
+	for _, field := range []string{"FileVersion", "ProductVersion"} {
 		if version := windowsVersionResourceString(data, field); version != "" {
 			return version
 		}

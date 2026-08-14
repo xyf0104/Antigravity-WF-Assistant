@@ -56,6 +56,9 @@ func assertAgentImageUIRuntimeWithLoadingStatus(t *testing.T, fixture, loadingSt
 			t.Fatalf("Agent image UI fixture is missing %s", marker)
 		}
 	}
+	if !strings.Contains(updated, imageArtifactThumbnailStyle) {
+		t.Fatal("Agent artifact renderer is missing the 320px thumbnail constraint")
+	}
 	second, secondResult := patchAgentImageUI(updated)
 	if !secondResult.Recognized || secondResult.Changed || second != updated {
 		t.Fatalf("Agent image UI patch is not idempotent: %+v", secondResult)
@@ -67,8 +70,10 @@ func assertAgentImageUIRuntimeWithLoadingStatus(t *testing.T, fixture, loadingSt
 	}
 	path := filepath.Join(t.TempDir(), "agent-image-ui.js")
 	script := `"use strict";` + updated + `
+let wfNow=Date.now();Date.now=()=>wfNow;
 const title=(modelName,status="done",hasMedia=true)=>tool.generateImage.renderer({step:{modelName,generatedMedia:hasMedia?{uri:"file:///C:/Temp/generated.png"}:void 0},status}).props.title.props.content;
 mcb({step:{generatedMedia:{uri:"file:///C:/Temp/generated.png"}},status:"done"});
+wfNow+=300000;
 const matching=S4a({src:"vscode-file://vscode-app/C:/Temp/generated.png",alt:"duplicate",originalFilePath:"C:\\Temp\\generated.png"});
 const different=S4a({src:"file:///C:/Temp/normal.png",alt:"normal",originalFilePath:"C:\\Temp\\normal.png"});
 $wfRememberGeneratedImageURI("file:///C:/Temp/generated-two.png");
@@ -112,6 +117,7 @@ func TestPatchAgentImageUIMigratesLegacyDedupe(t *testing.T) {
 	}
 	legacy := strings.Replace(current, agentImageGenerationDedupePatchMarker, agentImageGenerationDedupePatchV1Marker, 1)
 	legacy = strings.Replace(legacy, agentGeneratedImageDedupeRegistry(), agentGeneratedImageDedupeV1Registry(), 1)
+	legacy = strings.Replace(legacy, imageArtifactThumbnailStyle, "", 1)
 	if legacy == current {
 		t.Fatal("failed to construct legacy Agent dedupe fixture")
 	}
@@ -123,5 +129,43 @@ func TestPatchAgentImageUIMigratesLegacyDedupe(t *testing.T) {
 	second, secondResult := patchAgentImageUI(updated)
 	if !secondResult.Recognized || secondResult.Changed || second != updated {
 		t.Fatalf("migrated Agent dedupe is not idempotent: %+v", secondResult)
+	}
+}
+
+func TestPatchAgentImageUIMigratesV2DedupeWindow(t *testing.T) {
+	current, result := patchAgentImageUI(agentImageUIFixture())
+	if !result.Changed {
+		t.Fatalf("failed to construct current Agent fixture: %+v", result)
+	}
+	legacy := strings.Replace(current, agentImageGenerationDedupePatchMarker, agentImageGenerationDedupePatchV2Marker, 1)
+	legacy = strings.Replace(legacy, agentGeneratedImageDedupeRegistry(), agentGeneratedImageDedupeV2Registry(), 1)
+	legacy = strings.Replace(legacy, imageArtifactThumbnailStyle, "", 1)
+	if legacy == current {
+		t.Fatal("failed to construct v2 Agent dedupe fixture")
+	}
+	updated, migration := patchAgentImageUI(legacy)
+	if !migration.Recognized || !migration.Changed || !strings.Contains(updated, agentImageGenerationDedupePatchMarker) ||
+		strings.Contains(updated, agentImageGenerationDedupePatchV2Marker) || strings.Contains(updated, agentGeneratedImageDedupeV2Registry()) {
+		t.Fatalf("v2 Agent dedupe was not migrated: %+v", migration)
+	}
+	if !strings.Contains(updated, `now-$wfGeneratedImageEvents[index].time>6E5`) {
+		t.Fatal("migrated Agent dedupe did not receive the ten-minute event window")
+	}
+}
+
+func TestPatchAgentImageUIMigratesV3ArtifactToThumbnail(t *testing.T) {
+	current, result := patchAgentImageUI(agentImageUIFixture())
+	if !result.Changed {
+		t.Fatalf("failed to construct current Agent fixture: %+v", result)
+	}
+	legacy := strings.Replace(current, agentImageGenerationDedupePatchMarker, agentImageGenerationDedupePatchV3Marker, 1)
+	legacy = strings.Replace(legacy, imageArtifactThumbnailStyle, "", 1)
+	if legacy == current {
+		t.Fatal("failed to construct v3 Agent dedupe fixture")
+	}
+	updated, migration := patchAgentImageUI(legacy)
+	if !migration.Recognized || !migration.Changed || !strings.Contains(updated, agentImageGenerationDedupePatchMarker) ||
+		strings.Contains(updated, agentImageGenerationDedupePatchV3Marker) || !strings.Contains(updated, imageArtifactThumbnailStyle) {
+		t.Fatalf("v3 Agent artifact was not migrated to a 320px thumbnail: %+v", migration)
 	}
 }

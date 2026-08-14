@@ -19,7 +19,9 @@ func TestWindowsApplyUsesOfficialSettingsAndKeepsIDEChecksumsValid(t *testing.T)
 	workbenchRenderer := filepath.Join(appRoot, "out", "vs", "workbench", "workbench.desktop.main.js")
 	extensionPath := filepath.Join(appRoot, "extensions", "antigravity", "dist", "extension.js")
 	productPath := filepath.Join(appRoot, "product.json")
-	executable := filepath.Join(root, "Antigravity IDE.exe")
+	// Keep the fixture process name distinct from a user's running IDE so this
+	// transaction test never depends on desktop application state.
+	executable := filepath.Join(root, "wf-fixture-ide.exe")
 	rendererOriginal := []byte(imagePreviewOriginalRendererFixture() + imageGenerationUIRendererFixture() + imageArtifactMarkdownRendererFixture())
 	productOriginal := []byte(`{"nameShort":"Antigravity Test","dataFolderName":".antigravity-test","checksums":{"jetskiAgent/main.js":"` + windowsIDEChecksum(rendererOriginal) + `","vs/workbench/workbench.desktop.main.js":"` + windowsIDEChecksum(rendererOriginal) + `"}}`)
 	files := map[string][]byte{
@@ -88,6 +90,83 @@ func TestWindowsApplyUsesOfficialSettingsAndKeepsIDEChecksumsValid(t *testing.T)
 	status := buildWindowsStatus([]windowsTarget{target})
 	if len(status.Targets) != 1 || !status.Targets[0].Supported || !status.Targets[0].Patched || status.Targets[0].ConnectionMode != "user-settings" {
 		t.Fatalf("unexpected safe configuration status: %+v", status)
+	}
+}
+
+func TestWindowsV5RendererIsNotCachedAsConnected(t *testing.T) {
+	invalidateWindowsStatusCache()
+	t.Cleanup(invalidateWindowsStatusCache)
+	root := t.TempDir()
+	appRoot := filepath.Join(root, "resources", "app")
+	mainPath := filepath.Join(appRoot, "out", "main.js")
+	extensionPath := filepath.Join(appRoot, "extensions", "antigravity", "dist", "extension.js")
+	rendererPath := filepath.Join(appRoot, "out", "jetskiAgent", "main.js")
+	productPath := filepath.Join(appRoot, "product.json")
+	executable := filepath.Join(root, "wf-v4-migration-fixture.exe")
+	legacyRenderer := []byte(imageGenerationDedupeV5RendererFixture(t))
+	files := map[string][]byte{
+		executable:    []byte("MZ"),
+		mainPath:      []byte(`const base=configuration.getValue("jetski.cloudCodeUrl");`),
+		extensionPath: []byte(`const key="jetski.cloudCodeUrl";args.push("--cloud_code_endpoint",await service.getCloudCodeUrl());`),
+		rendererPath:  legacyRenderer,
+		productPath:   []byte(`{"nameShort":"Antigravity Test","checksums":{"jetskiAgent/main.js":"` + windowsIDEChecksum(legacyRenderer) + `"}}`),
+	}
+	for path, data := range files {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appData := t.TempDir()
+	settingsPath := filepath.Join(appData, "Antigravity Test", "User", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte("{\n  \"jetski.cloudCodeUrl\": \"http://127.0.0.1:50999\"\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APPDATA", appData)
+	t.Setenv("ANTIGRAVITY_BYOK_BACKUP_DIR", filepath.Join(t.TempDir(), "backups"))
+	target := windowsTarget{
+		root: root, name: "Antigravity IDE", kind: "ide", version: "2.5.5",
+		executable: executable, main: mainPath, extensionEntry: extensionPath,
+	}
+
+	status := cacheWindowsStatus(buildWindowsStatus([]windowsTarget{target}))
+	if len(status.Targets) != 1 || !status.Targets[0].Supported || status.Targets[0].Patched {
+		t.Fatalf("configured endpoint with legacy renderer must remain pending: %+v", status)
+	}
+	if windowsCachedTargetConnected(target) {
+		t.Fatal("legacy renderer was incorrectly accepted by the connected-state cache")
+	}
+
+	message, err := applyWindowsTargetsForKind([]windowsTarget{target}, "ide")
+	if err != nil {
+		t.Fatalf("migrate legacy renderer: %v", err)
+	}
+	if strings.Contains(message, "文件未变化") {
+		t.Fatalf("first apply incorrectly skipped the v3 to v4 migration: %s", message)
+	}
+	active, err := os.ReadFile(rendererPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(active, []byte(imageGenerationDedupePatchMarker)) || bytes.Contains(active, []byte(imageGenerationDedupePatchV5Marker)) || !bytes.Contains(active, []byte(imageArtifactThumbnailStyle)) {
+		t.Fatalf("legacy renderer was not migrated to the current marker: %s", active)
+	}
+
+	status = cacheWindowsStatus(buildWindowsStatus([]windowsTarget{target}))
+	if !status.Targets[0].Patched || !windowsCachedTargetConnected(target) {
+		t.Fatalf("migrated renderer was not cached as connected: %+v", status)
+	}
+	message, err = applyWindowsTargetsForKind([]windowsTarget{target}, "ide")
+	if err != nil {
+		t.Fatalf("repeat apply: %v", err)
+	}
+	if !strings.Contains(message, "文件未变化，无需重复扫描") {
+		t.Fatalf("second apply did not use the verified no-op cache: %s", message)
 	}
 }
 

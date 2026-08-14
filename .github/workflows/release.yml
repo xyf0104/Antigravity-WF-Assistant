@@ -11,9 +11,6 @@ permissions:
 jobs:
   macos:
     name: Build macOS installer
-    # This release line is explicitly Windows-only. Keep the macOS source and
-    # published v1.5.9 installer untouched.
-    if: ${{ false }}
     runs-on: macos-14
     defaults:
       run:
@@ -92,6 +89,10 @@ jobs:
       - name: Run reasoning capability tests
         working-directory: macos/source/frontend
         run: node --test test/reasoningCapabilities.test.mjs
+
+      - name: Run complete frontend regression suite
+        working-directory: macos/source/frontend
+        run: node --test test/*.test.mjs
 
       - name: Run Go race tests
         run: go test -race ./...
@@ -241,7 +242,7 @@ jobs:
 
   release:
     name: Publish verified release
-    needs: [windows]
+    needs: [macos, windows]
     runs-on: ubuntu-latest
     steps:
       - name: Download installers
@@ -256,11 +257,14 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           cd release-assets
+          macos="Antigravity-WF-Assistant-macOS-universal-v${version}-Installer.pkg"
           windows="Antigravity-WF-Assistant-Windows-x64-v${version}-Setup.exe"
+          test -f "$macos"
           test -f "$windows"
           test "$(find . -maxdepth 1 -type f -name '*.exe' | wc -l | tr -d ' ')" = "1"
-          test "$(find . -maxdepth 1 -type f -name '*.pkg' | wc -l | tr -d ' ')" = "0"
-          sha256sum "$windows" > SHA256SUMS.txt
+          test "$(find . -maxdepth 1 -type f -name '*.pkg' | wc -l | tr -d ' ')" = "1"
+          sha256sum "$macos" "$windows" > SHA256SUMS.txt
+          macos_sha="$(sha256sum "$macos" | awk '{print $1}')"
           windows_sha="$(sha256sum "$windows" | awk '{print $1}')"
           {
             echo "### Installer SHA-256"
@@ -269,19 +273,24 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           cat > ../release-body.md <<EOF
-          ## Antigravity WF助手 v${version}（Windows）
+          ## Antigravity WF助手 v${version}
 
-          - 本次只发布 Windows x64；macOS 保持 v1.5.9，不重新构建、不替换。
-          - 图片生成完成后只保留 Prompt 卡片图片；v4 去重同时处理渲染竞态和同图不同 URI，IDE 与 Antigravity 2.0 均会迁移旧规则。
+          - 同时提供 macOS Universal 与 Windows x64 标准安装包，不提供 portable 或源码 ZIP 附件。
+          - Antigravity 模型统一显示为“模型名 · 账户池名/供应商名”，显示后缀不改变真实模型 ID 或 API 路由。
+          - 图片生成完成后保留 Prompt 卡片图片；重复正文 artifact 优先隐藏，无法隐藏时最大 320×320，普通 Markdown 图片不受影响。
           - GPT Image 2 与原生 Gemini 图片链路显示各自的实际生图模型。
+          - GPT 聊天供应商优先使用同一供应商内的 \`gpt-image-2\`；没有时可使用另一个已启用供应商的图片模型，并严格使用图片模型自己的凭据。
           - 推理等级使用原始值 \`auto / none / minimal / low / medium / high / xhigh / max\`，并按模型真实能力过滤。
           - 恢复代理商收起/展开、编辑、刷新和勾选模型、整组测试与单模型推理编辑。
-          - 保存安装路径与结构指纹以加快启动和重复连接；版本或文件变化后自动重新验证。
-          - Antigravity 版本、路径或程序变化时强制提醒重新连接；助手支持启动和托盘唤醒更新提醒。
+          - 保存安装路径、结构指纹与平台独立补丁 revision；Antigravity 版本、路径、程序或连接规则变化后自动提示重新连接。
           - 未识别结构会安全跳过，不伪造上游图片字段，不全局替换未知 JavaScript。
           - \`SHA256SUMS.txt\` 供客户端软件内更新和手动下载校验使用。
 
           ### SHA-256
+
+          \`$macos\`
+
+          \`$macos_sha\`
 
           \`$windows\`
 
@@ -295,6 +304,7 @@ jobs:
           generate_release_notes: false
           body_path: release-body.md
           files: |
+            release-assets/Antigravity-WF-Assistant-macOS-universal-${{ github.ref_name }}-Installer.pkg
             release-assets/Antigravity-WF-Assistant-Windows-x64-${{ github.ref_name }}-Setup.exe
             release-assets/SHA256SUMS.txt
           fail_on_unmatched_files: true

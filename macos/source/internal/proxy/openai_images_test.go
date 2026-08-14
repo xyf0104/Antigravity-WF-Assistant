@@ -12,7 +12,7 @@ import (
 	"antigravity-wf-assistant/internal/storage"
 )
 
-func TestDirectOpenAIImageModelUsesOnlyEnabledModelsFromSameUpstream(t *testing.T) {
+func TestDirectOpenAIImageModelUsesOnlyEnabledModelsFromCurrentSupplier(t *testing.T) {
 	storage.Init(t.TempDir())
 	disabled := false
 	enabled := true
@@ -21,9 +21,9 @@ func TestDirectOpenAIImageModelUsesOnlyEnabledModelsFromSameUpstream(t *testing.
 	}
 	if err := storage.SaveModels([]storage.CustomModel{
 		selected,
-		{Name: "models/disabled-image", Provider: "openai", APIURL: selected.APIURL, ExternalModelName: "gpt-image-2", Enabled: &disabled},
-		{Name: "models/other-upstream-image", Provider: "openai", APIURL: "https://other.example.test", ExternalModelName: "gpt-image-2", Enabled: &enabled},
-		{Name: "models/same-upstream-image", Provider: "openai", APIURL: selected.APIURL, ExternalModelName: "gpt-image-1", Enabled: &enabled},
+		{Name: "models/disabled-image", Provider: "openai", APIURL: selected.APIURL, APIKey: selected.APIKey, ExternalModelName: "gpt-image-2", Enabled: &disabled},
+		{Name: "models/other-upstream-image", Provider: "openai", APIURL: "https://other.example.test", APIKey: "other-key", ExternalModelName: "gpt-image-2", Enabled: &enabled},
+		{Name: "models/same-upstream-image", Provider: "openai", APIURL: selected.APIURL, APIKey: selected.APIKey, ExternalModelName: "gpt-image-1", Enabled: &enabled},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -31,6 +31,66 @@ func TestDirectOpenAIImageModelUsesOnlyEnabledModelsFromSameUpstream(t *testing.
 	image := directOpenAIImageModel(&selected)
 	if image == nil || image.ExternalModelName != "gpt-image-1" {
 		t.Fatalf("selected image model = %#v, want enabled same-upstream gpt-image-1", image)
+	}
+}
+
+func TestDirectOpenAIImageModelPrefersExactGPTImage2WithinCurrentSupplier(t *testing.T) {
+	storage.Init(t.TempDir())
+	enabled := true
+	selected := storage.CustomModel{
+		Name: "models/sol", Provider: "openai", APIURL: "https://api.example.test", APIKey: "same-key", ExternalModelName: "gpt-5.6-sol",
+	}
+	if err := storage.SaveModels([]storage.CustomModel{
+		selected,
+		{Name: "models/current-image-one", Provider: "openai", APIURL: selected.APIURL, APIKey: selected.APIKey, ExternalModelName: "gpt-image-1", Enabled: &enabled},
+		{Name: "models/current-image-two", Provider: "openai", APIURL: selected.APIURL, APIKey: selected.APIKey, ExternalModelName: "gpt-image-2", Enabled: &enabled},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	image := directOpenAIImageModel(&selected)
+	if image == nil || image.Name != "models/current-image-two" {
+		t.Fatalf("selected image model = %#v, want current supplier gpt-image-2", image)
+	}
+}
+
+func TestDirectOpenAIImageModelDoesNotMergeSameEndpointDifferentKeys(t *testing.T) {
+	storage.Init(t.TempDir())
+	enabled := true
+	selected := storage.CustomModel{
+		Name: "models/sol", Provider: "openai", APIURL: "https://shared.example.test", APIKey: "chat-card-key", ExternalModelName: "gpt-5.6-sol",
+	}
+	if err := storage.SaveModels([]storage.CustomModel{
+		selected,
+		{Name: "models/current-image", Provider: "openai", APIURL: selected.APIURL, APIKey: selected.APIKey, ExternalModelName: "gpt-image-1", Enabled: &enabled},
+		{Name: "models/other-card-image", Provider: "openai", APIURL: selected.APIURL, APIKey: "other-card-key", ExternalModelName: "gpt-image-2", Enabled: &enabled},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	image := directOpenAIImageModel(&selected)
+	if image == nil || image.Name != "models/current-image" {
+		t.Fatalf("same endpoint with another key was treated as current supplier: %#v", image)
+	}
+}
+
+func TestDirectOpenAIImageModelMatchesNormalizedAccountPool(t *testing.T) {
+	storage.Init(t.TempDir())
+	enabled := true
+	selected := storage.CustomModel{
+		Name: "models/sol", Provider: "openai", APIURL: "https://api.example.test", AccountIDs: []string{"primary", "backup"}, ExternalModelName: "gpt-5.6-sol",
+	}
+	if err := storage.SaveModels([]storage.CustomModel{
+		selected,
+		{Name: "models/current-pool-image", Provider: "openai", APIURL: selected.APIURL, AccountIDs: []string{" backup ", "primary", "primary"}, ExternalModelName: "gpt-image-1", Enabled: &enabled},
+		{Name: "models/other-pool-image", Provider: "openai", APIURL: selected.APIURL, AccountIDs: []string{"other"}, ExternalModelName: "gpt-image-2", Enabled: &enabled},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	image := directOpenAIImageModel(&selected)
+	if image == nil || image.Name != "models/current-pool-image" {
+		t.Fatalf("normalized current account pool was not preferred: %#v", image)
 	}
 }
 

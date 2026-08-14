@@ -386,10 +386,15 @@ func VisibleModelDisplayName(model CustomModel) string {
 	if base == "" {
 		base = strings.TrimPrefix(strings.TrimSpace(model.Name), "models/")
 	}
-	if upstream := strings.TrimSpace(model.UpstreamName); upstream != "" {
-		base += "（" + upstream + "）"
+	// An account-backed model follows the live account-pool name so renames are
+	// reflected immediately. Direct-credential models fall back to the saved
+	// supplier-card label. Neither label is ever folded into DisplayName or the
+	// real ExternalModelName used for routing.
+	label := strings.TrimSpace(model.AccountPoolLabel)
+	if label == "" {
+		label = strings.TrimSpace(model.UpstreamName)
 	}
-	if label := strings.TrimSpace(model.AccountPoolLabel); label != "" && !strings.EqualFold(label, strings.TrimSpace(model.UpstreamName)) {
+	if label != "" {
 		return base + " · " + label
 	}
 	return base

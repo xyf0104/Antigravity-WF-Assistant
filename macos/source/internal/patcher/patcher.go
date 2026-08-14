@@ -113,6 +113,25 @@ func GetStatus() Status {
 	return parseStatus(out)
 }
 
+// GetQuickStatus is the lightweight status API used during the first UI paint.
+// On macOS it checks only standard/saved bundle paths (or a metadata-valid
+// discovery cache) and deliberately skips process/Spotlight and deep
+// ASAR/renderer compatibility scans.
+func GetQuickStatus() Status {
+	if runtime.GOOS == "darwin" {
+		return getDarwinQuickStatus()
+	}
+	return GetStatus()
+}
+
+// RefreshStatus explicitly performs a fresh authoritative discovery pass.
+func RefreshStatus() Status {
+	if runtime.GOOS == "darwin" {
+		return refreshDarwinStatus()
+	}
+	return GetStatus()
+}
+
 func parseBoolPtr(s string) *bool {
 	s = strings.TrimSpace(s)
 	if s == "True" || s == "true" {

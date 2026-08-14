@@ -58,7 +58,7 @@ func TestAccountBoundDiscoveryUsesPrimaryAndBatchImportRetainsPool(t *testing.T)
 	saveModelTestAccount(t, "second", "openai", "token-two")
 
 	app := &App{}
-	config := upstream.Config{Provider: "openai", AccountIDs: []string{"first", "second"}}
+	config := upstream.Config{Provider: "openai", UpstreamName: "XIASS 代理", AccountIDs: []string{"first", "second"}}
 	resolved, err := app.resolveUpstreamConfig(config)
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +76,9 @@ func TestAccountBoundDiscoveryUsesPrimaryAndBatchImportRetainsPool(t *testing.T)
 		t.Fatalf("imported models = %#v, %v", models, err)
 	}
 	for _, model := range models {
+		if model.UpstreamName != "XIASS 代理" {
+			t.Fatalf("%s lost upstream name: %q", model.Name, model.UpstreamName)
+		}
 		if len(model.AccountIDs) != 2 || model.AccountIDs[0] != "first" || model.AccountIDs[1] != "second" {
 			t.Fatalf("%s lost bound accounts: %#v", model.Name, model.AccountIDs)
 		}

@@ -38,6 +38,7 @@ type App struct {
 	historyStatus         HistorySyncStatus
 	launchMu              sync.Mutex
 	patchMu               sync.Mutex
+	installStateMu        sync.Mutex
 	updateMu              sync.Mutex
 	updateCheckMu         sync.Mutex
 	updateCheckCancel     context.CancelFunc
@@ -240,6 +241,8 @@ type PatchStatus struct {
 	ProxyManaged             bool                `json:"proxyManaged"`
 	ProxyOwned               bool                `json:"proxyOwned"`
 	ProxyRepatchRequired     bool                `json:"proxyRepatchRequired"`
+	ProductRepatchRequired   bool                `json:"productRepatchRequired"`
+	ProductRepatchMessage    string              `json:"productRepatchMessage"`
 	LastRequestAt            string              `json:"lastRequestAt"`
 	LastRequestPath          string              `json:"lastRequestPath"`
 	LastModelFetchAt         string              `json:"lastModelFetchAt"`
@@ -662,6 +665,7 @@ func (a *App) TestUpstreamModelDetailed(config upstream.Config, request upstream
 // model list. The default UI selects all discovered models; callers may pass a
 // narrowed list to respect manual selection.
 func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) BatchModelResult {
+	upstreamName := strings.TrimSpace(config.UpstreamName)
 	boundAccountIDs := configuredAccountIDs(config)
 	if config.AccountID == "" && len(boundAccountIDs) > 0 {
 		config.AccountID = boundAccountIDs[0]
@@ -670,6 +674,7 @@ func (a *App) AddDiscoveredModels(config upstream.Config, modelIDs []string) Bat
 	if err != nil {
 		return BatchModelResult{Message: err.Error()}
 	}
+	resolved.UpstreamName = upstreamName
 	if err := upstream.ValidateConfig(resolved); err != nil {
 		return BatchModelResult{Message: err.Error()}
 	}
@@ -694,6 +699,7 @@ func (a *App) saveDiscoveredModels(resolved upstream.Config, boundAccountIDs, mo
 		}
 		seen[modelID] = struct{}{}
 		model := storage.NewDiscoveredModel(provider, resolved.APIURL, resolved.APIKey, modelID)
+		model.UpstreamName = resolved.UpstreamName
 		model.APIStyle = upstream.EffectiveAPIStyle(resolved)
 		model.EndpointMode = upstream.NormalizedEndpointMode(resolved.EndpointMode)
 		model.MessagePathMode = resolved.MessagePathMode
@@ -1488,11 +1494,28 @@ func (a *App) DeleteModel(name string) Result {
 // ─── Patch ────────────────────────────────────────────────────────────────────
 
 func (a *App) GetPatchStatus() PatchStatus {
-	s := patcher.GetStatus()
+	return a.patchStatusFrom(patcher.GetStatus())
+}
+
+// GetQuickPatchStatus keeps the first dashboard paint responsive. It uses
+// only standard paths, saved successful paths and a metadata-valid cache;
+// RefreshPatchStatus performs the full compatibility verification.
+func (a *App) GetQuickPatchStatus() PatchStatus {
+	return a.patchStatusFrom(patcher.GetQuickStatus())
+}
+
+// RefreshPatchStatus explicitly re-runs bundle discovery and compatibility
+// verification when the user refreshes the dashboard.
+func (a *App) RefreshPatchStatus() PatchStatus {
+	return a.patchStatusFrom(patcher.RefreshStatus())
+}
+
+func (a *App) patchStatusFrom(s patcher.Status) PatchStatus {
 	diagnostics := proxy.GetDiagnostics()
 	agentPatched := s.AgentPatched != nil && *s.AgentPatched
 	idePatched := s.IDEPatched != nil && *s.IDEPatched
 	proxyRepatchRequired := currentProxyRepatchRequired()
+	productRepatchRequired, productRepatchMessage := a.antigravityProductRepatchState(s)
 	targets := make([]PatchTargetStatus, 0, len(s.Targets))
 	for _, target := range s.Targets {
 		running := false
@@ -1515,6 +1538,8 @@ func (a *App) GetPatchStatus() PatchStatus {
 		ProxyManaged:             proxy.IsManagedListener(),
 		ProxyOwned:               proxy.OwnsListener(),
 		ProxyRepatchRequired:     proxyRepatchRequired,
+		ProductRepatchRequired:   productRepatchRequired,
+		ProductRepatchMessage:    productRepatchMessage,
 		LastRequestAt:            diagnostics.LastRequestAt,
 		LastRequestPath:          diagnostics.LastRequestPath,
 		LastModelFetchAt:         diagnostics.LastModelFetchAt,
@@ -1581,7 +1606,7 @@ func (a *App) LaunchOrRestartAntigravity(appPath string) Result {
 
 	selected := ""
 	selectedName := "Antigravity"
-	for _, target := range patcher.GetStatus().Targets {
+	for _, target := range patcher.GetQuickStatus().Targets {
 		if filepath.Clean(target.AppPath) == filepath.Clean(appPath) {
 			selected = target.AppPath
 			selectedName = target.Name
@@ -1669,15 +1694,15 @@ func (a *App) applyIDEPatchWithResolvedEndpoint() Result {
 }
 
 func (a *App) ApplyPatch() Result {
-	return a.runPatchAction("全部连接", a.applyAllPatchesWithResolvedEndpoint)
+	return a.runPatchAction("apply", "全部连接", a.applyAllPatchesWithResolvedEndpoint)
 }
 
 func (a *App) ApplyIDEPatch() Result {
-	return a.runPatchAction("连接 Antigravity IDE", a.applyIDEPatchWithResolvedEndpoint)
+	return a.runPatchAction("apply-ide", "连接 Antigravity IDE", a.applyIDEPatchWithResolvedEndpoint)
 }
 
 func (a *App) ApplyAgentPatch() Result {
-	return a.runPatchAction("连接 Antigravity 2.0", func() Result {
+	return a.runPatchAction("apply-agent", "连接 Antigravity 2.0", func() Result {
 		if pending, err := storage.HasStagedProxyRuntimePort(); err != nil {
 			return Result{OK: false, Message: "无法确认本地代理端口切换状态；为保护所有已连接的 Antigravity，本次操作已停止：" + err.Error()}
 		} else if pending {
@@ -1702,7 +1727,7 @@ func (a *App) ApplyAgentPatch() Result {
 	})
 }
 
-func (a *App) runPatchAction(operation string, action func() Result) Result {
+func (a *App) runPatchAction(actionName string, operation string, action func() Result) Result {
 	if !a.patchMu.TryLock() {
 		return Result{OK: false, Message: "已有连接任务正在进行，请等待当前任务完成。"}
 	}
@@ -1736,6 +1761,9 @@ func (a *App) runPatchAction(operation string, action func() Result) Result {
 		a.emitPatchProgress(PatchProgress{Phase: "error", Operation: operation, Percent: 100, Message: result.Message})
 		return result
 	}
+	if err := a.recordConnectedAntigravityTargets(actionName); err != nil {
+		log.Printf("[wf] 无法保存已连接的 Antigravity 安装路径: %v", err)
+	}
 	a.emitPatchProgress(PatchProgress{Phase: "verifying", Operation: operation, Percent: 90, Message: "正在核验连接状态与安装完整性"})
 	a.emitPatchProgress(PatchProgress{Phase: "complete", Operation: operation, Percent: 100, Message: "连接成功，可以打开 Antigravity"})
 	return result
@@ -1751,6 +1779,9 @@ func (a *App) RestorePatch() Result {
 	out, err := patcher.Run("restore")
 	if err != nil {
 		return Result{OK: false, Message: fmt.Sprintf("%s\n%s", err.Error(), out)}
+	}
+	if err := a.clearConnectedAntigravityTargets(); err != nil {
+		log.Printf("[wf] 无法清除 Antigravity 连接基线: %v", err)
 	}
 	return Result{OK: true, Message: out}
 }

@@ -378,7 +378,10 @@ process.stdout.write(JSON.stringify({matching,different,differentAlt:different?.
 	if output, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
 		t.Fatalf("generated-image dedupe failed node --check: %s: %v", output, err)
 	}
-	output, err := exec.Command(node, path).CombinedOutput()
+	// Node 22+ may emit a localStorage CLI warning on stderr even though the
+	// renderer produced valid JSON on stdout. Keep the business payload
+	// separate so the warning cannot corrupt the JSON assertion below.
+	output, err := exec.Command(node, path).Output()
 	if err != nil {
 		t.Fatalf("generated-image dedupe failed at runtime: %s: %v", output, err)
 	}
@@ -954,10 +957,19 @@ func TestOfficialIDEImageRendererWhenFixturePresent(t *testing.T) {
 		if !result.Recognized || !result.Changed {
 			t.Fatalf("official IDE renderer is not safely patchable: %s %#v", path, result)
 		}
-		for _, marker := range []string{imagePreviewPatchMarker, imageGenerationUIPatchMarker, imageGenerationDedupePatchMarker} {
+		previewReady := strings.Contains(updated, imagePreviewPatchMarker) ||
+			strings.Contains(updated, imagePreviewNativeCompatibleMarker)
+		if !previewReady {
+			t.Fatalf("official IDE renderer has neither the managed fallback nor a verified native preview after patch: %s", path)
+		}
+		for _, marker := range []string{imageGenerationUIPatchMarker, imageGenerationDedupePatchMarker} {
 			if !strings.Contains(updated, marker) {
 				t.Fatalf("official IDE renderer is missing %s after patch: %s", marker, path)
 			}
+		}
+		second, secondResult := patchImagePreviewRenderer(updated)
+		if !secondResult.Recognized || secondResult.Changed || second != updated {
+			t.Fatalf("official IDE renderer patch is not idempotent: %s %#v", path, secondResult)
 		}
 		if !bytes.Equal(original, mustReadImagePreviewFixture(t, path)) {
 			t.Fatalf("read-only renderer validation modified the fixture: %s", path)

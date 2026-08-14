@@ -106,3 +106,17 @@ func TestWindowsExecutableProductVersionReadsInstalledIDE(t *testing.T) {
 		t.Logf("installed Antigravity IDE product version: %s", version)
 	}
 }
+
+func TestWindowsVersionFromTargetNeverUsesEmbeddedVSCodePackageVersion(t *testing.T) {
+	root := t.TempDir()
+	packagePath := filepath.Join(root, "resources", "app", "package.json")
+	if err := os.MkdirAll(filepath.Dir(packagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(packagePath, []byte(`{"version":"1.107.0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := windowsVersionFromTarget(windowsTarget{root: root, kind: "ide"}); got != "" {
+		t.Fatalf("embedded VS Code version leaked into Antigravity product version: %q", got)
+	}
+}

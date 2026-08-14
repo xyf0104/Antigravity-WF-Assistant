@@ -43,7 +43,11 @@ func newDarwinConnectionFixture(t *testing.T, settings string) darwinConnectionF
 
 	originalMain := []byte(`const setting="jetski.cloudCodeUrl"; const keepMain=true;`)
 	originalExtension := []byte(`const setting="jetski.cloudCodeUrl",flag="--cloud_code_endpoint"; const keepExtension=true;`)
-	originalRenderer := []byte(imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture())
+	// A current IDE renderer owns both the generated-image prompt card and the
+	// Markdown/artifact image component. Include both so the connection
+	// transaction exercises the complete v6 dedupe upgrade instead of the
+	// deliberately fail-closed partial-renderer path.
+	originalRenderer := []byte(imagePreviewOriginalRendererFixture() + ";" + imageGenerationUIRendererFixture() + ";" + imageArtifactMarkdownRendererFixture())
 	product := map[string]any{
 		"nameShort":      "Antigravity",
 		"dataFolderName": ".antigravity",
@@ -146,6 +150,24 @@ func TestDarwinConnectionSupportAndStatusDescribeEachExactTarget(t *testing.T) {
 	}
 	if status.Targets[1].Supported || status.Targets[1].ConnectionMode != "" || !strings.Contains(status.Targets[1].Reason, "app.asar") {
 		t.Fatalf("unsupported TargetStatus fields are incomplete: %+v", status.Targets[1])
+	}
+}
+
+func TestDarwinIDEStatusRequiresCurrentImageRendererAsWellAsEndpoint(t *testing.T) {
+	endpoint := currentPatchProxyEndpoint().Base
+	fixture := newDarwinConnectionFixture(t, "{\n  \"jetski.cloudCodeUrl\": \""+endpoint+"\"\n}\n")
+
+	status := buildDarwinStatus([]darwinTargets{fixture.target})
+	if len(status.Targets) != 1 || status.Targets[0].Patched || status.IDEPatched == nil || *status.IDEPatched {
+		t.Fatalf("configured endpoint with an old renderer was incorrectly reported as connected: %+v", status)
+	}
+
+	if _, err := applyDarwinSafeIDETarget(fixture.target); err != nil {
+		t.Fatalf("upgrade current IDE renderer: %v", err)
+	}
+	status = buildDarwinStatus([]darwinTargets{fixture.target})
+	if len(status.Targets) != 1 || !status.Targets[0].Patched || status.IDEPatched == nil || !*status.IDEPatched {
+		t.Fatalf("configured endpoint with the current v6 renderer was not reported as connected: %+v", status)
 	}
 }
 

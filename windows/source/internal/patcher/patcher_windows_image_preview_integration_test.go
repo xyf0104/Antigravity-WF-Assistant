@@ -140,25 +140,45 @@ func TestWindowsLegacyRendererWithoutOriginalBackupUpgradesCurrentBytes(t *testi
 
 func TestWindowsStatusReflectsPendingImagePreviewFallback(t *testing.T) {
 	root := t.TempDir()
-	main := filepath.Join(root, "resources", "app", "out", "main.js")
-	if err := os.MkdirAll(filepath.Dir(main), 0o755); err != nil {
+	appRoot := filepath.Join(root, "resources", "app")
+	main := filepath.Join(appRoot, "out", "main.js")
+	extension := filepath.Join(appRoot, "extensions", "antigravity", "dist", "extension.js")
+	renderer := filepath.Join(appRoot, "out", "jetskiAgent", "main.js")
+	product := filepath.Join(appRoot, "product.json")
+	originalRenderer := []byte(imagePreviewOriginalRendererFixture())
+	for path, data := range map[string][]byte{
+		main:      []byte(`const base=configuration.getValue("jetski.cloudCodeUrl");`),
+		extension: []byte(`const key="jetski.cloudCodeUrl";args.push("--cloud_code_endpoint",await service.getCloudCodeUrl());`),
+		renderer:  originalRenderer,
+		product:   []byte(`{"nameShort":"Antigravity Test","checksums":{"jetskiAgent/main.js":"` + windowsIDEChecksum(originalRenderer) + `"}}`),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appData := t.TempDir()
+	settings := filepath.Join(appData, "Antigravity Test", "User", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	endpointPatched := "// " + windowsMainMarker + "\n" + windowsBaseProxyEndpoint + "\n"
-	if err := os.WriteFile(main, []byte(endpointPatched+imagePreviewOriginalRendererFixture()), 0o644); err != nil {
+	if err := os.WriteFile(settings, []byte("{\n  \"jetski.cloudCodeUrl\": \"http://127.0.0.1:50999\"\n}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	target := windowsTarget{root: root, kind: "ide", main: main}
+	t.Setenv("APPDATA", appData)
+	target := windowsTarget{root: root, kind: "ide", main: main, extensionEntry: extension}
 	status := buildWindowsStatus([]windowsTarget{target})
 	if status.IDEPatched == nil || *status.IDEPatched || len(status.Targets) != 1 || status.Targets[0].Patched {
 		t.Fatalf("pending preview fallback was not reflected in Windows status: %+v", status)
 	}
 
-	updated, result := patchImagePreviewRenderer(endpointPatched + imagePreviewOriginalRendererFixture())
+	updated, result := patchImagePreviewRenderer(string(originalRenderer))
 	if !result.Changed {
 		t.Fatal("fixture should produce the current v4 renderer")
 	}
-	if err := os.WriteFile(main, []byte(updated), 0o644); err != nil {
+	if err := os.WriteFile(renderer, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	status = buildWindowsStatus([]windowsTarget{target})

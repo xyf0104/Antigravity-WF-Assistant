@@ -59,9 +59,17 @@ const imageGenerationUIPatchV1Marker = "antigravity-wf:image-generation-ui:v1"
 // v3 also hides an already-mounted matching artifact node. v4 additionally
 // consumes one recent generated-image event when Antigravity saves the same
 // bytes under a different artifact URI, which is the shape used by IDE 2.5.5
-// and Agent 2.8.1. The event is single-use, so an unrelated later Markdown
-// image remains visible.
-const imageGenerationDedupePatchMarker = "antigravity-wf:image-generation-dedupe:v4"
+// and Agent 2.8.1. v5 mirrors only anonymous timestamps and URI fingerprints
+// through localStorage so the native card and artifact component can correlate
+// even when Antigravity runs them in separate renderer globals. The event is
+// single-use, so an unrelated later Markdown image remains visible. v6 also
+// constrains the verified duplicate artifact component to a 320px thumbnail
+// when an Antigravity renderer still mounts it despite the event suppression.
+const imageGenerationDedupePatchMarker = "antigravity-wf:image-generation-dedupe:v6"
+
+const imageGenerationDedupePatchV5Marker = "antigravity-wf:image-generation-dedupe:v5"
+
+const imageGenerationDedupePatchV4Marker = "antigravity-wf:image-generation-dedupe:v4"
 
 const imageGenerationDedupePatchV3Marker = "antigravity-wf:image-generation-dedupe:v3"
 
@@ -138,6 +146,10 @@ var imagePreviewCurrentHeaderPattern = regexp.MustCompile(
 
 var imageGenerationLegacyDuplicateExpressionPattern = regexp.MustCompile(
 	`\$wfImageDuplicate=!!globalThis\.__antigravityWFIsRecentGeneratedImageV2&&\[(` + imagePreviewJavaScriptIdentifier + `),(` + imagePreviewJavaScriptIdentifier + `),(` + imagePreviewJavaScriptIdentifier + `)\]\.some\(value=>globalThis\.__antigravityWFIsRecentGeneratedImageV2\(value\)\),`,
+)
+
+var imageGenerationV4DuplicateExpressionPattern = regexp.MustCompile(
+	`\$wfImageDuplicate=!!globalThis\.__antigravityWFConsumeGeneratedImageV4&&globalThis\.__antigravityWFConsumeGeneratedImageV4\((` + imagePreviewJavaScriptIdentifier + `),(` + imagePreviewJavaScriptIdentifier + `),(` + imagePreviewJavaScriptIdentifier + `)\),`,
 )
 
 // imageGenerationTitleRendererPattern describes one exact native title
@@ -444,9 +456,22 @@ func patchDuplicateGeneratedImageRenderers(source string) (string, bool, bool) {
 // marker. The component continues using the stable V2 global ABI while the
 // remember function gains the mounted-node cleanup needed by v3.
 func upgradeLegacyImageDedupeRenderers(source string) (string, bool, bool) {
+	if strings.Contains(source, imageGenerationDedupePatchV5Marker) {
+		updated := strings.ReplaceAll(source, imageGenerationDedupePatchV5Marker, imageGenerationDedupePatchMarker)
+		updated, ok := addImageArtifactThumbnailToMarkedComponent(updated)
+		if !ok {
+			return source, true, false
+		}
+		return updated, true, updated != source
+	}
 	marker := ""
 	legacyRuntime := ""
 	switch {
+	case strings.Contains(source, imageGenerationDedupePatchV4Marker):
+		marker = imageGenerationDedupePatchV4Marker
+		legacyRuntime = `globalThis.__antigravityWFGeneratedImageEventsV4??=[],` +
+			generatedImageMountedDuplicateHiderDefinition() + generatedImageV4RememberDefinition() +
+			generatedImageIsRecentDefinition() + generatedImageV4ConsumeDefinition()
 	case strings.Contains(source, imageGenerationDedupePatchV3Marker):
 		marker = imageGenerationDedupePatchV3Marker
 		legacyRuntime = generatedImageV3MountedDuplicateHiderDefinition() + generatedImageV3RememberDefinition()
@@ -461,19 +486,71 @@ func upgradeLegacyImageDedupeRenderers(source string) (string, bool, bool) {
 	}
 	currentRuntime := `globalThis.__antigravityWFGeneratedImageEventsV4??=[],` +
 		generatedImageMountedDuplicateHiderDefinition() + generatedImageRememberDefinition()
+	if marker == imageGenerationDedupePatchV4Marker {
+		currentRuntime += generatedImageIsRecentDefinition() + generatedImageConsumeDefinition()
+	}
 	updated := strings.ReplaceAll(source, legacyRuntime, currentRuntime)
 	if !strings.Contains(updated, generatedImageIsRecentDefinition()) {
 		return source, true, false
 	}
-	updated = strings.Replace(updated, generatedImageIsRecentDefinition(), generatedImageIsRecentDefinition()+generatedImageConsumeDefinition(), 1)
+	if marker == imageGenerationDedupePatchV4Marker {
+		currentExpressions := imageGenerationV4DuplicateExpressionPattern.FindAllStringSubmatchIndex(updated, -1)
+		if len(currentExpressions) != 1 {
+			return source, true, false
+		}
+		updated = imageGenerationV4DuplicateExpressionPattern.ReplaceAllString(updated,
+			`$$wfImageDuplicate=(`+generatedImageConsumerRuntime()+`!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4($1,$2,$3)),`)
+	} else {
+		updated = strings.Replace(updated, generatedImageIsRecentDefinition(), generatedImageIsRecentDefinition()+generatedImageConsumeDefinition(), 1)
+	}
 	legacyExpressions := imageGenerationLegacyDuplicateExpressionPattern.FindAllStringSubmatchIndex(updated, -1)
-	if len(legacyExpressions) != 1 {
+	if marker != imageGenerationDedupePatchV4Marker {
+		if len(legacyExpressions) != 1 {
+			return source, true, false
+		}
+		updated = imageGenerationLegacyDuplicateExpressionPattern.ReplaceAllString(updated,
+			`$$wfImageDuplicate=(`+generatedImageConsumerRuntime()+`!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4($1,$2,$3)),`)
+	}
+	updated = strings.ReplaceAll(updated, marker, imageGenerationDedupePatchMarker)
+	var thumbnailOK bool
+	updated, thumbnailOK = addImageArtifactThumbnailToMarkedComponent(updated)
+	if !thumbnailOK {
 		return source, true, false
 	}
-	updated = imageGenerationLegacyDuplicateExpressionPattern.ReplaceAllString(updated,
-		`$$wfImageDuplicate=!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4($1,$2,$3),`)
-	updated = strings.ReplaceAll(updated, marker, imageGenerationDedupePatchMarker)
 	return updated, true, updated != source
+}
+
+const imageArtifactThumbnailStyle = `style:{maxWidth:"320px",maxHeight:"320px",width:"auto",height:"auto",objectFit:"contain"},`
+
+func addImageArtifactThumbnailToMarkedComponent(source string) (string, bool) {
+	marker := "/*" + imageGenerationDedupePatchMarker + "*/"
+	markerStart := strings.Index(source, marker)
+	if markerStart < 0 || strings.Index(source[markerStart+len(marker):], marker) >= 0 {
+		return source, false
+	}
+	componentStart := markerStart + len(marker)
+	openOffset := strings.Index(source[componentStart:], "=>{")
+	if openOffset < 0 || openOffset > 2*1024 {
+		return source, false
+	}
+	componentEnd, ok := imagePreviewJavaScriptBalancedBlockEnd(source, componentStart+openOffset+2)
+	if !ok || componentEnd-componentStart > 16*1024 {
+		return source, false
+	}
+	component := source[componentStart:componentEnd]
+	if !strings.Contains(component, `$wfImageDuplicate=`) || !strings.Contains(component, `__antigravityWFConsumeGeneratedImageV4`) {
+		return source, false
+	}
+	if strings.Contains(component, imageArtifactThumbnailStyle) {
+		return source, true
+	}
+	thumbnailPattern := regexp.MustCompile(`alt:` + imagePreviewJavaScriptIdentifier + `\|\|"Artifact image",`)
+	matches := thumbnailPattern.FindAllStringIndex(component, -1)
+	if len(matches) != 1 {
+		return source, false
+	}
+	insert := componentStart + matches[0][1]
+	return source[:insert] + imageArtifactThumbnailStyle + source[insert:], true
 }
 
 // generatedImageRegistrationReplacements adds a short-lived record for every
@@ -535,7 +612,7 @@ func nativeGeneratedImageRegistrationReplacements(source string) []imagePreviewR
 }
 
 func generatedImageRegistrationRuntime(values ...string) string {
-	registration := `globalThis.__antigravityWFImageKeyV2??=(value=>{let text=typeof value==="string"?value:"";if(!text)return"";try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\/(?:localhost)?/i,"").replace(/\\/g,"/")}),` +
+	registration := generatedImageKeyDefinition() +
 		`globalThis.__antigravityWFGeneratedImageTimesV2??=new Map,` +
 		`globalThis.__antigravityWFGeneratedImageEventsV4??=[],` +
 		generatedImageMountedDuplicateHiderDefinition() + generatedImageRememberDefinition() +
@@ -550,6 +627,19 @@ func generatedImageRegistrationRuntime(values ...string) string {
 	return registration + ";"
 }
 
+func generatedImageKeyDefinition() string {
+	return `globalThis.__antigravityWFImageKeyV2??=(value=>{let text=typeof value==="string"?value:"";if(!text)return"";try{text=decodeURIComponent(text)}catch{}return text.replace(/^vscode-file:\/\/(?:vscode-app)?/i,"").replace(/^file:\/\/(?:localhost)?/i,"").replace(/\\/g,"/")}),`
+}
+
+// The artifact component can execute in a different renderer global from the
+// native generated-image card. Install the consumer beside that component as
+// well; its shared queue contains no URI or image data.
+func generatedImageConsumerRuntime() string {
+	return generatedImageKeyDefinition() +
+		`globalThis.__antigravityWFGeneratedImageEventsV4??=[],` +
+		generatedImageConsumeDefinition()
+}
+
 func generatedImageLegacyRememberDefinition() string {
 	return `globalThis.__antigravityWFRememberGeneratedImageV2??=(value=>{let key=globalThis.__antigravityWFImageKeyV2(value);if(!key)return;let now=Date.now(),images=globalThis.__antigravityWFGeneratedImageTimesV2;images instanceof Map||(images=globalThis.__antigravityWFGeneratedImageTimesV2=new Map),images.set(key,now);if(images.size>128)for(let[candidate,seen]of images)if(typeof seen!=="number"||now-seen>=600000||images.size>128)images.delete(candidate)}),`
 }
@@ -559,12 +649,21 @@ func generatedImageMountedDuplicateHiderDefinition() string {
 }
 
 func generatedImageRememberDefinition() string {
-	// Assignment (rather than ??=) deliberately upgrades an already-loaded v2
-	// function in renderer bundles that share a global execution context.
-	return `globalThis.__antigravityWFRememberGeneratedImageV2=(value=>{let key=globalThis.__antigravityWFImageKeyV2(value);if(!key)return;let now=Date.now(),images=globalThis.__antigravityWFGeneratedImageTimesV2;images instanceof Map||(images=globalThis.__antigravityWFGeneratedImageTimesV2=new Map);let seen=images.get(key);images.set(key,now);if(images.size>128)for(let[candidate,time]of images)if(typeof time!=="number"||now-time>=600000||images.size>128)images.delete(candidate);let events=globalThis.__antigravityWFGeneratedImageEventsV4;Array.isArray(events)||(events=globalThis.__antigravityWFGeneratedImageEventsV4=[]),events.splice(0,events.length,...events.filter(event=>event&&typeof event.time==="number"&&now-event.time<120000));if(!(typeof seen==="number"&&now-seen<5000))events.push({key,time:now,consumed:!1});globalThis.__antigravityWFHideGeneratedImageV2?.(key)}),`
+	// Assignment (rather than ??=) deliberately upgrades an already-loaded
+	// function. localStorage carries only a numeric fingerprint and timestamp;
+	// it never persists the user's local image path or generated bytes.
+	return `globalThis.__antigravityWFRememberGeneratedImageV2=(value=>{let key=globalThis.__antigravityWFImageKeyV2(value);if(!key)return;let now=Date.now(),images=globalThis.__antigravityWFGeneratedImageTimesV2;images instanceof Map||(images=globalThis.__antigravityWFGeneratedImageTimesV2=new Map);let seen=images.get(key);images.set(key,now);if(images.size>128)for(let[candidate,time]of images)if(typeof time!=="number"||now-time>=600000||images.size>128)images.delete(candidate);let fresh=!(typeof seen==="number"&&now-seen<600000),events=globalThis.__antigravityWFGeneratedImageEventsV4;Array.isArray(events)||(events=globalThis.__antigravityWFGeneratedImageEventsV4=[]),events.splice(0,events.length,...events.filter(event=>event&&typeof event.time==="number"&&now-event.time<600000));if(fresh){events.push({key,time:now,consumed:!1});try{let hash=0;for(let index=0;index<key.length;index++)hash=(Math.imul(hash,31)+key.charCodeAt(index))>>>0;let storage=globalThis.localStorage,storageKey="antigravity-wf-generated-image-events-v5",shared=JSON.parse(storage?.getItem(storageKey)||"[]");Array.isArray(shared)||(shared=[]),shared=shared.filter(event=>event&&typeof event.time==="number"&&now-event.time<600000).slice(-15),shared.some(event=>!event.consumed&&event.hash===hash)||(shared.push({hash,time:now,consumed:!1}),storage?.setItem(storageKey,JSON.stringify(shared)))}catch{}}globalThis.__antigravityWFHideGeneratedImageV2?.(key)}),`
 }
 
 func generatedImageConsumeDefinition() string {
+	return `globalThis.__antigravityWFConsumeGeneratedImageV4=((...values)=>{let now=Date.now(),keys=values.map(value=>globalThis.__antigravityWFImageKeyV2(value)).filter(Boolean),events=globalThis.__antigravityWFGeneratedImageEventsV4;Array.isArray(events)||(events=globalThis.__antigravityWFGeneratedImageEventsV4=[]),events.splice(0,events.length,...events.filter(event=>event&&typeof event.time==="number"&&now-event.time<600000));let event=events.find(candidate=>!candidate.consumed&&keys.includes(candidate.key));event||(event=events.find(candidate=>!candidate.consumed));let consumed=!!event;event&&(event.consumed=!0);try{let hashes=keys.map(key=>{let hash=0;for(let index=0;index<key.length;index++)hash=(Math.imul(hash,31)+key.charCodeAt(index))>>>0;return hash}),storage=globalThis.localStorage,storageKey="antigravity-wf-generated-image-events-v5",shared=JSON.parse(storage?.getItem(storageKey)||"[]");Array.isArray(shared)||(shared=[]),shared=shared.filter(candidate=>candidate&&typeof candidate.time==="number"&&now-candidate.time<600000);let sharedEvent=shared.find(candidate=>!candidate.consumed&&hashes.includes(candidate.hash));sharedEvent||(sharedEvent=shared.find(candidate=>!candidate.consumed)),sharedEvent&&(sharedEvent.consumed=!0,consumed=!0),storage?.setItem(storageKey,JSON.stringify(shared))}catch{}return consumed}),`
+}
+
+func generatedImageV4RememberDefinition() string {
+	return `globalThis.__antigravityWFRememberGeneratedImageV2=(value=>{let key=globalThis.__antigravityWFImageKeyV2(value);if(!key)return;let now=Date.now(),images=globalThis.__antigravityWFGeneratedImageTimesV2;images instanceof Map||(images=globalThis.__antigravityWFGeneratedImageTimesV2=new Map);let seen=images.get(key);images.set(key,now);if(images.size>128)for(let[candidate,time]of images)if(typeof time!=="number"||now-time>=600000||images.size>128)images.delete(candidate);let events=globalThis.__antigravityWFGeneratedImageEventsV4;Array.isArray(events)||(events=globalThis.__antigravityWFGeneratedImageEventsV4=[]),events.splice(0,events.length,...events.filter(event=>event&&typeof event.time==="number"&&now-event.time<120000));if(!(typeof seen==="number"&&now-seen<5000))events.push({key,time:now,consumed:!1});globalThis.__antigravityWFHideGeneratedImageV2?.(key)}),`
+}
+
+func generatedImageV4ConsumeDefinition() string {
 	return `globalThis.__antigravityWFConsumeGeneratedImageV4??=((...values)=>{let now=Date.now(),keys=values.map(value=>globalThis.__antigravityWFImageKeyV2(value)).filter(Boolean),events=globalThis.__antigravityWFGeneratedImageEventsV4;Array.isArray(events)||(events=globalThis.__antigravityWFGeneratedImageEventsV4=[]),events.splice(0,events.length,...events.filter(event=>event&&typeof event.time==="number"&&now-event.time<120000));let event=events.find(candidate=>!candidate.consumed&&keys.includes(candidate.key));event||(event=events.find(candidate=>!candidate.consumed));if(!event)return!1;return event.consumed=!0,!0}),`
 }
 
@@ -620,7 +719,7 @@ func imageArtifactMarkdownReplacement(source string) *imagePreviewRendererReplac
 			continue
 		}
 		returnStart := match[1] + returnOffset
-		duplicate := `$wfImageDuplicate=!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(` + sourceValue + `,` + resolvedValue + `,` + originalPath + `),`
+		duplicate := `$wfImageDuplicate=(` + generatedImageConsumerRuntime() + `!!globalThis.__antigravityWFConsumeGeneratedImageV4&&globalThis.__antigravityWFConsumeGeneratedImageV4(` + sourceValue + `,` + resolvedValue + `,` + originalPath + `)),`
 		beforeReturn := source[match[0]:match[1]] + duplicate + source[match[1]:returnStart]
 		afterReturn := source[returnStart:end]
 		if returnCount == 1 {
@@ -628,9 +727,15 @@ func imageArtifactMarkdownReplacement(source string) *imagePreviewRendererReplac
 		} else {
 			afterReturn = strings.Replace(afterReturn, ifNeedle, `;if($wfImageDuplicate)return null;if(!`+sourceValue+`||`+errorState+`)return`, 1)
 		}
+		patchedComponent := beforeReturn + afterReturn
+		thumbnailNeedle := `alt:` + altValue + `||"Artifact image",`
+		if strings.Count(patchedComponent, thumbnailNeedle) != 1 {
+			continue
+		}
+		patchedComponent = strings.Replace(patchedComponent, thumbnailNeedle, thumbnailNeedle+imageArtifactThumbnailStyle, 1)
 		candidates = append(candidates, imagePreviewRendererReplacement{
 			start: match[0], end: end,
-			value: "/*" + imageGenerationDedupePatchMarker + "*/" + beforeReturn + afterReturn,
+			value: "/*" + imageGenerationDedupePatchMarker + "*/" + patchedComponent,
 		})
 	}
 	if len(candidates) != 1 {

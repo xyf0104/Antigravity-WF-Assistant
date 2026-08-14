@@ -52,6 +52,10 @@ jobs:
         working-directory: macos/source/frontend
         run: npm run test:oauth-ux
 
+      - name: Run connection progress UX tests
+        working-directory: macos/source/frontend
+        run: npm run test:patch-ux
+
       - name: Run update-check tests
         working-directory: macos/source/frontend
         run: npm run test:update-check
@@ -59,6 +63,10 @@ jobs:
       - name: Run reasoning capability tests
         working-directory: macos/source/frontend
         run: node --test test/reasoningCapabilities.test.mjs
+
+      - name: Run complete frontend regression suite
+        working-directory: macos/source/frontend
+        run: node --test test/*.test.mjs
 
       - name: Run Go race tests
         run: go test -race ./...

@@ -83,6 +83,12 @@ async function handleRequiredReconnect() {
 	repatchDialogOpen.value = false;
 }
 
+function dismissRepatchDialog() {
+	if (state.patchBusy) return;
+	repatchError.value = "";
+	repatchDialogOpen.value = false;
+}
+
 function handleMainWindowShown() {
 	tab.value = "dashboard";
 	void loadPatchStatus();
@@ -175,8 +181,8 @@ onUnmounted(() => {
         <button
           class="exit-trigger"
           type="button"
-          title="退出助手并释放本地代理端口"
-          aria-label="退出助手并释放本地代理端口"
+          title="退出助手并停止本地代理"
+          aria-label="退出助手并停止本地代理"
           style="--wails-draggable: no-drag"
           @click="exitDialogOpen = true"
         >
@@ -184,7 +190,7 @@ onUnmounted(() => {
             <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
           </svg>
         </button>
-        <span class="version-pill">v1.6.2</span>
+        <span class="version-pill">v1.6.3</span>
       </div>
     </aside>
 
@@ -217,10 +223,10 @@ onUnmounted(() => {
     </section>
 
     <Modal :open="exitDialogOpen" title="退出助手？" @close="exitDialogOpen = false">
-      <p class="exit-copy">退出后会停止本地代理并释放 127.0.0.1:50999。点击窗口叉号只会最小化到 Dock/任务栏；也可从系统菜单栏或托盘图标退出。</p>
+      <p class="exit-copy">退出后会停止本地代理。点击窗口叉号只会隐藏主窗口；也可从系统菜单栏或托盘图标退出。</p>
       <template #footer>
         <Button variant="plain" @click="exitDialogOpen = false">取消</Button>
-        <Button variant="danger" @click="quitAssistant">退出并释放端口</Button>
+        <Button variant="danger" @click="quitAssistant">退出助手</Button>
       </template>
     </Modal>
 
@@ -241,14 +247,16 @@ onUnmounted(() => {
 	  </template>
 	</Modal>
 
-	<Modal :open="repatchDialogOpen" title="Antigravity 版本已变更" :closable="false" persistent>
+	<Modal :open="repatchDialogOpen" title="Antigravity 需要重新连接" :closable="!state.patchBusy" persistent @close="dismissRepatchDialog">
 	  <div class="global-dialog-copy">
-		<strong>需要重新连接补丁</strong>
+		<strong>检测到安装版本或连接规则已更新</strong>
 		<span>{{ state.patch.productRepatchMessage || '检测到 Antigravity 安装发生变化，请重新连接后继续使用。' }}</span>
 		<span>请先完全退出正在运行的 Antigravity。助手会按当前安装结构自动选择兼容注入方式。</span>
+		<span>也可以暂时跳过，之后随时在首页手动连接并升级到最新补丁规则。</span>
 	  </div>
 	  <div v-if="repatchError" class="global-error">{{ repatchError }}</div>
 	  <template #footer>
+		<Button variant="plain" :disabled="state.patchBusy" @click="dismissRepatchDialog">稍后再说</Button>
 		<Button variant="filled" :loading="state.patchBusy" :disabled="state.patchBusy" @click="handleRequiredReconnect">立即重新连接</Button>
 	  </template>
 	</Modal>

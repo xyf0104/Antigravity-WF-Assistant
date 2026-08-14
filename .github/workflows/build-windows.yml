@@ -64,6 +64,10 @@ jobs:
         working-directory: windows/source/frontend
         run: node --test test/reasoningCapabilities.test.mjs
 
+      - name: Run complete frontend regression suite
+        working-directory: windows/source/frontend
+        run: node --test test/*.test.mjs
+
       - name: Run Go race tests
         run: go test -race ./...
 

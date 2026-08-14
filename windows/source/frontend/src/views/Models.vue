@@ -491,8 +491,8 @@ function visibleModelName(model) {
   const base = String(model?.displayName || model?.externalModelName || model?.name || "").trim();
   const upstream = String(model?.upstreamName || "").trim();
   const pool = String(model?.accountPoolLabel || "").trim();
-  const named = upstream ? `${base}（${upstream}）` : base;
-	return pool && pool.toLowerCase() !== upstream.toLowerCase() ? `${named} · ${pool}` : named;
+  const label = pool || upstream;
+  return label ? `${base} · ${label}` : base;
 }
 
 function modelToForm(model) {
