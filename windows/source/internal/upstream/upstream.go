@@ -503,7 +503,7 @@ func TestModel(ctx context.Context, config Config, model string) TestResult {
 	style := EffectiveAPIStyle(config)
 	if style == "auto" {
 		result := testResponses(ctx, config, model)
-		if result.OK || !CanFallbackToChat(result.StatusCode) {
+		if result.OK || !CanFallbackToChatResponse(result.StatusCode, result.Message) {
 			return finish(result)
 		}
 		return finish(testChatCompletions(ctx, config, model))
@@ -523,6 +523,32 @@ func TestModel(ctx context.Context, config Config, model string) TestResult {
 // retrying it on a different API surface.
 func CanFallbackToChat(statusCode int) bool {
 	return statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed || statusCode == http.StatusNotImplemented
+}
+
+// CanFallbackToChatResponse recognises only protocol-shaped HTTP 400 errors
+// from OpenAI-compatible gateways. It is used exclusively by automatic mode;
+// explicit Responses and Codex OAuth retain their configured contract.
+func CanFallbackToChatResponse(statusCode int, body string) bool {
+	if CanFallbackToChat(statusCode) {
+		return true
+	}
+	if statusCode != http.StatusBadRequest {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(body))
+	for _, marker := range []string{
+		"upstream request failed", "upstream_request_failed",
+		"responses api is not supported", "responses endpoint is not supported",
+		"unsupported responses endpoint", "missing required parameter: messages",
+		"messages is required", "unknown parameter: input",
+		"unrecognized request argument supplied: input", "unknown field: input",
+		"unknown field \"input\"",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func testChatCompletions(ctx context.Context, config Config, model string) TestResult {

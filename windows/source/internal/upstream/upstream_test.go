@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"antigravity-byok/internal/storage"
@@ -189,6 +190,42 @@ func TestAutoModelTestFallsBackOnlyForMissingResponsesEndpoint(t *testing.T) {
 	result := TestModel(context.Background(), Config{Provider: "openai", APIURL: server.URL + "/v1", APIKey: "token", APIStyle: "auto"}, "gpt-test")
 	if !result.OK || result.APIStyle != "chat_completions" {
 		t.Fatalf("expected Responses fallback to chat, got %#v", result)
+	}
+}
+
+func TestAutoModelTestFallsBackForGenericGateway400(t *testing.T) {
+	var chatCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Upstream request failed"}}`))
+		case "/v1/chat/completions":
+			chatCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-test"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result := TestModel(context.Background(), Config{Provider: "openai", APIURL: server.URL + "/v1", APIKey: "token", APIStyle: "auto"}, "gpt-5.6-sol")
+	if !result.OK || result.APIStyle != "chat_completions" || chatCalls.Load() != 1 {
+		t.Fatalf("expected generic Responses 400 to fall back to chat, got %#v", result)
+	}
+}
+
+func TestCanFallbackToChatResponseKeepsSemantic400Visible(t *testing.T) {
+	if !CanFallbackToChatResponse(http.StatusBadRequest, `{"error":{"message":"Upstream request failed"}}`) {
+		t.Fatal("generic compatibility-gateway 400 was not recognised")
+	}
+	if CanFallbackToChatResponse(http.StatusBadRequest, `{"error":{"message":"assistant-prefill final message is not supported; last message must be user"}}`) {
+		t.Fatal("semantic validation 400 was incorrectly classified as endpoint incompatibility")
+	}
+	if CanFallbackToChatResponse(http.StatusUnauthorized, `{"error":{"message":"Upstream request failed"}}`) {
+		t.Fatal("authentication failure must never switch API contracts")
 	}
 }
 

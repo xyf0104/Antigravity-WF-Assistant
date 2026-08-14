@@ -188,14 +188,18 @@ func forwardOpenAIImagesGeneration(w http.ResponseWriter, incoming *http.Request
 
 	policy := currentStreamRecoveryPolicy()
 	excludedAccounts := map[string]struct{}{}
+	pinnedAccountID := ""
 	reconnects := 0
 	client := &http.Client{Timeout: upstreamStreamTimeout}
 	for attempt := 1; ; attempt++ {
-		attemptModel, lease, err := acquireAttemptModel(executionModel, excludedAccounts)
+		attemptModel, lease, err := acquireAttemptModel(executionModel, excludedAccounts, pinnedAccountID)
 		if err != nil {
 			trace("images-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			http.Error(w, accountPoolError("图片模型", err), http.StatusServiceUnavailable)
 			return
+		}
+		if pinnedAccountID == "" && lease != nil {
+			pinnedAccountID = lease.ID
 		}
 		config := upstream.ConfigFromModel(*attemptModel)
 		if upstream.IsOpenAICodexOAuth(config) {
@@ -232,14 +236,25 @@ func forwardOpenAIImagesGeneration(w http.ResponseWriter, incoming *http.Request
 				return lease.ID
 			}(),
 		})
+		req, writeTrace := traceUpstreamRequestWrite(req)
 		resp, err := client.Do(req)
 		if err != nil {
-			releaseAttemptFailure(lease, 0, "", err.Error())
-			excludeFailedAttempt(excludedAccounts, lease)
 			trace("images-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
-			if incoming.Context().Err() == nil {
-				http.Error(w, "无法确认上游是否已接收图片生成请求；为避免重复扣费，本次请求未自动重试", http.StatusBadGateway)
+			if incoming.Context().Err() != nil {
+				releaseAttemptFailure(lease, 0, "", err.Error())
+				return
 			}
+			reconnects++
+			if canRetryUnsentTransportFailureBeforeResponse(policy, reconnects, writeTrace) {
+				if lease != nil {
+					lease.Release()
+				}
+				if waitForRejectedRequestRetry(incoming.Context(), policy, "images", requestID, "connection-before-write", "", reconnects) {
+					continue
+				}
+			}
+			releaseAttemptFailure(lease, 0, "", err.Error())
+			http.Error(w, "无法确认上游是否已接收图片生成请求；为避免重复扣费，只有请求写出前的连接失败会自动重试", http.StatusBadGateway)
 			return
 		}
 		observeAttemptQuota(lease, "images", resp)
@@ -263,8 +278,8 @@ func forwardOpenAIImagesGeneration(w http.ResponseWriter, incoming *http.Request
 					releaseAttemptFailure(lease, resp.StatusCode, retryAfter, failureDetail)
 					excludeFailedAttempt(excludedAccounts, lease)
 				}
-				// A non-2xx response proves this account rejected the request before
-				// generation, so trying a different healthy pooled account is safe.
+				// A non-2xx response proves the current account rejected the request
+				// before generation, so retrying that same account is safe.
 				if mayRetry && waitForRejectedRequestRetry(incoming.Context(), policy, "images", requestID, fmt.Sprintf("http-%d", resp.StatusCode), rejectedRetryAfter(resp.StatusCode, failureDetail, retryAfter, reconnects), reconnects) {
 					continue
 				}

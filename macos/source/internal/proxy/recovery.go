@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"antigravity-wf-assistant/internal/storage"
@@ -64,6 +66,34 @@ type downstreamSSEWriter struct {
 	w         http.ResponseWriter
 	flusher   http.Flusher
 	committed bool
+}
+
+// upstreamRequestWriteTrace distinguishes a connection failure that happened
+// before net/http attempted to write the request from an ambiguous disconnect
+// after bytes may have reached the provider. Only the former can be replayed
+// without risking duplicate tokens, tools or image charges.
+type upstreamRequestWriteTrace struct {
+	writeAttempted atomic.Bool
+}
+
+func traceUpstreamRequestWrite(request *http.Request) (*http.Request, *upstreamRequestWriteTrace) {
+	state := &upstreamRequestWriteTrace{}
+	clientTrace := &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			// Even a callback carrying a write error can follow a partial write.
+			// Treat it as possibly delivered and therefore unsafe to replay.
+			state.writeAttempted.Store(true)
+		},
+	}
+	return request.WithContext(httptrace.WithClientTrace(request.Context(), clientTrace)), state
+}
+
+func canRetryUnsentTransportFailure(writer *downstreamSSEWriter, policy streamRecoveryPolicy, reconnect int, state *upstreamRequestWriteTrace) bool {
+	return writer != nil && !writer.committed && canRetryUnsentTransportFailureBeforeResponse(policy, reconnect, state)
+}
+
+func canRetryUnsentTransportFailureBeforeResponse(policy streamRecoveryPolicy, reconnect int, state *upstreamRequestWriteTrace) bool {
+	return state != nil && !state.writeAttempted.Load() && policy.enabled && reconnect > 0 && reconnect <= policy.maxAttempts
 }
 
 func newDownstreamSSEWriter(w http.ResponseWriter) *downstreamSSEWriter {
@@ -180,7 +210,7 @@ func waitForAccountPool(ctx context.Context, writer *downstreamSSEWriter, policy
 func writeRecoverableTurnStop(writer *downstreamSSEWriter, provider, requestID, modelVersion, message string, reconnects int) {
 	message = strings.TrimSpace(message)
 	if message == "" {
-		message = "上游暂时不可用，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。"
+		message = "上游暂时不可用，本轮未生成内容。请稍后再发送一次；新请求会重新探测当前账户。"
 	}
 	trace(provider+"-recoverable-turn-stop", map[string]any{
 		"requestId": requestID, "reconnects": reconnects, "message": message,
@@ -203,13 +233,13 @@ func writeRejectedTurnStop(writer *downstreamSSEWriter, provider, requestID, mod
 	case statusCode == http.StatusUnauthorized:
 		message = "第三方上游鉴权失败（HTTP 401）。请检查 API Key 或登录凭据后重新发送。"
 	case statusCode == http.StatusForbidden && isAccountLevelForbidden(body):
-		message = "第三方上游账户余额、额度或权限不足（HTTP 403）。请更换可用账户、补充额度或切换上游后重新发送。"
+		message = "第三方上游账户余额、额度或权限不足（HTTP 403）。请补充额度或修复当前账户权限后重新发送。"
 	case statusCode == http.StatusForbidden:
-		message = "第三方上游拒绝了当前线路（HTTP 403）。请切换同模型的其他可用上游后重新发送。"
+		message = "第三方上游拒绝了当前线路（HTTP 403）。请检查当前账户权限后重新发送。"
 	case statusCode == http.StatusNotFound && isModelRouteRejection(body):
 		message = "第三方上游没有为当前账户配置所选模型（HTTP 404）。请重新获取模型列表，或切换支持该模型的上游。"
 	case statusCode == http.StatusTooManyRequests:
-		message = "第三方上游当前请求过多或额度窗口已满（HTTP 429）。请稍后再发送，或切换同模型的其他可用上游。"
+		message = "第三方上游当前请求过多或额度窗口已满（HTTP 429）。WF助手已按设置重试当前账户，请稍后重新发送。"
 	}
 	writeRecoverableTurnStop(writer, provider, requestID, modelVersion, message, 0)
 }

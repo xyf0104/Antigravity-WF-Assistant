@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"antigravity-wf-assistant/internal/storage"
@@ -76,6 +77,95 @@ func TestForwardOpenAIAutoRoutesOrdinaryChatToChatCompletions(t *testing.T) {
 	}
 }
 
+func TestForwardOpenAIAutoFallsBackAfterGenericResponses400(t *testing.T) {
+	var paths []string
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Upstream request failed","type":"upstream_error"}}`))
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"id\":\"chat-fallback\",\"model\":\"gpt-5.6-sol\",\"choices\":[{\"delta\":{\"content\":\"fallback ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstreamServer.Close()
+
+	model := &storage.CustomModel{Provider: "openai", APIURL: upstreamServer.URL, APIKey: "test", ExternalModelName: "gpt-5.6-sol", APIStyle: "auto"}
+	recorder := httptest.NewRecorder()
+	forwardOpenAI(recorder, httptest.NewRequest(http.MethodPost, "/generate", nil), model, map[string]any{
+		"contents":       []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "测试兼容路径"}}}},
+		"wfUseResponses": true,
+	}, "generic-400-chat-fallback")
+
+	if len(paths) != 2 || paths[0] != "/v1/responses" || paths[1] != "/v1/chat/completions" {
+		t.Fatalf("upstream paths = %#v, want Responses then Chat Completions", paths)
+	}
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"text":"fallback ok"`) || !strings.Contains(recorder.Body.String(), `"finishReason":"STOP"`) {
+		t.Fatalf("unexpected fallback response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestForwardOpenAIAutoFallbackKeepsTheResponsesAccountPinned(t *testing.T) {
+	storage.Init(t.TempDir())
+
+	var firstResponses, firstChat, secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer first-token" {
+			t.Errorf("first account authorization = %q", got)
+		}
+		switch r.URL.Path {
+		case "/v1/responses":
+			firstResponses.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Upstream request failed","type":"upstream_error"}}`))
+		case "/v1/chat/completions":
+			firstChat.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"id\":\"chat-pinned\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"same account\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		http.Error(w, "the fallback must not switch accounts", http.StatusInternalServerError)
+	}))
+	defer second.Close()
+
+	for _, account := range []storage.UpstreamAccount{
+		{ID: "first", Name: "first", Provider: "openai", Type: "api_key", APIURL: first.URL, APIKey: "first-token", APIStyle: "auto", AuthMode: "bearer", Enabled: true, Priority: 1, MaxConcurrency: 1},
+		{ID: "second", Name: "second", Provider: "openai", Type: "api_key", APIURL: second.URL, APIKey: "second-token", APIStyle: "auto", AuthMode: "bearer", Enabled: true, Priority: 1, MaxConcurrency: 1},
+	} {
+		if err := storage.SaveUpstreamAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	model := &storage.CustomModel{
+		Name: "models/gpt-test", DisplayName: "gpt-test", Provider: "openai", ExternalModelName: "gpt-test",
+		AccountIDs: []string{"first", "second"}, APIStyle: "auto",
+	}
+	recorder := httptest.NewRecorder()
+	forwardOpenAI(recorder, httptest.NewRequest(http.MethodPost, "/generate", nil), model, map[string]any{
+		"contents":       []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "测试固定账户回退"}}}},
+		"wfUseResponses": true,
+	}, "responses-chat-pinned-account")
+
+	if firstResponses.Load() != 1 || firstChat.Load() != 1 || secondCalls.Load() != 0 {
+		t.Fatalf("account calls = first responses:%d chat:%d second:%d, want 1/1/0", firstResponses.Load(), firstChat.Load(), secondCalls.Load())
+	}
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"text":"same account"`) {
+		t.Fatalf("unexpected fallback response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestResponsesBuiltinToolFallbackIsSafeAndRemembered(t *testing.T) {
 	var bodies []map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +193,7 @@ func TestResponsesBuiltinToolFallbackIsSafeAndRemembered(t *testing.T) {
 	}
 
 	first := httptest.NewRecorder()
-	forwardOpenAIResponses(first, httptest.NewRequest(http.MethodPost, "/generate", nil), model, gemini, "tools-fallback-one", false)
+	forwardOpenAIResponses(first, httptest.NewRequest(http.MethodPost, "/generate", nil), model, gemini, "tools-fallback-one", false, nil)
 	if len(bodies) != 2 {
 		t.Fatalf("upstream requests = %d, want 2 (explicit rejection + safe downgrade)", len(bodies))
 	}
@@ -118,7 +208,7 @@ func TestResponsesBuiltinToolFallbackIsSafeAndRemembered(t *testing.T) {
 	}
 
 	second := httptest.NewRecorder()
-	forwardOpenAIResponses(second, httptest.NewRequest(http.MethodPost, "/generate", nil), model, gemini, "tools-fallback-two", false)
+	forwardOpenAIResponses(second, httptest.NewRequest(http.MethodPost, "/generate", nil), model, gemini, "tools-fallback-two", false, nil)
 	if len(bodies) != 3 {
 		t.Fatalf("known unsupported hosted tool was retried: requests = %d, want 3", len(bodies))
 	}
@@ -154,7 +244,7 @@ func TestResponsesStreamDoesNotReplayAfterAcceptedPartialOutput(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	forwardOpenAIResponses(recorder, httptest.NewRequest(http.MethodPost, "/generate", nil), model, map[string]any{
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "请回答"}}}},
-	}, "responses-partial", false)
+	}, "responses-partial", false, nil)
 
 	if calls != 1 {
 		t.Fatalf("accepted partial Responses stream was replayed %d times", calls)

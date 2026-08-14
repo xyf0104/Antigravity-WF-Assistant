@@ -156,7 +156,7 @@ onMounted(async () => {
         <label class="switch-row">
           <div class="grow">
             <div class="t-headline">首个回复前安全重试</div>
-            <div class="t-caption">仅当上游尚未交付任何事件时才会重试或切换账户。已有文字、工具调用或附件后绝不重放请求。</div>
+            <div class="t-caption">仅当上游尚未交付任何事件时，才会固定当前账户安全重试。已有文字、工具调用或附件后绝不重放请求。</div>
           </div>
           <input v-model="form.streamRecovery.enabled" type="checkbox" class="switch-input" />
           <span class="switch"></span>

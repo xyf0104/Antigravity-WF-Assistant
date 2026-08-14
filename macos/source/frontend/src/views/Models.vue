@@ -397,6 +397,12 @@ function capabilityLabels(model) {
   return labels;
 }
 
+function visibleModelName(model) {
+  const base = String(model?.displayName || model?.externalModelName || model?.name || "").trim();
+  const pool = String(model?.accountPoolLabel || "").trim();
+  return pool ? `${base} · ${pool}` : base;
+}
+
 function modelToForm(model) {
   const capabilities = automaticCapabilities(model.provider, model.externalModelName, model.capabilities, model.apiStyle);
   const endpointMode = model.endpointMode || (model.messagePathMode === "manual" ? "manual" : "auto");
@@ -418,6 +424,9 @@ function modelToForm(model) {
     model.reasoningEffort,
     modelReasoningProfile({ ...model, ...next }, next.provider, next.apiStyle)
   );
+  // accountPoolLabel is runtime-only display metadata. The editable model
+  // name and the real upstream model ID must remain independent from it.
+  delete next.accountPoolLabel;
   return next;
 }
 
@@ -689,12 +698,14 @@ async function setModelEnabled(model, enabled, { quiet = false } = {}) {
   }
   modelEnableBusy.value = { ...modelEnableBusy.value, [model.name]: true };
   try {
-    const result = await saveModel({ ...model, enabled });
+    const payload = { ...model, enabled };
+    delete payload.accountPoolLabel;
+    const result = await saveModel(payload);
     if (!result?.ok) {
       modelActionError.value = sanitizeModelMessage(result?.message || "模型状态保存失败");
       return false;
     }
-    if (!quiet) modelActionMessage.value = `${model.displayName || model.externalModelName || "模型"} 已${enabled ? "启用" : "停用"}。`;
+    if (!quiet) modelActionMessage.value = `${visibleModelName(model) || "模型"} 已${enabled ? "启用" : "停用"}。`;
     return true;
   } catch (error) {
     modelActionError.value = sanitizeModelMessage(error);
@@ -925,7 +936,7 @@ async function handleDelete() {
                 <span class="model-enable-text">{{ modelIsEnabled(model) ? '启用' : '停用' }}</span>
               </label>
               <div class="grow col model-copy" style="gap: 1px; min-width: 0">
-                <div class="t-body truncate">{{ model.displayName || model.externalModelName || model.name }}</div>
+                <div class="t-body truncate">{{ visibleModelName(model) }}</div>
                 <div class="mono truncate model-id">{{ model.externalModelName || model.name }}</div>
               </div>
               <div class="model-row-actions">

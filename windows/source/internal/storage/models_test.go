@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -52,6 +53,103 @@ func TestEmptyDisplayNameUsesUpstreamModelName(t *testing.T) {
 	if loaded[0].DisplayName != "gpt-test" {
 		t.Fatalf("displayName = %q, want upstream model name", loaded[0].DisplayName)
 	}
+}
+
+func TestLoadedModelDisplayNameIncludesCurrentAccountPoolNamesWithoutPersistingThem(t *testing.T) {
+	dir := t.TempDir()
+	Init(dir)
+	for _, account := range []UpstreamAccount{
+		{ID: "primary", Name: "XIASS主池", Provider: "openai", Type: "api_key", APIKey: "secret-one", Enabled: true},
+		{ID: "backup", Name: "备用供应商", Provider: "openai", Type: "api_key", APIKey: "secret-two", Enabled: true},
+	} {
+		if err := SaveUpstreamAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := NewDiscoveredModel("openai", "https://api.example.test", "", "gpt-5.6-sol")
+	model.AccountIDs = []string{"primary", "backup"}
+	model.AccountPoolLabel = "不应写入磁盘"
+	if err := SaveModels([]CustomModel{model}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "custom_models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "accountPoolLabel") || strings.Contains(string(raw), "不应写入磁盘") {
+		t.Fatalf("runtime account label leaked into model file: %s", raw)
+	}
+
+	loaded, err := LoadModels()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("load failed: %#v, %v", loaded, err)
+	}
+	if loaded[0].AccountPoolLabel != "XIASS主池 / 备用供应商" {
+		t.Fatalf("accountPoolLabel = %q", loaded[0].AccountPoolLabel)
+	}
+	if got := VisibleModelDisplayName(loaded[0]); got != "gpt-5.6-sol · XIASS主池 / 备用供应商" {
+		t.Fatalf("visible model name = %q", got)
+	}
+	if loaded[0].DisplayName != "gpt-5.6-sol" || loaded[0].ExternalModelName != "gpt-5.6-sol" {
+		t.Fatalf("real model fields were changed: %#v", loaded[0])
+	}
+
+	updated, err := GetUpstreamAccount("primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Name = "XIASS生产池"
+	if err := SaveUpstreamAccount(updated); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = LoadModels()
+	if err != nil || VisibleModelDisplayName(loaded[0]) != "gpt-5.6-sol · XIASS生产池 / 备用供应商" {
+		t.Fatalf("renamed account was not reflected: %#v, %v", loaded, err)
+	}
+}
+
+func TestDirectModelVisibleNameDoesNotGainAccountSuffix(t *testing.T) {
+	Init(t.TempDir())
+	model := NewDiscoveredModel("openai", "https://api.example.test", "secret", "gpt-direct")
+	if err := SaveModels([]CustomModel{model}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadModels()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("load failed: %#v, %v", loaded, err)
+	}
+	if loaded[0].AccountPoolLabel != "" || VisibleModelDisplayName(loaded[0]) != "gpt-direct" {
+		t.Fatalf("direct model gained a pool suffix: %#v", loaded[0])
+	}
+}
+
+func TestTransientAccountFailureIsEligibleAgainOnNextRequest(t *testing.T) {
+	Init(t.TempDir())
+	if err := SaveUpstreamAccount(UpstreamAccount{
+		ID: "transient", Name: "瞬时线路", Provider: "openai", Type: "api_key",
+		APIURL: "https://api.example.test", APIKey: "secret", Enabled: true, MaxConcurrency: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	model := CustomModel{Provider: "openai", AccountIDs: []string{"transient"}}
+	_, lease, err := AcquireAccountForModel(model, nil)
+	if err != nil || lease == nil {
+		t.Fatalf("first acquire failed: lease=%#v err=%v", lease, err)
+	}
+	lease.Finish(http.StatusServiceUnavailable, "30", "temporary gateway outage")
+	stored, err := GetUpstreamAccount("transient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CooldownUntil != "" || stored.FailureCount != 1 || stored.LastError == "" {
+		t.Fatalf("transient health should be recorded without a blacklist: %#v", stored)
+	}
+	_, nextLease, err := AcquireAccountForModel(model, nil)
+	if err != nil || nextLease == nil || nextLease.ID != "transient" {
+		t.Fatalf("next independent request did not probe the account again: lease=%#v err=%v", nextLease, err)
+	}
+	nextLease.Finish(http.StatusOK, "", "")
 }
 
 func TestLoadEnabledModelsKeepsLegacyModelsAndFiltersExplicitlyDisabledModels(t *testing.T) {

@@ -204,6 +204,12 @@ type CustomModel struct {
 	// preserves legacy per-model API credentials for existing installations.
 	AccountIDs   []string          `json:"accountIds,omitempty"`
 	Capabilities ModelCapabilities `json:"capabilities,omitempty"`
+	// AccountPoolLabel is derived from the currently saved account names every
+	// time models are loaded. It is returned to the renderer and model picker,
+	// but normalizeModelDisplayName clears it before any persistence operation.
+	// Keeping the label separate from DisplayName ensures account renames appear
+	// immediately and the real upstream model ID is never polluted by UI text.
+	AccountPoolLabel string `json:"accountPoolLabel,omitempty"`
 	// RuntimeOAuthUpstream and RuntimeChatGPTAccountID are copied only from the
 	// account selected for an in-flight request. They are intentionally not
 	// persisted in custom_models.json and can never expose an OAuth token.
@@ -254,8 +260,12 @@ func StorageDir() string { return storageDir }
 
 func LoadModels() ([]CustomModel, error) {
 	mu.RLock()
-	defer mu.RUnlock()
-	return loadModelsLocked()
+	models, err := loadModelsLocked()
+	mu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+	return attachAccountPoolLabels(models), nil
 }
 
 // LoadEnabledModels is intentionally separate from LoadModels: the settings
@@ -263,12 +273,79 @@ func LoadModels() ([]CustomModel, error) {
 // a model the user has unchecked in its upstream card.
 func LoadEnabledModels() ([]CustomModel, error) {
 	mu.RLock()
-	defer mu.RUnlock()
 	models, err := loadModelsLocked()
+	mu.RUnlock()
 	if err != nil {
 		return nil, err
 	}
-	return EnabledModels(models), nil
+	return EnabledModels(attachAccountPoolLabels(models)), nil
+}
+
+// attachAccountPoolLabels runs only after the model lock has been released.
+// MergeDiscoveredAccountModelsForCurrentAccount intentionally acquires the
+// account lock before the model lock, so reversing that order here would make
+// simultaneous account sync and model loading deadlock.
+func attachAccountPoolLabels(models []CustomModel) []CustomModel {
+	if len(models) == 0 {
+		return models
+	}
+	accounts, err := LoadUpstreamAccounts()
+	if err != nil || len(accounts) == 0 {
+		return models
+	}
+	accountNames := make(map[string]string, len(accounts))
+	for _, account := range accounts {
+		id := strings.TrimSpace(account.ID)
+		if id == "" {
+			continue
+		}
+		name := strings.TrimSpace(account.Name)
+		if name == "" {
+			name = accountProviderLabel(account.Provider) + " 账户"
+		}
+		accountNames[id] = name
+	}
+	for index := range models {
+		labels := make([]string, 0, len(models[index].AccountIDs))
+		seen := make(map[string]struct{}, len(models[index].AccountIDs))
+		for _, accountID := range normalizedAccountIDs(models[index].AccountIDs) {
+			label := strings.TrimSpace(accountNames[accountID])
+			if label == "" {
+				continue
+			}
+			key := strings.ToLower(label)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			labels = append(labels, label)
+		}
+		switch len(labels) {
+		case 0:
+			models[index].AccountPoolLabel = ""
+		case 1, 2:
+			models[index].AccountPoolLabel = strings.Join(labels, " / ")
+		default:
+			models[index].AccountPoolLabel = strings.Join(labels[:2], " / ") + fmt.Sprintf(" 等%d个账户", len(labels))
+		}
+	}
+	return models
+}
+
+// VisibleModelDisplayName is the only display-name source shared by WF助手
+// and Antigravity injection. Routing continues to use ExternalModelName.
+func VisibleModelDisplayName(model CustomModel) string {
+	base := strings.TrimSpace(model.DisplayName)
+	if base == "" {
+		base = strings.TrimSpace(model.ExternalModelName)
+	}
+	if base == "" {
+		base = strings.TrimPrefix(strings.TrimSpace(model.Name), "models/")
+	}
+	if label := strings.TrimSpace(model.AccountPoolLabel); label != "" {
+		return base + " · " + label
+	}
+	return base
 }
 
 func loadModelsLocked() ([]CustomModel, error) {
@@ -604,6 +681,9 @@ func mergeModelAccountIDs(existing, incoming []string) ([]string, bool) {
 }
 
 func normalizeModelDisplayName(model CustomModel) CustomModel {
+	// This field is always recalculated from upstream_accounts.json after the
+	// model lock is released. Never let a stale/forged derived label reach disk.
+	model.AccountPoolLabel = ""
 	model.Provider = strings.ToLower(strings.TrimSpace(model.Provider))
 	if model.Provider == "" {
 		model.Provider = "openai"

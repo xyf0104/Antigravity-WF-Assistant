@@ -98,13 +98,7 @@ func allocateModelSlugsWithExisting(models []storage.CustomModel, usedModelIDs m
 }
 
 func modelDisplayName(m storage.CustomModel) string {
-	if strings.TrimSpace(m.DisplayName) != "" {
-		return m.DisplayName
-	}
-	if strings.TrimSpace(m.ExternalModelName) != "" {
-		return m.ExternalModelName
-	}
-	return strings.TrimPrefix(m.Name, "models/")
+	return storage.VisibleModelDisplayName(m)
 }
 
 func collectModelResponseRoots(parsed map[string]any) []modelResponseRoot {

@@ -503,7 +503,7 @@ func TestModel(ctx context.Context, config Config, model string) TestResult {
 	style := EffectiveAPIStyle(config)
 	if style == "auto" {
 		result := testResponses(ctx, config, model)
-		if result.OK || !CanFallbackToChat(result.StatusCode) {
+		if result.OK || !CanFallbackToChatResponse(result.StatusCode, result.Message) {
 			return finish(result)
 		}
 		return finish(testChatCompletions(ctx, config, model))
@@ -523,6 +523,35 @@ func TestModel(ctx context.Context, config Config, model string) TestResult {
 // retrying it on a different API surface.
 func CanFallbackToChat(statusCode int) bool {
 	return statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed || statusCode == http.StatusNotImplemented
+}
+
+// CanFallbackToChatResponse recognises a narrow class of HTTP 400 responses
+// emitted by compatibility gateways when a request reached a Chat-only route
+// through /v1/responses. The generic status alone is deliberately insufficient:
+// semantic validation, authentication and model errors must stay visible.
+// Callers use this only for automatic API style; explicit Responses and Codex
+// OAuth never change protocol silently.
+func CanFallbackToChatResponse(statusCode int, body string) bool {
+	if CanFallbackToChat(statusCode) {
+		return true
+	}
+	if statusCode != http.StatusBadRequest {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(body))
+	for _, marker := range []string{
+		"upstream request failed", "upstream_request_failed",
+		"responses api is not supported", "responses endpoint is not supported",
+		"unsupported responses endpoint", "missing required parameter: messages",
+		"messages is required", "unknown parameter: input",
+		"unrecognized request argument supplied: input", "unknown field: input",
+		"unknown field \"input\"",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func testChatCompletions(ctx context.Context, config Config, model string) TestResult {

@@ -8,14 +8,25 @@ import (
 	"antigravity-byok/internal/storage"
 )
 
-// acquireAttemptModel selects an account for one upstream attempt. The model
-// payload remains model-specific, while URL, headers and credentials come from
-// the selected account. Excluded IDs prevent a retry from immediately sending
-// the same failed request to the same depleted account. The selected account is
-// only excluded after a genuine upstream failure: a prompt-cache compatibility
-// retry must be allowed to use the same healthy account.
-func acquireAttemptModel(base *storage.CustomModel, excluded map[string]struct{}) (*storage.CustomModel, *storage.AccountLease, error) {
-	selected, lease, err := storage.AcquireAccountForModel(*base, excluded)
+// acquireAttemptModel selects an account for one upstream attempt. After the
+// first lease, pinnedAccountID excludes every other binding so transient
+// retries stay on the same credential and upstream. Exclusions remain scoped
+// to this request and never become a cross-request blacklist.
+func acquireAttemptModel(base *storage.CustomModel, excluded map[string]struct{}, pinnedAccountID string) (*storage.CustomModel, *storage.AccountLease, error) {
+	effectiveExcluded := excluded
+	if strings.TrimSpace(pinnedAccountID) != "" {
+		effectiveExcluded = make(map[string]struct{}, len(excluded)+len(base.AccountIDs))
+		for id := range excluded {
+			effectiveExcluded[id] = struct{}{}
+		}
+		for _, id := range base.AccountIDs {
+			id = strings.TrimSpace(id)
+			if id != "" && id != pinnedAccountID {
+				effectiveExcluded[id] = struct{}{}
+			}
+		}
+	}
+	selected, lease, err := storage.AcquireAccountForModel(*base, effectiveExcluded)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -49,7 +60,7 @@ func releaseAttemptFailure(lease *storage.AccountLease, statusCode int, retryAft
 	if lease == nil {
 		return
 	}
-	if shouldCooldownAccount(statusCode, message) {
+	if shouldRecordAccountFailure(statusCode, message) {
 		lease.Finish(statusCode, retryAfter, message)
 		return
 	}
@@ -58,33 +69,22 @@ func releaseAttemptFailure(lease *storage.AccountLease, statusCode int, retryAft
 	lease.Finish(http.StatusOK, "", "")
 }
 
-func shouldCooldownAccount(statusCode int, message string) bool {
+func shouldRecordAccountFailure(statusCode int, message string) bool {
 	return statusCode == 0 || statusCode == http.StatusUnauthorized ||
 		(statusCode == http.StatusForbidden && isAccountLevelForbidden(message)) ||
 		statusCode == http.StatusTooManyRequests || statusCode == http.StatusBadGateway ||
 		statusCode == http.StatusServiceUnavailable || statusCode == http.StatusGatewayTimeout || statusCode == 524
 }
 
-// shouldFailOverAccount adds credential failures to the normal transient
-// retry list, but only when a model is actually bound to an account pool. A
-// legacy per-model API key still receives the upstream response directly.
-func shouldFailOverAccount(lease *storage.AccountLease, statusCode int, body string) bool {
-	if lease == nil {
-		return isRetryableStatus(statusCode) || isTransientProviderRejection(statusCode, body) || isTransientModelPoolRejection(statusCode, body)
-	}
-	if statusCode == http.StatusNotFound && isModelRouteRejection(body) {
-		return lease.HasAlternatives || isTransientModelPoolRejection(statusCode, body)
-	}
-	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
-		return lease.HasAlternatives || isTransientProviderRejection(statusCode, body)
-	}
-	return isRetryableStatus(statusCode)
+// shouldFailOverAccount retains its historical name but now identifies only
+// temporary rejections that are safe to retry on the pinned account.
+func shouldFailOverAccount(_ *storage.AccountLease, statusCode int, body string) bool {
+	return isRetryableStatus(statusCode) || isTransientProviderRejection(statusCode, body) || isTransientModelPoolRejection(statusCode, body)
 }
 
-func shouldRetrySameAccount(lease *storage.AccountLease, statusCode int, body string) bool {
-	if lease != nil && lease.HasAlternatives {
-		return false
-	}
+// shouldRetrySameAccount mirrors the temporary classification above. Keeping
+// it separate makes the no-account-switch invariant explicit at call sites.
+func shouldRetrySameAccount(_ *storage.AccountLease, statusCode int, body string) bool {
 	return isRetryableStatus(statusCode) || isTransientProviderRejection(statusCode, body) || isTransientModelPoolRejection(statusCode, body)
 }
 

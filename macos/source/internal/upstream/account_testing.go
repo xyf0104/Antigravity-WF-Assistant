@@ -121,8 +121,8 @@ var accountTestSecretPatterns = []*regexp.Regexp{
 // RunAccountTest performs a provider-aware, user-initiated probe. Direct
 // OpenAI/Codex OAuth is always kept on the Responses route; it intentionally
 // never falls back to Chat Completions, because a Codex OAuth token is not a
-// generic platform API key. A normal OpenAI auto configuration falls back only
-// on the endpoint-availability statuses used by XIASS (404/405/501).
+// generic platform API key. A normal OpenAI auto configuration may also fall
+// back when a compatibility gateway returns a recognised protocol-shaped 400.
 func RunAccountTest(ctx context.Context, config Config, request AccountTestRequest) AccountTestResult {
 	runner := &accountTestRunner{
 		ctx: ctx, config: config, request: request,
@@ -221,7 +221,7 @@ func (r *accountTestRunner) runOpenAITest() {
 		// Explicit Responses style and Compact mode must not silently change a
 		// test to another contract. Only automatic OpenAI gets XIASS's narrow
 		// endpoint-availability fallback.
-		if style != "auto" || r.request.Mode == "compact" || !CanFallbackToChat(probe.StatusCode) {
+		if style != "auto" || r.request.Mode == "compact" || !CanFallbackToChatResponse(probe.StatusCode, string(probe.Body)) {
 			r.finishTextProbe(probe, "responses")
 			return
 		}

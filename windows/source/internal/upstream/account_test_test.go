@@ -83,6 +83,58 @@ func TestRunAccountTestOpenAIAutoFallsBackOnlyForMissingResponsesRoute(t *testin
 	}
 }
 
+func TestRunAccountTestOpenAIAutoFallsBackForGenericGateway400(t *testing.T) {
+	var responsesCalls, chatCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Upstream request failed","type":"upstream_error"}}`))
+		case "/v1/chat/completions":
+			chatCalls.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Chat OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result := RunAccountTest(context.Background(), Config{
+		Provider: "openai", APIURL: server.URL, APIKey: "api-test-token", AuthMode: "bearer", APIStyle: "auto",
+	}, AccountTestRequest{AccountID: "openai-account", Model: "gpt-5.6-sol"})
+
+	if !result.OK || result.APIStyle != "chat_completions" || result.Content != "Chat OK" {
+		t.Fatalf("unexpected generic-400 fallback result: %#v", result)
+	}
+	if responsesCalls.Load() != 1 || chatCalls.Load() != 1 {
+		t.Fatalf("fallback calls responses=%d chat=%d", responsesCalls.Load(), chatCalls.Load())
+	}
+}
+
+func TestRunAccountTestOpenAIAutoDoesNotHideSemantic400(t *testing.T) {
+	var chatCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			chatCalls.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"assistant-prefill final message is not supported; last message must be user","type":"invalid_request_error"}}`))
+	}))
+	defer server.Close()
+
+	result := RunAccountTest(context.Background(), Config{
+		Provider: "openai", APIURL: server.URL, APIKey: "api-test-token", AuthMode: "bearer", APIStyle: "auto",
+	}, AccountTestRequest{AccountID: "openai-account", Model: "gpt-5.6-sol"})
+
+	if result.OK || result.StatusCode != http.StatusBadRequest || chatCalls.Load() != 0 {
+		t.Fatalf("semantic 400 was incorrectly hidden by Chat fallback: %#v; chat calls=%d", result, chatCalls.Load())
+	}
+}
+
 func TestRunAccountTestClaudeUsesCompatibleMessagesFallback(t *testing.T) {
 	var standardCalls, compatCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

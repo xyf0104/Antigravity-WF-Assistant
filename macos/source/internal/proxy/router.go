@@ -258,7 +258,7 @@ func buildFakeModelEntry(m storage.CustomModel, placeholder string) map[string]a
 		mimeTypes[mimeType] = true
 	}
 	entry := map[string]any{
-		"displayName":                  m.DisplayName,
+		"displayName":                  modelDisplayName(m),
 		"description":                  m.Description,
 		"recommended":                  true,
 		"maxTokens":                    1048576,
@@ -375,7 +375,7 @@ func handleFetchAvailableModelsLegacy(w http.ResponseWriter, r *http.Request) {
 				modelMap[slug] = buildFakeModelEntry(m, placeholder)
 				addAgentModelID(&parsed, slug)
 				injectedCount++
-				injectedNames = append(injectedNames, m.DisplayName)
+				injectedNames = append(injectedNames, modelDisplayName(m))
 			}
 		}
 	} else {
@@ -391,7 +391,7 @@ func handleFetchAvailableModelsLegacy(w http.ResponseWriter, r *http.Request) {
 			newMap[slug] = buildFakeModelEntry(m, placeholder)
 			addAgentModelID(&parsed, slug)
 			injectedCount++
-			injectedNames = append(injectedNames, m.DisplayName)
+			injectedNames = append(injectedNames, modelDisplayName(m))
 		}
 		if len(newMap) > 0 {
 			parsed["models"] = newMap
@@ -624,7 +624,7 @@ func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.Cus
 	// surface. Account-pool metadata is copied into the selected model later,
 	// so inspect the model binding before choosing the initial route too.
 	if isOpenAICodexOAuthModel(m) {
-		forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false)
+		forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false, nil)
 		return
 	}
 	// Route an explicit image-generation turn to the preferred enabled image
@@ -653,8 +653,17 @@ func forwardOpenAI(w http.ResponseWriter, incoming *http.Request, m *storage.Cus
 	if style == "responses" || (style == "auto" && needsResponses) {
 		// A native image turn must never silently downgrade to text Chat
 		// Completions, because the IDE then reports "no image generated".
-		if fallback := forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, style == "auto" && !directImageRequest); !fallback {
+		fallbackAccountID := ""
+		if fallback := forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, style == "auto" && !directImageRequest, &fallbackAccountID); !fallback {
 			return
+		}
+		// The Responses compatibility probe already selected a concrete
+		// account. Keep Chat Completions on that exact account so one
+		// Antigravity request never switches credentials or suppliers.
+		if fallbackAccountID != "" {
+			copied := *m
+			copied.AccountIDs = []string{fallbackAccountID}
+			m = &copied
 		}
 	}
 	forwardOpenAIChat(w, incoming, m, geminiReq, requestID)
@@ -842,16 +851,17 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 	reconnects := 0
 	cacheFallbackUsed := false
 	excludedAccounts := map[string]struct{}{}
+	pinnedAccountID := ""
 	lastRejectedStatus := 0
 	lastRejectedBody := ""
 
 	for attempt := 1; ; attempt++ {
-		attemptModel, lease, err := acquireAttemptModel(m, excludedAccounts)
+		attemptModel, lease, err := acquireAttemptModel(m, excludedAccounts, pinnedAccountID)
 		if err != nil {
 			trace("openai-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			if lastRejectedStatus != 0 && !writer.committed {
 				if isRetryableStatus(lastRejectedStatus) || isTransientProviderRejection(lastRejectedStatus, lastRejectedBody) || isTransientModelPoolRejection(lastRejectedStatus, lastRejectedBody) {
-					writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "第三方上游的可用账户均暂时不可用，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
+					writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "当前账户的第三方上游暂时不可用，本轮未生成内容。请稍后再发送一次；新请求会重新探测该账户。", reconnects)
 				} else {
 					writeRejectedTurnStop(writer, "openai", requestID, lastModelVersion, lastRejectedStatus, lastRejectedBody)
 				}
@@ -862,7 +872,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 				continue
 			}
 			if _, temporary := storage.AccountPoolRetryAfter(err); temporary && !writer.committed {
-				writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "上游账户正在冷却或繁忙，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
+				writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "当前账户仍在处理其他请求，本轮未生成内容。请稍后再发送一次；新请求会重新探测该账户。", reconnects)
 				return
 			}
 			if writer.committed {
@@ -872,6 +882,9 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 			}
 			return
 		}
+		if pinnedAccountID == "" && lease != nil {
+			pinnedAccountID = lease.ID
+		}
 		attemptConfig := upstream.ConfigFromModel(*attemptModel)
 		if upstream.IsOpenAICodexOAuth(attemptConfig) {
 			// Account metadata can change after forwardOpenAI made its routing
@@ -879,7 +892,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 			// URL/credential construction: a Codex OAuth token must never reach
 			// a Chat Completions endpoint.
 			releaseAttemptSuccess(lease)
-			forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false)
+			forwardOpenAIResponses(w, incoming, m, geminiReq, requestID, false, nil)
 			return
 		}
 		apiURL, err := upstream.ResolveChatCompletionsURLForConfig(attemptConfig)
@@ -913,15 +926,29 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 			return
 		}
 
+		req, writeTrace := traceUpstreamRequestWrite(req)
 		resp, err := client.Do(req)
 		if err != nil {
-			releaseAttemptFailure(lease, 0, "", err.Error())
-			excludeFailedAttempt(excludedAccounts, lease)
 			trace("openai-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			if incoming.Context().Err() != nil {
+				releaseAttemptFailure(lease, 0, "", err.Error())
 				return
 			}
-			writeUncertainUpstreamFailure(writer, "openai", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
+			reconnects++
+			if canRetryUnsentTransportFailure(writer, policy, reconnects, writeTrace) {
+				if lease != nil {
+					lease.Release()
+				}
+				if waitForRejectedRequestRetry(incoming.Context(), policy, "openai", requestID, "connection-before-write", "", reconnects) {
+					continue
+				}
+			}
+			releaseAttemptFailure(lease, 0, "", err.Error())
+			if writer.committed {
+				writeUncertainUpstreamFailure(writer, "openai", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
+			} else {
+				writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "上游网络暂时不可用，本轮未生成内容；WF助手未重放可能已送达的请求，以避免重复扣费或重复执行工具。", reconnects)
+			}
 			return
 		}
 		observeAttemptQuota(lease, "openai", resp)
@@ -970,7 +997,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 					return
 				}
 				if isRetryableStatus(resp.StatusCode) || isTransientProviderRejection(resp.StatusCode, string(errBody)) || isTransientModelPoolRejection(resp.StatusCode, string(errBody)) {
-					writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "第三方上游暂时没有可用线路，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
+					writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "当前账户的第三方上游暂时没有可用线路，本轮未生成内容。请稍后再发送一次；新请求会重新探测该账户。", reconnects)
 					return
 				}
 				returnRejectedUpstreamError(w, resp.StatusCode, errBody)
@@ -1024,7 +1051,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 // request through Chat Completions because the upstream does not expose
 // /responses. It never falls back after a semantic 4xx, which would hide a
 // model capability/configuration error from the user.
-func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string, allowFallback bool) bool {
+func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *storage.CustomModel, geminiReq map[string]any, requestID string, allowFallback bool, fallbackAccountID *string) bool {
 	conversionModel := openAICodexResponsesConversionModel(m)
 	baseRequest, err := toOpenAIResponsesRequest(geminiReq, m.ExternalModelName, conversionModel)
 	if err != nil {
@@ -1039,16 +1066,17 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 	lastModelVersion, lastResponseID := "", ""
 	reconnects := 0
 	excludedAccounts := map[string]struct{}{}
+	pinnedAccountID := ""
 	lastRejectedStatus := 0
 	lastRejectedBody := ""
 
 	for attempt := 1; ; attempt++ {
-		attemptModel, lease, err := acquireAttemptModel(m, excludedAccounts)
+		attemptModel, lease, err := acquireAttemptModel(m, excludedAccounts, pinnedAccountID)
 		if err != nil {
 			trace("responses-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			if lastRejectedStatus != 0 && !writer.committed {
 				if isRetryableStatus(lastRejectedStatus) || isTransientProviderRejection(lastRejectedStatus, lastRejectedBody) || isTransientModelPoolRejection(lastRejectedStatus, lastRejectedBody) {
-					writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "第三方上游的可用账户均暂时不可用，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
+					writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "当前账户的第三方上游暂时不可用，本轮未生成内容。请稍后再发送一次；新请求会重新探测该账户。", reconnects)
 				} else {
 					writeRejectedTurnStop(writer, "responses", requestID, lastModelVersion, lastRejectedStatus, lastRejectedBody)
 				}
@@ -1059,7 +1087,7 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 				continue
 			}
 			if _, temporary := storage.AccountPoolRetryAfter(err); temporary && !writer.committed {
-				writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "上游账户正在冷却或繁忙，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
+				writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "当前账户仍在处理其他请求，本轮未生成内容。请稍后再发送一次；新请求会重新探测该账户。", reconnects)
 				return false
 			}
 			if writer.committed {
@@ -1068,6 +1096,9 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 				http.Error(w, accountPoolError("OpenAI", err), http.StatusServiceUnavailable)
 			}
 			return false
+		}
+		if pinnedAccountID == "" && lease != nil {
+			pinnedAccountID = lease.ID
 		}
 		attemptConfig := upstream.ConfigFromModel(*attemptModel)
 		codexOAuth := upstream.IsOpenAICodexOAuth(attemptConfig)
@@ -1117,15 +1148,29 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return false
 		}
+		req, writeTrace := traceUpstreamRequestWrite(req)
 		resp, err := client.Do(req)
 		if err != nil {
-			releaseAttemptFailure(lease, 0, "", err.Error())
-			excludeFailedAttempt(excludedAccounts, lease)
 			trace("responses-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			if incoming.Context().Err() != nil {
+				releaseAttemptFailure(lease, 0, "", err.Error())
 				return false
 			}
-			writeUncertainUpstreamFailure(writer, "responses", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
+			reconnects++
+			if canRetryUnsentTransportFailure(writer, policy, reconnects, writeTrace) {
+				if lease != nil {
+					lease.Release()
+				}
+				if waitForRejectedRequestRetry(incoming.Context(), policy, "responses", requestID, "connection-before-write", "", reconnects) {
+					continue
+				}
+			}
+			releaseAttemptFailure(lease, 0, "", err.Error())
+			if writer.committed {
+				writeUncertainUpstreamFailure(writer, "responses", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
+			} else {
+				writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "上游网络暂时不可用，本轮未生成内容；WF助手未重放可能已送达的请求，以避免重复扣费或重复执行工具。", reconnects)
+			}
 			return false
 		}
 		observeAttemptQuota(lease, "responses", resp)
@@ -1147,8 +1192,11 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 					continue
 				}
 			}
-			if allowFallback && !writer.committed && upstream.CanFallbackToChat(resp.StatusCode) {
+			if allowFallback && !writer.committed && upstream.CanFallbackToChatResponse(resp.StatusCode, string(errBody)) {
 				releaseAttemptSuccess(lease)
+				if fallbackAccountID != nil {
+					*fallbackAccountID = pinnedAccountID
+				}
 				trace("responses-chat-fallback", map[string]any{"requestId": requestID, "statusCode": resp.StatusCode})
 				return true
 			}
@@ -1174,7 +1222,7 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 					return false
 				}
 				if isRetryableStatus(resp.StatusCode) || isTransientProviderRejection(resp.StatusCode, string(errBody)) || isTransientModelPoolRejection(resp.StatusCode, string(errBody)) {
-					writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "第三方上游暂时没有可用线路，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
+					writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "当前账户的第三方上游暂时没有可用线路，本轮未生成内容。请稍后再发送一次；新请求会重新探测该账户。", reconnects)
 					return false
 				}
 				returnRejectedUpstreamError(w, resp.StatusCode, errBody)
@@ -1374,17 +1422,18 @@ func forwardAnthropic(w http.ResponseWriter, incoming *http.Request, m *storage.
 	reconnects := 0
 	cacheFallbackUsed := false
 	excludedAccounts := map[string]struct{}{}
+	pinnedAccountID := ""
 	lastRejectedStatus := 0
 	lastRejectedBody := ""
 
 attemptLoop:
 	for attempt := 1; ; attempt++ {
-		attemptModel, lease, err := acquireAttemptModel(m, excludedAccounts)
+		attemptModel, lease, err := acquireAttemptModel(m, excludedAccounts, pinnedAccountID)
 		if err != nil {
 			trace("anthropic-account-pool-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 			if lastRejectedStatus != 0 && !writer.committed {
 				if isRetryableStatus(lastRejectedStatus) || isTransientProviderRejection(lastRejectedStatus, lastRejectedBody) || isTransientModelPoolRejection(lastRejectedStatus, lastRejectedBody) {
-					writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "第三方上游的可用账户均暂时不可用，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
+					writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "当前账户的第三方上游暂时不可用，本轮未生成内容。请稍后再发送一次；新请求会重新探测该账户。", reconnects)
 				} else {
 					writeRejectedTurnStop(writer, "anthropic", requestID, lastModelVersion, lastRejectedStatus, lastRejectedBody)
 				}
@@ -1395,7 +1444,7 @@ attemptLoop:
 				continue
 			}
 			if _, temporary := storage.AccountPoolRetryAfter(err); temporary && !writer.committed {
-				writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "上游账户正在冷却或繁忙，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
+				writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "当前账户仍在处理其他请求，本轮未生成内容。请稍后再发送一次；新请求会重新探测该账户。", reconnects)
 				return
 			}
 			if writer.committed {
@@ -1404,6 +1453,9 @@ attemptLoop:
 				http.Error(w, accountPoolError("Claude", err), http.StatusServiceUnavailable)
 			}
 			return
+		}
+		if pinnedAccountID == "" && lease != nil {
+			pinnedAccountID = lease.ID
 		}
 		attemptConfig := upstream.ConfigFromModel(*attemptModel)
 		apiURLs, err := upstream.ResolveAnthropicMessageCandidates(attemptConfig)
@@ -1442,15 +1494,29 @@ attemptLoop:
 				return
 			}
 
+			req, writeTrace := traceUpstreamRequestWrite(req)
 			resp, err := client.Do(req)
 			if err != nil {
-				releaseAttemptFailure(lease, 0, "", err.Error())
-				excludeFailedAttempt(excludedAccounts, lease)
 				trace("anthropic-upstream-error", map[string]any{"requestId": requestID, "attempt": attempt, "message": err.Error()})
 				if incoming.Context().Err() != nil {
+					releaseAttemptFailure(lease, 0, "", err.Error())
 					return
 				}
-				writeUncertainUpstreamFailure(writer, "anthropic", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
+				reconnects++
+				if canRetryUnsentTransportFailure(writer, policy, reconnects, writeTrace) {
+					if lease != nil {
+						lease.Release()
+					}
+					if waitForRejectedRequestRetry(incoming.Context(), policy, "anthropic", requestID, "connection-before-write", "", reconnects) {
+						continue attemptLoop
+					}
+				}
+				releaseAttemptFailure(lease, 0, "", err.Error())
+				if writer.committed {
+					writeUncertainUpstreamFailure(writer, "anthropic", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
+				} else {
+					writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "上游网络暂时不可用，本轮未生成内容；WF助手未重放可能已送达的请求，以避免重复扣费或重复执行工具。", reconnects)
+				}
 				return
 			}
 			observeAttemptQuota(lease, "anthropic", resp)
@@ -1500,7 +1566,7 @@ attemptLoop:
 						return
 					}
 					if isRetryableStatus(resp.StatusCode) || isTransientProviderRejection(resp.StatusCode, string(errBody)) || isTransientModelPoolRejection(resp.StatusCode, string(errBody)) {
-						writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "第三方上游暂时没有可用线路，本轮未生成内容。请稍后再发送一次，或切换同模型的其他可用上游。", reconnects)
+						writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "当前账户的第三方上游暂时没有可用线路，本轮未生成内容。请稍后再发送一次；新请求会重新探测该账户。", reconnects)
 						return
 					}
 					returnRejectedUpstreamError(w, resp.StatusCode, errBody)

@@ -651,13 +651,14 @@ func TestCollectAnthropicUsage(t *testing.T) {
 func TestBuildFakeModelEntry(t *testing.T) {
 	m := storage.CustomModel{
 		DisplayName:       "肥波",
+		AccountPoolLabel:  "XIASS主池",
 		Description:       "test",
 		ExternalModelName: "claude-fable-5",
 	}
 	placeholder := getModelPlaceholder(m)
 	entry := buildFakeModelEntry(m, placeholder)
 
-	if entry["displayName"] != "肥波" {
+	if entry["displayName"] != "肥波 · XIASS主池" {
 		t.Errorf("displayName = %v", entry["displayName"])
 	}
 	if entry["apiProvider"] != "API_PROVIDER_GOOGLE_GEMINI" {
@@ -807,19 +808,26 @@ func TestForwardOpenAIChatDoesNotReplayAfterRoleOnlyStream(t *testing.T) {
 	}
 }
 
-func TestBoundAccountPoolFailsOverAfterQuotaResponse(t *testing.T) {
+func TestBoundAccountPoolRetriesPinnedAccountAfterTransientQuotaResponse(t *testing.T) {
 	storage.Init(t.TempDir())
 
 	var firstCalls, secondCalls atomic.Int32
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		firstCalls.Add(1)
+		call := firstCalls.Add(1)
 		if got := r.Header.Get("Authorization"); got != "Bearer first-token" {
 			t.Errorf("first account authorization = %q", got)
 		}
-		w.Header().Set("X-RateLimit-Remaining-Requests", "0")
-		w.Header().Set("X-RateLimit-Reset-Requests", "30s")
-		w.Header().Set("Retry-After", "0")
-		http.Error(w, `{"error":{"message":"quota exhausted"}}`, http.StatusTooManyRequests)
+		if call == 1 {
+			w.Header().Set("X-RateLimit-Remaining-Requests", "0")
+			w.Header().Set("X-RateLimit-Reset-Requests", "30s")
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, `{"error":{"message":"quota exhausted"}}`, http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("X-RateLimit-Remaining-Requests", "9")
+		w.Header().Set("X-RateLimit-Remaining-Tokens", "1000")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-2\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"))
 	}))
 	defer first.Close()
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -857,8 +865,8 @@ func TestBoundAccountPoolFailsOverAfterQuotaResponse(t *testing.T) {
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
 	}, "pool-failover")
 
-	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
-		t.Fatalf("account calls = first:%d second:%d, want one request to each", firstCalls.Load(), secondCalls.Load())
+	if firstCalls.Load() != 2 || secondCalls.Load() != 0 {
+		t.Fatalf("account calls = first:%d second:%d, want two attempts on the pinned first account", firstCalls.Load(), secondCalls.Load())
 	}
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "ok") {
 		t.Fatalf("unexpected downstream response: %d %s", recorder.Code, recorder.Body.String())
@@ -871,17 +879,56 @@ func TestBoundAccountPoolFailsOverAfterQuotaResponse(t *testing.T) {
 	for _, account := range accounts {
 		status[account.ID] = account
 	}
-	if status["first"].CooldownUntil == "" || status["first"].FailureCount == 0 {
-		t.Fatalf("failed account health was not recorded: %#v", status["first"])
+	if status["first"].CooldownUntil != "" || status["first"].FailureCount != 0 || status["first"].LastSuccessAt == "" {
+		t.Fatalf("recovered account retained a cross-request blacklist: %#v", status["first"])
 	}
-	if quota := status["first"].Quota; !quota.Available || quota.StatusCode != http.StatusTooManyRequests || quota.RequestsRemaining != "0" || quota.RequestsReset != "30s" || quota.RetryAfter != "0" {
-		t.Fatalf("failed account quota was not observed from the upstream response: %#v", quota)
+	if quota := status["first"].Quota; !quota.Available || quota.StatusCode != http.StatusOK || quota.RequestsRemaining != "9" || quota.TokensRemaining != "1000" {
+		t.Fatalf("recovered account quota was not updated from the successful retry: %#v", quota)
 	}
-	if status["second"].LastSuccessAt == "" || status["second"].ActiveRequests != 0 {
-		t.Fatalf("successful account lease was not released: %#v", status["second"])
+	if status["second"].LastSuccessAt != "" || status["second"].ActiveRequests != 0 {
+		t.Fatalf("second account was unexpectedly used: %#v", status["second"])
 	}
-	if quota := status["second"].Quota; !quota.Available || quota.StatusCode != http.StatusOK || quota.RequestsRemaining != "9" || quota.TokensRemaining != "1000" {
-		t.Fatalf("successful account quota was not observed from the upstream response: %#v", quota)
+}
+
+func TestConnectionFailureBeforeRequestWriteRetriesAndCompletes(t *testing.T) {
+	previousPolicy := currentStreamRecoveryPolicy()
+	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 1, MaxDelaySeconds: 1})
+	defer ConfigureStreamRecovery(storage.StreamRecoverySettings{
+		Enabled: previousPolicy.enabled, MaxAttempts: previousPolicy.maxAttempts, MaxDelaySeconds: previousPolicy.maxDelaySeconds,
+	})
+
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-safe-retry\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstreamServer.Close()
+
+	originalTransport := http.DefaultTransport
+	var transportCalls atomic.Int32
+	http.DefaultTransport = modelFetchRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if transportCalls.Add(1) == 1 {
+			// Returning before delegating means net/http never invokes
+			// WroteRequest; the proxy can prove no upstream request was sent.
+			return nil, fmt.Errorf("temporary dial failure before request write")
+		}
+		return originalTransport.RoundTrip(request)
+	})
+	defer func() { http.DefaultTransport = originalTransport }()
+
+	model := &storage.CustomModel{
+		Provider: "openai", APIStyle: "chat_completions", APIURL: upstreamServer.URL,
+		APIKey: "test-key", ExternalModelName: "gpt-test",
+	}
+	recorder := httptest.NewRecorder()
+	forwardOpenAIChat(recorder, httptest.NewRequest(http.MethodPost, "/v1internal:streamGenerateContent", nil), model, map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, "safe-transport-retry")
+
+	if transportCalls.Load() != 2 {
+		t.Fatalf("transport attempts = %d, want one safe retry", transportCalls.Load())
+	}
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"text":"ok"`) {
+		t.Fatalf("safe connection retry did not complete normally: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -1038,7 +1085,7 @@ func TestPermanentUpstreamRejectionsEndTurnWithoutAutomaticReplay(t *testing.T) 
 	}
 }
 
-func TestBoundAccountPoolExhaustionEndsTurnWithoutHTTP503(t *testing.T) {
+func TestBoundAccountPermanentFailureDoesNotSwitchAccountsOrReturnHTTP503(t *testing.T) {
 	storage.Init(t.TempDir())
 	previous := currentStreamRecoveryPolicy()
 	ConfigureStreamRecovery(storage.StreamRecoverySettings{Enabled: true, MaxAttempts: 2, MaxDelaySeconds: 1})
@@ -1073,8 +1120,8 @@ func TestBoundAccountPoolExhaustionEndsTurnWithoutHTTP503(t *testing.T) {
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
 	}, "pool-exhausted")
 
-	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
-		t.Fatalf("pool calls = first:%d second:%d, want one safe attempt per account", firstCalls.Load(), secondCalls.Load())
+	if firstCalls.Load() != 1 || secondCalls.Load() != 0 {
+		t.Fatalf("pool calls = first:%d second:%d, permanent failure must stay on the selected account", firstCalls.Load(), secondCalls.Load())
 	}
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "余额、额度或权限不足") || !strings.Contains(recorder.Body.String(), `"finishReason":"STOP"`) {
 		t.Fatalf("exhausted pool terminated Antigravity instead of completing the turn: %d %s", recorder.Code, recorder.Body.String())

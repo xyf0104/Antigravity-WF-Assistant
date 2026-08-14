@@ -1251,7 +1251,7 @@ func parseAccountTime(value string) (time.Time, bool) {
 
 // Finish releases an in-flight reservation and records health. statusCode is
 // 0 for a network interruption; a 2xx status is a successful request.
-func (lease *AccountLease) Finish(statusCode int, retryAfter, failure string) {
+func (lease *AccountLease) Finish(statusCode int, _ string, failure string) {
 	if lease == nil || lease.ID == "" {
 		return
 	}
@@ -1274,7 +1274,12 @@ func (lease *AccountLease) Finish(statusCode int, retryAfter, failure string) {
 			}
 			account.FailureCount++
 			account.LastError = shortAccountError(failure, statusCode)
-			account.CooldownUntil = now.Add(accountCooldown(statusCode, retryAfter, account.FailureCount)).Format(time.RFC3339)
+			// A gateway/network failure is scoped to the current request only.
+			// Keeping a persistent scheduler cooldown made the next independent
+			// request skip an account after a one-frame relay outage. The proxy
+			// already bounds and pins same-account retries in memory, so retain the
+			// health record without placing the account in a cross-request blacklist.
+			account.CooldownUntil = ""
 		})
 	})
 }
@@ -1307,45 +1312,6 @@ func shortAccountError(failure string, statusCode int) string {
 		failure = string([]rune(failure)[:240]) + "…"
 	}
 	return failure
-}
-
-func accountCooldown(statusCode int, retryAfter string, failures int) time.Duration {
-	if retryAfter = strings.TrimSpace(retryAfter); retryAfter != "" {
-		if seconds, err := strconv.ParseFloat(retryAfter, 64); err == nil && seconds >= 0 {
-			return boundedAccountCooldown(time.Duration(seconds * float64(time.Second)))
-		}
-		if at, err := http.ParseTime(retryAfter); err == nil {
-			return boundedAccountCooldown(time.Until(at))
-		}
-	}
-	switch statusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return 10 * time.Minute
-	case http.StatusTooManyRequests:
-		return 90 * time.Second
-	case 0, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		delay := 5 * time.Second * time.Duration(1<<minInt(failures-1, 5))
-		return boundedAccountCooldown(delay)
-	default:
-		return 20 * time.Second
-	}
-}
-
-func boundedAccountCooldown(value time.Duration) time.Duration {
-	if value < 3*time.Second {
-		return 3 * time.Second
-	}
-	if value > 30*time.Minute {
-		return 30 * time.Minute
-	}
-	return value
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // ImportUpstreamAccounts accepts a single JSON object, an array, XIASS's
