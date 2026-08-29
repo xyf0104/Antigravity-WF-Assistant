@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -182,7 +183,7 @@ func normalizeWorkspaceState(state map[string]any, goos string) (bool, int) {
 			}
 			if len(roots) > 0 {
 				if name, ok := project["name"].(string); ok && workspaceProjectNameIsPath(name, goos) {
-					base := filepath.Base(roots[0])
+					base := path.Base(roots[0])
 					if base != "" && base != "." && name != base {
 						project["name"] = base
 						changed = true
@@ -250,14 +251,16 @@ func normalizeWorkspacePath(value, goos string) (string, bool) {
 	trimmed := strings.TrimSpace(value)
 	normalized := strings.ReplaceAll(trimmed, `\`, "/")
 	if strings.HasPrefix(normalized, "/") {
-		normalized = filepath.Clean(normalized)
+		// The requested target is macOS, so use slash-path semantics even
+		// when this repair is being verified on another host platform.
+		normalized = path.Clean(normalized)
 	}
 	return normalized, normalized != value
 }
 
 func normalizeWorkspaceProjectPath(value, goos string) (string, bool) {
 	normalized, _ := normalizeWorkspacePath(value, goos)
-	if goos == "darwin" && filepath.IsAbs(normalized) {
+	if goos == "darwin" && path.IsAbs(normalized) {
 		return normalized, true
 	}
 	return "", false

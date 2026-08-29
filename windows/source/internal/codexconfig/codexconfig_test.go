@@ -138,8 +138,10 @@ func TestApplyInspectAndRestorePreservesUserConfiguration(t *testing.T) {
 	if strings.Count(text, "[model_providers.xiass_tools]") != 1 {
 		t.Fatalf("managed provider was duplicated:\n%s", text)
 	}
-	if info, err := os.Stat(manager.ConfigPath); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("config mode = %v / %v, want 0600", info, err)
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(manager.ConfigPath); err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("config mode = %v / %v, want 0600", info, err)
+		}
 	}
 
 	snapshot, err := manager.Verify()
