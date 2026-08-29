@@ -27,6 +27,7 @@ type macCandidate struct {
 }
 
 type macInstallation struct {
+	bundle     string
 	executable string
 	source     Source
 	version    string
@@ -171,6 +172,7 @@ func inspectMacCandidate(filesystem FileSystem, candidate macCandidate) (*macIns
 		version = publicVersion(metadata["CFBundleVersion"])
 	}
 	return &macInstallation{
+		bundle:     candidate.bundle,
 		executable: executablePath,
 		source:     candidate.source,
 		version:    version,

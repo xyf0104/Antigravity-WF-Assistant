@@ -155,6 +155,15 @@ func mcpAgentCapabilities(metadata agent.Metadata, clientDetected, configuration
 			status.Availability = agent.CapabilityAvailable
 			status.Available = true
 			status.Reason = "Credential-free local MCP configuration diagnostics are available."
+		case agent.CapabilityBackup:
+			// The bridge can list, restore, and delete only verified recovery
+			// points created by explicit global MCP Apply/Restore operations. It
+			// intentionally does not implement the registry's broad BackupProvider
+			// contract, which could imply account, session, project, or arbitrary
+			// filesystem backups.
+			status.Availability = agent.CapabilityNotImplemented
+			status.Available = false
+			status.Reason = "Verified recovery points are limited to explicit global MCP configuration Apply or Restore actions; no general agent backup provider is exposed."
 		}
 		statuses = append(statuses, status)
 	}

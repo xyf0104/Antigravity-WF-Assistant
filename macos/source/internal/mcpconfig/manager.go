@@ -1,6 +1,7 @@
 package mcpconfig
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -144,6 +146,52 @@ func (m *manager) Inspect() (Snapshot, error) {
 	return document.snapshot(m.target, exists), nil
 }
 
+// ListBackups returns only checksum-verified, redacted recovery metadata. It
+// is read-only: absent backup directories remain absent, and malformed or
+// tampered entries are never returned as usable recovery points.
+func (m *manager) ListBackups() ([]BackupInfo, error) {
+	if err := m.validatePaths(); err != nil {
+		return nil, err
+	}
+	if err := ensureExistingPathNoSymlink(m.backupRoot); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(m.backupRoot)
+	if errors.Is(err, fs.ErrNotExist) {
+		return []BackupInfo{}, nil
+	}
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	type backupListing struct {
+		info      BackupInfo
+		createdAt time.Time
+	}
+	listings := make([]backupListing, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !validBackupID(entry.Name()) {
+			continue
+		}
+		backup, err := m.readVerifiedBackup(entry.Name())
+		if err != nil {
+			continue
+		}
+		zeroBytes(backup.data)
+		listings = append(listings, backupListing{
+			info:      backupInfo(backup.manifest),
+			createdAt: backup.manifest.CreatedAt,
+		})
+	}
+	sort.Slice(listings, func(left, right int) bool {
+		return listings[left].createdAt.After(listings[right].createdAt)
+	})
+	backups := make([]BackupInfo, 0, len(listings))
+	for _, listing := range listings {
+		backups = append(backups, listing.info)
+	}
+	return backups, nil
+}
+
 // ApplyRemote atomically creates or updates the reserved XIASS Tools remote
 // MCP entry. It accepts only HTTPS or loopback HTTP without credentials,
 // headers, query values, OAuth data, or environment values.
@@ -205,6 +253,94 @@ func (m *manager) ApplyRemote(input ApplyInput) (ApplyResult, error) {
 		return ApplyResult{Snapshot: Snapshot{Target: m.target}}, safeOperationError(err)
 	}
 	return result, nil
+}
+
+// Restore replaces the target global MCP file with one checksum-verified
+// XIASS Tools backup. Before changing anything it creates a new verified
+// safety backup of the current, non-sensitive configuration. It never restores
+// a backup containing sensitive account, credential, OAuth, header, command,
+// or environment data.
+func (m *manager) Restore(backupID string) (RestoreResult, error) {
+	empty := RestoreResult{Snapshot: Snapshot{Target: m.target}}
+	if err := m.validatePaths(); err != nil {
+		return empty, err
+	}
+	if !validBackupID(backupID) {
+		return empty, ErrOperation
+	}
+
+	var result RestoreResult
+	err := m.withLock(func() error {
+		target, err := m.readVerifiedBackup(backupID)
+		if err != nil {
+			return err
+		}
+		defer zeroBytes(target.data)
+
+		current, original, existed, mode, err := m.readDocument()
+		defer zeroBytes(original)
+		if err != nil {
+			return err
+		}
+		if current.hasSensitiveConfiguration {
+			return ErrUnsafeConfiguration
+		}
+
+		safety, err := m.createBackup(original, existed, mode, "restore")
+		if err != nil {
+			return err
+		}
+		if err := m.ensureConfigurationUnchanged(original, existed); err != nil {
+			return err
+		}
+
+		restoredMode := fs.FileMode(target.manifest.OriginalMode)
+		if err := restoreOriginal(m.configPath, target.data, target.manifest.OriginalExisted, restoredMode); err != nil {
+			return m.rollback(original, existed, mode)
+		}
+
+		restored, written, writtenExists, _, err := m.readDocument()
+		defer zeroBytes(written)
+		if err != nil || writtenExists != target.manifest.OriginalExisted || (writtenExists && !bytes.Equal(written, target.data)) || restored.hasSensitiveConfiguration {
+			return m.rollback(original, existed, mode)
+		}
+		if writtenExists {
+			safety.AppliedSHA256 = sha256Hex(written)
+		}
+		if err := m.writeBackupManifest(safety); err != nil {
+			return m.rollback(original, existed, mode)
+		}
+		result = RestoreResult{
+			Snapshot:      restored.snapshot(m.target, writtenExists),
+			BackupCreated: true,
+		}
+		return nil
+	})
+	if err != nil {
+		return empty, safeOperationError(err)
+	}
+	return result, nil
+}
+
+// DeleteBackup removes only a complete, checksum-verified XIASS Tools backup.
+// Tampered, unexpected, and non-owned directories are rejected rather than
+// recursively deleted.
+func (m *manager) DeleteBackup(backupID string) error {
+	if err := m.validatePaths(); err != nil {
+		return err
+	}
+	if !validBackupID(backupID) {
+		return ErrOperation
+	}
+	err := m.withLock(func() error {
+		backup, err := m.readVerifiedBackup(backupID)
+		if err != nil {
+			return err
+		}
+		zeroBytes(backup.data)
+		return m.removeVerifiedBackup(backupID)
+	})
+	return safeOperationError(err)
 }
 
 func safeOperationError(err error) error {

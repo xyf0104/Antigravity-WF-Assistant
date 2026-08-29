@@ -1,14 +1,29 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"antigravity-byok/internal/totp"
 )
 
 type appTOTPStore struct{ values map[string]string }
+
+type failingAppTOTPStore struct{}
+
+func (failingAppTOTPStore) Set(_ string, _ string, _ string) error {
+	return errors.New("credential secret=totp-private-value at C:\\Users\\private\\CredentialManager")
+}
+func (failingAppTOTPStore) Get(_ string, _ string) (string, error) {
+	return "", errors.New("credential secret=totp-private-value at C:\\Users\\private\\CredentialManager")
+}
+func (failingAppTOTPStore) Delete(_ string, _ string) error {
+	return errors.New("credential secret=totp-private-value at C:\\Users\\private\\CredentialManager")
+}
 
 func (store *appTOTPStore) Set(_ string, account, secret string) error {
 	if store.values == nil {
@@ -55,5 +70,28 @@ func TestWriteNewSensitiveExportDoesNotOverwriteExistingFile(t *testing.T) {
 	data, err := os.ReadFile(path)
 	if err != nil || string(data) != "first" {
 		t.Fatalf("data = %q, %v", data, err)
+	}
+}
+
+func TestTOTPBridgeDoesNotSerializeCredentialStoreErrors(t *testing.T) {
+	vault, err := totp.NewWithStore(t.TempDir(), failingAppTOTPStore{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := (&App{totpVault: vault}).AddTOTPEntry(totp.ImportInput{
+		Secret: "JBSWY3DPEHPK3PXP",
+		Label:  "Test",
+	})
+	if status.OK {
+		t.Fatalf("unexpected successful status: %#v", status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"totp-private-value", "C:\\Users\\private", "credential secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("TOTP bridge leaked %q: %s", forbidden, encoded)
+		}
 	}
 }

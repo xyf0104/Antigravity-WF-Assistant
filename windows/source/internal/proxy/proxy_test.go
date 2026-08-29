@@ -286,6 +286,9 @@ func TestInjectCustomModelsAddsOnlyDirectImageModelsToImageGenerationIndex(t *te
 			t.Fatalf("text-only model leaked into image-generation index: %#v", imageIDs)
 		}
 	}
+	if got := summary.assignments.nativeImageModelIDs; len(got) != 1 || got[0] != "native-image" {
+		t.Fatalf("native image model directory was not captured before custom injection: %#v", got)
+	}
 
 	models := parsed["models"].(map[string]any)
 	if models[imageSlug].(map[string]any)["requiresImageOutputOutsideFunctionResponses"] != true {

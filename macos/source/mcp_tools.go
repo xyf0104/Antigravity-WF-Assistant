@@ -18,6 +18,14 @@ type MCPConfigurationInput struct {
 	RemoteURL string `json:"remoteUrl"`
 }
 
+// MCPRemoteInput is the target-scoped Wails input used by Cursor and
+// Windsurf actions. The remote address is inbound-only: it is passed to the
+// manager for this one operation and is never included in a result, backup,
+// diagnostic, or App field.
+type MCPRemoteInput struct {
+	RemoteURL string `json:"remoteUrl"`
+}
+
 // MCPConfigurationStatus is safe for the renderer: the configuration snapshot
 // deliberately omits paths, endpoint values, server command lines, headers,
 // env entries, backup IDs, and all secret material.
@@ -29,6 +37,107 @@ type MCPConfigurationStatus struct {
 	Snapshot       mcpconfig.Snapshot `json:"snapshot"`
 }
 
+// MCPBackupListStatus is a renderer-safe recovery-point listing. BackupInfo
+// intentionally contains only an opaque ID, creation time, reason, and
+// whether the original file existed; it never contains configuration data.
+type MCPBackupListStatus struct {
+	OK      bool                   `json:"ok"`
+	Message string                 `json:"message"`
+	Backups []mcpconfig.BackupInfo `json:"backups"`
+}
+
+// MCPRestoreStatus exposes only the redacted result of an explicit restore.
+// It cannot reveal an endpoint, path, raw JSON, header, token, account, or
+// OAuth material.
+type MCPRestoreStatus struct {
+	OK      bool                    `json:"ok"`
+	Message string                  `json:"message"`
+	Result  mcpconfig.RestoreResult `json:"result"`
+}
+
+// MCPBackupDeleteStatus confirms an explicit recovery-point deletion without
+// returning the selected ID or any filesystem information.
+type MCPBackupDeleteStatus struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// GetCursorMCPConfiguration reads only Cursor's documented global MCP
+// configuration. It is target-scoped so renderer input cannot redirect this
+// operation to another application or an arbitrary file.
+func (a *App) GetCursorMCPConfiguration() MCPConfigurationStatus {
+	return a.mcpConfigurationStatus(mcpconfig.TargetCursor)
+}
+
+// ApplyCursorMCPConfiguration explicitly adds or updates only the reserved
+// XIASS Tools remote entry in Cursor's documented global MCP configuration.
+func (a *App) ApplyCursorMCPConfiguration(input MCPRemoteInput) MCPConfigurationStatus {
+	remoteURL := input.RemoteURL
+	defer func() {
+		input.RemoteURL = ""
+		remoteURL = ""
+	}()
+	return a.applyMCPConfigurationTarget(mcpconfig.TargetCursor, remoteURL)
+}
+
+// ListCursorMCPBackups lists only checksum-verified XIASS Tools recovery
+// points for Cursor. This read-only action does not require Cursor to be
+// installed and never creates a backup directory.
+func (a *App) ListCursorMCPBackups() MCPBackupListStatus {
+	return a.listMCPBackupsTarget(mcpconfig.TargetCursor)
+}
+
+// RestoreCursorMCPBackup explicitly restores one verified Cursor global MCP
+// recovery point. It never runs as part of Get or Apply.
+func (a *App) RestoreCursorMCPBackup(backupID string) MCPRestoreStatus {
+	return a.restoreMCPBackupTarget(mcpconfig.TargetCursor, strings.TrimSpace(backupID))
+}
+
+// DeleteCursorMCPBackup explicitly deletes one verified, manager-owned
+// Cursor recovery point. It never runs as part of Get or Apply.
+func (a *App) DeleteCursorMCPBackup(backupID string) MCPBackupDeleteStatus {
+	return a.deleteMCPBackupTarget(mcpconfig.TargetCursor, strings.TrimSpace(backupID))
+}
+
+// GetWindsurfMCPConfiguration reads only Windsurf's documented global MCP
+// configuration. It is target-scoped so renderer input cannot redirect this
+// operation to another application or an arbitrary file.
+func (a *App) GetWindsurfMCPConfiguration() MCPConfigurationStatus {
+	return a.mcpConfigurationStatus(mcpconfig.TargetWindsurf)
+}
+
+// ApplyWindsurfMCPConfiguration explicitly adds or updates only the reserved
+// XIASS Tools remote entry in Windsurf's documented global MCP configuration.
+func (a *App) ApplyWindsurfMCPConfiguration(input MCPRemoteInput) MCPConfigurationStatus {
+	remoteURL := input.RemoteURL
+	defer func() {
+		input.RemoteURL = ""
+		remoteURL = ""
+	}()
+	return a.applyMCPConfigurationTarget(mcpconfig.TargetWindsurf, remoteURL)
+}
+
+// ListWindsurfMCPBackups lists only checksum-verified XIASS Tools recovery
+// points for Windsurf. This read-only action does not require Windsurf to be
+// installed and never creates a backup directory.
+func (a *App) ListWindsurfMCPBackups() MCPBackupListStatus {
+	return a.listMCPBackupsTarget(mcpconfig.TargetWindsurf)
+}
+
+// RestoreWindsurfMCPBackup explicitly restores one verified Windsurf global
+// MCP recovery point. It never runs as part of Get or Apply.
+func (a *App) RestoreWindsurfMCPBackup(backupID string) MCPRestoreStatus {
+	return a.restoreMCPBackupTarget(mcpconfig.TargetWindsurf, strings.TrimSpace(backupID))
+}
+
+// DeleteWindsurfMCPBackup explicitly deletes one verified, manager-owned
+// Windsurf recovery point. It never runs as part of Get or Apply.
+func (a *App) DeleteWindsurfMCPBackup(backupID string) MCPBackupDeleteStatus {
+	return a.deleteMCPBackupTarget(mcpconfig.TargetWindsurf, strings.TrimSpace(backupID))
+}
+
+// GetMCPConfiguration is retained for existing callers. New renderer code
+// should use the target-scoped Cursor/Windsurf methods above instead.
 func (a *App) GetMCPConfiguration(target string) MCPConfigurationStatus {
 	resolved, ok := parseMCPConfigurationTarget(target)
 	if !ok {
@@ -42,7 +151,16 @@ func (a *App) ApplyMCPConfiguration(input MCPConfigurationInput) MCPConfiguratio
 	if !ok {
 		return MCPConfigurationStatus{Message: "不支持的 MCP 客户端。"}
 	}
-	status := a.mcpConfigurationStatus(resolved)
+	remoteURL := input.RemoteURL
+	defer func() {
+		input.RemoteURL = ""
+		remoteURL = ""
+	}()
+	return a.applyMCPConfigurationTarget(resolved, remoteURL)
+}
+
+func (a *App) applyMCPConfigurationTarget(target mcpconfig.Target, remoteURL string) MCPConfigurationStatus {
+	status := a.mcpConfigurationStatus(target)
 	if !status.ClientDetected {
 		status.Message = "尚未在本机确认该客户端。为避免创建无效配置，XIASS Tools 不会写入全局 MCP 设置。"
 		return status
@@ -51,14 +169,15 @@ func (a *App) ApplyMCPConfiguration(input MCPConfigurationInput) MCPConfiguratio
 		status.Message = "现有全局 MCP 设置无法安全修改。XIASS Tools 不会读取、展示或改写其中的敏感内容。"
 		return status
 	}
-
-	manager, err := mcpconfig.NewDefaultManager(resolved)
+	manager, err := mcpconfig.NewDefaultManager(target)
 	if err != nil {
 		status.Message = "无法安全定位该客户端的全局 MCP 设置。"
 		return status
 	}
-	result, err := manager.ApplyRemote(mcpconfig.ApplyInput{RemoteURL: input.RemoteURL})
-	input.RemoteURL = ""
+	applyInput := mcpconfig.ApplyInput{RemoteURL: remoteURL}
+	result, err := manager.ApplyRemote(applyInput)
+	applyInput.RemoteURL = ""
+	remoteURL = ""
 	if err != nil {
 		status.Message = mcpConfigurationErrorMessage(err)
 		return status
@@ -70,6 +189,70 @@ func (a *App) ApplyMCPConfiguration(input MCPConfigurationInput) MCPConfiguratio
 		CanApply:       result.Snapshot.Valid && !result.Snapshot.HasSensitiveConfiguration,
 		Snapshot:       result.Snapshot,
 	}
+}
+
+func (a *App) listMCPBackupsTarget(target mcpconfig.Target) MCPBackupListStatus {
+	manager, err := mcpconfig.NewDefaultManager(target)
+	if err != nil {
+		return MCPBackupListStatus{Message: "无法安全访问该客户端的全局 MCP 恢复点。", Backups: emptyMCPBackups()}
+	}
+	backups, err := manager.ListBackups()
+	if err != nil {
+		return MCPBackupListStatus{Message: "全局 MCP 恢复点未通过安全校验，当前设置未被修改。", Backups: emptyMCPBackups()}
+	}
+	return MCPBackupListStatus{
+		OK:      true,
+		Message: "已读取经过校验的全局 MCP 恢复点。",
+		Backups: nonNilMCPBackups(backups),
+	}
+}
+
+func (a *App) restoreMCPBackupTarget(target mcpconfig.Target, backupID string) MCPRestoreStatus {
+	empty := MCPRestoreStatus{Result: mcpconfig.RestoreResult{Snapshot: mcpconfig.Snapshot{Target: target}}}
+	if !a.mcpTargetDetected(target) {
+		empty.Message = "尚未在本机确认该客户端。为避免修改无效设置，XIASS Tools 不会恢复全局 MCP 设置。"
+		return empty
+	}
+	manager, err := mcpconfig.NewDefaultManager(target)
+	if err != nil {
+		empty.Message = "无法安全访问该客户端的全局 MCP 恢复点。"
+		return empty
+	}
+	result, err := manager.Restore(backupID)
+	backupID = ""
+	if err != nil {
+		empty.Message = mcpRestoreErrorMessage(err)
+		return empty
+	}
+	return MCPRestoreStatus{
+		OK:      true,
+		Message: "已恢复选定的全局 MCP 恢复点，并创建新的安全恢复点。",
+		Result:  result,
+	}
+}
+
+func (a *App) deleteMCPBackupTarget(target mcpconfig.Target, backupID string) MCPBackupDeleteStatus {
+	manager, err := mcpconfig.NewDefaultManager(target)
+	if err != nil {
+		return MCPBackupDeleteStatus{Message: "无法安全访问该客户端的全局 MCP 恢复点。"}
+	}
+	err = manager.DeleteBackup(backupID)
+	backupID = ""
+	if err != nil {
+		return MCPBackupDeleteStatus{Message: mcpDeleteBackupErrorMessage(err)}
+	}
+	return MCPBackupDeleteStatus{OK: true, Message: "已删除选定的全局 MCP 恢复点。"}
+}
+
+func emptyMCPBackups() []mcpconfig.BackupInfo {
+	return []mcpconfig.BackupInfo{}
+}
+
+func nonNilMCPBackups(backups []mcpconfig.BackupInfo) []mcpconfig.BackupInfo {
+	if backups == nil {
+		return emptyMCPBackups()
+	}
+	return backups
 }
 
 func (a *App) mcpConfigurationStatus(target mcpconfig.Target) MCPConfigurationStatus {
@@ -92,7 +275,7 @@ func (a *App) mcpConfigurationStatus(target mcpconfig.Target) MCPConfigurationSt
 	case !clientDetected:
 		status.Message = "尚未在本机确认该客户端；不会创建或修改其全局 MCP 设置。"
 	case snapshot.HasSensitiveConfiguration:
-		status.Message = "检测到敏感 MCP 设置。内容保持私密，XIASS Tools 已将该文件设为只读。"
+		status.Message = "检测到敏感 MCP 设置。内容保持私密，XIASS Tools 将其作为只读保护处理，不会修改该文件。"
 	case !snapshot.Valid:
 		status.Message = "全局 MCP 设置格式无效，修复前不会进行写入。"
 	case snapshot.ManagedServerConfigured:
@@ -142,5 +325,27 @@ func mcpConfigurationErrorMessage(err error) string {
 		return "另一项 MCP 设置操作正在进行，请完成后重试。"
 	default:
 		return "未能安全保存 MCP 远程连接；现有设置已保持不变。"
+	}
+}
+
+func mcpRestoreErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, mcpconfig.ErrUnsafeConfiguration), errors.Is(err, mcpconfig.ErrInvalidConfiguration):
+		return "选定恢复点或当前全局 MCP 设置未通过安全校验，未执行恢复。"
+	case errors.Is(err, mcpconfig.ErrOperationBusy):
+		return "另一项 MCP 设置操作正在进行，请完成后重试。"
+	default:
+		return "未能恢复全局 MCP 设置；当前设置已保持不变。"
+	}
+}
+
+func mcpDeleteBackupErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, mcpconfig.ErrUnsafeConfiguration), errors.Is(err, mcpconfig.ErrInvalidConfiguration):
+		return "选定恢复点未通过安全校验，未执行删除。"
+	case errors.Is(err, mcpconfig.ErrOperationBusy):
+		return "另一项 MCP 设置操作正在进行，请完成后重试。"
+	default:
+		return "未能删除全局 MCP 恢复点；现有设置未被修改。"
 	}
 }

@@ -19,7 +19,7 @@ func TestCodexAgentSnapshotStatusIsConservative(t *testing.T) {
 		wantState         agent.State
 		wantConfiguration bool
 	}{
-		{name: "no local home", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex"}, Valid: true}, wantState: agent.StateNotInstalled, wantConfiguration: false},
+		{name: "no local home", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex"}, Valid: true}, wantState: agent.StateNotInstalled, wantConfiguration: true},
 		{name: "valid unmanaged config", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex", ConfigPath: "/home/test/.codex/config.toml", Exists: true}, Valid: true, ModelProvider: "official"}, homeExists: true, wantState: agent.StateDetected, wantConfiguration: true},
 		{name: "valid xiass config", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex", ConfigPath: "/home/test/.codex/config.toml", Exists: true}, Valid: true, ModelProvider: codexconfig.DefaultProviderID}, homeExists: true, wantState: agent.StateReady, wantConfiguration: true},
 		{name: "invalid config", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex", Exists: true}, Valid: false}, homeExists: true, inspectErr: errors.New("invalid TOML"), wantState: agent.StateDegraded, wantConfiguration: false},

@@ -30,11 +30,11 @@ type TOTPCodeResult struct {
 func (a *App) GetTOTPEntries() TOTPStatus {
 	vault, err := a.getTOTPVault()
 	if err != nil {
-		return TOTPStatus{OK: false, Message: err.Error()}
+		return TOTPStatus{OK: false, Message: "本机验证器尚未完成初始化。"}
 	}
 	entries, err := vault.List()
 	if err != nil {
-		return TOTPStatus{OK: false, Message: "无法读取系统凭据库中的验证器：" + err.Error()}
+		return TOTPStatus{OK: false, Message: "无法读取本机验证器。请检查系统凭据库权限后重试。"}
 	}
 	return TOTPStatus{OK: true, Message: "已读取本机验证器。", Entries: entries}
 }
@@ -42,10 +42,10 @@ func (a *App) GetTOTPEntries() TOTPStatus {
 func (a *App) AddTOTPEntry(input totp.ImportInput) TOTPStatus {
 	vault, err := a.getTOTPVault()
 	if err != nil {
-		return TOTPStatus{OK: false, Message: err.Error()}
+		return TOTPStatus{OK: false, Message: "本机验证器尚未完成初始化。"}
 	}
 	if _, err := vault.Add(input); err != nil {
-		return TOTPStatus{OK: false, Message: "无法保存验证器到系统凭据库：" + err.Error()}
+		return TOTPStatus{OK: false, Message: "无法保存验证器。请检查导入格式与系统凭据库权限后重试。"}
 	}
 	return a.GetTOTPEntries()
 }
@@ -53,11 +53,11 @@ func (a *App) AddTOTPEntry(input totp.ImportInput) TOTPStatus {
 func (a *App) GenerateTOTPCode(id string) TOTPCodeResult {
 	vault, err := a.getTOTPVault()
 	if err != nil {
-		return TOTPCodeResult{OK: false, Message: err.Error()}
+		return TOTPCodeResult{OK: false, Message: "本机验证器尚未完成初始化。"}
 	}
 	code, err := vault.Generate(strings.TrimSpace(id), time.Now())
 	if err != nil {
-		return TOTPCodeResult{OK: false, Message: "无法生成动态验证码：" + err.Error()}
+		return TOTPCodeResult{OK: false, Message: "无法生成动态验证码。请确认该验证器仍存在且系统凭据库可用。"}
 	}
 	return TOTPCodeResult{OK: true, Message: "动态验证码已生成。", Code: code}
 }
@@ -65,10 +65,10 @@ func (a *App) GenerateTOTPCode(id string) TOTPCodeResult {
 func (a *App) DeleteTOTPEntry(id string) TOTPStatus {
 	vault, err := a.getTOTPVault()
 	if err != nil {
-		return TOTPStatus{OK: false, Message: err.Error()}
+		return TOTPStatus{OK: false, Message: "本机验证器尚未完成初始化。"}
 	}
 	if err := vault.Delete(strings.TrimSpace(id)); err != nil {
-		return TOTPStatus{OK: false, Message: "删除验证器失败：" + err.Error()}
+		return TOTPStatus{OK: false, Message: "无法删除验证器。请检查系统凭据库权限后重试。"}
 	}
 	return a.GetTOTPEntries()
 }
@@ -82,11 +82,11 @@ func (a *App) ExportTOTPEncrypted(password string) Result {
 	}
 	vault, err := a.getTOTPVault()
 	if err != nil {
-		return Result{OK: false, Message: err.Error()}
+		return Result{OK: false, Message: "本机验证器尚未完成初始化。"}
 	}
 	data, err := vault.ExportEncrypted(password)
 	if err != nil {
-		return Result{OK: false, Message: "无法创建加密验证器备份：" + err.Error()}
+		return Result{OK: false, Message: "无法创建加密验证器备份。请确认导出密码与系统凭据库后重试。"}
 	}
 	destination, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           "导出加密验证器备份",
@@ -96,7 +96,7 @@ func (a *App) ExportTOTPEncrypted(password string) Result {
 		}},
 	})
 	if err != nil {
-		return Result{OK: false, Message: "无法打开备份保存窗口：" + err.Error()}
+		return Result{OK: false, Message: "无法打开备份保存窗口。"}
 	}
 	if strings.TrimSpace(destination) == "" {
 		return Result{OK: true, Message: "已取消导出加密验证器备份。"}
@@ -105,7 +105,7 @@ func (a *App) ExportTOTPEncrypted(password string) Result {
 		destination += ".json"
 	}
 	if err := writeNewSensitiveExport(destination, data); err != nil {
-		return Result{OK: false, Message: "无法保存加密验证器备份：" + err.Error()}
+		return Result{OK: false, Message: "无法保存加密验证器备份。请确认目标位置可写且文件不存在。"}
 	}
 	return Result{OK: true, Message: "已导出加密验证器备份。请妥善保管导出密码与文件。"}
 }

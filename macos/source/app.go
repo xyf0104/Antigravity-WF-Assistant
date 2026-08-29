@@ -16,6 +16,7 @@ import (
 
 	"antigravity-wf-assistant/internal/agent"
 	"antigravity-wf-assistant/internal/agentdiscovery"
+	"antigravity-wf-assistant/internal/codexdesktop"
 	"antigravity-wf-assistant/internal/codexselection"
 	"antigravity-wf-assistant/internal/diagnostics"
 	"antigravity-wf-assistant/internal/launcher"
@@ -59,6 +60,9 @@ type App struct {
 	oauthLoopbacks        map[string]*oauthLoopbackListener
 	codexSelectionMu      sync.Mutex
 	codexKeySelection     *codexselection.Service
+	codexDesktopMu        sync.Mutex
+	codexDesktopControl   codexDesktopControlService
+	codexDesktopOperation sync.Mutex
 	exitRequested         atomic.Bool
 }
 
@@ -117,13 +121,14 @@ func newApp() *App {
 		log.Printf("[wf] 无法初始化本地诊断日志: %v", err)
 	}
 	application := &App{
-		storageDir:         dir,
-		permissions:        permissions.New(home, dir),
-		accountTestCancels: make(map[string]*activeAccountTest),
-		oauthSessions:      make(map[string]*pendingOAuthSession),
-		oauthResults:       make(map[string]oauthAuthorizationRecord),
-		oauthLoopbacks:     make(map[string]*oauthLoopbackListener),
-		codexKeySelection:  codexselection.New(),
+		storageDir:          dir,
+		permissions:         permissions.New(home, dir),
+		accountTestCancels:  make(map[string]*activeAccountTest),
+		oauthSessions:       make(map[string]*pendingOAuthSession),
+		oauthResults:        make(map[string]oauthAuthorizationRecord),
+		oauthLoopbacks:      make(map[string]*oauthLoopbackListener),
+		codexKeySelection:   codexselection.New(),
+		codexDesktopControl: codexdesktop.NewController(),
 		historyStatus: HistorySyncStatus{
 			State:   "pending",
 			Message: "等待启动时同步历史会话",

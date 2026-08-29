@@ -23,7 +23,7 @@ func TestCodexAgentSnapshotStatusIsConservative(t *testing.T) {
 			name:              "no local home",
 			snapshot:          codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex"}, Valid: true},
 			wantState:         agent.StateNotInstalled,
-			wantConfiguration: false,
+			wantConfiguration: true,
 		},
 		{
 			name: "valid unmanaged config",

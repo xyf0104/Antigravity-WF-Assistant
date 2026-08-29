@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -9,6 +10,12 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+// errCodexXIASSLifecycleNotApplied stays entirely on the native side. It
+// lets the caller keep a one-time selection available after a transactional
+// lifecycle failure without serializing the selected credential or a raw
+// implementation error to the renderer.
+var errCodexXIASSLifecycleNotApplied = errors.New("selected XIASS credential was not applied")
 
 // CodexKeySelectionStatus is the renderer-safe state of the XIASS website
 // Key-selection flow. It never contains a Key, callback URL, state token, or
@@ -144,4 +151,70 @@ func (a *App) ApplyCodexXIASSSelection(sessionID string, input codexconfig.Apply
 	}
 	status.Message = "已使用 XIASS API 选择的 Key 安全保存 Codex 配置，并创建可恢复备份 " + result.BackupID + "。请自行退出并重新打开 Codex 后使新配置生效。"
 	return status
+}
+
+// ApplyCodexXIASSSelectionWithLifecycle applies a browser-selected XIASS API
+// key through the same explicit Codex Desktop lifecycle transaction as a
+// manually entered key. BaseURL, APIKey, and KeyName in input are ignored;
+// only the short-lived native selection credential is used. The API key never
+// crosses the Wails response boundary, is never copied into App state, and is
+// cleared from this stack frame before the method returns.
+//
+// If the transaction does not complete, the selection remains available for a
+// user-initiated retry until it expires or is cancelled. A successful
+// transaction consumes and zeroes the one-time native selection session.
+func (a *App) ApplyCodexXIASSSelectionWithLifecycle(sessionID string, input CodexConfigurationLifecycleInput) CodexConfigurationLifecycleStatus {
+	if a == nil || a.ctx == nil || a.exitRequested.Load() {
+		return CodexConfigurationLifecycleStatus{OK: false, Message: "XIASS Tools 尚未完成启动，无法应用 Codex 配置。"}
+	}
+	service := a.codexKeySelectionService()
+	if service == nil {
+		return CodexConfigurationLifecycleStatus{OK: false, Message: "XIASS API Key 选择服务不可用。"}
+	}
+
+	// The configuration input is renderer-controlled. The selection owns the
+	// connection credential, so discard any manually supplied credential fields
+	// before we ask the native service for its short-lived key.
+	input.Config.APIKey = ""
+	input.Config.BaseURL = ""
+	input.Config.KeyName = ""
+
+	a.codexDesktopOperation.Lock()
+	defer a.codexDesktopOperation.Unlock()
+
+	manager, err := a.codexManager()
+	if err != nil {
+		return CodexConfigurationLifecycleStatus{OK: false, Message: "无法识别本机 Codex 配置目录；未执行任何操作。"}
+	}
+
+	var lifecycleStatus CodexConfigurationLifecycleStatus
+	_, err = service.WithCredential(sessionID, true, func(credential codexselection.Credential) error {
+		// codexconfig accepts a string API key, so this conversion is strictly
+		// limited to the synchronous native apply call. The selection service
+		// separately zeroes its copied byte slice once this callback returns.
+		input.Config.APIKey = string(credential.APIKey)
+		input.Config.BaseURL = credential.BaseURL
+		input.Config.KeyName = credential.KeyName
+		if strings.TrimSpace(input.Config.ProviderName) == "" {
+			input.Config.ProviderName = credential.KeyName
+		}
+		defer func() {
+			input.Config.APIKey = ""
+			input.Config.BaseURL = ""
+			input.Config.KeyName = ""
+		}()
+
+		lifecycleStatus = a.applyCodexConfigurationWithLifecycleLocked(input, manager, manager.Apply)
+		if !lifecycleStatus.OK {
+			return errCodexXIASSLifecycleNotApplied
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errCodexXIASSLifecycleNotApplied) {
+			return lifecycleStatus
+		}
+		return CodexConfigurationLifecycleStatus{OK: false, Message: "未保存通过 XIASS API 选择的 Codex 配置。请重新选择 Key 并检查模型设置后重试。"}
+	}
+	return lifecycleStatus
 }

@@ -180,6 +180,11 @@ func (filesystem *windowsFakeFileSystem) Getenv(key string) string {
 func addWindowsExecutable(filesystem *windowsFakeFileSystem, executable, metadata string) {
 	executable = filepath.Clean(executable)
 	filesystem.entries[executable] = windowsFakeFileInfo{name: filepath.Base(executable), mode: 0755}
+	// Current official desktop builds use Electron's public app.asar layout.
+	// The detector intentionally requires this marker so a bare lookalike EXE
+	// cannot be accepted just because its filename is ChatGPT.exe/Codex.exe.
+	asarPath := filepath.Join(filepath.Dir(executable), "resources", "app.asar")
+	filesystem.entries[asarPath] = windowsFakeFileInfo{name: "app.asar", mode: 0644}
 	if metadata != "" {
 		metadataPath := filepath.Join(filepath.Dir(executable), "resources", "app", "product.json")
 		filesystem.contents[metadataPath] = []byte(metadata)

@@ -11,6 +11,7 @@ defineEmits(["update:modelValue"]);
     <button
       v-for="opt in options"
       :key="opt.value"
+	  type="button"
       class="item"
       :class="{ active: modelValue === opt.value }"
       @click="$emit('update:modelValue', opt.value)"
@@ -36,7 +37,7 @@ defineEmits(["update:modelValue"]);
   font-size: 12.5px;
   font-weight: 550;
   color: var(--text-secondary);
-  transition: all 0.2s var(--ease);
+	  transition: background-color 0.2s var(--ease), color 0.2s var(--ease), box-shadow 0.2s var(--ease);
   white-space: nowrap;
 }
 

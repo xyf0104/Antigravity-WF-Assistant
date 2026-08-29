@@ -417,10 +417,54 @@ func TestNativeAgentSwitchClearsRememberedImageSourceForItsTrajectory(t *testing
 	if selected != nil || customMatched || nativeImageSource {
 		t.Fatalf("native image request incorrectly reused GPT after Gemini switch: model:%#v custom:%t native:%t", selected, customMatched, nativeImageSource)
 	}
+	selected, customMatched, nativeImageSource = resolveGenerationModel(model.Name, nativeImageA)
+	if selected != nil || customMatched || nativeImageSource {
+		t.Fatalf("stale custom image-tool slug overrode the current Gemini selection: model:%#v custom:%t native:%t", selected, customMatched, nativeImageSource)
+	}
 
 	selected, customMatched, nativeImageSource = resolveGenerationModel("gemini-3.1-flash-image", nativeImageB)
 	if selected == nil || customMatched || !nativeImageSource || selected.ExternalModelName != "gpt-image-2" {
 		t.Fatalf("separate trajectory was incorrectly cleared: model:%#v custom:%t native:%t", selected, customMatched, nativeImageSource)
+	}
+}
+
+func TestGeminiImageGenerationRestoresNativeModelFromStaleCustomIndex(t *testing.T) {
+	resetImageGenerationSourcesForTest()
+	t.Cleanup(resetImageGenerationSourcesForTest)
+
+	model := storage.CustomModel{
+		Name: "models/gpt-text", Provider: "openai", APIURL: "https://example.invalid",
+		APIKey: "test-key", ExternalModelName: "gpt-5.6-sol", APIStyle: "auto",
+	}
+	setupAntigravityIntegrationModel(t, model)
+	restoreAssignments := replaceModelRouteAssignmentsForTest(modelRouteAssignments{
+		placeholders:        map[string]string{},
+		slugs:               map[string]string{},
+		nativeImageModelIDs: []string{"gemini-3.1-flash-image"},
+	})
+	t.Cleanup(restoreAssignments)
+
+	trajectoryID := "e04c09bc-2713-45e6-8e9f-d074f8b3e850"
+	requestID := "image_gen/1786384733053/" + trajectoryID + "/8"
+	req := map[string]any{
+		"model": model.Name, "requestId": requestID,
+		"request": textTurn("generate natively with Gemini"),
+	}
+	selected, customMatched, nativeImageSource := resolveGenerationModel(model.Name, requestID)
+	if selected != nil || customMatched || nativeImageSource {
+		t.Fatalf("stale image-tool slug must not select GPT without a custom agent source: %#v %t %t", selected, customMatched, nativeImageSource)
+	}
+	restoredModel, changed, err := restoreNativeImageGenerationRequestModel(req, model.Name, requestID)
+	if err != nil || !changed || restoredModel != "gemini-3.1-flash-image" {
+		t.Fatalf("native Gemini image route was not restored: model=%q changed=%t err=%v", restoredModel, changed, err)
+	}
+	if req["model"] != "gemini-3.1-flash-image" {
+		t.Fatalf("outer model was not restored to Gemini: %#v", req)
+	}
+	request := req["request"].(map[string]any)
+	parts := request["contents"].([]any)[0].(map[string]any)["parts"].([]any)
+	if parts[0].(map[string]any)["text"] != "generate natively with Gemini" {
+		t.Fatalf("Gemini route repair changed the user prompt: %#v", req)
 	}
 }
 

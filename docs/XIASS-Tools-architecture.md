@@ -28,7 +28,7 @@ XIASS Tools release. The implementation below is independently written.
 Wails UI
   └── Agent registry
         ├── Antigravity adapter: existing verified patch and proxy workflow
-        ├── Codex adapter: explicit config.toml management
+        ├── Codex adapter: explicit config.toml management and guarded Desktop lifecycle
         ├── Claude Code adapter: explicit settings.json management
         ├── Cursor adapter: documented global MCP configuration only
         └── Windsurf adapter: documented global MCP configuration only
@@ -57,10 +57,10 @@ Common safety services
 | Platform | Detect and diagnose | Supported configuration surface | Account/OAuth/quota | Apply / restore | Launch |
 | --- | --- | --- | --- | --- | --- |
 | Antigravity | yes | existing verified local proxy and patch workflow | existing product-specific workflow only | existing verified patch backup and restore | existing launcher |
-| Codex | yes | independent `xiass_tools` provider in `config.toml`; optional guarded history/workspace repair | not read or claimed | atomic config backup / restore and explicit repairs | discovery only |
+| Codex | yes | independent `xiass_tools` provider in `config.toml`; optional guarded history/workspace repair | not read or claimed | atomic config backup / restore and explicit repairs | only for a structure-verified Codex / ChatGPT Desktop installation, after explicit user confirmation; graceful stop/start/restart only, never force-kill |
 | Claude Code | yes | only `settings.json`: API root, authorization token and model | not read or claimed | atomic settings backup / restore | discovery only |
-| Cursor | yes | documented global `~/.cursor/mcp.json` only, after its contract is wired and verified | not read or claimed | reserved XIASS MCP entry only, with backup / rollback | discovery only |
-| Windsurf | yes | documented global `~/.codeium/windsurf/mcp_config.json` only, after its contract is wired and verified | not read or claimed | reserved XIASS MCP entry only, with backup / rollback | discovery only |
+| Cursor | yes | documented global `~/.cursor/mcp.json` only | not read or claimed | reserved XIASS MCP entry only, with atomic write, verified recovery points, explicit restore and explicit deletion | discovery only |
+| Windsurf | yes | documented global `~/.codeium/windsurf/mcp_config.json` only | not read or claimed | reserved XIASS MCP entry only, with atomic write, verified recovery points, explicit restore and explicit deletion | discovery only |
 
 No adapter may claim an account is connected, a quota is available, or a
 client version is supported unless the adapter has read and validated the

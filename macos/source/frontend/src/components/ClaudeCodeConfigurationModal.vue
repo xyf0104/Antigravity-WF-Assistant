@@ -32,6 +32,19 @@ const readyToSave = computed(() => Boolean(
 const backups = computed(() => data.value?.backups || []);
 const legacyBackups = computed(() => data.value?.legacyBackups || []);
 
+// Claude's native backup DTO deliberately uses the established created_at
+// field. Accept the former camel-case spelling only for an already-running
+// older binary, so timestamps stay readable during an in-place upgrade.
+function backupCreatedAt(backup) {
+  return backup?.created_at || backup?.createdAt || "";
+}
+
+function formatBackupTime(backup) {
+  const raw = backupCreatedAt(backup);
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString() : "时间不可用";
+}
+
 function resetVisibleToken() {
   draft.value.authToken = "";
 }
@@ -58,7 +71,7 @@ async function refresh() {
       error.value = "无法读取 Claude Code 用户设置。请确认 settings.json 是有效的普通 JSON 文件。";
       return;
     }
-    notice.value = result.message || "已读取 Claude Code 用户设置。";
+    notice.value = "已读取 Claude Code 用户设置。";
   } catch {
     data.value = null;
     resetVisibleToken();
@@ -93,7 +106,7 @@ async function save() {
       error.value = "未保存 Claude Code 用户设置。请检查填写内容与当前 settings.json 后重试。";
       return;
     }
-    notice.value = result.message || "Claude Code 用户设置已安全保存。";
+    notice.value = "Claude Code 用户设置已安全保存，并创建可恢复备份。";
     emit("changed");
   } catch {
     request.authToken = "";
@@ -117,7 +130,7 @@ async function runBackupAction(action, backupID) {
       error.value = "Claude Code 用户设置备份操作未完成。请确认备份仍可安全验证。";
       return;
     }
-    notice.value = result.message || (action === "restore" ? "已恢复用户设置备份。" : "已删除用户设置备份。");
+    notice.value = action === "restore" ? "已恢复用户设置备份。" : "已删除用户设置备份。";
     emit("changed");
   } catch {
     error.value = "Claude Code 用户设置备份操作未完成。";
@@ -146,7 +159,7 @@ async function migrateLegacyBackup(backup) {
       error.value = "旧版 Claude Code 用户设置备份未导入。该备份可能未通过安全校验。";
       return;
     }
-    notice.value = result.message || "旧版备份已复制为新的恢复点。";
+    notice.value = "旧版备份已复制为新的恢复点。";
     emit("changed");
   } catch {
     error.value = "旧版 Claude Code 用户设置备份未导入。";
@@ -234,7 +247,7 @@ watch(() => props.open, (open) => {
           <article v-for="backup in backups" :key="backup.id" class="backup-row">
             <div>
               <strong>{{ backup.reason || "用户设置备份" }}</strong>
-              <span>{{ new Date(backup.createdAt).toLocaleString() }}</span>
+              <span>{{ formatBackupTime(backup) }}</span>
             </div>
             <div>
               <button type="button" :disabled="busy" @click="confirmBackupAction('restore', backup.id)">恢复</button>
@@ -250,7 +263,7 @@ watch(() => props.open, (open) => {
           <article v-for="backup in legacyBackups" :key="`${backup.source}:${backup.id}`" class="backup-row">
             <div>
               <strong>{{ backup.reason || "旧版用户设置备份" }}</strong>
-              <span>{{ new Date(backup.createdAt).toLocaleString() }}</span>
+              <span>{{ formatBackupTime(backup) }}</span>
             </div>
             <div><button type="button" :disabled="busy" @click="migrateLegacyBackup(backup)">复制为恢复点</button></div>
           </article>
@@ -297,7 +310,6 @@ watch(() => props.open, (open) => {
 .field > span { color: var(--text-secondary); font-size: 11px; }
 .field input { width: 100%; min-width: 0; border: 1px solid var(--separator-strong); border-radius: 8px; outline: none; background: var(--bg-base); color: var(--text-primary); font: inherit; font-family: var(--font-num); font-size: 12px; padding: 9px 10px; }
 .field input:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 3px var(--accent-soft); }
-.field input:disabled { cursor: not-allowed; opacity: .58; }
 .field small { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 .backup-section { border-top: 1px solid var(--separator); padding-top: 12px; }
 .backup-section summary { cursor: pointer; color: var(--text-primary); font-size: 12px; font-weight: 700; }

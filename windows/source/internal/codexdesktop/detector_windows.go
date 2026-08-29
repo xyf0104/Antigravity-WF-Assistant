@@ -27,6 +27,7 @@ type windowsCandidate struct {
 
 type windowsInstallation struct {
 	executable         string
+	storePackage       string
 	source             Source
 	version            string
 	executableVerified bool
@@ -178,7 +179,7 @@ func inspectWindowsCandidate(filesystem FileSystem, candidate windowsCandidate) 
 		}
 		return nil, true, false
 	}
-	if !info.Mode().IsRegular() || isKnownCLIPath(candidate.executable) {
+	if !info.Mode().IsRegular() || isKnownCLIPath(candidate.executable) || !isVerifiedWindowsDesktopExecutable(filesystem, candidate.executable) {
 		return nil, false, true
 	}
 	return &windowsInstallation{
@@ -205,8 +206,9 @@ func inspectWindowsStore(registry Registry) (*windowsInstallation, bool) {
 			continue
 		}
 		return &windowsInstallation{
-			source:  SourceWindowsStore,
-			version: storePackageVersion(packageName),
+			storePackage: packageName,
+			source:       SourceWindowsStore,
+			version:      storePackageVersion(packageName),
 		}, false
 	}
 	return nil, false
@@ -224,6 +226,7 @@ func findRunningWindowsInstallation(processes []Process, known *windowsInstallat
 		if packageName, ok := trustedStoreExecutable(executable, programFilesRoots); ok {
 			return &windowsInstallation{
 				executable:         executable,
+				storePackage:       packageName,
 				source:             SourceWindowsStore,
 				version:            storePackageVersion(packageName),
 				executableVerified: true,

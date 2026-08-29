@@ -25,7 +25,7 @@ defineEmits(["close"]);
           <div class="sheet" :class="{ wide }" role="dialog" aria-modal="true" :aria-label="title" @click.stop>
             <header class="head">
               <div class="t-headline">{{ title }}</div>
-			  <button v-if="closable" class="x" @click="$emit('close')">
+				  <button v-if="closable" type="button" class="x" aria-label="关闭" @click="$emit('close')">
                 <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
                   <path
                     d="M3.5 3.5L11.5 11.5M11.5 3.5L3.5 11.5"
@@ -103,7 +103,7 @@ defineEmits(["close"]);
   border-radius: 50%;
   background: var(--bg-fill);
   color: var(--text-secondary);
-  transition: all 0.16s var(--ease);
+	  transition: background-color 0.16s var(--ease), color 0.16s var(--ease);
   flex-shrink: 0;
 }
 

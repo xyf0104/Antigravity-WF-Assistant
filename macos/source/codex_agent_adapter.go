@@ -148,7 +148,7 @@ func decorateCodexDesktopStatus(status agent.Status, desktop codexdesktop.Status
 
 	switch desktop.State {
 	case codexdesktop.StateRunning:
-		status.Message = joinCodexStatusMessage(status.Message, "Codex Desktop is currently running; configuration changes take effect only after you restart it yourself.")
+		status.Message = joinCodexStatusMessage(status.Message, "Codex Desktop is currently running; configuration changes take effect after an explicit restart.")
 	case codexdesktop.StateInstalled:
 		if status.State == agent.StateNotInstalled {
 			status.State = agent.StateDetected
@@ -206,13 +206,21 @@ func codexCapabilityStatuses(metadata agent.Metadata, homeExists, configExists, 
 			status.Reason = "Local Codex configuration discovery completed."
 		case agent.CapabilityConfiguration, agent.CapabilityModelCatalog:
 			status.Availability = agent.CapabilityAvailable
-			status.Available = homeExists && configValid
+			// A missing ~/.codex is an initial state, not an unsafe state. The
+			// manager has already resolved its fixed default target and can create
+			// the directory through the same verified atomic-write path used for
+			// an existing valid config.toml.
+			status.Available = configValid
 			if status.Available {
-				status.Reason = "Codex configuration can be managed with verified atomic writes."
+				if homeExists {
+					status.Reason = "Codex configuration can be managed with verified atomic writes."
+				} else {
+					status.Reason = "Codex can be safely initialized at its verified default configuration location."
+				}
 			} else if homeExists {
 				status.Reason = "Codex configuration must be repaired before it can be changed."
 			} else {
-				status.Reason = "No local Codex configuration directory was found."
+				status.Reason = "Codex configuration location could not be safely prepared."
 			}
 		case agent.CapabilityDiagnostics:
 			status.Availability = agent.CapabilityAvailable

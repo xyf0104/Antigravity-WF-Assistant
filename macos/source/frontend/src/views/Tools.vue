@@ -19,7 +19,7 @@ const props = defineProps({
 	},
 });
 
-const emit = defineEmits(["refresh", "configure", "launch", "diagnose", "open"]);
+const emit = defineEmits(["refresh", "configure", "diagnose", "open"]);
 
 const platformOrder = ["antigravity", "codex", "claude-code", "cursor", "windsurf"];
 
@@ -212,9 +212,6 @@ function capabilityLabel(name) {
           </button>
           <button class="text-action" type="button" :disabled="!isAvailable(platform, 'configuration') || actionBusy(platform, 'configure')" @click="emit('configure', platform.agentId)">
             {{ configurationActionLabel(platform) }}
-          </button>
-			<button class="icon-action" type="button" :title="`打开 ${platform.displayName}`" :aria-label="`打开 ${platform.displayName}`" :disabled="!platform.launchable || actionBusy(platform, 'launch')" @click="emit('launch', platform.agentId)">
-			<svg class="play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7-11-7Z" /></svg>
           </button>
           <button class="icon-action" type="button" :title="`查看 ${platform.displayName} 状态`" :aria-label="`查看 ${platform.displayName} 状态`" @click="emit('open', platform.agentId)">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12a7 7 0 0 1 14 0 7 7 0 0 1-14 0Zm7-3v3l2 1.5M12 5V3M19 12h2M5 12H3M18.4 5.6 20 4M5.6 5.6 4 4" /></svg>

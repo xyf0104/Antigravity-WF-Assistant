@@ -16,6 +16,30 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
+# Wails deliberately preserves the bin directory between builds. Refuse to
+# package a bundle that carries a stale helper or a differently named previous
+# executable: an installer must contain exactly the current XIASS Tools app,
+# not an accidental second binary left by a smoke build.
+APP_INFO_PLIST="$APP_PATH/Contents/Info.plist"
+APP_MACOS_DIR="$APP_PATH/Contents/MacOS"
+if [[ ! -f "$APP_INFO_PLIST" || ! -d "$APP_MACOS_DIR" ]]; then
+  echo "App bundle has no valid macOS executable layout" >&2
+  exit 1
+fi
+APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_INFO_PLIST" 2>/dev/null || true)"
+if [[ "$APP_EXECUTABLE" != "XIASS Tools" || ! -f "$APP_MACOS_DIR/$APP_EXECUTABLE" ]]; then
+  echo "App bundle executable does not match XIASS Tools" >&2
+  exit 1
+fi
+if [[ -n "$(/usr/bin/find "$APP_MACOS_DIR" -maxdepth 1 -type f ! -name "$APP_EXECUTABLE" -print -quit)" ]]; then
+  echo "App bundle contains an unexpected additional executable" >&2
+  exit 1
+fi
+if ! /usr/bin/codesign --verify --deep --strict "$APP_PATH"; then
+  echo "App bundle signature validation failed" >&2
+  exit 1
+fi
+
 WORK_DIR="$(mktemp -d -t xiass-tools-package)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 APP_ROOT="$WORK_DIR/root"

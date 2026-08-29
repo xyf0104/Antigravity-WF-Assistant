@@ -12,6 +12,7 @@ const (
 	ManagedServerID = "xiass-tools"
 
 	maxConfigurationBytes = int64(1 << 20)
+	maxManifestBytes      = int64(64 << 10)
 	backupDirectoryName   = "mcp-backups"
 	lockFilename          = "mcp-config.operation.lock"
 	backupManifestVersion = 1
@@ -61,6 +62,26 @@ type ApplyResult struct {
 	BackupCreated bool     `json:"backupCreated"`
 }
 
+// BackupInfo is the only backup metadata exposed to callers. It contains no
+// file paths, URLs, headers, environment data, configuration contents, or
+// checksums, so it is safe for a future renderer to list recovery points.
+type BackupInfo struct {
+	ID string `json:"id"`
+	// CreatedAt is deliberately serialized as RFC3339Nano text. The manifest
+	// retains its native time.Time for integrity checks, while this renderer DTO
+	// avoids a Wails binding-generator fallback to an untyped time namespace.
+	CreatedAt       string `json:"createdAt"`
+	Reason          string `json:"reason"`
+	OriginalExisted bool   `json:"originalExisted"`
+}
+
+// RestoreResult confirms a completed restore without exposing either the
+// restored endpoint or the private on-disk safety-backup location.
+type RestoreResult struct {
+	Snapshot      Snapshot `json:"snapshot"`
+	BackupCreated bool     `json:"backupCreated"`
+}
+
 type backupManifest struct {
 	Version         int       `json:"version"`
 	ID              string    `json:"id"`
@@ -68,8 +89,14 @@ type backupManifest struct {
 	CreatedAt       time.Time `json:"createdAt"`
 	Reason          string    `json:"reason"`
 	OriginalExisted bool      `json:"originalExisted"`
+	OriginalMode    uint32    `json:"originalMode,omitempty"`
 	OriginalSHA256  string    `json:"originalSHA256,omitempty"`
 	AppliedSHA256   string    `json:"appliedSHA256,omitempty"`
+}
+
+type verifiedBackup struct {
+	manifest backupManifest
+	data     []byte
 }
 
 type manager struct {

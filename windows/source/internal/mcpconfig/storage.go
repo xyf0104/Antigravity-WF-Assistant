@@ -69,6 +69,7 @@ func (m *manager) createBackup(original []byte, existed bool, mode fs.FileMode, 
 		OriginalExisted: existed,
 	}
 	if existed {
+		manifest.OriginalMode = uint32(mode.Perm())
 		manifest.OriginalSHA256 = sha256Hex(original)
 		if err := writeFileAtomic(filepath.Join(directory, "configuration.json"), original, defaultMode(mode)); err != nil {
 			return backupManifest{}, err
@@ -93,6 +94,9 @@ func (m *manager) writeBackupManifest(manifest backupManifest) error {
 }
 
 func writeBackupManifestAt(directory string, manifest backupManifest) error {
+	if err := validateBackupManifest(manifest); err != nil {
+		return err
+	}
 	if err := ensureExistingPathNoSymlink(directory); err != nil {
 		return err
 	}
@@ -107,6 +111,229 @@ func writeBackupManifestAt(directory string, manifest backupManifest) error {
 	defer zeroBytes(data)
 	data = append(data, '\n')
 	return writeFileAtomic(filepath.Join(directory, "manifest.json"), data, 0o600)
+}
+
+func backupInfo(manifest backupManifest) BackupInfo {
+	return BackupInfo{
+		ID:              manifest.ID,
+		CreatedAt:       manifest.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Reason:          manifest.Reason,
+		OriginalExisted: manifest.OriginalExisted,
+	}
+}
+
+func (m *manager) backupDirectory(backupID string) (string, error) {
+	if !validBackupID(backupID) {
+		return "", ErrOperation
+	}
+	directory := filepath.Join(m.backupRoot, backupID)
+	if !pathWithin(m.backupRoot, directory) {
+		return "", ErrUnsafeConfiguration
+	}
+	return directory, nil
+}
+
+// readVerifiedBackup proves that a recovery point is one created by this
+// manager for this exact target, has not been tampered with, contains no
+// sensitive configuration, and has no unexpected directory entries.
+func (m *manager) readVerifiedBackup(backupID string) (verifiedBackup, error) {
+	directory, err := m.backupDirectory(backupID)
+	if err != nil {
+		return verifiedBackup{}, err
+	}
+	manifest, err := m.readBackupManifest(backupID)
+	if err != nil {
+		return verifiedBackup{}, err
+	}
+	if manifest.Target != m.target || manifest.ID != backupID {
+		return verifiedBackup{}, ErrUnsafeConfiguration
+	}
+	if err := verifyBackupDirectory(directory, manifest); err != nil {
+		return verifiedBackup{}, err
+	}
+	if !manifest.OriginalExisted {
+		return verifiedBackup{manifest: manifest}, nil
+	}
+	path := filepath.Join(directory, "configuration.json")
+	data, exists, _, err := readRegularFile(path, maxConfigurationBytes)
+	if err != nil || !exists {
+		zeroBytes(data)
+		return verifiedBackup{}, ErrUnsafeConfiguration
+	}
+	if sha256Hex(data) != manifest.OriginalSHA256 {
+		zeroBytes(data)
+		return verifiedBackup{}, ErrUnsafeConfiguration
+	}
+	document, err := parseConfiguration(data)
+	if err != nil || document.hasSensitiveConfiguration {
+		zeroBytes(data)
+		return verifiedBackup{}, ErrUnsafeConfiguration
+	}
+	return verifiedBackup{manifest: manifest, data: data}, nil
+}
+
+func (m *manager) readBackupManifest(backupID string) (backupManifest, error) {
+	directory, err := m.backupDirectory(backupID)
+	if err != nil {
+		return backupManifest{}, err
+	}
+	data, exists, _, err := readRegularFile(filepath.Join(directory, "manifest.json"), maxManifestBytes)
+	defer zeroBytes(data)
+	if err != nil || !exists {
+		return backupManifest{}, ErrUnsafeConfiguration
+	}
+	manifest, err := parseBackupManifest(data)
+	if err != nil {
+		return backupManifest{}, err
+	}
+	if manifest.ID != backupID || manifest.Target != m.target {
+		return backupManifest{}, ErrUnsafeConfiguration
+	}
+	return manifest, nil
+}
+
+func parseBackupManifest(data []byte) (backupManifest, error) {
+	root, err := strictJSONObject(data)
+	if err != nil {
+		return backupManifest{}, ErrUnsafeConfiguration
+	}
+	allowed := map[string]bool{
+		"version": true, "id": true, "target": true, "createdAt": true,
+		"reason": true, "originalExisted": true, "originalMode": true,
+		"originalSHA256": true, "appliedSHA256": true,
+	}
+	for key := range root {
+		if !allowed[key] {
+			return backupManifest{}, ErrUnsafeConfiguration
+		}
+	}
+	for _, required := range []string{"version", "id", "target", "createdAt", "reason", "originalExisted"} {
+		if _, exists := root[required]; !exists {
+			return backupManifest{}, ErrUnsafeConfiguration
+		}
+	}
+	var manifest backupManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return backupManifest{}, ErrUnsafeConfiguration
+	}
+	if err := validateBackupManifest(manifest); err != nil {
+		return backupManifest{}, err
+	}
+	return manifest, nil
+}
+
+func validateBackupManifest(manifest backupManifest) error {
+	if manifest.Version != backupManifestVersion || !manifest.Target.valid() || !validBackupID(manifest.ID) || manifest.CreatedAt.IsZero() || !validBackupReason(manifest.Reason) {
+		return ErrUnsafeConfiguration
+	}
+	if manifest.OriginalMode > 0o777 || (manifest.OriginalExisted && !validSHA256(manifest.OriginalSHA256)) || (!manifest.OriginalExisted && (manifest.OriginalMode != 0 || manifest.OriginalSHA256 != "")) {
+		return ErrUnsafeConfiguration
+	}
+	if manifest.AppliedSHA256 != "" && !validSHA256(manifest.AppliedSHA256) {
+		return ErrUnsafeConfiguration
+	}
+	return nil
+}
+
+func validBackupReason(reason string) bool {
+	return reason == "apply" || reason == "restore"
+}
+
+func validBackupID(value string) bool {
+	if len(value) < 32 || len(value) > 128 || filepath.Base(value) != value || strings.ContainsAny(value, `/\\`) {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') && character != 'T' && character != 'Z' && character != '-' && character != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func verifyBackupDirectory(directory string, manifest backupManifest) error {
+	if err := ensureExistingPathNoSymlink(directory); err != nil {
+		return err
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return ErrUnsafeConfiguration
+	}
+	expected := map[string]bool{"manifest.json": true}
+	if manifest.OriginalExisted {
+		expected["configuration.json"] = true
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return ErrUnavailable
+	}
+	for _, entry := range entries {
+		if !expected[entry.Name()] {
+			return ErrUnsafeConfiguration
+		}
+		info, err := entry.Info()
+		if err != nil || entry.Type()&os.ModeSymlink != 0 || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return ErrUnsafeConfiguration
+		}
+		delete(expected, entry.Name())
+	}
+	if len(expected) != 0 {
+		return ErrUnsafeConfiguration
+	}
+	return nil
+}
+
+func (m *manager) removeVerifiedBackup(backupID string) error {
+	backup, err := m.readVerifiedBackup(backupID)
+	if err != nil {
+		return err
+	}
+	defer zeroBytes(backup.data)
+	directory, err := m.backupDirectory(backupID)
+	if err != nil {
+		return err
+	}
+	if backup.manifest.OriginalExisted {
+		if err := removeVerifiedRegularFile(filepath.Join(directory, "configuration.json")); err != nil {
+			return err
+		}
+	}
+	if err := removeVerifiedRegularFile(filepath.Join(directory, "manifest.json")); err != nil {
+		return err
+	}
+	if err := os.Remove(directory); err != nil {
+		return ErrOperation
+	}
+	if _, err := os.Lstat(directory); !errors.Is(err, fs.ErrNotExist) {
+		return ErrOperation
+	}
+	return nil
+}
+
+func removeVerifiedRegularFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return ErrUnsafeConfiguration
+	}
+	if err := os.Remove(path); err != nil {
+		return ErrOperation
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+		return ErrOperation
+	}
+	return nil
 }
 
 func nowUTC() time.Time {

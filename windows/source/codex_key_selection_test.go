@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net"
@@ -15,6 +16,117 @@ import (
 	"antigravity-byok/internal/codexconfig"
 	"antigravity-byok/internal/codexselection"
 )
+
+func TestCodexXIASSSelectionLifecycleUsesNativeCredentialAndConsumesOnlyOnSuccess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	service := codexselection.New()
+	t.Cleanup(service.Close)
+	app := &App{
+		ctx:                 context.Background(),
+		codexKeySelection:   service,
+		codexDesktopControl: newCodexLifecycleFakeDesktop(false),
+	}
+	started, err := service.Begin("https://gateway.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	callback, state := selectionCallbackAndState(t, started.ConnectURL)
+	secret := "sk-native-lifecycle-selection-secret"
+	completedURL := selectionCallbackURL(callback, state, "https://gateway.example.test/v1", secret, "Lifecycle Key")
+	completed := app.CompleteCodexXIASSKeySelectionManual(started.State.SessionID, completedURL)
+	if !completed.OK || completed.Selection.Status != "ready" {
+		t.Fatalf("manual selection completion = %+v", completed)
+	}
+
+	status := app.ApplyCodexXIASSSelectionWithLifecycle(started.State.SessionID, CodexConfigurationLifecycleInput{
+		Config: codexconfig.ApplyConfig{
+			BaseURL:     "https://renderer-controlled.example.test/v1",
+			APIKey:      "renderer-supplied-secret",
+			KeyName:     "renderer-supplied-key-name",
+			Model:       "gpt-5.6-sol",
+			ReviewModel: "gpt-5.6-sol",
+		},
+	})
+	if !status.OK || !status.Applied {
+		t.Fatalf("ApplyCodexXIASSSelectionWithLifecycle() = %+v", status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{secret, "renderer-supplied-secret", "renderer-controlled.example.test", home, "config.toml", started.ConnectURL, completedURL, started.State.SessionID, state} {
+		if bytes.Contains(encoded, []byte(forbidden)) {
+			t.Fatalf("lifecycle status leaked %q: %s", forbidden, encoded)
+		}
+	}
+	written, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{secret, `base_url = "https://gateway.example.test/v1"`, `name = "Lifecycle Key"`} {
+		if !strings.Contains(string(written), want) {
+			t.Fatalf("written Codex config does not contain %q:\n%s", want, written)
+		}
+	}
+	for _, forbidden := range []string{"renderer-supplied-secret", "renderer-controlled.example.test", "renderer-supplied-key-name"} {
+		if strings.Contains(string(written), forbidden) {
+			t.Fatalf("renderer-supplied credential field was not ignored: %q in\n%s", forbidden, written)
+		}
+	}
+	if state := app.GetCodexXIASSKeySelectionStatus(started.State.SessionID); state.Selection.Status != "expired" {
+		t.Fatalf("successful lifecycle apply did not consume selection: %+v", state)
+	}
+	if repeated := app.ApplyCodexXIASSSelectionWithLifecycle(started.State.SessionID, CodexConfigurationLifecycleInput{Config: codexconfig.ApplyConfig{Model: "gpt-5.6-sol"}}); repeated.OK {
+		t.Fatalf("consumed lifecycle selection unexpectedly applied again: %+v", repeated)
+	}
+}
+
+func TestCodexXIASSSelectionLifecycleKeepsCredentialForExplicitRetryAfterFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	service := codexselection.New()
+	t.Cleanup(service.Close)
+	app := &App{
+		ctx:                 context.Background(),
+		codexKeySelection:   service,
+		codexDesktopControl: newCodexLifecycleFakeDesktop(true),
+	}
+	started, err := service.Begin("https://gateway.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	callback, state := selectionCallbackAndState(t, started.ConnectURL)
+	secret := "sk-retryable-selection-secret"
+	completedURL := selectionCallbackURL(callback, state, "https://gateway.example.test/v1", secret, "Retry Key")
+	completed := app.CompleteCodexXIASSKeySelectionManual(started.State.SessionID, completedURL)
+	if !completed.OK {
+		t.Fatalf("manual selection completion = %+v", completed)
+	}
+
+	status := app.ApplyCodexXIASSSelectionWithLifecycle(started.State.SessionID, CodexConfigurationLifecycleInput{
+		Config: codexconfig.ApplyConfig{Model: "gpt-5.6-sol"},
+		// No lifecycle confirmation: a running desktop must remain untouched.
+	})
+	if status.OK || status.Applied || status.DesktopStopped {
+		t.Fatalf("unconfirmed lifecycle selection unexpectedly changed state: %+v", status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{secret, home, "config.toml", started.ConnectURL, completedURL, started.State.SessionID, state} {
+		if bytes.Contains(encoded, []byte(forbidden)) {
+			t.Fatalf("failed lifecycle status leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if state := app.GetCodexXIASSKeySelectionStatus(started.State.SessionID); state.Selection.Status != "ready" {
+		t.Fatalf("failed lifecycle apply consumed retryable selection: %+v", state)
+	}
+	if _, err := os.Stat(filepath.Join(home, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("unconfirmed lifecycle selection wrote config.toml: %v", err)
+	}
+}
 
 func TestCodexXIASSSelectionAppliesNativeOnlyKey(t *testing.T) {
 	home := t.TempDir()

@@ -532,6 +532,150 @@ export async function applyCodexXIASSSelection(sessionID, config) {
   return call("ApplyCodexXIASSSelection", sessionID, config);
 }
 
+// ─── Codex Desktop control ────────────────────────────────────────────────
+// Desktop control is deliberately separate from the Codex config lifecycle.
+// The native layer exposes a redacted status only (no app path, process ID,
+// launch arguments, credentials, or conversation data). These wrappers also
+// keep older installed XIASS Tools builds harmless: a missing new binding
+// becomes an explicit unavailable result rather than a renderer exception.
+const codexDesktopMethodAliases = Object.freeze({
+  status: ["GetCodexDesktopControlStatus", "GetCodexDesktopStatus"],
+  select: ["SelectCodexDesktopInstallation", "SelectCodexDesktopApp"],
+  launch: ["LaunchCodexDesktop", "OpenCodexDesktop"],
+  stop: ["StopCodexDesktop", "StopCodexDesktopApp"],
+  restart: ["RestartCodexDesktop", "RestartCodexDesktopApp"],
+});
+const codexDesktopConfirmationPhrase = "CONFIRM_CODEX_DESKTOP_LIFECYCLE";
+
+function codexDesktopUnavailableResult() {
+  return {
+    ok: false,
+    unavailable: true,
+    message: "当前安装包尚未包含 Codex Desktop 控制功能。",
+  };
+}
+
+function codexDesktopFailedResult() {
+  return {
+    ok: false,
+    unavailable: false,
+    message: "Codex Desktop 操作未完成。请刷新状态后重试。",
+  };
+}
+
+function codexDesktopMethod(methods) {
+  const app = go();
+  if (!app) return null;
+  return methods.find((method) => typeof app[method] === "function") || null;
+}
+
+async function callCodexDesktop(methods, ...args) {
+  const method = codexDesktopMethod(methods);
+  if (!method) return codexDesktopUnavailableResult();
+  try {
+    // Do not log the native response. It is intentionally consumed only by
+    // the local Codex modal after it has been reduced to public status fields.
+    return await go()[method](...args);
+  } catch {
+    return codexDesktopFailedResult();
+  }
+}
+
+async function callConfirmedCodexDesktopAction(methods, confirmed) {
+  if (!confirmed) {
+    return {
+      ok: false,
+      confirmationRequired: true,
+      message: "请先确认此 Codex Desktop 操作。",
+    };
+  }
+  // The native controller accepts this stable acknowledgement string. Do not
+  // retry a failed lifecycle action: a stop/restart is never made implicit or
+  // repeated behind the user's back.
+  return callCodexDesktop(methods, codexDesktopConfirmationPhrase);
+}
+
+export async function getCodexDesktopControlStatus() {
+  return callCodexDesktop(codexDesktopMethodAliases.status);
+}
+
+export async function selectCodexDesktopApp() {
+  return callCodexDesktop(codexDesktopMethodAliases.select);
+}
+
+export async function launchCodexDesktop() {
+  return callCodexDesktop(codexDesktopMethodAliases.launch);
+}
+
+export async function stopCodexDesktop(confirmed = false) {
+  return callConfirmedCodexDesktopAction(codexDesktopMethodAliases.stop, Boolean(confirmed));
+}
+
+export async function restartCodexDesktop(confirmed = false) {
+  return callConfirmedCodexDesktopAction(codexDesktopMethodAliases.restart, Boolean(confirmed));
+}
+
+// The lifecycle transaction is an opt-in composite operation. It preserves
+// the existing lightweight save path above, while allowing a user who has
+// explicitly confirmed the risk to ask native code to stop, save, optionally
+// repair compatibility history, and relaunch one verified Codex Desktop app.
+// `input.config` may contain a request-local API key; neither wrapper stores
+// it in reactive state, browser storage, diagnostics, or console output.
+const codexLifecycleMethodAliases = Object.freeze({
+  manual: ["ApplyCodexConfigurationWithLifecycle"],
+  xiassSelection: ["ApplyCodexXIASSSelectionWithLifecycle"],
+});
+
+function codexLifecycleUnavailableResult() {
+  return {
+    ok: false,
+    unavailable: true,
+    message: "当前安装包尚未包含 Codex 高级生命周期操作。",
+  };
+}
+
+function codexLifecycleFailedResult() {
+  return {
+    ok: false,
+    unavailable: false,
+    message: "Codex 高级操作未完成。",
+  };
+}
+
+async function callCodexLifecycle(methods, ...args) {
+  const method = codexDesktopMethod(methods);
+  if (!method) return codexLifecycleUnavailableResult();
+  try {
+    // Lifecycle responses are consumed only by the local modal after it
+    // reduces them to an allowlisted status. Do not log native responses.
+    return await go()[method](...args);
+  } catch {
+    return codexLifecycleFailedResult();
+  }
+}
+
+function lifecycleInputWithConfirmation(input, confirmed) {
+  return {
+    ...(input && typeof input === "object" ? input : {}),
+    confirmation: confirmed ? codexDesktopConfirmationPhrase : "",
+  };
+}
+
+export async function applyCodexConfigurationWithLifecycle(input, confirmed = false) {
+  return callCodexLifecycle(
+    codexLifecycleMethodAliases.manual,
+    lifecycleInputWithConfirmation(input, Boolean(confirmed)),
+  );
+}
+
+export async function applyCodexXIASSSelectionWithLifecycle(sessionID, input, confirmed = false) {
+  return callCodexLifecycle(
+    codexLifecycleMethodAliases.xiassSelection,
+    sessionID,
+    lifecycleInputWithConfirmation(input, Boolean(confirmed)),
+  );
+}
+
 // ─── Claude Code user settings ─────────────────────────────────────────────
 // These bindings expose only redacted settings status. The authorization token
 // is intentionally supplied from the Claude modal's local component state and
@@ -565,6 +709,125 @@ export async function getMCPConfiguration(target) {
 
 export async function applyMCPConfiguration(input) {
   return call("ApplyMCPConfiguration", input);
+}
+
+// Cursor and Windsurf now expose fixed target-scoped native entry points. The
+// generic calls above remain only as a compatibility fallback for an older
+// installed XIASS Tools binary; a discovered scoped binding is never retried
+// through the generic route after an error, so an explicit save cannot run
+// twice. Remote URLs and recovery metadata stay in the modal's local state.
+const mcpTargetMethods = Object.freeze({
+  cursor: {
+    get: ["GetCursorMCPConfiguration"],
+    apply: ["ApplyCursorMCPConfiguration"],
+    list: ["ListCursorMCPBackups"],
+    restore: ["RestoreCursorMCPBackup"],
+    delete: ["DeleteCursorMCPBackup"],
+  },
+  windsurf: {
+    get: ["GetWindsurfMCPConfiguration"],
+    apply: ["ApplyWindsurfMCPConfiguration"],
+    list: ["ListWindsurfMCPBackups"],
+    restore: ["RestoreWindsurfMCPBackup"],
+    delete: ["DeleteWindsurfMCPBackup"],
+  },
+});
+
+function normalizedMCPConfigurationTarget(target) {
+  const value = String(target || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(mcpTargetMethods, value) ? value : "";
+}
+
+function mcpTargetScopedMethod(target, action) {
+  const methods = mcpTargetMethods[normalizedMCPConfigurationTarget(target)]?.[action];
+  const app = go();
+  if (!app || !Array.isArray(methods)) return null;
+  return methods.find((method) => typeof app[method] === "function") || null;
+}
+
+function mcpTargetScopedUnavailable(action) {
+  const backupAction = ["list", "restore", "delete"].includes(action);
+  return {
+    ok: false,
+    unavailable: true,
+    backups: backupAction ? [] : undefined,
+    message: backupAction ? "当前安装包尚未包含 MCP 恢复点功能。" : "当前安装包尚未包含目标专用 MCP 配置功能。",
+  };
+}
+
+function mcpTargetScopedFailure(action) {
+  const backupAction = ["list", "restore", "delete"].includes(action);
+  return {
+    ok: false,
+    unavailable: false,
+    backups: backupAction ? [] : undefined,
+    message: backupAction ? "MCP 恢复点操作未完成。" : "MCP 配置操作未完成。",
+  };
+}
+
+async function callTargetScopedMCP(target, action, args = []) {
+  const method = mcpTargetScopedMethod(target, action);
+  if (!method) return null;
+  try {
+    // Never log a native MCP response: it may only be reduced to the safe
+    // view-model in MCPConfigurationModal.
+    return await go()[method](...args);
+  } catch {
+    return mcpTargetScopedFailure(action);
+  }
+}
+
+export async function getTargetMCPConfiguration(target) {
+  const normalized = normalizedMCPConfigurationTarget(target);
+  if (!normalized) return mcpTargetScopedUnavailable("get");
+  const result = await callTargetScopedMCP(normalized, "get");
+  if (result !== null) return result;
+  return getMCPConfiguration(normalized);
+}
+
+export async function applyTargetMCPConfiguration(target, remoteURL) {
+  const normalized = normalizedMCPConfigurationTarget(target);
+  if (!normalized) return mcpTargetScopedUnavailable("apply");
+  const scopedInput = { remoteUrl: String(remoteURL || "") };
+  try {
+    const result = await callTargetScopedMCP(normalized, "apply", [scopedInput]);
+    if (result !== null) return result;
+    return applyMCPConfiguration({ target: normalized, remoteUrl: scopedInput.remoteUrl });
+  } finally {
+    scopedInput.remoteUrl = "";
+  }
+}
+
+export async function listTargetMCPBackups(target) {
+  const normalized = normalizedMCPConfigurationTarget(target);
+  if (!normalized) return mcpTargetScopedUnavailable("list");
+  const result = await callTargetScopedMCP(normalized, "list");
+  return result ?? mcpTargetScopedUnavailable("list");
+}
+
+export async function restoreTargetMCPBackup(target, backupID) {
+  const normalized = normalizedMCPConfigurationTarget(target);
+  if (!normalized) return mcpTargetScopedUnavailable("restore");
+  const opaqueID = String(backupID || "");
+  try {
+    const result = await callTargetScopedMCP(normalized, "restore", [opaqueID]);
+    return result ?? mcpTargetScopedUnavailable("restore");
+  } finally {
+    // The opaque ID is not retained in shared state or surfaced to the UI.
+    // It exists only for this direct, user-confirmed native request.
+  }
+}
+
+export async function deleteTargetMCPBackup(target, backupID) {
+  const normalized = normalizedMCPConfigurationTarget(target);
+  if (!normalized) return mcpTargetScopedUnavailable("delete");
+  const opaqueID = String(backupID || "");
+  try {
+    const result = await callTargetScopedMCP(normalized, "delete", [opaqueID]);
+    return result ?? mcpTargetScopedUnavailable("delete");
+  } finally {
+    // See restoreTargetMCPBackup: the opaque ID never reaches global state.
+  }
 }
 
 let dashboardRefreshPromise = null;

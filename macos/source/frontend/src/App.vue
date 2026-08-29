@@ -144,12 +144,6 @@ function handleAgentConfigure(agentID) {
 	agentDetailOpen.value = true;
 }
 
-function handleAgentLaunch(agentID) {
-	if (agentID === "antigravity") {
-		tab.value = "dashboard";
-	}
-}
-
 function handleAgentOpen(agentID) {
 	selectedAgentID.value = agentID;
 	selectedAgentDiagnostics.value = state.agents.diagnostics.filter((item) => item.agentId === agentID);
@@ -266,7 +260,7 @@ onUnmounted(() => {
             <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
           </svg>
         </button>
-        <span class="version-pill">v1.6.4</span>
+        <span class="version-pill">v1.6.5</span>
       </div>
     </aside>
 
@@ -300,7 +294,6 @@ onUnmounted(() => {
 			:message="state.agents.message"
             @refresh="handleAgentRefresh"
             @configure="handleAgentConfigure"
-            @launch="handleAgentLaunch"
             @diagnose="handleAgentDiagnose"
             @open="handleAgentOpen"
           />

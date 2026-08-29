@@ -34,6 +34,10 @@ const (
 	SourceLocalAppData       Source = "local_app_data"
 	SourceProgramFiles       Source = "program_files"
 	SourceWindowsStore       Source = "windows_store"
+	// SourceManualSelection records that the user explicitly selected a
+	// structure-validated application through the native picker. The selected
+	// path itself is deliberately never included in any public DTO.
+	SourceManualSelection Source = "manual_selection"
 )
 
 // Warning is a stable, non-sensitive reason that discovery could not make a

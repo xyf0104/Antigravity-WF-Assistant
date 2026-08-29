@@ -10,6 +10,24 @@ import (
 	"antigravity-byok/internal/mcpconfig"
 )
 
+func TestMCPAgentMetadataOnlyDeclaresGlobalMCPConfiguration(t *testing.T) {
+	for _, adapter := range []*mcpAgentAdapter{newCursorMCPAgentAdapter(), newWindsurfMCPAgentAdapter()} {
+		metadata := adapter.Metadata()
+		if !strings.Contains(metadata.Description, "global MCP configuration") || !strings.Contains(metadata.Description, "no account, OAuth, or session integration") {
+			t.Fatalf("metadata did not accurately scope %s: %q", metadata.ID, metadata.Description)
+		}
+		if declaration := mcpCapabilityDeclaration(metadata, agent.CapabilityConfiguration); declaration.Availability != agent.CapabilityRequiresBinding || !strings.Contains(declaration.Summary, "global MCP configuration") {
+			t.Fatalf("configuration declaration for %s = %#v", metadata.ID, declaration)
+		}
+		for _, capability := range []agent.Capability{agent.CapabilityLocalProxy, agent.CapabilityModelCatalog, agent.CapabilityBackup, agent.CapabilityOAuth, agent.CapabilityUsage, agent.CapabilityTwoFactorAuth} {
+			declaration := mcpCapabilityDeclaration(metadata, capability)
+			if declaration.Availability != agent.CapabilityNotImplemented {
+				t.Fatalf("%s declaration for %s was unexpectedly available: %#v", capability, metadata.ID, declaration)
+			}
+		}
+	}
+}
+
 func TestMCPAgentStatusOnlyEnablesVerifiedGlobalConfiguration(t *testing.T) {
 	metadata := newCursorMCPAgentAdapter().Metadata()
 	cases := []struct {
@@ -79,8 +97,32 @@ func TestMCPAgentStatusOnlyEnablesVerifiedGlobalConfiguration(t *testing.T) {
 					t.Fatalf("unsupported account or proxy capability was advertised: %s", capability)
 				}
 			}
+			if agentCapabilityAvailable(status, agent.CapabilityBackup) {
+				t.Fatalf("generic backup capability was advertised despite only global MCP recovery points being supported")
+			}
+			if reason := agentCapabilityReason(status, agent.CapabilityBackup); !strings.Contains(reason, "global MCP configuration") {
+				t.Fatalf("backup capability reason did not accurately scope recovery points: %q", reason)
+			}
 		})
 	}
+}
+
+func agentCapabilityReason(status agent.Status, wanted agent.Capability) string {
+	for _, capability := range status.Capabilities {
+		if capability.Capability == wanted {
+			return capability.Reason
+		}
+	}
+	return ""
+}
+
+func mcpCapabilityDeclaration(metadata agent.Metadata, wanted agent.Capability) agent.CapabilityDeclaration {
+	for _, declaration := range metadata.Capabilities {
+		if declaration.Capability == wanted {
+			return declaration
+		}
+	}
+	return agent.CapabilityDeclaration{}
 }
 
 func TestMCPBridgeRejectsUnknownTargetWithoutEchoingEndpoint(t *testing.T) {

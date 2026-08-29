@@ -14,6 +14,7 @@ import (
 
 	"antigravity-byok/internal/agent"
 	"antigravity-byok/internal/agentdiscovery"
+	"antigravity-byok/internal/codexdesktop"
 	"antigravity-byok/internal/codexselection"
 	"antigravity-byok/internal/diagnostics"
 	"antigravity-byok/internal/launcher"
@@ -56,6 +57,9 @@ type App struct {
 	oauthLoopbacks        map[string]*oauthLoopbackListener
 	codexSelectionMu      sync.Mutex
 	codexKeySelection     *codexselection.Service
+	codexDesktopMu        sync.Mutex
+	codexDesktopControl   codexDesktopControlService
+	codexDesktopOperation sync.Mutex
 	exitRequested         atomic.Bool
 }
 
@@ -77,14 +81,15 @@ func newApp() *App {
 		log.Printf("[wf] 无法初始化本地诊断日志: %v", err)
 	}
 	application := &App{
-		storageDir:         dir,
-		permissions:        permissions.New(home, dir),
-		accountTestCancels: make(map[string]*activeAccountTest),
-		oauthSessions:      make(map[string]*pendingOAuthSession),
-		oauthResults:       make(map[string]oauthAuthorizationRecord),
-		oauthLoopbacks:     make(map[string]*oauthLoopbackListener),
-		codexKeySelection:  codexselection.New(),
-		historyStatus:      HistorySyncStatus{State: "pending", Message: "等待启动时同步历史会话"},
+		storageDir:          dir,
+		permissions:         permissions.New(home, dir),
+		accountTestCancels:  make(map[string]*activeAccountTest),
+		oauthSessions:       make(map[string]*pendingOAuthSession),
+		oauthResults:        make(map[string]oauthAuthorizationRecord),
+		oauthLoopbacks:      make(map[string]*oauthLoopbackListener),
+		codexKeySelection:   codexselection.New(),
+		codexDesktopControl: codexdesktop.NewController(),
+		historyStatus:       HistorySyncStatus{State: "pending", Message: "等待启动时同步历史会话"},
 	}
 	if vault, vaultErr := totp.New(dir); vaultErr != nil {
 		log.Printf("[xiass-tools] 无法初始化系统凭据库：%v", vaultErr)
