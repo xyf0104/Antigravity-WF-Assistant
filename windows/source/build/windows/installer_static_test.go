@@ -49,8 +49,8 @@ func TestVersionedArtifactsDeriveFromBuildVersion(t *testing.T) {
 	for _, required := range []string{
 		"!ifndef APP_VERSION",
 		`!error "APP_VERSION is required. Run makensis with /DAPP_VERSION=<VERSION>."`,
-		`!define APP_SOURCE_EXE "Antigravity WF助手-v${APP_VERSION}.exe"`,
-		`!define APP_SETUP_EXE "Antigravity-WF-Assistant-Windows-x64-v${APP_VERSION}-Setup.exe"`,
+		`!define APP_SOURCE_EXE "XIASS Tools-v${APP_VERSION}.exe"`,
+		`!define APP_SETUP_EXE "XIASS-Tools-Windows-x64-v${APP_VERSION}-Setup.exe"`,
 		`OutFile "..\bin\${APP_SETUP_EXE}"`,
 		`VIProductVersion "${APP_VERSION}.0"`,
 	} {

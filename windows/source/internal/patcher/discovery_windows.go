@@ -193,15 +193,26 @@ func windowsInstallCandidates(includeShell bool) ([]string, bool) {
 // recorded after a successful connection. The state file never contains
 // accounts, model credentials, chat history or user configuration.
 func windowsSavedInstallPaths() []string {
+	stateName := "antigravity-install-state.json"
+	if statePath := xiassPatcherInstallStatePath(stateName); statePath != "" {
+		if data, err := os.ReadFile(statePath); err == nil {
+			return windowsSavedInstallPathsFromData(data)
+		}
+	}
+	// A standalone diagnostic can run before the app performs its storage
+	// migration. Keep legacy state as a read-only fallback; normal XIASS Tools
+	// startup has already migrated it to the path above.
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".antigravity-byok", "antigravity-install-state.json"))
-	if err != nil {
-		return nil
+	for _, legacy := range []string{".antigravity-wf", ".antigravity-byok"} {
+		data, readErr := os.ReadFile(filepath.Join(home, legacy, stateName))
+		if readErr == nil {
+			return windowsSavedInstallPathsFromData(data)
+		}
 	}
-	return windowsSavedInstallPathsFromData(data)
+	return nil
 }
 
 func windowsSavedInstallPathsFromData(data []byte) []string {

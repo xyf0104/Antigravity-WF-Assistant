@@ -1223,7 +1223,7 @@ func windowsOptionalPath(path string) string {
 func windowsPermissionHint(err error) error {
 	if errors.Is(err, os.ErrPermission) || errors.Is(err, winapi.ERROR_ACCESS_DENIED) ||
 		strings.Contains(strings.ToLower(err.Error()), "access is denied") {
-		return fmt.Errorf("%w；安装目录需要管理员权限，请右键 Antigravity WF助手并选择“以管理员身份运行”", err)
+		return fmt.Errorf("%w；安装目录需要管理员权限，请右键 XIASS Tools 并选择“以管理员身份运行”", err)
 	}
 	return err
 }

@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/agentdiscovery"
+	"antigravity-wf-assistant/internal/codexselection"
 	"antigravity-wf-assistant/internal/diagnostics"
 	"antigravity-wf-assistant/internal/launcher"
 	"antigravity-wf-assistant/internal/oauthflow"
@@ -22,6 +25,7 @@ import (
 	"antigravity-wf-assistant/internal/proxy"
 	"antigravity-wf-assistant/internal/stats"
 	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/totp"
 	"antigravity-wf-assistant/internal/updater"
 	"antigravity-wf-assistant/internal/upstream"
 
@@ -33,6 +37,10 @@ type App struct {
 	ctx                   context.Context
 	storageDir            string
 	permissions           *permissions.Manager
+	totpVault             *totp.Vault
+	agentRegistry         *agent.Registry
+	antigravityAgent      *antigravityAgentAdapter
+	agentRefreshMu        sync.Mutex
 	historyMu             sync.RWMutex
 	historyRunMu          sync.Mutex
 	historyStatus         HistorySyncStatus
@@ -49,6 +57,8 @@ type App struct {
 	oauthSessions         map[string]*pendingOAuthSession
 	oauthResults          map[string]oauthAuthorizationRecord
 	oauthLoopbacks        map[string]*oauthLoopbackListener
+	codexSelectionMu      sync.Mutex
+	codexKeySelection     *codexselection.Service
 	exitRequested         atomic.Bool
 }
 
@@ -99,25 +109,72 @@ type UpstreamAccountView struct {
 
 func newApp() *App {
 	home, _ := os.UserHomeDir()
-	dir := resolveWFStorageDir(home)
+	dir := resolveXIASSStorageDir(home)
 	_ = os.MkdirAll(dir, 0o700)
 	_ = os.Chmod(dir, 0o700)
 	storage.Init(dir)
 	if err := diagnostics.Init(dir); err != nil {
 		log.Printf("[wf] 无法初始化本地诊断日志: %v", err)
 	}
-	return &App{
+	application := &App{
 		storageDir:         dir,
 		permissions:        permissions.New(home, dir),
 		accountTestCancels: make(map[string]*activeAccountTest),
 		oauthSessions:      make(map[string]*pendingOAuthSession),
 		oauthResults:       make(map[string]oauthAuthorizationRecord),
 		oauthLoopbacks:     make(map[string]*oauthLoopbackListener),
+		codexKeySelection:  codexselection.New(),
 		historyStatus: HistorySyncStatus{
 			State:   "pending",
 			Message: "等待启动时同步历史会话",
 		},
 	}
+	if vault, vaultErr := totp.New(dir); vaultErr != nil {
+		log.Printf("[xiass-tools] 无法初始化系统凭据库：%v", vaultErr)
+	} else {
+		application.totpVault = vault
+	}
+	application.initializeAgentRegistry()
+	return application
+}
+
+// initializeAgentRegistry binds only adapters with real, local implementations.
+// A binding failure is logged and leaves the corresponding public profile
+// conservatively unbound rather than making startup fail or advertising an
+// integration that cannot be used.
+func (a *App) initializeAgentRegistry() {
+	registry := agent.NewDefaultRegistry()
+	antigravityAdapter := newAntigravityAgentAdapter()
+	if err := registry.Bind(antigravityAdapter); err != nil {
+		log.Printf("[xiass-tools] 无法绑定 Antigravity 集成: %v", err)
+	} else {
+		a.antigravityAgent = antigravityAdapter
+	}
+	if err := registry.Bind(newCodexAgentAdapter()); err != nil {
+		log.Printf("[xiass-tools] 无法绑定 Codex 集成: %v", err)
+	}
+	if err := registry.Bind(newClaudeCodeAgentAdapter()); err != nil {
+		log.Printf("[xiass-tools] 无法绑定 Claude Code 集成: %v", err)
+	}
+	if err := registry.Bind(newCursorMCPAgentAdapter()); err != nil {
+		log.Printf("[xiass-tools] 无法绑定 Cursor MCP 集成: %v", err)
+	}
+	if err := registry.Bind(newWindsurfMCPAgentAdapter()); err != nil {
+		log.Printf("[xiass-tools] 无法绑定 Windsurf MCP 集成: %v", err)
+	}
+	for _, adapter := range agentdiscovery.NewAdapters() {
+		// Each discovery adapter below has a concrete, narrowly-scoped binding
+		// above. Avoid overwriting its verified capability status with a generic
+		// read-only duplicate detector.
+		switch adapter.Metadata().ID {
+		case agent.ClaudeCodeID, agent.CursorID, agent.WindsurfID:
+			continue
+		}
+		if err := registry.Bind(adapter); err != nil {
+			log.Printf("[xiass-tools] 无法绑定本机 Agent 检测器: %v", err)
+		}
+	}
+	a.agentRegistry = registry
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -185,6 +242,7 @@ func (a *App) requestQuit() {
 // safe on that fallback path as well.
 func (a *App) releaseExitResources() {
 	a.stopOAuthLoopbacks()
+	a.closeCodexKeySelections()
 	_ = proxy.Stop()
 }
 
@@ -202,7 +260,7 @@ func (a *App) ExportDiagnosticLogs() Result {
 	if a.ctx == nil {
 		return Result{OK: false, Message: "助手尚未完成启动，请稍后再试。"}
 	}
-	filename := "Antigravity-WF-Diagnostics-" + time.Now().Format("20060102-150405") + ".zip"
+	filename := "XIASS-Tools-Diagnostics-" + time.Now().Format("20060102-150405") + ".zip"
 	destination, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           "导出诊断日志",
 		DefaultFilename: filename,
@@ -522,7 +580,7 @@ func (a *App) InstallLatestUpdate() Result {
 	// Quit immediately once that handoff succeeds; a fixed delay can leave the
 	// currently installed bundle running when Installer begins its replacement.
 	go a.requestQuit()
-	return Result{OK: true, Message: "安装程序已启动；完成系统安装后请重新打开 Antigravity WF助手。"}
+	return Result{OK: true, Message: "安装程序已启动；完成系统安装后请重新打开 XIASS Tools。"}
 }
 
 func (a *App) emitUpdateProgress(progress UpdateProgress) {
@@ -546,7 +604,7 @@ func (a *App) SetAutoApproval(settings AutoApprovalSettings) Result {
 	if status.Enabled {
 		return Result{OK: true, Message: fmt.Sprintf("命令自动批准已启用，共管理 %d 条授权规则。重新打开 Agent Window 后生效。", len(status.ManagedGrants))}
 	}
-	return Result{OK: true, Message: "命令自动批准已关闭，WF助手添加的授权已移除。重新打开 Agent Window 后生效。"}
+	return Result{OK: true, Message: "命令自动批准已关闭，XIASS Tools 添加的授权已移除。重新打开 Agent Window 后生效。"}
 }
 
 func (a *App) GetHistorySyncStatus() HistorySyncStatus {
@@ -1591,7 +1649,7 @@ func (a *App) ensureProxyReadyForAntigravityLaunch() error {
 		return errors.New("本地代理连接正在安全调整中。请先点击“应用全部补丁”，完成后再启动 Antigravity")
 	}
 	if !proxy.IsManagedListener() {
-		return errors.New("本地代理未通过健康检查，未启动 Antigravity。请稍后重试或重新打开 WF 助手")
+		return errors.New("本地代理未通过健康检查，未启动 Antigravity。请稍后重试或重新打开 XIASS Tools")
 	}
 	return nil
 }

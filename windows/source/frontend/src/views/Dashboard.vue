@@ -205,7 +205,7 @@ onUnmounted(() => {
           <div class="t-headline">{{ statusLabel }}</div>
           <div class="t-caption" style="color: inherit; opacity: 0.7">
             本地代理 ·
-            {{ state.patch.proxyManaged ? "当前 WF助手正在监听" : state.patch.proxyListening ? "被其他程序占用" : "未监听" }}
+            {{ state.patch.proxyManaged ? "当前 XIASS Tools 正在监听" : state.patch.proxyListening ? "被其他程序占用" : "未监听" }}
           </div>
         </div>
       </div>

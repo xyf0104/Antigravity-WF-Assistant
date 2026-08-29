@@ -76,7 +76,7 @@ void wfTrayStart(const unsigned char *iconBytes, int iconLength) {
                                                          name:NSApplicationDidHideNotification
                                                        object:NSApp];
 
-            wfStatusMenu = [[NSMenu alloc] initWithTitle:@"Antigravity WF助手"];
+            wfStatusMenu = [[NSMenu alloc] initWithTitle:@"XIASS Tools"];
             NSMenuItem *showItem = [[NSMenuItem alloc] initWithTitle:@"打开主界面"
                                                                action:@selector(showMainWindow:)
                                                         keyEquivalent:@""];
@@ -84,7 +84,7 @@ void wfTrayStart(const unsigned char *iconBytes, int iconLength) {
             [wfStatusMenu addItem:showItem];
             [wfStatusMenu addItem:[NSMenuItem separatorItem]];
 
-            NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"退出 Antigravity WF助手"
+            NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"退出 XIASS Tools"
                                                                action:@selector(quitApplication:)
                                                         keyEquivalent:@""];
             [quitItem setTarget:wfTrayController];
@@ -94,7 +94,7 @@ void wfTrayStart(const unsigned char *iconBytes, int iconLength) {
             [button setTarget:wfTrayController];
             [button setAction:@selector(statusItemClicked:)];
             [button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)];
-            [button setAccessibilityLabel:@"Antigravity WF助手"];
+            [button setAccessibilityLabel:@"XIASS Tools"];
         }
 
         NSImage *image = [[NSImage alloc] initWithData:iconData];
@@ -104,7 +104,7 @@ void wfTrayStart(const unsigned char *iconBytes, int iconLength) {
             [[wfStatusItem button] setImage:image];
             [[wfStatusItem button] setImagePosition:NSImageOnly];
         }
-        [[wfStatusItem button] setToolTip:@"Antigravity WF助手"];
+        [[wfStatusItem button] setToolTip:@"XIASS Tools"];
         if (getenv("WF_TRAY_DEBUG") != NULL) {
             NSRect frame = [[wfStatusItem button] frame];
             NSWindow *buttonWindow = [[wfStatusItem button] window];

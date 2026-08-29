@@ -1,4 +1,4 @@
-name: Build macOS
+name: Build XIASS Tools for macOS
 
 on:
   workflow_dispatch:
@@ -75,7 +75,7 @@ jobs:
         run: go vet ./...
 
       - name: Build Universal App
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform darwin/universal -trimpath -o "Antigravity WF助手"
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform darwin/universal -trimpath -o "XIASS Tools"
 
       - name: Package macOS installer
         run: ./build/darwin/package-installer.sh
@@ -83,7 +83,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Antigravity-WF-Assistant-macOS-universal
+          name: XIASS-Tools-macOS-universal
           path: |
-            macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v*-Installer.pkg
+            macos/source/build/bin/XIASS-Tools-macOS-universal-v*-Installer.pkg
           if-no-files-found: error

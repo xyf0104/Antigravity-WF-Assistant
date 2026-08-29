@@ -1,5 +1,5 @@
 // Package updater performs a deliberately narrow, verified update check for
-// Antigravity WF助手's own public GitHub releases. It never accepts an
+// XIASS Tools' own public GitHub releases. It never accepts an
 // arbitrary URL from the renderer and verifies the published SHA256 manifest
 // before handing an installer to the operating system.
 package updater
@@ -24,7 +24,7 @@ import (
 
 const (
 	Repository     = "xyf0104/Antigravity-WF-Assistant"
-	CurrentVersion = "1.6.3"
+	CurrentVersion = "1.6.4"
 	maxAssetBytes  = int64(2 << 30) // installers are normally tens of MB
 	// CheckTimeout keeps a background update check from blocking the UI when a
 	// network, DNS resolver, proxy, or captive portal is unhealthy.
@@ -154,7 +154,7 @@ func DownloadLatestInstaller(ctx context.Context, report func(downloaded, total 
 	if err != nil {
 		return "", Info{}, fmt.Errorf("无法创建安装包下载请求")
 	}
-	request.Header.Set("User-Agent", "Antigravity-WF-Assistant/"+CurrentVersion)
+	request.Header.Set("User-Agent", "XIASS-Tools/"+CurrentVersion)
 	response, err := httpClient().Do(request)
 	if err != nil {
 		return "", Info{}, fmt.Errorf("下载更新失败")
@@ -167,7 +167,7 @@ func DownloadLatestInstaller(ctx context.Context, report func(downloaded, total 
 		return "", Info{}, fmt.Errorf("更新安装包过大，已拒绝下载")
 	}
 
-	temp, err := os.CreateTemp("", "antigravity-wf-update-*."+installerExtension(asset.Name))
+	temp, err := os.CreateTemp("", "xiass-tools-update-*."+installerExtension(asset.Name))
 	if err != nil {
 		return "", Info{}, err
 	}
@@ -363,7 +363,7 @@ func fetchReleaseList(ctx context.Context, etag string) ([]githubRelease, string
 		return nil, "", false, fmt.Errorf("无法创建更新请求: %w", err)
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("User-Agent", "Antigravity-WF-Assistant/"+CurrentVersion)
+	request.Header.Set("User-Agent", "XIASS-Tools/"+CurrentVersion)
 	if strings.TrimSpace(etag) != "" {
 		request.Header.Set("If-None-Match", etag)
 	}
@@ -545,7 +545,7 @@ func releaseChecksum(ctx context.Context, release githubRelease, assetName strin
 	if err != nil {
 		return "", err
 	}
-	request.Header.Set("User-Agent", "Antigravity-WF-Assistant/"+CurrentVersion)
+	request.Header.Set("User-Agent", "XIASS-Tools/"+CurrentVersion)
 	response, err := httpClient().Do(request)
 	if err != nil {
 		return "", fmt.Errorf("无法下载更新校验清单")
@@ -590,9 +590,9 @@ func selectInstaller(release githubRelease, platform string) (githubAsset, error
 	expectedName := ""
 	switch platform {
 	case "darwin":
-		expectedName = fmt.Sprintf("Antigravity-WF-Assistant-macOS-universal-v%s-Installer.pkg", version)
+		expectedName = fmt.Sprintf("XIASS-Tools-macOS-universal-v%s-Installer.pkg", version)
 	case "windows":
-		expectedName = fmt.Sprintf("Antigravity-WF-Assistant-Windows-x64-v%s-Setup.exe", version)
+		expectedName = fmt.Sprintf("XIASS-Tools-Windows-x64-v%s-Setup.exe", version)
 	default:
 		return githubAsset{}, fmt.Errorf("该版本没有适用于当前系统的安装包")
 	}

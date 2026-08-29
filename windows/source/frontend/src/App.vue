@@ -1,10 +1,14 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import Dashboard from "@/views/Dashboard.vue";
+import Tools from "@/views/Tools.vue";
 import Models from "@/views/Models.vue";
 import Accounts from "@/views/Accounts.vue";
 import Permissions from "@/views/Permissions.vue";
 import Settings from "@/views/Settings.vue";
+import CodexConfigurationModal from "@/components/CodexConfigurationModal.vue";
+import ClaudeCodeConfigurationModal from "@/components/ClaudeCodeConfigurationModal.vue";
+import MCPConfigurationModal from "@/components/MCPConfigurationModal.vue";
 import Button from "@/components/ui/Button.vue";
 import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
@@ -16,6 +20,8 @@ import {
 	installLatestUpdate,
 	applyPatch,
 	loadPatchStatus,
+	refreshAgentStatuses,
+	diagnoseAgent,
 } from "@/state/appState";
 
 const tab = ref("dashboard");
@@ -25,10 +31,18 @@ const updateDialogError = ref("");
 const dismissedUpdateVersion = ref("");
 const repatchDialogOpen = ref(false);
 const repatchError = ref("");
+const agentDetailOpen = ref(false);
+const codexConfigurationOpen = ref(false);
+const claudeCodeConfigurationOpen = ref(false);
+const mcpConfigurationOpen = ref(false);
+const mcpConfigurationTarget = ref("");
+const selectedAgentID = ref("");
+const selectedAgentDiagnostics = ref([]);
 let removeMainWindowShownListener = null;
 const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 const tabs = [
   { label: "总览", value: "dashboard", hint: "运行状态与快捷操作" },
+  { label: "工具", value: "tools", hint: "本机 Agent 检测与配置入口" },
   { label: "模型", value: "models", hint: "管理自定义上游模型" },
   { label: "账户池", value: "accounts", hint: "凭据、健康状态与自动调度" },
   { label: "权限", value: "permissions", hint: "终端命令自动批准" },
@@ -45,6 +59,7 @@ const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 const currentTab = computed(() => tabs.find((item) => item.value === tab.value) || tabs[0]);
 const updateProgressPercent = computed(() => Math.min(100, Math.max(0, Number(state.update.progress?.percent) || 0)));
+const selectedAgent = computed(() => state.agents.platforms.find((platform) => (platform.agentId || platform.id) === selectedAgentID.value) || null);
 
 function applyTheme() {
   const resolved = themeMode.value === "system"
@@ -93,6 +108,64 @@ function handleMainWindowShown() {
 	tab.value = "dashboard";
 	void loadPatchStatus();
 	if (state.settings?.updates?.autoCheck !== false) void checkForUpdates();
+}
+
+async function handleAgentRefresh() {
+	await refreshAgentStatuses();
+}
+
+async function handleAgentDiagnose(agentID) {
+	selectedAgentID.value = agentID;
+	const result = await diagnoseAgent(agentID);
+	selectedAgentDiagnostics.value = result?.diagnostics || [];
+	agentDetailOpen.value = true;
+}
+
+function handleAgentConfigure(agentID) {
+	if (agentID === "antigravity") {
+		tab.value = "models";
+		return;
+	}
+	if (agentID === "codex") {
+		codexConfigurationOpen.value = true;
+		return;
+	}
+	if (agentID === "claude-code") {
+		claudeCodeConfigurationOpen.value = true;
+		return;
+	}
+	if (agentID === "cursor" || agentID === "windsurf") {
+		mcpConfigurationTarget.value = agentID;
+		mcpConfigurationOpen.value = true;
+		return;
+	}
+	selectedAgentID.value = agentID;
+	selectedAgentDiagnostics.value = state.agents.diagnostics.filter((item) => item.agentId === agentID);
+	agentDetailOpen.value = true;
+}
+
+function handleAgentLaunch(agentID) {
+	if (agentID === "antigravity") {
+		tab.value = "dashboard";
+	}
+}
+
+function handleAgentOpen(agentID) {
+	selectedAgentID.value = agentID;
+	selectedAgentDiagnostics.value = state.agents.diagnostics.filter((item) => item.agentId === agentID);
+	agentDetailOpen.value = true;
+}
+
+function handleCodexConfigurationChanged() {
+	void refreshAgentStatuses();
+}
+
+function handleClaudeCodeConfigurationChanged() {
+	void refreshAgentStatuses();
+}
+
+function handleMCPConfigurationChanged() {
+	void refreshAgentStatuses();
 }
 
 watch(themeMode, (value) => {
@@ -145,8 +218,8 @@ onUnmounted(() => {
 <template>
   <div class="shell">
     <aside class="sidebar" :class="{ mac: isMac }" style="--wails-draggable: drag">
-      <div class="brand-mark" title="Antigravity WF助手">
-        <img src="/wf-logo.png" alt="Antigravity WF" />
+      <div class="brand-mark" title="XIASS Tools">
+        <img src="/xiass-tools-logo.png" alt="XIASS Tools" />
       </div>
 
       <nav class="nav-stack" aria-label="主导航" style="--wails-draggable: no-drag">
@@ -160,6 +233,9 @@ onUnmounted(() => {
         >
           <svg v-if="item.value === 'dashboard'" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z" />
+          </svg>
+          <svg v-else-if="item.value === 'tools'" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M13.4 6.6a4.1 4.1 0 0 0-5.8 5.8l-4.1 4.1a2 2 0 0 0 2.8 2.8l4.1-4.1a4.1 4.1 0 0 0 5.8-5.8l-2.5 2.5-2.3-.6-.6-2.3 2.5-2.4Z" />
           </svg>
           <svg v-else-if="item.value === 'models'" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 3 3.8 7.4 12 11.8l8.2-4.4L12 3Zm-8.2 8L12 15.4l8.2-4.4M3.8 14.6 12 19l8.2-4.4" />
@@ -190,14 +266,14 @@ onUnmounted(() => {
             <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
           </svg>
         </button>
-        <span class="version-pill">v1.6.3</span>
+        <span class="version-pill">v1.6.4</span>
       </div>
     </aside>
 
     <section class="workspace">
       <header class="topbar" style="--wails-draggable: drag">
         <div class="page-title">
-          <div class="eyebrow">ANTIGRAVITY WF助手</div>
+          <div class="eyebrow">XIASS TOOLS</div>
           <div class="title-row">
             <h1>{{ currentTab.label }}</h1>
             <span>{{ currentTab.hint }}</span>
@@ -214,6 +290,20 @@ onUnmounted(() => {
       <main class="main">
         <Transition name="page" mode="out-in">
           <Dashboard v-if="tab === 'dashboard'" key="dashboard" />
+          <Tools
+            v-else-if="tab === 'tools'"
+            key="tools"
+            :platforms="state.agents.platforms"
+            :loading="state.agents.loading"
+            :action-busy="state.agents.actionBusy"
+			:preview="state.agents.preview"
+			:message="state.agents.message"
+            @refresh="handleAgentRefresh"
+            @configure="handleAgentConfigure"
+            @launch="handleAgentLaunch"
+            @diagnose="handleAgentDiagnose"
+            @open="handleAgentOpen"
+          />
           <Models v-else-if="tab === 'models'" key="models" />
           <Accounts v-else-if="tab === 'accounts'" key="accounts" />
           <Permissions v-else-if="tab === 'permissions'" key="permissions" />
@@ -230,9 +320,46 @@ onUnmounted(() => {
       </template>
     </Modal>
 
+	<Modal :open="agentDetailOpen" :title="selectedAgent ? `${selectedAgent.displayName} 本机状态` : '工具状态'" @close="agentDetailOpen = false">
+	  <div class="agent-detail-copy">
+		<span v-if="selectedAgent?.message">{{ selectedAgent.message }}</span>
+		<span v-if="(selectedAgent?.agentId || selectedAgent?.id) !== 'codex' && selectedAgent?.installation?.root" class="agent-detail-path">{{ selectedAgent.installation.root }}</span>
+		<div v-if="selectedAgentDiagnostics.length" class="agent-diagnostic-list">
+		  <article v-for="(diagnostic, index) in selectedAgentDiagnostics" :key="`${diagnostic.code}-${index}`" :class="['agent-diagnostic', diagnostic.severity || 'info']">
+			<strong>{{ diagnostic.summary }}</strong>
+			<span v-if="diagnostic.detail">{{ diagnostic.detail }}</span>
+			<span v-if="diagnostic.remediation" class="agent-remediation">{{ diagnostic.remediation }}</span>
+		  </article>
+		</div>
+		<span v-else class="agent-detail-empty">尚无额外诊断信息。</span>
+	  </div>
+	  <template #footer>
+		<Button variant="plain" @click="agentDetailOpen = false">关闭</Button>
+	  </template>
+	</Modal>
+
+	<CodexConfigurationModal
+		:open="codexConfigurationOpen"
+		@close="codexConfigurationOpen = false"
+		@changed="handleCodexConfigurationChanged"
+	/>
+
+	<ClaudeCodeConfigurationModal
+		:open="claudeCodeConfigurationOpen"
+		@close="claudeCodeConfigurationOpen = false"
+		@changed="handleClaudeCodeConfigurationChanged"
+	/>
+
+	<MCPConfigurationModal
+		:open="mcpConfigurationOpen"
+		:target="mcpConfigurationTarget"
+		@close="mcpConfigurationOpen = false"
+		@changed="handleMCPConfigurationChanged"
+	/>
+
 	<Modal :open="updateDialogOpen" title="发现新版本" @close="dismissUpdateDialog">
 	  <div class="global-dialog-copy">
-		<strong>Antigravity WF助手 v{{ state.update.info.latestVersion }}</strong>
+		<strong>XIASS Tools v{{ state.update.info.latestVersion }}</strong>
 		<span>当前为 v{{ state.update.info.currentVersion || '—' }}，可以直接下载、校验并启动新版安装程序。</span>
 		<span v-if="state.update.info.notes" class="update-notes">{{ state.update.info.notes }}</span>
 	  </div>
@@ -270,6 +397,46 @@ onUnmounted(() => {
   height: 100vh;
   background: var(--bg-base);
 }
+
+.agent-detail-copy {
+	display: grid;
+	gap: 12px;
+	color: var(--text-secondary);
+	font-size: 13px;
+	line-height: 1.6;
+}
+
+.agent-detail-path {
+	overflow: hidden;
+	border: 1px solid var(--separator);
+	border-radius: 7px;
+	background: var(--bg-inset);
+	color: var(--text-tertiary);
+	font-family: var(--font-num);
+	font-size: 11px;
+	padding: 8px 10px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agent-diagnostic-list { display: grid; gap: 8px; }
+
+.agent-diagnostic {
+	display: grid;
+	gap: 3px;
+	border: 1px solid var(--separator);
+	border-left: 3px solid var(--blue);
+	border-radius: 7px;
+	background: var(--bg-inset);
+	padding: 10px 11px;
+}
+
+.agent-diagnostic.warning { border-left-color: var(--orange); }
+.agent-diagnostic.error { border-left-color: var(--red); }
+.agent-diagnostic strong { color: var(--text-primary); font-size: 12px; }
+.agent-diagnostic span { color: var(--text-secondary); font-size: 12px; }
+.agent-diagnostic .agent-remediation { color: var(--text-tertiary); }
+.agent-detail-empty { color: var(--text-tertiary); }
 
 .sidebar {
   display: flex;

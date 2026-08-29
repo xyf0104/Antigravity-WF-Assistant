@@ -404,7 +404,7 @@ func (a *App) loopbackOAuthCallbackHandler(sessionID string, callback *oauthLoop
 		callbackQuery := request.URL.Query().Encode()
 		parsed, err := oauthflow.ExtractCallback(callbackQuery)
 		if err != nil {
-			http.Error(writer, "authorization was not completed; return to Antigravity WF助手", http.StatusBadRequest)
+			http.Error(writer, "authorization was not completed; return to XIASS Tools", http.StatusBadRequest)
 			return
 		}
 		expectedState := a.oauthSessionState(sessionID)
@@ -430,7 +430,7 @@ func (a *App) loopbackOAuthCallbackHandler(sessionID string, callback *oauthLoop
 		result := a.CompleteOAuthAuthorization(sessionID, callbackQuery)
 		callback.completionMu.Unlock()
 		if !result.OK {
-			http.Error(writer, "authorization could not be completed; return to Antigravity WF助手", http.StatusBadGateway)
+			http.Error(writer, "authorization could not be completed; return to XIASS Tools", http.StatusBadGateway)
 			return
 		}
 		writeOAuthCompletionPage(writer, false)
@@ -460,11 +460,11 @@ func (a *App) completedOAuthResult(sessionID string) (OAuthCompletionResult, boo
 
 func writeOAuthCompletionPage(writer http.ResponseWriter, duplicate bool) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	message := "授权完成，可以返回 Antigravity WF助手。"
+	message := "授权完成，可以返回 XIASS Tools。"
 	if duplicate {
-		message = "该授权已完成，可以返回 Antigravity WF助手。"
+		message = "该授权已完成，可以返回 XIASS Tools。"
 	}
-	_, _ = writer.Write([]byte("<!doctype html><title>Antigravity WF助手</title><p>" + message + "</p>"))
+	_, _ = writer.Write([]byte("<!doctype html><title>XIASS Tools</title><p>" + message + "</p>"))
 }
 
 func (a *App) recordOAuthAuthorizationResult(sessionID string, result OAuthCompletionResult) {

@@ -1,4 +1,4 @@
-name: Build Windows
+name: Build XIASS Tools for Windows
 
 on:
   workflow_dispatch:
@@ -78,7 +78,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手-v$version.exe"
+          go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "XIASS Tools-v$version.exe"
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
@@ -93,7 +93,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Antigravity-WF-Assistant-Windows-x64
+          name: XIASS-Tools-Windows-x64
           path: |
-            windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-v*-Setup.exe
+            windows/source/build/bin/XIASS-Tools-Windows-x64-v*-Setup.exe
           if-no-files-found: error

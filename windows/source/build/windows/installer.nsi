@@ -4,8 +4,8 @@ SetCompressor /SOLID lzma
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 
-!define APP_NAME "Antigravity WF助手"
-!define APP_EXE "Antigravity WF助手.exe"
+!define APP_NAME "XIASS Tools"
+!define APP_EXE "XIASS Tools.exe"
 ; Keep the installed executable name stable while packaging a versioned build
 ; artifact. This lets local and CI builds coexist without overwriting a
 ; previous executable before NSIS has produced a verified installer.
@@ -16,12 +16,15 @@ SetCompressor /SOLID lzma
 !error "APP_VERSION is required. Run makensis with /DAPP_VERSION=<VERSION>."
 !endif
 !ifndef APP_SOURCE_EXE
-!define APP_SOURCE_EXE "Antigravity WF助手-v${APP_VERSION}.exe"
+!define APP_SOURCE_EXE "XIASS Tools-v${APP_VERSION}.exe"
 !endif
 !ifndef APP_SETUP_EXE
-!define APP_SETUP_EXE "Antigravity-WF-Assistant-Windows-x64-v${APP_VERSION}-Setup.exe"
+!define APP_SETUP_EXE "XIASS-Tools-Windows-x64-v${APP_VERSION}-Setup.exe"
 !endif
-!define APP_PUBLISHER "WF"
+!define APP_PUBLISHER "XIASS Tools"
+; This legacy upgrade-compatibility key is intentionally retained so an
+; in-place upgrade keeps the existing uninstall entry and optional
+; desktop-shortcut ownership marker. It is not product branding.
 !define APP_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityWFAssistant"
 
 Name "${APP_NAME}"
@@ -36,7 +39,7 @@ VIProductVersion "${APP_VERSION}.0"
 VIAddVersionKey /LANG=2052 "ProductName" "${APP_NAME}"
 VIAddVersionKey /LANG=2052 "FileDescription" "${APP_NAME} 安装程序"
 VIAddVersionKey /LANG=2052 "CompanyName" "${APP_PUBLISHER}"
-VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (c) 2026 WF"
+VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (c) 2026 XIASS Tools"
 VIAddVersionKey /LANG=2052 "FileVersion" "${APP_VERSION}"
 VIAddVersionKey /LANG=2052 "ProductVersion" "${APP_VERSION}"
 

@@ -9,8 +9,8 @@ import (
 
 func TestMigrateLegacyStorageDirectoryRenamesSoleDirectory(t *testing.T) {
 	home := t.TempDir()
-	legacy := filepath.Join(home, legacyStorageDirectoryName)
-	target := filepath.Join(home, wfStorageDirectoryName)
+	legacy := filepath.Join(home, legacyStorageDirectoryNames[0])
+	target := filepath.Join(home, xiassToolsStorageDirectoryName)
 	if err := os.MkdirAll(filepath.Join(legacy, "backups"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -30,8 +30,8 @@ func TestMigrateLegacyStorageDirectoryRenamesSoleDirectory(t *testing.T) {
 
 func TestMigrateLegacyStorageDirectoryMergesNewestFiles(t *testing.T) {
 	home := t.TempDir()
-	legacy := filepath.Join(home, legacyStorageDirectoryName)
-	target := filepath.Join(home, wfStorageDirectoryName)
+	legacy := filepath.Join(home, legacyStorageDirectoryNames[0])
+	target := filepath.Join(home, xiassToolsStorageDirectoryName)
 	if err := os.MkdirAll(filepath.Join(legacy, "backups"), 0o700); err != nil {
 		t.Fatal(err)
 	}

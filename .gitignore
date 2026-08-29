@@ -12,6 +12,7 @@
 **/build/bin/
 **/coverage/
 **/*.test
+**/*.test.exe
 **/*.out
 
 custom_models.json

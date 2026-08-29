@@ -1,8 +1,8 @@
-# Antigravity WF助手 macOS 源码
+# XIASS Tools macOS 源码
 
-这是由 WF 开发与维护的 Antigravity WF助手 macOS Universal 源码，支持 Apple Silicon 与 Intel Mac。本工具属于非官方开发版本，与 Antigravity 官方无隶属关系。
+这是 XIASS Tools macOS Universal 源码，支持 Apple Silicon 与 Intel Mac。XIASS Tools 是本机 Agent 配置与连接工具；Antigravity 集成为非官方兼容实现，与 Antigravity 官方无隶属关系。
 
-主要能力包括自定义 OpenAI 兼容/Anthropic 模型、完整推理等级、工具 Schema 规范化、Antigravity IDE/2.x 自动检测与安全启动/重启、历史会话自动恢复、终端命令自动批准、补丁备份和回滚，以及浅色/深色/跟随系统界面。
+目前已提供 Antigravity 模型、补丁、代理、会话恢复、诊断和备份能力；并提供 Codex 本机 `config.toml` 的安全配置、上游模型发现、原子备份/恢复和兼容历史修复。Claude Code 仅管理明确的用户 `settings.json` 字段；Cursor 与 Windsurf 仅在本机确认客户端、且公开全局 MCP JSON 结构安全时管理 XIASS Tools 自己的 MCP 条目。界面不会将未接入、未验证或受保护的配置能力伪装成可用。
 
 ## 构建
 
@@ -15,9 +15,9 @@ npm run build
 cd ..
 go test ./...
 go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build \
-  -platform darwin/universal -trimpath -o "Antigravity WF助手"
+  -platform darwin/universal -trimpath -o "XIASS Tools"
 ```
 
-构建结果位于 `build/bin/Antigravity WF助手.app`。运行数据保存在 `~/.antigravity-wf/`；升级时应用会自动合并旧版模型、凭据、日志和补丁备份。
+构建结果位于 `build/bin/XIASS Tools.app`。运行数据保存在 `~/.xiass-tools/`；升级时应用会自动从历史目录安全合并模型、凭据、日志和补丁备份，不删除旧数据。
 
 完整安装和使用说明见发布仓库根目录的 `README.md` 与 `docs/macOS使用说明.md`。

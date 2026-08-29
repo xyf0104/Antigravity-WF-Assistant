@@ -22,4 +22,5 @@ build/bin/
 # Test and coverage output
 coverage/
 *.test
+*.test.exe
 *.out

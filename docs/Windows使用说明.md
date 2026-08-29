@@ -1,19 +1,19 @@
-# Antigravity WF助手 Windows x64 v1.5.9
+# XIASS Tools Windows x64
 
 ## 安装
 
-1. 从 GitHub 最新发布页下载并双击 `Antigravity-WF-Assistant-Windows-x64-v1.5.9-Setup.exe`。
-2. 在“选择组件”页按需要勾选“在桌面创建快捷方式”，然后完成安装并从开始菜单或桌面打开“Antigravity WF助手”。
-3. 安装器默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Antigravity WF助手`，安装助手本身不需要管理员权限。
+1. 从 GitHub 最新发布页下载并双击 `XIASS-Tools-Windows-x64-v<version>-Setup.exe`。
+2. 在“选择组件”页按需要勾选“在桌面创建快捷方式”，然后完成安装并从开始菜单或桌面打开“XIASS Tools”。
+3. 安装器默认安装到当前用户的 `%LOCALAPPDATA%\Programs\XIASS Tools`，安装助手本身不需要管理员权限。
 
 该安装包已包含完整 x64 主程序，运行时不需要 Python、Node.js 或外置补丁脚本。支持 Windows 10/11 x64。
 
 ## 首次使用
 
-1. 打开 WF助手，本地代理会自动启动，并自动合并旧版 Antigravity 历史会话。
+1. 打开 XIASS Tools，本地代理会自动启动，并自动合并旧版 Antigravity 历史会话。
 2. 进入“账户池”，添加 API Key、导入账户 JSON，或完成 OAuth 登录；保存成功后直接在该账户卡片点击“同步全部模型”。“模型”页仅用于手动添加或调整单个模型。
 3. 回到“总览”，确认已自动识别 Antigravity IDE 或 Antigravity 2.x。
-4. 完全退出 Antigravity，然后点击“全部连接”；也可按需要选择“仅连接 IDE”或“仅连接 Antigravity 2.0”。如果 Antigravity 安装在 `Program Files` 等受保护目录，请右键 WF助手，选择“以管理员身份运行”后再连接。
+4. 完全退出 Antigravity，然后点击“全部连接”；也可按需要选择“仅连接 IDE”或“仅连接 Antigravity 2.0”。如果 Antigravity 安装在 `Program Files` 等受保护目录，请右键 XIASS Tools，选择“以管理员身份运行”后再连接。
 5. 使用“Antigravity 快捷启动”按钮启动或重启对应安装。
 
 ## 账户池与登录
@@ -48,7 +48,7 @@
 - 右上角可选“浅色”、“深色”或“跟随系统”。
 - 模型、凭据、统计和备份保存在当前 Windows 用户的本地数据目录；覆盖升级时会保留现有数据。
 - 可在 Windows “设置 → 应用”或开始菜单的卸载入口删除助手。
-- 点击窗口右上角关闭按钮时，主窗口会隐藏，不会继续占用任务栏；代理与历史同步继续运行。右下角时间旁的 WF 通知区域图标可“打开主界面”或“退出 Antigravity WF助手”；退出会先释放本地代理。若 Windows 将图标收进 `^` 溢出区，可在系统的任务栏设置中将其设为始终显示。
+- 点击窗口右上角关闭按钮时，主窗口会隐藏，不会继续占用任务栏；代理与历史同步继续运行。右下角时间旁的 XIASS Tools 通知区域图标可“打开主界面”或“退出 XIASS Tools”；退出会先释放本地代理。若 Windows 将图标收进 `^` 溢出区，可在系统的任务栏设置中将其设为始终显示。
 
 ## 兼容说明
 

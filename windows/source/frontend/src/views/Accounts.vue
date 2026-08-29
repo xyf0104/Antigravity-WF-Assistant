@@ -1640,7 +1640,7 @@ onBeforeUnmount(() => {
           <Field v-if="showCustomHeaderName" label="认证请求头名称" hint="例如 X-API-Token" v-model="form.authHeader" placeholder="X-API-Token" mono />
           <label v-if="showAdditionalHeaders" class="text-field">
             <span class="t-footnote">附加请求头（可选 JSON）</span>
-            <textarea v-model="form.headersText" spellcheck="false" placeholder='{"X-Client":"Antigravity-WF"}'></textarea>
+            <textarea v-model="form.headersText" spellcheck="false" placeholder='{"X-Client":"XIASS-Tools"}'></textarea>
           </label>
         </section>
         <section v-if="showSchedulingControls" class="section">

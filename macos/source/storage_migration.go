@@ -11,25 +11,30 @@ import (
 	"time"
 )
 
-const wfStorageDirectoryName = ".antigravity-wf"
+const xiassToolsStorageDirectoryName = ".xiass-tools"
 
-// The first WF releases inherited a historical data-directory name. Keep the
-// old location only as an upgrade input: after a verified merge it is removed,
-// so all active configuration, logs and backups live under the WF brand.
-var legacyStorageDirectoryName = ".antigravity-" + strings.Join([]string{"b", "y", "o", "k"}, "")
+// Historical directories remain migration inputs only. XIASS Tools merges them
+// into one private state directory so an upgrade cannot lose models, accounts,
+// patch backups, or diagnostic history created by older assistant releases.
+var legacyStorageDirectoryNames = []string{
+	".antigravity-wf",
+	".antigravity-" + strings.Join([]string{"b", "y", "o", "k"}, ""),
+}
 
-func resolveWFStorageDir(home string) string {
-	target := filepath.Join(home, wfStorageDirectoryName)
-	legacy := filepath.Join(home, legacyStorageDirectoryName)
-	if err := migrateLegacyStorageDirectory(legacy, target); err != nil {
-		// Never trade branding cleanup for lost credentials. If migration cannot
-		// be completed atomically enough to preserve every file, keep using the
-		// untouched legacy directory and report the reason in the local log.
-		if info, statErr := os.Stat(legacy); statErr == nil && info.IsDir() {
-			log.Printf("[wf] 旧数据目录迁移失败，已保留并继续使用原配置: %v", err)
-			return legacy
+func resolveXIASSStorageDir(home string) string {
+	target := filepath.Join(home, xiassToolsStorageDirectoryName)
+	for _, legacyName := range legacyStorageDirectoryNames {
+		legacy := filepath.Join(home, legacyName)
+		if err := migrateLegacyStorageDirectory(legacy, target); err != nil {
+			// Never trade a branded directory for lost credentials. If a migration
+			// cannot complete, continue from the untouched older directory so the
+			// existing Antigravity connection remains usable.
+			if info, statErr := os.Stat(legacy); statErr == nil && info.IsDir() {
+				log.Printf("[xiass-tools] 旧数据目录迁移失败，已保留并继续使用原配置: %v", err)
+				return legacy
+			}
+			log.Printf("[xiass-tools] 创建数据目录失败: %v", err)
 		}
-		log.Printf("[wf] 创建数据目录失败: %v", err)
 	}
 	return target
 }

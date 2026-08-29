@@ -19,7 +19,7 @@ const modes = [
 
 const managedSummary = computed(() => {
   const count = state.autoApproval.managedGrants?.length || 0;
-  return count ? `当前由 WF助手管理 ${count} 条规则` : "当前没有 WF助手管理的规则";
+  return count ? `当前由 XIASS Tools 管理 ${count} 条规则` : "当前没有 XIASS Tools 管理的规则";
 });
 
 function syncForm() {
@@ -58,7 +58,7 @@ onMounted(async () => {
       <div class="warning-icon">!</div>
       <div class="grow">
         <div class="t-headline">命令自动批准会降低执行前确认保护</div>
-        <div class="t-caption">配置写入 Antigravity 官方 globalPermissionGrants。WF助手只移除自己添加的规则，不触碰已有授权。</div>
+        <div class="t-caption">配置写入 Antigravity 官方 globalPermissionGrants。XIASS Tools 只移除自己添加的规则，不触碰已有授权。</div>
       </div>
     </div>
 

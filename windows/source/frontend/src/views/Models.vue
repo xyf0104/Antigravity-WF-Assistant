@@ -1223,7 +1223,7 @@ async function addSelectedModels() {
           <Field v-if="form.authMode === 'custom_header'" label="认证请求头名称" hint="例如 X-API-Token" v-model="form.authHeader" placeholder="X-API-Token" mono />
           <label class="text-field">
             <span class="t-footnote">附加请求头（可选 JSON）</span>
-            <textarea v-model="form.headersText" spellcheck="false" placeholder='{"X-Client": "Antigravity-WF"}'></textarea>
+            <textarea v-model="form.headersText" spellcheck="false" placeholder='{"X-Client": "XIASS-Tools"}'></textarea>
           </label>
           <div class="compact-label">上游 API 模式</div>
           <SegmentedControl :options="apiStyleOptions" :model-value="form.apiStyle" @update:model-value="form.apiStyle = $event" />

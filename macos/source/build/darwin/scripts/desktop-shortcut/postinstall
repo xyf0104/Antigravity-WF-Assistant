@@ -15,12 +15,12 @@ if [[ -z "$USER_HOME" || ! -d "$USER_HOME/Desktop" ]]; then
   exit 0
 fi
 
-SHORTCUT_PATH="$USER_HOME/Desktop/Antigravity WF助手.app"
+SHORTCUT_PATH="$USER_HOME/Desktop/XIASS Tools.app"
 if [[ -e "$SHORTCUT_PATH" || -L "$SHORTCUT_PATH" ]]; then
   exit 0
 fi
 
-APP_PATH="/Applications/Antigravity WF助手.app"
+APP_PATH="/Applications/XIASS Tools.app"
 if [[ ! -d "$APP_PATH" ]]; then
   # Never create an unusable desktop entry if the application payload was not
   # installed successfully. The main package must complete before this script.

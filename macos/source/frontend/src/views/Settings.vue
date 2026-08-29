@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
+import TOTPSettingsCard from "@/components/TOTPSettingsCard.vue";
 import {
 	state,
   cancelUpdateCheck,
@@ -174,10 +175,12 @@ onMounted(async () => {
         </div>
 
         <div class="note-box">
-          正常对话会由 Antigravity 提供必要的会话上下文，因为上游 API 本身是无状态的；WF助手不会再额外拼接“已输出回答”和“继续回答”指令。支持的上游会使用提示词缓存，不支持的上游只探测一次，随后自动关闭该缓存字段。
+          正常对话会由 Antigravity 提供必要的会话上下文，因为上游 API 本身是无状态的；XIASS Tools 不会再额外拼接“已输出回答”和“继续回答”指令。支持的上游会使用提示词缓存，不支持的上游只探测一次，随后自动关闭该缓存字段。
         </div>
       </div>
     </Card>
+
+    <TOTPSettingsCard />
 
     <Card title="软件更新">
       <template #action>
@@ -236,7 +239,7 @@ onMounted(async () => {
           遇到补丁、模型注入、对话或生图异常时，可导出最近一次运行的诊断包交给技术支持。导出前会自动隐藏 API Key、Token、OAuth 授权码、Cookie、用户目录和图片数据；不会主动打包账户文件、模型配置文件或聊天历史文件。
         </div>
         <div class="diagnostic-list t-caption">
-          <span>包含 WF助手运行日志与代理事件</span>
+          <span>包含 XIASS Tools 运行日志与代理事件</span>
           <span>包含最近一次 Antigravity 运行日志</span>
           <span>单文件自动截断，避免诊断包过大</span>
         </div>

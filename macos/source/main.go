@@ -16,7 +16,7 @@ var assets embed.FS
 func main() {
 	app := newApp()
 	err := wails.Run(&options.App{
-		Title:     "Antigravity WF助手",
+		Title:     "XIASS Tools",
 		Width:     1120,
 		Height:    760,
 		MinWidth:  900,

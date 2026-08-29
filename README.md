@@ -1,89 +1,78 @@
-<p align="center"><img src="assets/logo.png" alt="Antigravity WF助手 Logo" width="160"></p>
+<p align="center"><img src="macos/source/frontend/public/xiass-tools-logo.png" alt="XIASS Tools" width="96"></p>
 
-# Antigravity WF助手
+# XIASS Tools
 
-面向 Windows 与 macOS 的 Antigravity 本地模型管理、连接与启动工具。它可以自动发现已安装的 Antigravity IDE / Antigravity 2.x，通过本机代理接入自定义模型，并集中管理账户、模型、测试、恢复和启动操作。
+面向 macOS 和 Windows 的本机 Agent 配置、连接与诊断工具。XIASS Tools 保留已验证的 Antigravity 工作流，并提供 Codex 的安全本机配置管理、统一工具中心、账户与上游模型管理、双重验证器、更新与隐私脱敏诊断。
 
-[![Release](https://img.shields.io/github/v/release/xyf0104/Antigravity-WF-Assistant?label=release)](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest)
+[![XIASS Tools release](https://img.shields.io/github/v/release/xyf0104/Antigravity-WF-Assistant?label=XIASS%20Tools%20release)](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![macOS Universal](https://img.shields.io/badge/macOS-Universal-5b5b5b)
 ![Windows x64](https://img.shields.io/badge/Windows-x64-0078d4)
 
-## 主要功能
+## 已实现的能力
 
-- 自动检测 Antigravity、Antigravity IDE 和 Antigravity 2.x；多个安装可以分别连接、启动或重启。
-- 支持 OpenAI Chat Completions、OpenAI Responses、OpenAI 兼容接口和 Anthropic Messages API。
-- 支持 API Key、Bearer / Access Token、x-api-key、Setup Token、Codex PAT、自定义认证头、账户 JSON、Refresh Token，以及 OpenAI / Codex 浏览器 OAuth 登录。
-- 从账户或 API 获取真实可用模型，一键同步到 Antigravity；同一模型可绑定多个账户并按优先级、并发和健康状态调度。模型下拉框统一显示为“模型名 · 账户池名/供应商名”，例如 `gpt-5.6-sol · 无风`，显示后缀不会改变真实模型 ID。
-- 模型支持自定义显示名、完整 API 路径、推理等级、连接测试与可用性测试。
-- 支持文字、截图、图片识别、文件、PDF、工具调用、推理、联网搜索和上游支持的图片生成能力；当前聊天供应商没有图片模型时，可自动使用另一个已启用供应商的 `gpt-image-2`，不改变当前聊天模型。
-- 已识别的图片界面可显示实际图片模型名、默认展开生成结果、保留 Prompt 缩略图，并隐藏同一结果的正文重复大图。
-- 提供“全部连接”“仅连接 IDE”“仅连接 Antigravity 2.0”和“恢复原机配置”；写入前创建备份，失败时自动回滚。
-- 启动时安全合并历史会话；支持浅色、深色和跟随系统主题。
-- 设置页可一键导出脱敏诊断 ZIP，自动收集 WF助手和 Antigravity 最近一次运行日志，便于定位客户电脑上的补丁、模型注入、对话和生图故障。
-- Windows 关闭主窗口后驻留通知区域；macOS 关闭主窗口后保留 Dock 与顶部菜单栏入口。选择“退出”会关闭本地代理并释放端口。
+- **Antigravity**：自动发现 Antigravity IDE 与 Antigravity 2.x 安装，管理本地代理、自定义上游模型、账户池、模型测试、启动/重启、补丁备份/恢复、历史恢复、自动批准、图片链路和脱敏诊断。
+- **Codex**：安全读取并管理本机 `config.toml` 中独立的 `xiass_tools` Provider；支持 API 地址规范化、上游模型发现、原子写入、校验备份/恢复、workspace 状态修复与按需历史兼容修复。不会读取 `auth.json`，不会伪造官方账号、订阅等级或额度。
+- **Claude Code**：仅安全管理用户 `settings.json` 中明确的 API 根地址、授权令牌和模型；每次写入都通过原子备份与读回校验完成，不读取登录、OAuth、会话、项目配置或 MCP。
+- **Cursor / Windsurf**：工具中心只检查公开安装信息；已确认客户端安装且全局 MCP JSON 结构安全时，可添加或更新 XIASS Tools 自己的远程 MCP 条目。不会读取或改写账号、Cookie、Token、聊天记录、数据库、其他 MCP 条目或未公开存储。
+- **工具中心**：真实检查 Antigravity、Codex、Claude Code、Cursor 和 Windsurf 的本机安装与公开版本信息。每项操作仅在本机已验证可用时启用；已实现但当前结构不安全的配置会显示“暂不可配置”，而不是伪装为可用。
+- **本地验证器（2FA）**：导入标准 `otpauth://totp/` 链接或手动 Base32 密钥；密钥仅保存在 macOS Keychain 或 Windows Credential Manager，可按需显示短时验证码，并能使用密码加密导出。
+- **账户与上游**：支持 API Key、Bearer / Access Token、`x-api-key`、Setup Token、Codex PAT、自定义认证头、账户 JSON、Refresh Token 和已实现的 OAuth 流程；支持模型发现、连接测试和安全重试。
+- **更新与诊断**：更新器只接受本项目公开 Release 的标准安装包，并在安装前校验 `SHA256SUMS.txt`。诊断包会二次隐藏密钥、Token、Cookie、授权码、用户目录和图片数据，不会主动打包账户、模型或聊天历史。
 
 ## 下载与安装
 
-请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载 v1.6.3 安装包。Release 只提供两个系统的标准安装包和客户端安全更新所需的 `SHA256SUMS.txt`，不额外提供 portable、独立 EXE 或 ZIP：
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与 Release 标签匹配的标准安装包。该公开地址暂时保留历史仓库路径，作为已验证的发布与更新通道，不是 XIASS Tools 的显示名称。当前发布准备版本为 v1.6.4；它高于历史 v1.6.3 基线，不会覆盖或冒充已有发布。Release 只提供两个系统的安装包和更新校验所需的 `SHA256SUMS.txt`，不提供 portable、独立 EXE 或 ZIP：
 
 | 系统 | 安装包 | 支持范围 |
 | --- | --- | --- |
-| macOS | `Antigravity-WF-Assistant-macOS-universal-v1.6.3-Installer.pkg` | Apple Silicon 与 Intel Mac |
-| Windows | `Antigravity-WF-Assistant-Windows-x64-v1.6.3-Setup.exe` | Windows 10/11 x64 |
-
-手动下载时可使用同一 Release 中的 `SHA256SUMS.txt` 校验文件完整性；软件内更新会自动完成该校验。
-
-安装包已包含运行所需组件，不需要另外安装 Python、Node.js 或外置补丁脚本。
+| macOS | `XIASS-Tools-macOS-universal-v<version>-Installer.pkg` | Apple Silicon 与 Intel Mac |
+| Windows | `XIASS-Tools-Windows-x64-v<version>-Setup.exe` | Windows 10/11 x64 |
 
 Windows 安装时可以勾选创建桌面快捷方式。macOS 安装完成后可从“应用程序”或 Launchpad 打开；若系统拦截未签名应用，请在 Finder 中按住 Control 点按安装包或 App 后选择“打开”，并在“系统设置 → 隐私与安全性”中确认。
 
-## 快速使用
+从旧版“Antigravity WF助手”升级到 XIASS Tools 时，macOS 会保留旧 App 与原有数据，避免安装程序擅自删除用户文件。请先退出旧 App，确认 XIASS Tools 能正常启动；确认不再需要旧 App 后，再由你手动移至废纸篓。
 
-1. 安装并打开 Antigravity WF助手，本地代理会自动启动。
-2. 在“账户池”添加 API Key、Token、账户 JSON 或 OAuth 账户。
-3. 保存后在账户卡片点击“同步全部模型”；也可以在“模型”页手动添加上游并测试模型。
-4. 回到“总览”，确认助手已经检测到 Antigravity IDE 或 Antigravity 2.x。
-5. 完全退出正在运行的 Antigravity，然后选择“全部连接”“仅连接 IDE”或“仅连接 Antigravity 2.0”。
-6. 连接完成后使用首页启动按钮打开 Antigravity，并在使用自定义模型期间保持 WF助手运行。
+安装包包含运行时依赖，不需要额外安装 Python、Node.js 或补丁脚本。运行数据默认保存在 `~/.xiass-tools/`；升级时会从旧目录安全迁移已有数据，不会删除原目录。
 
-更新或重新安装 Antigravity 后，通常需要重新执行连接。若要撤销助手写入的连接配置，请先完全退出 Antigravity，再点击“恢复原机配置”。该操作不会删除账户、模型或聊天记录。
+## 快速开始
 
-## 账户与模型
+### 配置 Antigravity
 
-- 每个账户卡片都可以单独测试、查看可解析的账号信息和本机转发用量，并直接同步该账户的全部模型。
-- 同协议、同上游地址、同模型名的多个账户会绑定到同一个模型，不会重复创建大量模型卡片。
-- 每个新请求按优先级和并发选择一次账户；运行中遇到可安全重试的瞬时网络或线路故障时，只重试本次选中的账户，不切换账户、不建立跨请求冷却，也不会重放已经可能送达或已开始输出的完整对话。
-- API 地址可以只填写基础域名并由助手补全，也可以切换到完整路径手动编辑。
-- 模型能力以实际上游响应为准；上游不支持的 Responses 工具会安全降级，不会伪造模型能力。
+1. 打开 XIASS Tools；本地代理会自动准备，但只有在 Antigravity 工作流需要时才会实际接管连接。
+2. 在“账户池”添加 API Key、Token、账户 JSON 或 OAuth 账户；或者在“模型”中添加上游、获取模型并完成测试。
+3. 在“总览”确认已发现的 Antigravity 安装，然后完全退出目标应用，选择“全部连接”或单独连接目标。
+4. 连接完成后从首页启动目标应用；使用自定义模型期间保持 XIASS Tools 运行。
 
-## 自动检测与数据
+### 配置 Codex
 
-macOS 会优先检查 `/Applications`、`/System/Applications`、`~/Applications` 和上次成功连接的安装路径，后台完整刷新时再检查运行中的应用与 Spotlight；Windows 会检查常见安装目录、上次成功连接的路径、运行进程、卸载注册表及各磁盘常用目录。两端都会缓存已经验证的发现结果，并在产品版本、主程序、Language Server、renderer、ASAR 或安装目录发生变化时立即失效，避免每次打开首页都重复扫描大型安装文件。
+1. 打开“工具 → Codex → 配置”。
+2. 输入上游 API 地址和仅用于本次写入的 API Key，获取可用模型后选择默认模型与审查模型。
+3. 保存后，XIASS Tools 只写入独立的 `model_providers.xiass_tools` 配置块，并自动创建校验备份。
+4. 如出现旧会话兼容问题，再主动选择历史修复；普通保存不会改写本机历史。
 
-助手显示的是 Antigravity 产品版本，而不是内置 VS Code/Electron 版本。macOS 只从 App Bundle 的 `Info.plist` 读取 `CFBundleShortVersionString`（缺失时回退到 `CFBundleVersion`）；Windows 从 Antigravity 主程序的 PE 版本资源读取产品版本。`package.json` / `product.json` 中类似 `1.107.0` 的内部版本不会作为 Antigravity 版本显示，也不会参与产品更新判断。
+### 管理本地验证器
 
-如需指定安装位置，可设置：
+1. 打开“设置 → 验证器（2FA）”。
+2. 粘贴标准验证器链接，或输入 Base32 密钥和识别名称。
+3. 需要验证码时点击“显示验证码”，再按需复制；密钥不会回显。
 
-- `ANTIGRAVITY_APP_PATH`：单个安装路径；
-- `ANTIGRAVITY_APP_PATHS`：多个路径，macOS 使用冒号分隔，Windows 使用分号分隔。
+## 兼容性与隐私边界
 
-本地代理只监听本机回环地址，不向局域网或互联网开放。账户凭据、模型配置、统计与备份只保存在本机。请勿上传 API Key、Token、Cookie、账户 JSON、模型配置或未经脱敏的运行日志。
+Antigravity 的连接操作按**实际安装结构**验证，而不是承诺任意未知版本都可以安全注入。遇到未识别的结构，XIASS Tools 会保留原文件并提示需要诊断或适配，不会强制覆盖未知 JavaScript、ASAR 或二进制。
 
-遇到客户电脑故障时，请打开“设置 → 诊断与日志 → 导出诊断日志”，将生成的 ZIP 发给技术支持。导出过程会二次隐藏 API Key、Authorization、Token、OAuth 授权码、Cookie、用户目录和图片 Base64，并且不会打包账户、模型或 OAuth 配置文件。
+所有需要修改本机配置的动作都应由用户主动触发，并使用原子写入与可恢复备份。XIASS Tools 不会为了配置 Codex、Claude Code、Cursor 或 Windsurf 而结束、关闭或控制其他桌面应用；也不会读取未经授权的账号、密码、Token 或第三方应用数据库。
 
-## 兼容说明
+遇到问题时，请使用“设置 → 诊断与日志 → 导出诊断日志”。请勿上传 API Key、Token、Cookie、账户 JSON、模型配置或未经脱敏的日志。
 
-助手按安装结构而不是仅按版本号判断兼容性。已识别的连接链、renderer 和完整性字段会进入可恢复事务；图片 renderer 未识别时会保持原文件不变并跳过可选界面增强，不会阻断已验证的用户级代理设置。必要的连接链本身无法识别时仍保持零写入；助手不会全局替换未知 JavaScript，也不会把其他版本文件强行复制到当前安装。
+## 构建与贡献
 
-当前回归包含 Antigravity IDE 2.5.5 的原生图片预览结构和 Antigravity 2.0 2.8.1 的 Agent renderer 家族；macOS 使用对应的 App Bundle、Mach-O、ASAR/内嵌 ZIP 与完整性校验流程，Windows 使用对应的 PE 与安装结构流程。
+macOS 与 Windows 的源代码、构建命令和平台说明分别位于：
 
-更多说明：
-
-- [macOS 安装与使用说明](docs/macOS使用说明.md)
-- [Windows 安装与使用说明](docs/Windows使用说明.md)
-- [Windows v1.6.3 与 macOS v1.6.3 对照审计](docs/Windows-v1.6.3与macOS-v1.6.3对照审计.md)
+- [macOS 源码说明](macos/source/README.md)
+- [Windows 源码说明](windows/source/README.md)
+- [系统架构与能力边界](docs/XIASS-Tools-architecture.md)
 
 ## 许可证与声明
 
-代码按 [MIT License](LICENSE) 发布。Antigravity 名称及相关商标归各自权利人所有；本项目为本地兼容与开发辅助工具，不代表 Antigravity 官方授权或背书。使用第三方模型服务时，请遵守对应服务条款。
+代码按 [MIT License](LICENSE) 发布。Antigravity、Codex、Claude Code、Cursor 与 Windsurf 的名称及商标归各自权利人所有；XIASS Tools 是独立的本地辅助工具，不代表任何相关产品的官方授权或背书。使用第三方模型服务时，请遵守相应服务条款。

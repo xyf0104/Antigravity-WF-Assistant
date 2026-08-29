@@ -2,6 +2,7 @@ import { reactive, computed } from "vue";
 
 // ─── Wails bindings ─────────────────────────────────────────────────────────
 const go = () => window.go?.main?.App;
+export const agentPreviewRuntimeMessage = "本地预览未连接原生运行时；安装版会在启动后检查本机工具。";
 
 async function call(method, ...args) {
   const fn = go()?.[method];
@@ -119,6 +120,18 @@ export const state = reactive({
 			checkedAt: "",
     },
     progress: { phase: "idle", downloaded: 0, total: 0, percent: 0, message: "" },
+  },
+
+  // Agent 工具中心。这里只保存经过原生后端脱敏后的本机状态；不会保存
+  // 配置文件原文、API Key、OAuth 令牌或会话内容。
+  agents: {
+    platforms: [],
+    diagnostics: [],
+    loading: false,
+    actionBusy: {},
+    preview: !go(),
+    message: !go() ? agentPreviewRuntimeMessage : "",
+    updatedAt: "",
   },
 });
 
@@ -383,6 +396,177 @@ export async function loadPatchStatus(options = {}) {
   }
 }
 
+let agentStatusPromise = null;
+
+// The normal pass is deliberately non-blocking during startup. A deep scan is
+// only requested after an explicit user refresh, so opening XIASS Tools stays
+// responsive even when a desktop IDE bundle is large.
+export async function loadAgentStatuses(options = {}) {
+  if (agentStatusPromise) return agentStatusPromise;
+  if (!go()) {
+    state.agents.platforms = [];
+    state.agents.diagnostics = [];
+    state.agents.loading = false;
+    state.agents.preview = true;
+    state.agents.message = agentPreviewRuntimeMessage;
+    state.agents.updatedAt = "";
+    return null;
+  }
+
+  state.agents.preview = false;
+  state.agents.loading = true;
+  const method = options.refresh ? "RefreshAgentStatuses" : "GetAgentStatuses";
+  agentStatusPromise = call(method)
+    .then((result) => {
+      state.agents.platforms = result?.agents || [];
+      state.agents.diagnostics = result?.diagnostics || [];
+      state.agents.updatedAt = result?.generatedAt || "";
+      state.agents.message = "";
+      return result;
+    })
+    .catch((error) => {
+      state.agents.preview = false;
+      state.agents.message = error?.message || "本机工具检查失败。";
+      if (go()) console.error("loadAgentStatuses", error);
+      return null;
+    })
+    .finally(() => {
+      state.agents.loading = false;
+      agentStatusPromise = null;
+    });
+  return agentStatusPromise;
+}
+
+export function refreshAgentStatuses() {
+  return loadAgentStatuses({ refresh: true });
+}
+
+export async function diagnoseAgent(agentID) {
+  const key = `${agentID}:diagnose`;
+  state.agents.actionBusy = { ...state.agents.actionBusy, [key]: true };
+  try {
+    const result = await call("DiagnoseAgent", agentID);
+    if (result?.diagnostics) {
+      state.agents.diagnostics = result.diagnostics;
+    }
+    return result;
+  } finally {
+    const next = { ...state.agents.actionBusy };
+    delete next[key];
+    state.agents.actionBusy = next;
+  }
+}
+
+// ─── Codex local configuration ─────────────────────────────────────────────
+// The native bindings return redacted snapshots only. Callers intentionally
+// pass an API key only to the two explicit operations below; this state module
+// never assigns that key into the global reactive state or localStorage.
+export async function getCodexConfiguration() {
+  return call("GetCodexConfiguration");
+}
+
+export async function applyCodexConfiguration(config) {
+  return call("ApplyCodexConfiguration", config);
+}
+
+export async function discoverCodexModels(baseURL, apiKey) {
+  return call("DiscoverCodexModels", baseURL, apiKey);
+}
+
+export async function restoreCodexConfiguration(backupID) {
+  return call("RestoreCodexConfiguration", backupID);
+}
+
+export async function deleteCodexConfigurationBackup(backupID) {
+  return call("DeleteCodexConfigurationBackup", backupID);
+}
+
+export async function repairCodexHistory(compatibility = true) {
+  return call("RepairCodexHistory", Boolean(compatibility));
+}
+
+export async function restoreCodexHistoryBackup(backupID) {
+  return call("RestoreCodexHistoryBackup", backupID);
+}
+
+export async function deleteCodexHistoryBackup(backupID) {
+  return call("DeleteCodexHistoryBackup", backupID);
+}
+
+// Legacy XIASS Codex Helper archives are imported only as new, current-format
+// recovery points. The native layer validates the fixed legacy storage roots;
+// this wrapper deliberately accepts an opaque source ID rather than a path.
+export async function importCodexLegacyConfigBackup(sourceID) {
+  return call("ImportCodexLegacyConfigBackup", sourceID);
+}
+
+export async function importCodexLegacyHistoryBackup(sourceID) {
+  return call("ImportCodexLegacyHistoryBackup", sourceID);
+}
+
+// XIASS website Key selection is deliberately separate from OAuth. The native
+// layer opens the website and retains the actual callback URL and API Key;
+// Vue receives only a redacted session status and never writes it to app state
+// or localStorage.
+export async function startCodexXIASSKeySelection(siteURL) {
+  return call("StartCodexXIASSKeySelection", siteURL);
+}
+
+export async function getCodexXIASSKeySelectionStatus(sessionID) {
+  return call("GetCodexXIASSKeySelectionStatus", sessionID);
+}
+
+export async function completeCodexXIASSKeySelectionManual(sessionID, callbackURL) {
+  return call("CompleteCodexXIASSKeySelectionManual", sessionID, callbackURL);
+}
+
+export async function cancelCodexXIASSKeySelection(sessionID) {
+  return call("CancelCodexXIASSKeySelection", sessionID);
+}
+
+export async function discoverCodexXIASSSelectionModels(sessionID) {
+  return call("DiscoverCodexXIASSSelectionModels", sessionID);
+}
+
+export async function applyCodexXIASSSelection(sessionID, config) {
+  return call("ApplyCodexXIASSSelection", sessionID, config);
+}
+
+// ─── Claude Code user settings ─────────────────────────────────────────────
+// These bindings expose only redacted settings status. The authorization token
+// is intentionally supplied from the Claude modal's local component state and
+// never enters this global reactive state or browser storage.
+export async function getClaudeCodeConfiguration() {
+  return call("GetClaudeCodeConfiguration");
+}
+
+export async function applyClaudeCodeConfiguration(input) {
+  return call("ApplyClaudeCodeConfiguration", input);
+}
+
+export async function restoreClaudeCodeConfiguration(backupID) {
+  return call("RestoreClaudeCodeConfiguration", backupID);
+}
+
+export async function deleteClaudeCodeConfigurationBackup(backupID) {
+  return call("DeleteClaudeCodeConfigurationBackup", backupID);
+}
+
+export async function migrateClaudeCodeLegacyBackup(source, backupID) {
+  return call("MigrateClaudeCodeLegacyBackup", source, backupID);
+}
+
+// Cursor/Windsurf MCP calls keep the remote endpoint inside the modal's local
+// draft. Nothing from these calls is retained in global reactive state or
+// browser storage, and native status never echoes an endpoint or config path.
+export async function getMCPConfiguration(target) {
+  return call("GetMCPConfiguration", target);
+}
+
+export async function applyMCPConfiguration(input) {
+  return call("ApplyMCPConfiguration", input);
+}
+
 let dashboardRefreshPromise = null;
 
 // Refresh every value shown on the dashboard as one operation. Manual refresh
@@ -576,6 +760,29 @@ export async function exportDiagnosticLogs() {
   return call("ExportDiagnosticLogs");
 }
 
+// TOTP secrets never enter this shared state. These bridge calls are kept
+// deliberately stateless so the Settings view owns the short-lived draft and
+// the user-requested one-time code only for as long as it is visible.
+export function getTOTPEntries() {
+  return call("GetTOTPEntries");
+}
+
+export function addTOTPEntry(input) {
+  return call("AddTOTPEntry", input);
+}
+
+export function generateTOTPCode(id) {
+  return call("GenerateTOTPCode", id);
+}
+
+export function deleteTOTPEntry(id) {
+  return call("DeleteTOTPEntry", id);
+}
+
+export function exportTOTPEncrypted(password) {
+  return call("ExportTOTPEncrypted", password);
+}
+
 let updateCheckGeneration = 0;
 
 export async function checkForUpdates() {
@@ -695,4 +902,5 @@ export async function bootstrap() {
 	]);
 	bindUpdateEvents();
 	if (settings?.updates?.autoCheck) void checkForUpdates();
+	void loadAgentStatuses();
 }

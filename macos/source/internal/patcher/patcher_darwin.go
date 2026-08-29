@@ -1688,11 +1688,7 @@ func fileSHA256(path string) ([32]byte, error) {
 }
 
 func backupPath(sourcePath string) string {
-	dir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_WF_BACKUP_DIR"))
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".antigravity-wf", "backups")
-	}
+	dir := xiassPatcherBackupDir()
 	digest := sha256.Sum256([]byte(filepath.Clean(sourcePath)))
 	name := fmt.Sprintf("%s-%x.bak", filepath.Base(sourcePath), digest[:8])
 	return filepath.Join(dir, name)

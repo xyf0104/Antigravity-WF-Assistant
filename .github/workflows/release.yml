@@ -1,4 +1,4 @@
-name: Publish Release
+name: Publish XIASS Tools Release
 
 on:
   push:
@@ -101,7 +101,7 @@ jobs:
         run: go vet ./...
 
       - name: Build Universal App
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform darwin/universal -trimpath -o "Antigravity WF助手"
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform darwin/universal -trimpath -o "XIASS Tools"
 
       - name: Package macOS installer
         run: ./build/darwin/package-installer.sh
@@ -110,7 +110,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-installer
-          path: macos/source/build/bin/Antigravity-WF-Assistant-macOS-universal-v*-Installer.pkg
+          path: macos/source/build/bin/XIASS-Tools-macOS-universal-v*-Installer.pkg
           if-no-files-found: error
 
   windows:
@@ -221,7 +221,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "Antigravity WF助手-v$version.exe"
+          go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform windows/amd64 -trimpath -o "XIASS Tools-v$version.exe"
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
@@ -237,7 +237,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: windows/source/build/bin/Antigravity-WF-Assistant-Windows-x64-${{ github.ref_name }}-Setup.exe
+          path: windows/source/build/bin/XIASS-Tools-Windows-x64-${{ github.ref_name }}-Setup.exe
           if-no-files-found: error
 
   release:
@@ -257,8 +257,8 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           cd release-assets
-          macos="Antigravity-WF-Assistant-macOS-universal-v${version}-Installer.pkg"
-          windows="Antigravity-WF-Assistant-Windows-x64-v${version}-Setup.exe"
+          macos="XIASS-Tools-macOS-universal-v${version}-Installer.pkg"
+          windows="XIASS-Tools-Windows-x64-v${version}-Setup.exe"
           test -f "$macos"
           test -f "$windows"
           test "$(find . -maxdepth 1 -type f -name '*.exe' | wc -l | tr -d ' ')" = "1"
@@ -273,9 +273,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           cat > ../release-body.md <<EOF
-          ## Antigravity WF助手 v${version}
+          ## XIASS Tools v${version}
 
           - 同时提供 macOS Universal 与 Windows x64 标准安装包，不提供 portable 或源码 ZIP 附件。
+          - 工具中心显示本机 Antigravity、Codex、Claude Code、Cursor 和 Windsurf 的真实检测状态；未接入或受保护的配置能力不会伪装成可用。
+          - Codex 只管理独立的 \`xiass_tools\` Provider；Claude Code 只管理明确的用户 \`settings.json\` 字段。
+          - Cursor / Windsurf 仅在客户端已确认、公开全局 MCP JSON 可安全管理时，写入 XIASS Tools 自己的远程 MCP 条目；含敏感字段的现有 MCP 配置保持只读。
+          - 本地验证器密钥仅保存在系统凭据库，支持标准 TOTP 导入和用户主动发起的加密导出。
           - Antigravity 模型统一显示为“模型名 · 账户池名/供应商名”，显示后缀不改变真实模型 ID 或 API 路由。
           - 图片生成完成后保留 Prompt 卡片图片；重复正文 artifact 优先隐藏，无法隐藏时最大 320×320，普通 Markdown 图片不受影响。
           - GPT Image 2 与原生 Gemini 图片链路显示各自的实际生图模型。
@@ -300,11 +304,11 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          name: Antigravity WF助手 ${{ github.ref_name }}
+          name: XIASS Tools ${{ github.ref_name }}
           generate_release_notes: false
           body_path: release-body.md
           files: |
-            release-assets/Antigravity-WF-Assistant-macOS-universal-${{ github.ref_name }}-Installer.pkg
-            release-assets/Antigravity-WF-Assistant-Windows-x64-${{ github.ref_name }}-Setup.exe
+            release-assets/XIASS-Tools-macOS-universal-${{ github.ref_name }}-Installer.pkg
+            release-assets/XIASS-Tools-Windows-x64-${{ github.ref_name }}-Setup.exe
             release-assets/SHA256SUMS.txt
           fail_on_unmatched_files: true

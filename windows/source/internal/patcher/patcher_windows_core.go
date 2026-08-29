@@ -477,11 +477,7 @@ func windowsContainsKnownPatch(data []byte) bool {
 }
 
 func windowsBackupPath(sourcePath string) string {
-	dir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_BYOK_BACKUP_DIR"))
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".antigravity-byok", "backups")
-	}
+	dir := xiassPatcherBackupDir()
 	digest := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(sourcePath))))
 	return filepath.Join(dir, fmt.Sprintf("%s-%x.windows.bak", filepath.Base(sourcePath), digest[:8]))
 }

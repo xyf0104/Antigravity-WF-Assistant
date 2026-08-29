@@ -1,15 +1,15 @@
-# Antigravity WF助手 macOS v1.5.9
+# XIASS Tools macOS
 
 ## 安装
 
-1. 推荐双击 `Antigravity-WF-Assistant-macOS-universal-v1.5.9-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
+1. 推荐双击 `XIASS-Tools-macOS-universal-v<version>-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
 2. 当前发布包未使用 Apple Developer ID 签名或公证。若 macOS 阻止打开安装包，请在 Finder 中按住 Control 点按该 `.pkg` 后选择“打开”，或在“系统设置 → 隐私与安全性”中确认继续；安装完成后首次打开 App 遇到相同提示时也按此方式处理。安装前请先用发布页的 `SHA256SUMS.txt` 核验下载文件。
 
 App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时不需要 Python、Node.js 或外置补丁脚本。
 
 ## 首次使用
 
-1. 打开 WF助手，本地代理会自动启动，并自动合并旧版 Antigravity 历史会话。
+1. 打开 XIASS Tools，本地代理会自动启动，并自动合并旧版 Antigravity 历史会话。
 2. 进入“账户池”，添加 API Key、导入账户 JSON，或完成 OAuth 登录；保存成功后，直接在该账户卡片点击“同步全部模型”。“模型”页用于手动添加或精细调整单个模型。
 3. 回到“总览”，确认已自动识别 Antigravity IDE 或 Antigravity 2.x。
 4. 完全退出 Antigravity，然后点击“全部连接”；也可只连接 IDE 或 Antigravity 2.0。助手只会处理通过结构验证的安装，未知结构会显示原因并保持原文件不变。
@@ -41,9 +41,9 @@ App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时�
 ## 界面和数据
 
 - 右上角可选“浅色”、“深色”或“跟随系统”。
-- 模型、凭据、统计和备份保存在 `~/.antigravity-wf/`。首次启动新版时会自动合并旧版数据，已有模型和凭据不会丢失。
+- 模型、凭据、统计和备份保存在 `~/.xiass-tools/`。首次启动时会安全迁移 `~/.antigravity-wf/` 与 `~/.antigravity-byok/` 中的兼容数据；这两个旧目录只作为迁移来源，不再作为新的运行数据位置。
 - 历史会话使用 `~/.gemini/antigravity/`；合并时只补充缺失文件，不覆盖现有会话。
-- 点击窗口左上角关闭按钮时，主窗口会最小化到 Dock；代理与历史同步继续运行，顶部菜单栏的 WF 图标也会保留。点击顶部图标可打开“打开主界面 / 退出 Antigravity WF助手”菜单；Dock 右键或顶部菜单栏选择“退出”都会先释放本地代理。
+- 点击窗口左上角关闭按钮时，主窗口会最小化到 Dock；代理与历史同步继续运行，顶部菜单栏的 XIASS Tools 图标也会保留。点击顶部图标可打开“打开主界面 / 退出 XIASS Tools”菜单；Dock 右键或顶部菜单栏选择“退出”都会先释放本地代理。
 
 ## 兼容说明
 
@@ -51,4 +51,4 @@ App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时�
 
 ## 提醒
 
-请在使用自定义模型时保持 WF助手运行。重装或升级 Antigravity 后，需要重新执行连接。
+请在使用自定义模型时保持 XIASS Tools 运行。重装或升级 Antigravity 后，需要重新执行连接。

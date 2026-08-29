@@ -62,14 +62,14 @@ func runWindowsTray() {
 		if len(windowsTrayIcon) > 0 {
 			systray.SetIcon(windowsTrayIcon)
 		}
-		systray.SetTooltip("Antigravity WF助手")
+	systray.SetTooltip("XIASS Tools")
 		systray.SetOnTapped(handleWindowsTrayPrimaryClick)
 		// With no secondary callback, the maintained systray implementation
 		// keeps the native right-click context menu behaviour.
 		systray.SetOnSecondaryTapped(nil)
-		showItem := systray.AddMenuItem("打开主界面", "显示 Antigravity WF助手主窗口")
+	showItem := systray.AddMenuItem("打开主界面", "显示 XIASS Tools 主窗口")
 		systray.AddSeparator()
-		quitItem := systray.AddMenuItem("退出 Antigravity WF助手", "退出助手并释放本地代理端口")
+	quitItem := systray.AddMenuItem("退出 XIASS Tools", "退出助手并释放本地代理端口")
 
 		go func() {
 			for {

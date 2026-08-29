@@ -51,12 +51,12 @@ func useLatestReleaseServer(t *testing.T, handler http.Handler) {
 func testInstallerAsset(version, platform string) githubAsset {
 	if platform == "windows" {
 		return githubAsset{
-			Name: fmt.Sprintf("Antigravity-WF-Assistant-Windows-x64-v%s-Setup.exe", version),
+			Name: fmt.Sprintf("XIASS-Tools-Windows-x64-v%s-Setup.exe", version),
 			Size: 1,
 		}
 	}
 	return githubAsset{
-		Name: fmt.Sprintf("Antigravity-WF-Assistant-macOS-universal-v%s-Installer.pkg", version),
+		Name: fmt.Sprintf("XIASS-Tools-macOS-universal-v%s-Installer.pkg", version),
 		Size: 1,
 	}
 }
@@ -122,8 +122,8 @@ func TestSelectInstallerRequiresCanonicalReleaseAsset(t *testing.T) {
 			// These are deliberately plausible names, but neither is an asset
 			// produced by release.yml. A future accidental upload must not make
 			// the in-app updater install it.
-			{Name: "Antigravity-WF-Assistant-macOS-v1.5.5-Installer.pkg"},
-			{Name: "Antigravity-WF-Assistant-Windows-x64-v1.5.5-Portable.exe"},
+			{Name: "XIASS-Tools-macOS-v1.5.5-Installer.pkg"},
+			{Name: "XIASS-Tools-Windows-x64-v1.5.5-Portable.exe"},
 			{Name: "unrelated-windows-setup.exe"},
 		},
 	}
