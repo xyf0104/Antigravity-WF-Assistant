@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const argv = new Set(process.argv.slice(2));
@@ -50,6 +51,18 @@ function runStep(step) {
 }
 
 const steps = [];
+const repositoryRoot = path.resolve(__dirname, '..', '..', '..');
+const wfFrontendDirectory = path.join(
+  repositoryRoot,
+  process.platform === 'win32' ? 'windows' : 'macos',
+  'source',
+  'frontend'
+);
+const wfFrontendTests = fs
+  .readdirSync(path.join(wfFrontendDirectory, 'test'))
+  .filter((name) => name.endsWith('.test.mjs'))
+  .sort()
+  .map((name) => path.join('test', name));
 
 if (!hasFlag('--skip-brand-license')) {
   steps.push({
@@ -80,6 +93,15 @@ if (!hasFlag('--skip-build')) {
     name: 'Web build',
     command: 'npm',
     args: ['run', 'build'],
+  });
+}
+
+if (!hasFlag('--skip-wf-frontend-test')) {
+  steps.push({
+    name: 'WF bridge frontend regression tests',
+    command: 'node',
+    args: ['--test', ...wfFrontendTests],
+    cwd: wfFrontendDirectory,
   });
 }
 
