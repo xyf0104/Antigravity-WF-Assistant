@@ -100,9 +100,12 @@ function Assert-ShortcutTarget([string]$shortcutPath, [string]$expectedTarget) {
   $shell = New-Object -ComObject WScript.Shell
   try {
     $shortcut = $shell.CreateShortcut($shortcutPath)
-    $targetPath = [string]$shortcut.TargetPath
+    # WScript may preserve outer quotes around a target supplied by an
+    # installer. They are syntax, not part of the filesystem path.
+    $targetPath = ([string]$shortcut.TargetPath).Trim().Trim([char]'"')
     if ([string]::IsNullOrWhiteSpace($targetPath) -or -not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
-      throw "Shortcut target is missing for $shortcutPath"
+      $targetLeaf = [System.IO.Path]::GetFileName($targetPath)
+      throw "Shortcut target is missing for $shortcutPath (target filename: $targetLeaf)"
     }
     $actualTarget = (Get-Item -LiteralPath $targetPath).FullName
     $expectedResolvedTarget = (Get-Item -LiteralPath $expectedTarget).FullName

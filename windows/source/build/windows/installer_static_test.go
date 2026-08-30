@@ -87,6 +87,7 @@ func TestInstallerLifecycleSmokeScriptUsesRealSetupWithoutCleanupShortcuts(t *te
 		"HashSet[string]",
 		"$seen.Add($identity)",
 		"Assert-ShortcutTarget",
+		"Trim([char]'\"')",
 		"Get-Item -LiteralPath $targetPath",
 		"StringComparison]::OrdinalIgnoreCase",
 		"Start-Process -FilePath $setupPath",
