@@ -68,27 +68,27 @@ func (adapter *mcpAgentAdapter) Diagnose(ctx context.Context) ([]agent.Diagnosti
 	if !mcpClientDetected(status) {
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: adapter.id, Code: string(adapter.id) + ".not-installed", Severity: agent.SeverityInfo,
-			Summary:     adapter.Metadata().DisplayName + " was not found",
+			Summary:     "未找到 " + adapter.Metadata().DisplayName,
 			Detail:      mcpNotInstalledDetail(adapter.Metadata()),
-			Remediation: "Install or open the client, then run the local check again.", CreatedAt: now,
+			Remediation: "请安装或打开客户端，再重新检查本机。", CreatedAt: now,
 		})
 		return diagnostics, nil
 	}
 	if status.Details["mcpConfigSafe"] != "true" {
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: adapter.id, Code: string(adapter.id) + ".mcp-config-unsafe", Severity: agent.SeverityWarning,
-			Summary:     "Global MCP configuration cannot be safely changed",
-			Detail:      "XIASS Tools detected an invalid or sensitive configuration and did not expose or modify its contents.",
-			Remediation: "Resolve the configuration in the client, then run the local check again.", CreatedAt: now,
+			Summary:     "无法安全修改全局 MCP 配置",
+			Detail:      "XIASS Tools 检测到无效或包含敏感内容的配置，未显示或修改其内容。",
+			Remediation: "请先在客户端中处理该配置，再重新检查本机。", CreatedAt: now,
 		})
 		return diagnostics, nil
 	}
 	if status.Details["mcpManaged"] != "true" {
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: adapter.id, Code: string(adapter.id) + ".mcp-not-configured", Severity: agent.SeverityInfo,
-			Summary:     "Global MCP configuration is ready",
-			Detail:      "No XIASS Tools MCP entry is currently active.",
-			Remediation: "Use the configuration action to add the reserved XIASS Tools remote MCP entry.", CreatedAt: now,
+			Summary:     "全局 MCP 配置已就绪",
+			Detail:      "当前没有启用 XIASS Tools MCP 条目。",
+			Remediation: "请使用配置操作添加保留的 XIASS Tools 远程 MCP 条目。", CreatedAt: now,
 		})
 	}
 	return diagnostics, nil
@@ -111,20 +111,20 @@ func mcpAgentStatus(metadata agent.Metadata, discovered agent.Status, snapshot m
 
 	switch {
 	case !clientDetected:
-		status.Message = metadata.DisplayName + " was not found. Its global MCP configuration will not be changed."
+		status.Message = "未找到 " + metadata.DisplayName + "，不会修改其全局 MCP 配置。"
 	case !configurationSafe:
 		status.State = agent.StateDegraded
 		if snapshot.HasSensitiveConfiguration {
-			status.Message = "The global MCP configuration contains sensitive values and is read-only in XIASS Tools."
+			status.Message = "全局 MCP 配置包含敏感值，在 XIASS Tools 中只能读取。"
 		} else {
-			status.Message = "The global MCP configuration could not be safely validated."
+			status.Message = "无法安全验证全局 MCP 配置。"
 		}
 	case snapshot.ManagedServerConfigured:
 		status.State = agent.StateReady
-		status.Message = "The XIASS Tools MCP entry is configured in the verified global MCP configuration."
+		status.Message = "已在通过验证的全局 MCP 配置中设置 XIASS Tools MCP 条目。"
 	case status.State == agent.StateReady || status.State == agent.StateDetected:
 		status.State = agent.StateDetected
-		status.Message = metadata.DisplayName + " is installed and its global MCP configuration is ready to be configured."
+		status.Message = "已安装 " + metadata.DisplayName + "，其全局 MCP 配置已可以设置。"
 	}
 	status.Capabilities = mcpAgentCapabilities(metadata, clientDetected, configurationSafe)
 	return status
@@ -141,7 +141,7 @@ func mcpAgentCapabilities(metadata agent.Metadata, clientDetected, configuration
 		case agent.CapabilityDiscovery:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = true
-			status.Reason = "Local application discovery completed without reading private account data."
+			status.Reason = "已完成本机应用发现，未读取任何私密账号数据。"
 		case agent.CapabilityConfiguration:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = clientDetected && configurationSafe
@@ -178,51 +178,51 @@ func mcpSupportsExplicitProjectConfiguration(metadata agent.Metadata) bool {
 
 func mcpNotInstalledDetail(metadata agent.Metadata) string {
 	if mcpSupportsExplicitProjectConfiguration(metadata) {
-		return "XIASS Tools will not create or change the global MCP configuration until Cursor is locally detected. A separately selected Cursor project can still be configured through the explicit project MCP action."
+		return "在本机检测到 Cursor 前，XIASS Tools 不会创建或修改全局 MCP 配置；仍可通过明确的项目 MCP 操作为单独选择的 Cursor 项目进行配置。"
 	}
-	return "XIASS Tools will not create or change this client's global MCP configuration until the client is locally detected."
+	return "在本机检测到该客户端前，XIASS Tools 不会创建或修改其全局 MCP 配置。"
 }
 
 func mcpUnsupportedCapabilityReason(metadata agent.Metadata) string {
 	if mcpSupportsExplicitProjectConfiguration(metadata) {
-		return "This capability is not implemented for Cursor's documented global MCP configuration or an explicitly selected project MCP configuration."
+		return "Cursor 的公开全局 MCP 配置或明确选择的项目 MCP 配置尚未实现此功能。"
 	}
-	return "This capability is not implemented for the documented global MCP configuration."
+	return "公开的全局 MCP 配置尚未实现此功能。"
 }
 
 func mcpAvailableConfigurationReason(metadata agent.Metadata) string {
 	if mcpSupportsExplicitProjectConfiguration(metadata) {
-		return "The documented global MCP configuration can be changed with an atomic backup and rollback. A separately selected project's .cursor/mcp.json can be handled through an explicit native project selection."
+		return "可通过原子备份和回滚修改公开的全局 MCP 配置；单独选择项目后，可明确管理该项目的 .cursor/mcp.json。"
 	}
-	return "The documented global MCP configuration can be changed with an atomic backup and rollback."
+	return "可通过原子备份和回滚修改公开的全局 MCP 配置。"
 }
 
 func mcpUndetectedConfigurationReason(metadata agent.Metadata) string {
 	if mcpSupportsExplicitProjectConfiguration(metadata) {
-		return "Cursor must be locally detected before its global MCP configuration can be changed. A separately selected project can still use the explicit project MCP action."
+		return "必须先在本机检测到 Cursor，才能修改其全局 MCP 配置；单独选择的项目仍可使用明确的项目 MCP 操作。"
 	}
-	return "The client must be locally detected before its MCP configuration can be changed."
+	return "必须先在本机检测到客户端，才能修改其 MCP 配置。"
 }
 
 func mcpUnsafeConfigurationReason(metadata agent.Metadata) string {
 	if mcpSupportsExplicitProjectConfiguration(metadata) {
-		return "The existing global MCP configuration must be safe and valid before it can be changed. Project MCP configuration is checked separately after an explicit project selection."
+		return "现有全局 MCP 配置必须安全且有效，才能修改；明确选择项目后会单独检查项目 MCP 配置。"
 	}
-	return "The existing MCP configuration must be safe and valid before it can be changed."
+	return "现有 MCP 配置必须安全且有效，才能修改。"
 }
 
 func mcpDiagnosticsReason(metadata agent.Metadata) string {
 	if mcpSupportsExplicitProjectConfiguration(metadata) {
-		return "Credential-free global MCP diagnostics are available. Project MCP diagnostics occur only after an explicit project selection."
+		return "可使用不包含凭据的全局 MCP 诊断；只有明确选择项目后才会执行项目 MCP 诊断。"
 	}
-	return "Credential-free local MCP configuration diagnostics are available."
+	return "可使用不包含凭据的本机 MCP 配置诊断。"
 }
 
 func mcpRecoveryPointReason(metadata agent.Metadata) string {
 	if mcpSupportsExplicitProjectConfiguration(metadata) {
-		return "Verified recovery points are limited to explicit global MCP or explicitly selected project MCP Apply or Restore actions; no general agent backup provider is exposed."
+		return "已验证的恢复点仅由明确的全局 MCP 或所选项目 MCP 应用/恢复操作创建；不会开放通用 Agent 备份。"
 	}
-	return "Verified recovery points are limited to explicit global MCP configuration Apply or Restore actions; no general agent backup provider is exposed."
+	return "已验证的恢复点仅由明确的全局 MCP 配置应用/恢复操作创建；不会开放通用 Agent 备份。"
 }
 
 func mcpClientDetected(status agent.Status) bool {

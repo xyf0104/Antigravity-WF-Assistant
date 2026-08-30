@@ -1,3 +1,5 @@
+//go:build !wfbridge
+
 package main
 
 import (

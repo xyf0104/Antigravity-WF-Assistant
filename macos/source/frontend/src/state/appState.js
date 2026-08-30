@@ -6,6 +6,17 @@ export const agentPreviewRuntimeMessage = "本地预览未连接原生运行时�
 
 async function call(method, ...args) {
   const fn = go()?.[method];
+  if (!fn && import.meta.env.DEV) {
+    if (method === "GetTOTPEntries" || method === "AddTOTPEntry" || method === "DeleteTOTPEntry") {
+      return { ok: true, message: agentPreviewRuntimeMessage, entries: [] };
+    }
+    if (method === "GenerateTOTPCode") {
+      return { ok: false, message: agentPreviewRuntimeMessage, code: null };
+    }
+    if (method === "ExportTOTPEncrypted" || method === "ImportTOTPEncrypted") {
+      return { ok: false, message: agentPreviewRuntimeMessage };
+    }
+  }
   if (!fn) throw new Error(`方法 ${method} 未找到`);
   return fn(...args);
 }

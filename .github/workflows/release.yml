@@ -1,366 +1,332 @@
-name: Publish XIASS Tools Release
+name: Publish XIASS Tools Nextgen Release
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: nextgen-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    defaults:
+      run:
+        working-directory: nextgen
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: nextgen/package-lock.json
+
+      - name: Validate tag, version, changelog and updater credentials
+        id: version
+        shell: bash
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF}" == refs/tags/v* ]]
+          version="$(node -p "require('./package.json').version")"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          test -n "$TAURI_UPDATER_PUBLIC_KEY"
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          grep -Fq "## [${version}]" CHANGELOG.md
+          grep -Fq "## [${version}]" CHANGELOG.zh-CN.md
+          grep -Fq "当前正式版本为 v${version}" ../README.md
+          node scripts/release/generate_tauri_release_config.cjs \
+            --repo "$GITHUB_REPOSITORY" \
+            --output "$RUNNER_TEMP/tauri.release.preflight.json"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          extract_section() {
+            awk -v version="$2" '
+              /^## / {
+                if (capture) exit
+                if ($0 ~ ("^## \\[" version "\\]")) capture=1
+              }
+              capture { print }
+            ' "$1"
+          }
+          {
+            echo "## 更新日志"
+            echo
+            extract_section CHANGELOG.zh-CN.md "$version"
+            echo
+            echo "## Changelog"
+            echo
+            extract_section CHANGELOG.md "$version"
+          } > release-notes.md
+          test -s release-notes.md
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > published-at.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            nextgen/release-notes.md
+            nextgen/published-at.txt
+          if-no-files-found: error
+          retention-days: 7
+
   macos:
-    name: Build macOS installer
+    needs: prepare
     runs-on: macos-14
     defaults:
       run:
-        working-directory: macos/source
+        working-directory: nextgen
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Verify release version
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(tr -d '\r\n' < VERSION)"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "VERSION must use numeric MAJOR.MINOR.PATCH form, got: $version" >&2
-            exit 1
-          fi
-          test "${GITHUB_REF_NAME#v}" = "$version"
-          grep -Fq "\"version\": \"$version\"" frontend/package.json
-          grep -Fq "\"version\": \"$version\"" frontend/package-lock.json
-          grep -Fq "\"productVersion\": \"$version\"" wails.json
-          grep -Fq "CurrentVersion = \"$version\"" internal/updater/updater.go
-          grep -Fq "v$version" frontend/src/App.vue
-          grep -Fq "v$version" ../../README.md
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          version = Path("VERSION").read_text().strip()
-          lock = json.loads(Path("frontend/package-lock.json").read_text())
-          if lock.get("packages", {}).get("", {}).get("version") != version:
-              raise SystemExit("frontend lockfile root package differs from VERSION")
-          PY
-          test "$(md5 -q frontend/package.json)" = "$(tr -d '\r\n' < frontend/package.json.md5)"
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: macos/source/go.mod
-          cache-dependency-path: macos/source/go.sum
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: nextgen
+          key: nextgen-release-macos-universal
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: nextgen/sidecars/cockpit-cliproxy/go.mod
+          cache-dependency-path: |
+            nextgen/sidecars/cockpit-cliproxy/go.sum
+            macos/source/go.sum
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: macos/source/frontend/package-lock.json
+          cache-dependency-path: nextgen/package-lock.json
 
-      - name: Install frontend dependencies
-        working-directory: macos/source/frontend
-        run: npm ci
+      - run: npm ci
 
-      - name: Run frontend build
-        working-directory: macos/source/frontend
-        run: npm run build
+      - name: Run release preflight
+        run: |
+          npm run release:preflight
+          node --test scripts/release/*.test.cjs
+          node scripts/check_brand_and_license.cjs
 
-      - name: Run model grouping tests
-        working-directory: macos/source/frontend
-        run: node --test test/modelGroups.test.mjs
+      - name: Generate updater-enabled Tauri config
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: node scripts/release/generate_tauri_release_config.cjs --repo "$GITHUB_REPOSITORY"
 
-      - name: Run OAuth status tests
-        working-directory: macos/source/frontend
-        run: npm run test:oauth
+      - name: Build signed-updater Universal app and DMG
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --ci --config src-tauri/tauri.release.generated.conf.json --target universal-apple-darwin
 
-      - name: Run OAuth login UX tests
-        working-directory: macos/source/frontend
-        run: npm run test:oauth-ux
-
-      - name: Run update-check tests
-        working-directory: macos/source/frontend
-        run: npm run test:update-check
-
-      - name: Run connection progress UX tests
-        working-directory: macos/source/frontend
-        run: npm run test:patch-ux
-
-      - name: Run reasoning capability tests
-        working-directory: macos/source/frontend
-        run: node --test test/reasoningCapabilities.test.mjs
-
-      # Wails bindings are generated during the native build below. Keep the
-      # binding contract test after generation so a clean checkout never
-      # mistakes an absent ignored artifact for a renderer regression.
-      - name: Run pre-native-build frontend regression suite
-        working-directory: macos/source/frontend
+      - name: Stage and verify macOS release assets
         shell: bash
         run: |
           set -euo pipefail
-          tests=()
-          for test_file in test/*.test.mjs; do
-            [[ "$test_file" = "test/wailsBindings.verify.mjs" ]] && continue
-            tests+=("$test_file")
+          for sidecar in \
+            sidecars/cockpit-cliproxy/bin/xiass-cliproxy-universal-apple-darwin \
+            sidecars/wf-bridge/bin/xiass-wf-bridge-universal-apple-darwin; do
+            test -x "$sidecar"
+            arches="$(lipo -archs "$sidecar")"
+            [[ "$arches" == *x86_64* && "$arches" == *arm64* ]]
           done
-          test "${#tests[@]}" -gt 0
-          node --test "${tests[@]}"
+          node scripts/release/stage_release_assets.cjs \
+            --platform macos \
+            --mac-arch universal \
+            --assets-dir target/universal-apple-darwin/release/bundle \
+            --output-dir release-assets
+          test "$(find release-assets -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')" -eq 1
+          test "$(find release-assets -maxdepth 1 -type f -name '*_universal.app.tar.gz' | wc -l | tr -d ' ')" -eq 1
+          test "$(find release-assets -maxdepth 1 -type f -name '*_universal.app.tar.gz.sig' | wc -l | tr -d ' ')" -eq 1
+          app="$(find target/universal-apple-darwin/release/bundle -type d -name 'XIASS Tools.app' -print -quit)"
+          test -n "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
 
-      - name: Run Go race tests
-        run: go test -race ./...
-
-      - name: Run Go vet
-        run: go vet ./...
-
-      - name: Remove verified stale app bundle
-        run: bash ./build/darwin/prepare-app-output.sh
-
-      - name: Build Universal App
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -clean -platform darwin/universal -trimpath -o "XIASS Tools"
-
-      - name: Verify generated Wails bindings
-        working-directory: macos/source/frontend
-        run: node --test test/wailsBindings.verify.mjs
-
-      - name: Package macOS installer
-        run: ./build/darwin/package-installer.sh
-
-      - name: Verify macOS installer payload
-        run: ./build/darwin/verify-installer.sh
-
-      - name: Smoke-test macOS installer lifecycle
-        if: ${{ runner.environment == 'github-hosted' }}
-        run: ./build/darwin/smoke-installer.sh
-
-      - name: Upload macOS installer
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: macos-installer
-          path: macos/source/build/bin/XIASS-Tools-macOS-universal-${{ github.ref_name }}-Installer.pkg
+          name: release-macos
+          path: nextgen/release-assets
           if-no-files-found: error
+          retention-days: 7
 
   windows:
-    name: Build Windows installer
+    needs: prepare
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: windows/source
+        working-directory: nextgen
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Verify release version and Windows metadata
-        shell: pwsh
-        run: |
-          $version = (Get-Content VERSION -Raw).Trim()
-          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must use numeric MAJOR.MINOR.PATCH form, got: $version" }
-          if ("${{ github.ref_name }}" -ne "v$version") { throw "Tag and Windows VERSION differ" }
-          $frontend = Get-Content frontend/package.json -Raw | ConvertFrom-Json -AsHashtable
-          $lockfile = Get-Content frontend/package-lock.json -Raw | ConvertFrom-Json -AsHashtable
-          $wails = Get-Content wails.json -Raw | ConvertFrom-Json -AsHashtable
-          if ($frontend['version'] -ne $version) { throw "frontend package version differs from VERSION" }
-          if ($lockfile['version'] -ne $version) { throw "frontend lockfile version differs from VERSION" }
-          if ($lockfile['packages']['']['version'] -ne $version) { throw "frontend lockfile root package differs from VERSION" }
-          if ($wails['info']['productVersion'] -ne $version) { throw "Wails product version differs from VERSION" }
-          $updaterNeedle = 'CurrentVersion = "' + $version + '"'
-          if (-not (Get-Content internal/updater/updater.go -Raw).Contains($updaterNeedle)) { throw "updater version differs from VERSION" }
-          if (-not (Get-Content frontend/src/App.vue -Raw).Contains("v$version")) { throw "visible application version differs from VERSION" }
-          if (-not (Get-Content ../../README.md -Raw).Contains("v$version")) { throw "README release version differs from VERSION" }
-
-          # package.json.md5 is Wails' dependency-install cache sentinel, not
-          # a release integrity hash. The checked-in Windows sentinel tracks
-          # the CRLF byte representation used by a normal Windows checkout.
-          $packageText = (Get-Content frontend/package.json -Raw) -replace "`r?`n", "`r`n"
-          $packageBytes = [Text.Encoding]::UTF8.GetBytes($packageText)
-          $md5 = [Security.Cryptography.MD5]::Create()
-          try {
-            $expectedPackageHash = ([BitConverter]::ToString($md5.ComputeHash($packageBytes))).Replace('-', '').ToLowerInvariant()
-          } finally {
-            $md5.Dispose()
-          }
-          $declaredPackageHash = (Get-Content frontend/package.json.md5 -Raw).Trim()
-          if ($declaredPackageHash -ne $expectedPackageHash) { throw "Wails package.json.md5 sentinel is stale" }
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: windows/source/go.mod
-          cache-dependency-path: windows/source/go.sum
+          targets: x86_64-pc-windows-msvc
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: nextgen
+          key: nextgen-release-windows-x64
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: nextgen/sidecars/cockpit-cliproxy/go.mod
+          cache-dependency-path: |
+            nextgen/sidecars/cockpit-cliproxy/go.sum
+            windows/source/go.sum
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: windows/source/frontend/package-lock.json
+          cache-dependency-path: nextgen/package-lock.json
 
-      - name: Install frontend dependencies
-        working-directory: windows/source/frontend
-        run: npm ci
+      - run: npm ci
 
-      - name: Synchronise Wails dependency cache sentinel
-        working-directory: windows/source/frontend
+      - name: Run release preflight
+        run: |
+          npm run release:preflight
+          node --test scripts/release/*.test.cjs
+          node scripts/check_brand_and_license.cjs
+
+      - name: Generate updater-enabled Tauri config
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: node scripts/release/generate_tauri_release_config.cjs --repo "$env:GITHUB_REPOSITORY"
+
+      - name: Build signed-updater Windows x64 installers
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --ci --config src-tauri/tauri.release.generated.conf.json --target x86_64-pc-windows-msvc
+
+      - name: Stage and verify Windows release assets
         shell: pwsh
         run: |
-          $hash = (Get-FileHash package.json -Algorithm MD5).Hash.ToLowerInvariant()
-          [IO.File]::WriteAllText((Join-Path (Get-Location) 'package.json.md5'), $hash, [Text.UTF8Encoding]::new($false))
+          $sidecars = @(
+            'sidecars/cockpit-cliproxy/bin/xiass-cliproxy-x86_64-pc-windows-msvc.exe',
+            'sidecars/wf-bridge/bin/xiass-wf-bridge-x86_64-pc-windows-msvc.exe'
+          )
+          foreach ($sidecar in $sidecars) {
+            if (-not (Test-Path $sidecar -PathType Leaf)) { throw "Missing sidecar: $sidecar" }
+            if ((Get-Item $sidecar).Length -le 0) { throw "Empty sidecar: $sidecar" }
+          }
+          node scripts/release/stage_release_assets.cjs --platform windows --assets-dir target/x86_64-pc-windows-msvc/release/bundle --output-dir release-assets
+          $msi = @(Get-ChildItem release-assets -Filter '*.msi')
+          $msiSig = @(Get-ChildItem release-assets -Filter '*.msi.sig')
+          $nsis = @(Get-ChildItem release-assets -Filter '*-setup.exe')
+          $nsisSig = @(Get-ChildItem release-assets -Filter '*-setup.exe.sig')
+          if ($msi.Count -ne 1 -or $msiSig.Count -ne 1) { throw 'MSI updater asset/signature set is incomplete' }
+          if ($nsis.Count -ne 1 -or $nsisSig.Count -ne 1) { throw 'NSIS updater asset/signature set is incomplete' }
 
-      - name: Run frontend build
-        working-directory: windows/source/frontend
-        run: npm run build
-
-      - name: Run model grouping tests
-        working-directory: windows/source/frontend
-        run: node --test test/modelGroups.test.mjs
-
-      - name: Run OAuth status tests
-        working-directory: windows/source/frontend
-        run: npm run test:oauth
-
-      - name: Run OAuth login UX tests
-        working-directory: windows/source/frontend
-        run: npm run test:oauth-ux
-
-      - name: Run update-check tests
-        working-directory: windows/source/frontend
-        run: npm run test:update-check
-
-      - name: Run connection progress UX tests
-        working-directory: windows/source/frontend
-        run: npm run test:patch-ux
-
-      - name: Run reasoning capability tests
-        working-directory: windows/source/frontend
-        run: node --test test/reasoningCapabilities.test.mjs
-
-      # Generated Wails bindings are intentionally not a pre-native-build
-      # source of truth. wailsBindings.verify.mjs deliberately runs only after Wails production build below.
-      - name: Run pre-native-build frontend regression suite
-        working-directory: windows/source/frontend
-        shell: pwsh
-        run: |
-          # The generated binding verifier intentionally ends in .verify.mjs,
-          # so this .test.mjs glob already excludes it until Wails has created
-          # the production bindings below.
-          $tests = @(Get-ChildItem -Path test -Filter '*.test.mjs' -File | Sort-Object Name | ForEach-Object { $_.FullName })
-          if ($tests.Count -eq 0) { throw "No pre-native frontend regression tests were found." }
-          & node --test $tests
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Run Go race tests
-        run: go test -race ./...
-
-      - name: Run Go vet
-        run: go vet ./...
-
-      - name: Build Windows x64
-        shell: pwsh
-        run: |
-          $version = (Get-Content VERSION -Raw).Trim()
-          go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -clean -platform windows/amd64 -trimpath -o "XIASS Tools-v$version.exe"
-
-      - name: Verify generated Wails bindings
-        working-directory: windows/source/frontend
-        run: node --test test/wailsBindings.verify.mjs
-
-      - name: Install NSIS
-        run: choco install nsis -y --no-progress
-
-      - name: Build NSIS installer
-        working-directory: windows/source/build/windows
-        shell: pwsh
-        run: |
-          $version = (Get-Content ../../VERSION -Raw).Trim()
-          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 "/DAPP_VERSION=$version" installer.nsi
-
-      - name: Smoke-test Windows installer lifecycle
-        if: ${{ runner.environment == 'github-hosted' }}
-        shell: pwsh
-        run: ./build/windows/smoke-installer.ps1
-
-      - name: Refuse installer smoke test on persistent runner
-        if: ${{ runner.environment != 'github-hosted' }}
-        shell: pwsh
-        run: throw "Installer smoke tests may run only on an ephemeral GitHub-hosted Windows runner."
-
-      - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
-          path: windows/source/build/bin/XIASS-Tools-Windows-x64-${{ github.ref_name }}-Setup.exe
+          name: release-windows
+          path: nextgen/release-assets
           if-no-files-found: error
+          retention-days: 7
 
-  release:
-    name: Publish verified release
-    needs: [macos, windows]
+  publish:
+    needs: [prepare, macos, windows]
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nextgen
     steps:
-      - name: Download installers
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
+      - uses: actions/checkout@v4
 
-      - name: Verify installer set and create SHA-256 manifest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          path: nextgen/release-metadata
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-macos
+          path: nextgen/release-assets
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: nextgen/release-assets
+
+      - name: Build and validate updater manifests before publication
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          cd release-assets
-          macos="XIASS-Tools-macOS-universal-v${version}-Installer.pkg"
-          windows="XIASS-Tools-Windows-x64-v${version}-Setup.exe"
-          test -f "$macos"
-          test -f "$windows"
-          test "$(find . -maxdepth 1 -type f | wc -l | tr -d ' ')" = "2"
-          test "$(find . -maxdepth 1 -type f -name '*.exe' | wc -l | tr -d ' ')" = "1"
-          test "$(find . -maxdepth 1 -type f -name '*.pkg' | wc -l | tr -d ' ')" = "1"
-          sha256sum "$macos" "$windows" > SHA256SUMS.txt
-          test "$(wc -l < SHA256SUMS.txt | tr -d ' ')" = "2"
-          macos_sha="$(sha256sum "$macos" | awk '{print $1}')"
-          windows_sha="$(sha256sum "$windows" | awk '{print $1}')"
-          {
-            echo "### Installer SHA-256"
-            echo '```text'
-            cat SHA256SUMS.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          cat > ../release-body.md <<EOF
-          ## XIASS Tools v${version}
+          version="${{ needs.prepare.outputs.version }}"
+          notes="release-metadata/release-notes.md"
+          published_at="$(cat release-metadata/published-at.txt)"
+          test "$(find release-assets -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')" -eq 1
+          test "$(find release-assets -maxdepth 1 -type f -name '*.msi' | wc -l | tr -d ' ')" -eq 1
+          test "$(find release-assets -maxdepth 1 -type f -name '*-setup.exe' | wc -l | tr -d ' ')" -eq 1
+          test "$(find release-assets -maxdepth 1 -type f -name '*_universal.app.tar.gz' | wc -l | tr -d ' ')" -eq 1
+          node scripts/release/build_target_latest_json.cjs \
+            --version "$version" \
+            --repo "$GITHUB_REPOSITORY" \
+            --assets-dir release-assets \
+            --notes-file "$notes" \
+            --published-at "$published_at" \
+            --targets darwin-aarch64-app,darwin-x86_64-app,windows-x86_64-msi,windows-x86_64-nsis \
+            --output-dir target-manifests
+          node scripts/release/build_merged_latest_json.cjs \
+            --version "$version" \
+            --repo "$GITHUB_REPOSITORY" \
+            --assets-dir release-assets \
+            --notes-file "$notes" \
+            --published-at "$published_at" \
+            --output latest.json
+          cp target-manifests/*.json release-assets/
+          cp latest.json release-assets/
+          (
+            cd release-assets
+            find . -maxdepth 1 -type f ! -name '*.sig' ! -name 'latest*.json' -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              | sed 's#  \./#  #' > SHA256SUMS.txt
+          )
+          test "$(wc -l < release-assets/SHA256SUMS.txt | tr -d ' ')" -eq 4
+          node --test scripts/release/*.test.cjs
 
-          - 同时提供 macOS Universal 与 Windows x64 标准安装包，不提供 portable 或源码 ZIP 附件。
-          - 工具中心显示本机 Antigravity、Codex、Claude Code、Cursor 和 Windsurf 的真实检测状态；未接入或受保护的配置能力不会伪装成可用。
-          - Codex 只管理独立的 \`xiass_tools\` Provider；Claude Code 只管理明确的用户 \`settings.json\` 字段。
-          - Cursor / Windsurf 仅在客户端已确认、公开全局 MCP JSON 可安全管理时，写入 XIASS Tools 自己的远程 MCP 条目；含敏感字段的现有 MCP 配置保持只读。
-          - 本地验证器密钥仅保存在系统凭据库，支持标准 TOTP 导入和用户主动发起的加密导出。
-          - Antigravity 模型统一显示为“模型名 · 账户池名/供应商名”，显示后缀不改变真实模型 ID 或 API 路由。
-          - 图片生成完成后保留 Prompt 卡片图片；重复正文 artifact 优先隐藏，无法隐藏时最大 320×320，普通 Markdown 图片不受影响。
-          - GPT Image 2 与原生 Gemini 图片链路显示各自的实际生图模型。
-          - GPT 聊天供应商优先使用同一供应商内的 \`gpt-image-2\`；没有时可使用另一个已启用供应商的图片模型，并严格使用图片模型自己的凭据。
-          - 推理等级使用原始值 \`auto / none / minimal / low / medium / high / xhigh / max\`，并按模型真实能力过滤。
-          - 恢复代理商收起/展开、编辑、刷新和勾选模型、整组测试与单模型推理编辑。
-          - 保存安装路径、结构指纹与平台独立补丁 revision；Antigravity 版本、路径、程序或连接规则变化后自动提示重新连接。
-          - 未识别结构会安全跳过，不伪造上游图片字段，不全局替换未知 JavaScript。
-          - \`SHA256SUMS.txt\` 供客户端软件内更新和手动下载校验使用。
-
-          ### SHA-256
-
-          \`$macos\`
-
-          \`$macos_sha\`
-
-          \`$windows\`
-
-          \`$windows_sha\`
-          EOF
-
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: XIASS Tools ${{ github.ref_name }}
-          generate_release_notes: false
-          body_path: release-body.md
-          files: |
-            release-assets/XIASS-Tools-macOS-universal-${{ github.ref_name }}-Installer.pkg
-            release-assets/XIASS-Tools-Windows-x64-${{ github.ref_name }}-Setup.exe
-            release-assets/SHA256SUMS.txt
-          fail_on_unmatched_files: true
+      - name: Create draft, upload the complete verified set, then publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v${{ needs.prepare.outputs.version }}"
+          title="XIASS Tools ${tag}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+            test "$is_draft" = true
+          else
+            gh release create "$tag" --draft --title "$title" --notes-file release-metadata/release-notes.md
+          fi
+          mapfile -d '' assets < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
+          test "${#assets[@]}" -ge 10
+          gh release upload "$tag" "${assets[@]}" --clobber
+          remote_count="$(gh release view "$tag" --json assets --jq '.assets | length')"
+          test "$remote_count" -eq "${#assets[@]}"
+          gh release edit "$tag" --title "$title" --notes-file release-metadata/release-notes.md --draft=false --prerelease=false --latest

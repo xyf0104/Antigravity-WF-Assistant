@@ -728,4 +728,28 @@ onUnmounted(() => {
 @media (max-width: 980px) {
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+@media (max-width: 520px) {
+  .launcher-row {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .launcher-copy {
+    flex-basis: 100%;
+  }
+
+  .launcher-row > :deep(.btn) {
+    width: 100%;
+  }
+
+  .target-row > .row.between {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .target-row > .row.between > .row:last-child {
+    flex-wrap: wrap;
+  }
+}
 </style>

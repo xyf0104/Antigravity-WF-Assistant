@@ -1,0 +1,202 @@
+/* ============================================
+   XIASS Tools - Design System
+   Brand Direction: deep-sea command deck with floating blue-gray surfaces
+   ============================================ */
+
+:root {
+  /* Typography */
+  --font-sans: 'Inter', 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', monospace;
+
+  /* Brand Colors */
+  --primary: #f97316;
+  --primary-hover: #ea580c;
+  --primary-light: rgba(249, 115, 22, 0.13);
+  --accent: #2f719f;
+
+  /* Status Colors */
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --warning-strong: #f97316;
+  --danger: #ef4444;
+
+  /* Background Colors */
+  --bg-primary: #e9f0f5;
+  /* Solid surfaces: dialogs / dropdowns / menus (no transparency) */
+  --bg-secondary: #f8fbfd;
+  --bg-surface: var(--bg-secondary);
+  /* Soft panels: cards / list rows (slight transparency to show gradient) */
+  --bg-tertiary: #dce7ef;
+  --bg-card: rgba(244, 249, 252, 0.88);
+  --bg-hover: rgba(20, 54, 79, 0.08);
+
+  /* Text Colors */
+  --text-primary: #102638;
+  --text-secondary: #496579;
+  --text-tertiary: #536f83;
+  --text-muted: #536f83;
+
+  /* Border Colors */
+  --border: rgba(33, 72, 99, 0.16);
+  --border-light: rgba(33, 72, 99, 0.09);
+
+  /* Shadows */
+  --shadow-sm: 0 3px 10px rgba(5, 29, 47, 0.09);
+  --shadow-md: 0 14px 30px rgba(5, 29, 47, 0.14);
+  --shadow-lg: 0 24px 52px rgba(5, 29, 47, 0.2);
+
+  /* Gradients */
+  --gradient-primary: linear-gradient(135deg, #ff9a4a 0%, #f97316 56%, #dc4f0b 100%);
+  --gradient-success: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  --gradient-danger: linear-gradient(135deg, #f97316 0%, #ef4444 100%);
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+
+  /* Component sizing */
+  --modal-close-icon-size: 16px;
+}
+
+/* === Dark Theme === */
+[data-theme="dark"] {
+  /* Brand Colors - slightly brighter for dark mode */
+  --primary: #ff8a3d;
+  --primary-hover: #ff9e62;
+  --primary-light: rgba(255, 138, 61, 0.16);
+  --accent: #66a6d1;
+
+  /* Status Colors */
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --warning-strong: #f97316;
+  --danger: #ef4444;
+
+  /* Background Colors - dark palette */
+  --bg-primary: #06131f;
+  /* Solid surfaces: dialogs / dropdowns / menus (no transparency) */
+  --bg-secondary: #0d2234;
+  --bg-surface: var(--bg-secondary);
+  /* Soft panels: cards / list rows (slight transparency to show gradient) */
+  --bg-tertiary: #173249;
+  --bg-card: rgba(16, 42, 62, 0.9);
+  --bg-hover: rgba(144, 188, 219, 0.1);
+
+  /* Text Colors - inverted */
+  --text-primary: #edf6fc;
+  --text-secondary: #aac0d0;
+  --text-tertiary: #91aebe;
+  --text-muted: #91aebe;
+
+  /* Border Colors */
+  --border: rgba(151, 194, 224, 0.16);
+  --border-light: rgba(151, 194, 224, 0.08);
+
+  /* Shadows - darker */
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 12px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 20px 40px rgba(0, 0, 0, 0.45);
+
+  color-scheme: dark;
+}
+
+/* Theme color packs (#1399) — layered on light/dark base */
+[data-theme-color="nord"] {
+  --primary: #5e81ac;
+  --primary-hover: #81a1c1;
+  --accent: #88c0d0;
+}
+[data-theme-color="nord"][data-theme="dark"] {
+  --bg-primary: #2e3440;
+  --bg-secondary: #3b4252;
+  --bg-tertiary: #434c5e;
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+}
+[data-theme-color="tokyo-night"] {
+  --primary: #7aa2f7;
+  --primary-hover: #89b4fa;
+  --accent: #bb9af7;
+}
+[data-theme-color="tokyo-night"][data-theme="dark"] {
+  --bg-primary: #1a1b26;
+  --bg-secondary: #24283b;
+  --bg-tertiary: #414868;
+  --text-primary: #c0caf5;
+  --text-secondary: #a9b1d6;
+}
+[data-theme-color="catppuccin"] {
+  --primary: #89b4fa;
+  --accent: #cba6f7;
+}
+[data-theme-color="catppuccin"][data-theme="dark"] {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #313244;
+  --text-primary: #cdd6f4;
+}
+[data-theme-color="gruvbox"] {
+  --primary: #d79921;
+  --accent: #689d6a;
+}
+[data-theme-color="gruvbox"][data-theme="dark"] {
+  --bg-primary: #282828;
+  --bg-secondary: #3c3836;
+  --text-primary: #ebdbb2;
+}
+[data-theme-color="everforest"] {
+  --primary: #a7c080;
+  --accent: #7fbbb3;
+}
+[data-theme-color="everforest"][data-theme="dark"] {
+  --bg-primary: #2d353b;
+  --bg-secondary: #343f44;
+  --text-primary: #d3c6aa;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: radial-gradient(circle at 14% 8%, rgba(49, 112, 156, 0.16), transparent 42%),
+    radial-gradient(circle at 88% 2%, rgba(249, 115, 22, 0.08), transparent 34%),
+    linear-gradient(160deg, #f4f8fb 0%, #e6eef4 54%, #dbe7ef 100%);
+  color: var(--text-primary);
+  line-height: 1.6;
+  color-scheme: light;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Dark mode body background */
+[data-theme="dark"] body,
+html[data-theme="dark"] body {
+  background: radial-gradient(circle at 15% 6%, rgba(47, 113, 159, 0.22), transparent 42%),
+    radial-gradient(circle at 90% 0%, rgba(249, 115, 22, 0.1), transparent 32%),
+    linear-gradient(160deg, #06131f 0%, #091b2a 58%, #0d2638 100%);
+  color-scheme: dark;
+}
+
+html[data-reduced-motion="true"] {
+  scroll-behavior: auto !important;
+}
+
+html[data-reduced-motion="true"] body {
+  background: var(--bg-primary) !important;
+}
+
+/* Keep essential loading spinners; disable decorative motion/glass. */
+html[data-reduced-motion="true"] *:not(.loading-spinner):not(.spin):not(.icon-spin):not(.floating-card-spin):not(.animate-spin),
+html[data-reduced-motion="true"] *:not(.loading-spinner):not(.spin):not(.icon-spin):not(.floating-card-spin):not(.animate-spin)::before,
+html[data-reduced-motion="true"] *:not(.loading-spinner):not(.spin):not(.icon-spin):not(.floating-card-spin):not(.animate-spin)::after {
+  animation: none !important;
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  scroll-behavior: auto !important;
+}

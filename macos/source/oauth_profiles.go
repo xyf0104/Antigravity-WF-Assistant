@@ -525,8 +525,8 @@ func (a *App) recordOAuthAuthorizationResult(sessionID string, result OAuthCompl
 	if a.ctx != nil {
 		// Keep the status event for polling-capable native integrations, while
 		// the flat completed event is the stable renderer contract.
-		runtime.EventsEmit(a.ctx, "wf:oauth-authorization", status)
-		runtime.EventsEmit(a.ctx, "wf:oauth-completed", redactOAuthCompletionEvent(sessionID, result))
+		a.emitRuntimeEvent("wf:oauth-authorization", status)
+		a.emitRuntimeEvent("wf:oauth-completed", redactOAuthCompletionEvent(sessionID, result))
 	}
 }
 

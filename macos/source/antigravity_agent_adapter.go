@@ -79,21 +79,21 @@ func (adapter *antigravityAgentAdapter) Diagnose(ctx context.Context) ([]agent.D
 	case agent.StateNotInstalled:
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: agent.AntigravityID, Code: "antigravity.not-installed", Severity: agent.SeverityInfo,
-			Summary: "No Antigravity installation was detected", Detail: status.Message,
-			Remediation: "Install Antigravity IDE or Antigravity 2.0, then run the local check again.", CreatedAt: now,
+			Summary: "未检测到 Antigravity 安装", Detail: status.Message,
+			Remediation: "请安装 Antigravity IDE 或 Antigravity 2.0，再重新检查本机。", CreatedAt: now,
 		})
 	case agent.StateDegraded:
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: agent.AntigravityID, Code: "antigravity.requires-attention", Severity: agent.SeverityWarning,
-			Summary: "Antigravity needs attention before it can be used safely", Detail: status.Message,
-			Remediation: "Review the detected installation in the dashboard and apply a patch only when it is reported as supported.", CreatedAt: now,
+			Summary: "Antigravity 需要处理后才能安全使用", Detail: status.Message,
+			Remediation: "请在运行总览中检查检测到的安装，仅在显示支持时应用连接补丁。", CreatedAt: now,
 		})
 	}
 	if supportedTargets > 0 && patchedTargets < supportedTargets {
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: agent.AntigravityID, Code: "antigravity.patch-incomplete", Severity: agent.SeverityWarning,
-			Summary: "One or more supported installations are not connected", Detail: fmt.Sprintf("%d of %d supported installations are connected.", patchedTargets, supportedTargets),
-			Remediation: "Use the existing Antigravity dashboard action to connect all supported installations.", CreatedAt: now,
+			Summary: "一个或多个受支持的安装尚未连接", Detail: fmt.Sprintf("%d/%d 个受支持的安装已连接。", patchedTargets, supportedTargets),
+			Remediation: "请在 Antigravity 运行总览中连接所有受支持的安装。", CreatedAt: now,
 		})
 	}
 	return diagnostics, nil
@@ -140,24 +140,24 @@ func antigravityAgentStatus(metadata agent.Metadata, snapshot patcher.Status) ag
 	}
 
 	state := agent.StateDetected
-	message := "Detected Antigravity installation; verify the compatibility status before applying changes."
+	message := "已检测到 Antigravity 安装；应用变更前请先确认兼容状态。"
 	switch {
 	case len(targets) == 0:
 		state = agent.StateNotInstalled
-		message = "No Antigravity IDE or Antigravity 2.0 installation was detected."
+		message = "未检测到 Antigravity IDE 或 Antigravity 2.0。"
 	case supportedTargets == 0:
 		state = agent.StateDegraded
-		message = "Antigravity was detected, but its current structure has not passed the compatibility check."
+		message = "已检测到 Antigravity，但当前结构尚未通过兼容检查。"
 	case patchedTargets == supportedTargets && snapshot.ProxyListening:
 		state = agent.StateReady
-		message = "All supported Antigravity installations are connected to the local proxy."
+		message = "所有受支持的 Antigravity 安装均已连接到本地代理。"
 	case patchedTargets > 0:
 		state = agent.StateDegraded
-		message = "Antigravity was detected, but some supported installations still need attention."
+		message = "已检测到 Antigravity，但部分受支持的安装仍需处理。"
 	case snapshot.ProxyListening:
-		message = "A supported Antigravity installation was detected and is ready to be connected."
+		message = "已检测到受支持的 Antigravity 安装，可以开始连接。"
 	default:
-		message = "A supported Antigravity installation was detected; start the local proxy before connecting it."
+		message = "已检测到受支持的 Antigravity 安装；请先启动本地代理再连接。"
 	}
 
 	status := agent.Status{
@@ -194,33 +194,33 @@ func antigravityCapabilityStatuses(metadata agent.Metadata, targetCount, support
 		status := agent.CapabilityStatus{
 			Capability:   declaration.Capability,
 			Availability: declaration.Availability,
-			Reason:       "This capability has not been verified on this machine.",
+			Reason:       "尚未在本机验证此功能。",
 		}
 		switch declaration.Capability {
 		case agent.CapabilityDiscovery:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = true
 			if targetCount == 0 {
-				status.Reason = "Local Antigravity discovery completed; no installation was found."
+				status.Reason = "已完成本机 Antigravity 发现，但未找到安装。"
 			} else {
-				status.Reason = "Local Antigravity discovery completed."
+				status.Reason = "已完成本机 Antigravity 发现。"
 			}
 		case agent.CapabilityLocalProxy:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = proxyListening
 			if proxyListening {
-				status.Reason = "The established local proxy is listening."
+				status.Reason = "本地代理已启动。"
 			} else {
-				status.Reason = "The local proxy is not listening."
+				status.Reason = "本地代理尚未启动。"
 			}
 		case agent.CapabilityConfiguration, agent.CapabilityPatchInjection, agent.CapabilityModelCatalog,
 			agent.CapabilitySessionRecovery, agent.CapabilityImageIO, agent.CapabilityDiagnostics, agent.CapabilityBackup:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = supportedTargets > 0
 			if supportedTargets > 0 {
-				status.Reason = "A compatible Antigravity installation was verified."
+				status.Reason = "已验证兼容的 Antigravity 安装。"
 			} else {
-				status.Reason = "No compatible Antigravity installation was verified."
+				status.Reason = "尚未验证兼容的 Antigravity 安装。"
 			}
 		}
 		statuses = append(statuses, status)

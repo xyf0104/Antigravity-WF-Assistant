@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"antigravity-wf-assistant/internal/agent"
@@ -137,7 +138,7 @@ func TestClaudeCodeLoopbackAddressIsNotAdvertisedAsHealthyProxy(t *testing.T) {
 		t.Fatal("an untested loopback URL was advertised as a healthy local proxy")
 	}
 	for _, capability := range status.Capabilities {
-		if capability.Capability == agent.CapabilityLocalProxy && capability.Reason != "The managed API root points to a local loopback address, but endpoint health has not been tested." {
+		if capability.Capability == agent.CapabilityLocalProxy && (!strings.Contains(capability.Reason, "回环地址") || !strings.Contains(capability.Reason, "尚未测试")) {
 			t.Fatalf("local proxy reason = %q", capability.Reason)
 		}
 	}

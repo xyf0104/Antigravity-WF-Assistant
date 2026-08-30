@@ -82,30 +82,30 @@ func (adapter *claudeCodeAgentAdapter) Diagnose(ctx context.Context) ([]agent.Di
 	case agent.StateError:
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: agent.ClaudeCodeID, Code: "claude-code.settings-location-unavailable", Severity: agent.SeverityError,
-			Summary:     "Claude Code user-settings location is unavailable",
-			Detail:      "XIASS Tools could not safely resolve the selected Claude Code settings.json location.",
-			Remediation: "Check CLAUDE_CONFIG_DIR or the local Claude Code user directory, then run the check again.", CreatedAt: now,
+			Summary:     "无法使用 Claude Code 用户设置位置",
+			Detail:      "XIASS Tools 无法安全确定所选 Claude Code settings.json 的位置。",
+			Remediation: "请检查 CLAUDE_CONFIG_DIR 或本机 Claude Code 用户目录，再重新检查。", CreatedAt: now,
 		})
 	case agent.StateDegraded:
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: agent.ClaudeCodeID, Code: "claude-code.settings-needs-attention", Severity: agent.SeverityError,
-			Summary:     "Claude Code user settings need attention",
-			Detail:      "The selected settings.json could not be safely validated. No settings were changed.",
-			Remediation: "Repair the JSON file or restore a verified user-settings backup before saving a new configuration.", CreatedAt: now,
+			Summary:     "Claude Code 用户设置需要处理",
+			Detail:      "无法安全验证所选 settings.json，未修改任何设置。",
+			Remediation: "请先修复 JSON 文件，或恢复一个已验证的用户设置备份，再保存新配置。", CreatedAt: now,
 		})
 	case agent.StateNotInstalled:
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: agent.ClaudeCodeID, Code: "claude-code.cli-not-found", Severity: agent.SeverityInfo,
-			Summary:     "Claude Code CLI was not found",
-			Detail:      "XIASS Tools can prepare the selected user settings, but does not claim that Claude Code is installed or logged in.",
-			Remediation: "Install or open Claude Code, then run the local check again.", CreatedAt: now,
+			Summary:     "未找到 Claude Code CLI",
+			Detail:      "XIASS Tools 可以准备所选用户设置，但这不代表 Claude Code 已安装或已登录。",
+			Remediation: "请安装或打开 Claude Code，再重新检查本机。", CreatedAt: now,
 		})
 	case agent.StateDetected:
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: agent.ClaudeCodeID, Code: "claude-code.settings-not-managed", Severity: agent.SeverityInfo,
-			Summary:     "Claude Code user settings are available",
-			Detail:      "The selected settings.json is valid but is not fully managed by XIASS Tools.",
-			Remediation: "Use the Claude Code configuration flow to save an API root, one credential mode, optional gateway discovery, and a model field.", CreatedAt: now,
+			Summary:     "Claude Code 用户设置可用",
+			Detail:      "所选 settings.json 有效，但尚未完全由 XIASS Tools 管理。",
+			Remediation: "请通过 Claude Code 配置流程保存 API 根地址、一个凭据方式、可选的网关发现和模型字段。", CreatedAt: now,
 		})
 	}
 	return diagnostics, nil
@@ -115,30 +115,30 @@ func claudeCodeAgentSnapshotStatus(metadata agent.Metadata, snapshot claudeconfi
 	validConfig := inspectErr == nil && snapshot.Valid
 	canWriteConfig := validConfig && backupAvailable
 	state := agent.StateDetected
-	message := "Claude Code user settings are ready to be configured."
+	message := "Claude Code 用户设置已可以配置。"
 	switch {
 	case !validConfig:
 		state = agent.StateDegraded
-		message = "The selected Claude Code settings.json could not be safely validated."
+		message = "无法安全验证所选 Claude Code settings.json。"
 	case !cliFound:
 		state = agent.StateNotInstalled
 		if snapshot.Managed {
-			message = "XIASS Tools-managed Claude Code settings were found, but the Claude Code CLI was not found."
+			message = "已找到由 XIASS Tools 管理的 Claude Code 设置，但未找到 Claude Code CLI。"
 		} else {
-			message = "Claude Code CLI was not found. Local user settings can be inspected but do not prove the client is installed."
+			message = "未找到 Claude Code CLI。可以检查本机用户设置，但这不能证明客户端已安装。"
 		}
 	case !canWriteConfig:
 		state = agent.StateDegraded
-		message = "Claude Code settings are readable, but the rollback backup location could not be safely verified."
+		message = "Claude Code 设置可读取，但无法安全验证回滚备份位置。"
 	case snapshot.Managed:
 		state = agent.StateReady
-		message = "Claude Code user settings are configured by XIASS Tools."
+		message = "Claude Code 用户设置已由 XIASS Tools 配置。"
 	case snapshot.Location.Exists:
-		message = "A valid Claude Code user settings file was detected."
+		message = "已发现有效的 Claude Code 用户设置文件。"
 	}
 	if cliDiscoveryIssue {
 		state = agent.StateDegraded
-		message = "Claude Code user settings were inspected, but CLI discovery could not be completed."
+		message = "已检查 Claude Code 用户设置，但未能完成 CLI 发现。"
 	}
 
 	status := agent.Status{
@@ -170,7 +170,7 @@ func claudeCodeAgentErrorStatus(metadata agent.Metadata) agent.Status {
 		AgentID:     agent.ClaudeCodeID,
 		DisplayName: metadata.DisplayName,
 		State:       agent.StateError,
-		Message:     "The Claude Code user-settings location could not be safely resolved.",
+		Message:     "无法安全确定 Claude Code 用户设置位置。",
 		UpdatedAt:   time.Now().UTC(),
 	}
 	status.Capabilities = claudeCodeCapabilityStatuses(metadata, false, false, false, false)
@@ -184,32 +184,32 @@ func claudeCodeCapabilityStatuses(metadata agent.Metadata, validConfig, managed,
 			Capability:   declaration.Capability,
 			Availability: declaration.Availability,
 			Available:    false,
-			Reason:       "This capability is not implemented for Claude Code.",
+			Reason:       "Claude Code 尚未实现此功能。",
 		}
 		switch declaration.Capability {
 		case agent.CapabilityDiscovery:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = true
-			status.Reason = "Local Claude Code user-settings discovery completed."
+			status.Reason = "已完成本机 Claude Code 用户设置发现。"
 		case agent.CapabilityConfiguration:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = validConfig && backupAvailable
 			if validConfig {
 				if backupAvailable {
-					status.Reason = "The selected settings.json can be changed with verified atomic writes and recovery backups."
+					status.Reason = "可通过已验证的原子写入和恢复备份修改所选 settings.json。"
 				} else {
-					status.Reason = "The selected settings.json is readable, but its recovery backup location is not safely available for writes."
+					status.Reason = "所选 settings.json 可读取，但恢复备份位置无法安全写入。"
 				}
 			} else {
-				status.Reason = "The selected settings.json must be repaired before it can be changed."
+				status.Reason = "必须先修复所选 settings.json，才能进行修改。"
 			}
 		case agent.CapabilityModelCatalog:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = validConfig
 			if validConfig {
-				status.Reason = "A user-supplied gateway credential can be used for one-shot model directory discovery; no current catalog or inference result is implied."
+				status.Reason = "可使用用户提供的网关凭据进行一次模型目录发现；这不代表已有当前目录或推理结果。"
 			} else {
-				status.Reason = "A valid settings.json is required before model selection and gateway discovery are available."
+				status.Reason = "需要有效的 settings.json，才能使用模型选择和网关发现。"
 			}
 		case agent.CapabilityLocalProxy:
 			status.Availability = agent.CapabilityAvailable
@@ -218,21 +218,21 @@ func claudeCodeCapabilityStatuses(metadata agent.Metadata, validConfig, managed,
 			// listener or a Claude-compatible proxy is running right now.
 			status.Available = false
 			if managed && loopbackConfigured {
-				status.Reason = "The managed API root points to a local loopback address, but endpoint health has not been tested."
+				status.Reason = "受管 API 根地址指向本机回环地址，但尚未测试端点健康状态。"
 			} else {
-				status.Reason = "No managed local loopback API root is configured or health-checked."
+				status.Reason = "尚未配置或检查受管的本机回环 API 根地址。"
 			}
 		case agent.CapabilityDiagnostics:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = true
-			status.Reason = "Credential-safe local user-settings diagnostics are available."
+			status.Reason = "可使用不会暴露凭据的本机用户设置诊断。"
 		case agent.CapabilityBackup:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = validConfig && backupAvailable
 			if status.Available {
-				status.Reason = "Verified Claude Code user-settings backups are available."
+				status.Reason = "可使用已验证的 Claude Code 用户设置备份。"
 			} else {
-				status.Reason = "The user-settings and backup locations must be safely verified first."
+				status.Reason = "必须先安全验证用户设置和备份位置。"
 			}
 		}
 		statuses = append(statuses, status)

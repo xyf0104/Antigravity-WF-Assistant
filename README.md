@@ -5,7 +5,7 @@
 面向 macOS 和 Windows 的多 Agent 本机管理工具。XIASS Tools 是统一母应用，Antigravity WF、Codex、Claude Code、Cursor 与 Windsurf 分别作为独立模块提供各自经过验证的配置、连接、启动、诊断与恢复能力；共享更新、主题、本地验证器、安全存储和脱敏诊断服务。
 
 [![XIASS Tools release](https://img.shields.io/github/v/release/xyf0104/Antigravity-WF-Assistant?label=XIASS%20Tools%20release)](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT%20%2B%20CC%20BY--NC--SA%204.0-blue.svg)](nextgen/ORIGIN_AND_LICENSE.md)
 ![macOS Universal](https://img.shields.io/badge/macOS-Universal-5b5b5b)
 ![Windows x64](https://img.shields.io/badge/Windows-x64-0078d4)
 
@@ -22,12 +22,12 @@
 
 ## 下载与安装
 
-请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与 Release 标签匹配的标准安装包。该公开地址暂时保留历史仓库路径，作为已验证的发布与更新通道，不是 XIASS Tools 的显示名称。当前正式版本为 v1.6.8。Release 只提供两个系统的安装包和更新校验所需的 `SHA256SUMS.txt`，不提供 portable、独立 EXE 或 ZIP：
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与 Release 标签匹配的标准安装包。该公开地址暂时保留历史仓库路径，作为已验证的发布与更新通道，不是 XIASS Tools 的显示名称。当前正式版本为 v1.7.0。面向用户的下载只保留三个标准安装包，不提供 portable、便携版或用户手动解压的 ZIP；Release 中其余签名、清单、校验文件及 macOS `.app.tar.gz` 仅供应用内自动更新使用：
 
 | 系统 | 安装包 | 支持范围 |
 | --- | --- | --- |
-| macOS | `XIASS-Tools-macOS-universal-v<version>-Installer.pkg` | Apple Silicon 与 Intel Mac |
-| Windows | `XIASS-Tools-Windows-x64-v<version>-Setup.exe` | Windows 10/11 x64 |
+| macOS | `XIASS-Tools-macOS-universal-v<version>.dmg` | Apple Silicon 与 Intel Mac |
+| Windows | `XIASS-Tools-Windows-x64-v<version>.msi` 或 `XIASS-Tools-Windows-x64-v<version>-Setup.exe` | Windows 10/11 x64 |
 
 Windows 安装时可以勾选创建桌面快捷方式。macOS 安装完成后可从“应用程序”或 Launchpad 打开；若系统拦截未签名应用，请在 Finder 中按住 Control 点按安装包或 App 后选择“打开”，并在“系统设置 → 隐私与安全性”中确认。
 
@@ -86,4 +86,6 @@ macOS 与 Windows 的源代码、构建命令和平台说明分别位于：
 
 ## 许可证与声明
 
-代码按 [MIT License](LICENSE) 发布。Antigravity、Codex、Claude Code、Cursor 与 Windsurf 的名称及商标归各自权利人所有；XIASS Tools 是独立的本地辅助工具，不代表任何相关产品的官方授权或背书。使用第三方模型服务时，请遵守相应服务条款。
+本仓库采用混合许可证：XIASS 原有、未标注其他许可证的组件继续按根目录 [MIT License](LICENSE) 发布；`nextgen/` 中从 Cockpit Tools 派生的部分按 [CC BY-NC-SA 4.0 和来源声明](nextgen/ORIGIN_AND_LICENSE.md) 分发；内置 CLIProxyAPI 等独立第三方组件继续适用各自许可证。未经 Cockpit Tools 作者另行书面商业授权，不得把其派生部分用于商业集成、付费分发或企业内部商业用途。
+
+Antigravity、Codex、Claude Code、Cursor 与 Windsurf 的名称及商标归各自权利人所有。XIASS Tools 是独立的本地辅助工具，不代表任何相关产品的官方授权或背书。使用第三方模型服务时，请遵守相应服务条款。

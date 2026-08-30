@@ -1,4 +1,4 @@
-name: Build XIASS Tools for macOS
+name: Build XIASS Tools Nextgen for macOS
 
 on:
   workflow_dispatch:
@@ -9,110 +9,73 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: nextgen-macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-14
     defaults:
       run:
-        working-directory: macos/source
+        working-directory: nextgen
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: macos/source/go.mod
-          cache-dependency-path: macos/source/go.sum
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: nextgen
+          key: nextgen-macos-universal
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: nextgen/sidecars/cockpit-cliproxy/go.mod
+          cache-dependency-path: |
+            nextgen/sidecars/cockpit-cliproxy/go.sum
+            macos/source/go.sum
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: macos/source/frontend/package-lock.json
+          cache-dependency-path: nextgen/package-lock.json
 
-      - name: Install frontend dependencies
-        working-directory: macos/source/frontend
+      - name: Install dependencies
         run: npm ci
 
-      - name: Build frontend
-        working-directory: macos/source/frontend
-        run: npm run build
+      - name: Run release preflight and packaging unit tests
+        run: |
+          npm run release:preflight
+          node --test scripts/release/*.test.cjs
+          node scripts/check_brand_and_license.cjs
 
-      - name: Run model grouping tests
-        working-directory: macos/source/frontend
-        run: node --test test/modelGroups.test.mjs
+      - name: Build ad-hoc-signed Universal app and DMG
+        run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target universal-apple-darwin
 
-      - name: Run OAuth status tests
-        working-directory: macos/source/frontend
-        run: npm run test:oauth
-
-      - name: Run OAuth login UX tests
-        working-directory: macos/source/frontend
-        run: npm run test:oauth-ux
-
-      - name: Run connection progress UX tests
-        working-directory: macos/source/frontend
-        run: npm run test:patch-ux
-
-      - name: Run update-check tests
-        working-directory: macos/source/frontend
-        run: npm run test:update-check
-
-      - name: Run reasoning capability tests
-        working-directory: macos/source/frontend
-        run: node --test test/reasoningCapabilities.test.mjs
-
-      # Wails bindings are generated during the native build below. Keep the
-      # binding contract test after generation so a clean checkout never
-      # mistakes an absent ignored artifact for a renderer regression.
-      - name: Run pre-native-build frontend regression suite
-        working-directory: macos/source/frontend
+      - name: Verify Universal sidecars and bundles
         shell: bash
         run: |
           set -euo pipefail
-          tests=()
-          for test_file in test/*.test.mjs; do
-            [[ "$test_file" = "test/wailsBindings.verify.mjs" ]] && continue
-            tests+=("$test_file")
+          for sidecar in \
+            sidecars/cockpit-cliproxy/bin/xiass-cliproxy-universal-apple-darwin \
+            sidecars/wf-bridge/bin/xiass-wf-bridge-universal-apple-darwin; do
+            test -x "$sidecar"
+            arches="$(lipo -archs "$sidecar")"
+            [[ "$arches" == *x86_64* && "$arches" == *arm64* ]]
           done
-          test "${#tests[@]}" -gt 0
-          node --test "${tests[@]}"
+          test "$(find target/universal-apple-darwin/release/bundle -type d -name '*.app' | wc -l | tr -d ' ')" -ge 1
+          test "$(find target/universal-apple-darwin/release/bundle -type f -name '*.dmg' | wc -l | tr -d ' ')" -eq 1
+          app="$(find target/universal-apple-darwin/release/bundle -type d -name 'XIASS Tools.app' -print -quit)"
+          test -n "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
 
-      - name: Run Go race tests
-        run: go test -race ./...
-
-      - name: Run Go vet
-        run: go vet ./...
-
-      - name: Remove verified stale app bundle
-        run: bash ./build/darwin/prepare-app-output.sh
-
-      - name: Build Universal App
-        # Wails otherwise preserves prior build/bin contents. A clean target is
-        # required so the signed app and installer cannot accidentally package
-        # an executable from an earlier local or CI build.
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -clean -platform darwin/universal -trimpath -o "XIASS Tools"
-
-      - name: Verify generated Wails bindings
-        working-directory: macos/source/frontend
-        run: node --test test/wailsBindings.verify.mjs
-
-      - name: Package macOS installer
-        run: ./build/darwin/package-installer.sh
-
-      - name: Verify macOS installer payload
-        run: ./build/darwin/verify-installer.sh
-
-      - name: Smoke-test macOS installer lifecycle
-        if: ${{ runner.environment == 'github-hosted' }}
-        run: ./build/darwin/smoke-installer.sh
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: XIASS-Tools-macOS-universal
-          path: |
-            macos/source/build/bin/XIASS-Tools-macOS-universal-v*-Installer.pkg
+          name: XIASS-Tools-Nextgen-macOS-universal
+          path: nextgen/target/universal-apple-darwin/release/bundle
           if-no-files-found: error
+          retention-days: 7

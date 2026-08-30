@@ -14,7 +14,7 @@ import {
   migrateClaudeCodeLegacyBackup,
 } from "@/state/appState";
 
-const props = defineProps({ open: Boolean });
+const props = defineProps({ open: Boolean, inline: Boolean });
 const emit = defineEmits(["close", "changed"]);
 
 const data = ref(null);
@@ -490,7 +490,7 @@ watch(() => draft.value.credentialMode, () => {
 </script>
 
 <template>
-  <Modal :open="open" title="配置 Claude Code" wide persistent :closable="!busy" @close="close">
+  <Modal :open="open" title="配置 Claude Code" wide persistent :inline="inline" :closable="!busy" @close="close">
     <div class="claude-config">
       <p class="intro">
         XIASS Tools 仅管理 Claude Code 用户 <code>settings.json</code> 中的 API 根地址、一个显式凭据方式、模型和网关模型目录开关。
@@ -700,7 +700,7 @@ watch(() => draft.value.credentialMode, () => {
 </template>
 
 <style scoped>
-.claude-config { display: grid; gap: 13px; }
+.claude-config { display: grid; min-width: 0; gap: 13px; overflow-wrap: anywhere; }
 .intro { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
 .intro code, .current-state code { color: var(--accent-strong); font-family: var(--font-num); font-size: .95em; }
 .state-block { min-height: 110px; display: grid; place-items: center; border: 1px dashed var(--separator-strong); border-radius: 10px; color: var(--text-tertiary); font-size: 12px; }
@@ -742,7 +742,7 @@ watch(() => draft.value.credentialMode, () => {
 .notice, .error { margin: 0; border-radius: 8px; font-size: 11px; line-height: 1.5; padding: 8px 10px; }
 .notice { border: 1px solid color-mix(in srgb, var(--green) 35%, var(--separator)); background: color-mix(in srgb, var(--green) 7%, transparent); color: var(--green); }
 .error { border: 1px solid color-mix(in srgb, var(--red) 42%, var(--separator)); background: color-mix(in srgb, var(--red) 8%, transparent); color: var(--red); }
-.configuration-section { display: grid; gap: 10px; border-top: 1px solid var(--separator); padding-top: 12px; }
+.configuration-section { display: grid; min-width: 0; gap: 10px; border-top: 1px solid var(--separator); padding-top: 12px; }
 .section-heading { display: flex; justify-content: space-between; gap: 12px; }
 .section-heading > div { display: grid; gap: 2px; }
 .section-heading strong { color: var(--text-primary); font-size: 12px; }
@@ -757,7 +757,7 @@ watch(() => draft.value.credentialMode, () => {
 .helper-field { border-left: 2px solid color-mix(in srgb, var(--orange) 65%, var(--separator)); padding-left: 9px; }
 .discovery-toggle { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; border: 1px solid var(--separator); border-radius: 9px; background: var(--bg-inset); padding: 10px; cursor: pointer; }
 .discovery-toggle input { width: 14px; height: 14px; margin: 2px 0 0; accent-color: var(--accent-strong); }
-.discovery-toggle > span { display: grid; gap: 3px; }
+.discovery-toggle > span { display: grid; min-width: 0; gap: 3px; }
 .discovery-toggle strong { color: var(--text-primary); font-size: 11px; }
 .discovery-toggle small { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 .gateway-compatibility-warning { margin: -2px 0 0; border: 1px solid color-mix(in srgb, var(--orange) 46%, var(--separator)); border-left: 3px solid var(--orange); border-radius: 8px; background: color-mix(in srgb, var(--orange) 7%, var(--bg-inset)); color: var(--text-secondary); font-size: 10px; line-height: 1.5; padding: 8px 10px; }

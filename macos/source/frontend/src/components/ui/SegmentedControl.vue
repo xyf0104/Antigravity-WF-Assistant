@@ -50,4 +50,24 @@ defineEmits(["update:modelValue"]);
   color: var(--text-primary);
   box-shadow: var(--shadow-card);
 }
+
+@media (max-width: 560px) {
+  .seg {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .item {
+    min-width: 0;
+    min-height: 40px;
+    padding: 7px 9px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .item:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
 </style>

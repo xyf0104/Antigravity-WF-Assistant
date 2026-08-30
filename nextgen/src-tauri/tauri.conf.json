@@ -1,0 +1,105 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "XIASS Tools",
+  "version": "1.7.0",
+  "identifier": "com.xiass.tools",
+  "build": {
+    "beforeDevCommand": "node scripts/prepare-tauri.cjs && npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "node scripts/prepare-tauri.cjs && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "XIASS Tools",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "transparent": false,
+        "resizable": true
+      },
+      {
+        "label": "floating-card",
+        "title": "XIASS Tools",
+        "create": false,
+        "width": 250,
+        "height": 290,
+        "minWidth": 250,
+        "minHeight": 290,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "resizable": false,
+        "skipTaskbar": true,
+        "alwaysOnTop": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "publisher": "XIASS Tools",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./windows/nsis/installer-hooks.nsh"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libsecret-tools"
+        ]
+      }
+    },
+    "icon": [
+      "icons/48x48.png",
+      "icons/32x32.png",
+      "icons/16x16.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/256x256.png",
+      "icons/512x512.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../scripts/claude-desktop-auth-helper.cjs": "scripts/claude-desktop-auth-helper.cjs",
+      "../src/assets/icons/antigravity-menu.png": "native-menu-icons/antigravity-menu.png",
+      "../src/assets/icons/claude.png": "native-menu-icons/claude.png",
+      "../src/assets/icons/codex.svg": "native-menu-icons/codex.svg",
+      "../src/assets/icons/cursor-menu.png": "native-menu-icons/cursor-menu.png",
+      "../src/assets/icons/windsurf.svg": "native-menu-icons/windsurf.svg"
+    },
+    "externalBin": [
+      "../sidecars/cockpit-cliproxy/bin/xiass-cliproxy",
+      "../sidecars/wf-bridge/bin/xiass-wf-bridge"
+    ],
+    "macOS": {
+      "bundleName": "XIASS Tools",
+      "infoPlist": "Info.plist"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "xiass-tools",
+          "xiasstools"
+        ]
+      }
+    }
+  }
+}

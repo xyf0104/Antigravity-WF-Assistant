@@ -26,7 +26,10 @@ defineProps({
   gap: 6px;
   border-radius: var(--r-sm);
   font-weight: 550;
-  white-space: nowrap;
+  min-width: 0;
+  line-height: 1.3;
+  white-space: normal;
+  overflow-wrap: anywhere;
   transition: transform 0.14s var(--spring), background 0.16s var(--ease),
     opacity 0.16s var(--ease);
   user-select: none;
@@ -37,14 +40,16 @@ defineProps({
 }
 
 .s-md {
-  height: 32px;
-  padding: 0 14px;
+  min-height: 40px;
+  height: auto;
+  padding: 8px 14px;
   font-size: 14px;
 }
 
 .s-sm {
-  height: 26px;
-  padding: 0 10px;
+  min-height: 40px;
+  height: auto;
+  padding: 8px 10px;
   font-size: 12.5px;
   border-radius: 7px;
 }

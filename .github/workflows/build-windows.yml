@@ -1,4 +1,4 @@
-name: Build XIASS Tools for Windows
+name: Build XIASS Tools Nextgen for Windows
 
 on:
   workflow_dispatch:
@@ -9,117 +9,72 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: nextgen-windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: windows/source
+        working-directory: nextgen
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: windows/source/go.mod
-          cache-dependency-path: windows/source/go.sum
+          targets: x86_64-pc-windows-msvc
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: nextgen
+          key: nextgen-windows-x64
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: nextgen/sidecars/cockpit-cliproxy/go.mod
+          cache-dependency-path: |
+            nextgen/sidecars/cockpit-cliproxy/go.sum
+            windows/source/go.sum
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: windows/source/frontend/package-lock.json
+          cache-dependency-path: nextgen/package-lock.json
 
-      - name: Install frontend dependencies
-        working-directory: windows/source/frontend
+      - name: Install dependencies
         run: npm ci
 
-      - name: Build frontend
-        working-directory: windows/source/frontend
-        run: npm run build
+      - name: Run release preflight and packaging unit tests
+        run: |
+          npm run release:preflight
+          node --test scripts/release/*.test.cjs
+          node scripts/check_brand_and_license.cjs
 
-      - name: Run model grouping tests
-        working-directory: windows/source/frontend
-        run: node --test test/modelGroups.test.mjs
+      - name: Build unsigned Windows x64 installers
+        run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target x86_64-pc-windows-msvc
 
-      - name: Run OAuth status tests
-        working-directory: windows/source/frontend
-        run: npm run test:oauth
-
-      - name: Run OAuth login UX tests
-        working-directory: windows/source/frontend
-        run: npm run test:oauth-ux
-
-      - name: Run patch progress UX tests
-        working-directory: windows/source/frontend
-        run: npm run test:patch-ux
-
-      - name: Run update-check tests
-        working-directory: windows/source/frontend
-        run: npm run test:update-check
-
-      - name: Run reasoning capability tests
-        working-directory: windows/source/frontend
-        run: node --test test/reasoningCapabilities.test.mjs
-
-      # Generated Wails bindings are intentionally not a pre-native-build
-      # source of truth. wailsBindings.verify.mjs deliberately runs only after Wails production build below.
-      - name: Run pre-native-build frontend regression suite
-        working-directory: windows/source/frontend
+      - name: Verify Windows sidecars and installers
         shell: pwsh
         run: |
-          # The generated binding verifier intentionally ends in .verify.mjs,
-          # so this .test.mjs glob already excludes it until Wails has created
-          # the production bindings below.
-          $tests = @(Get-ChildItem -Path test -Filter '*.test.mjs' -File | Sort-Object Name | ForEach-Object { $_.FullName })
-          if ($tests.Count -eq 0) { throw "No pre-native frontend regression tests were found." }
-          & node --test $tests
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $sidecars = @(
+            'sidecars/cockpit-cliproxy/bin/xiass-cliproxy-x86_64-pc-windows-msvc.exe',
+            'sidecars/wf-bridge/bin/xiass-wf-bridge-x86_64-pc-windows-msvc.exe'
+          )
+          foreach ($sidecar in $sidecars) {
+            if (-not (Test-Path $sidecar -PathType Leaf)) { throw "Missing sidecar: $sidecar" }
+            if ((Get-Item $sidecar).Length -le 0) { throw "Empty sidecar: $sidecar" }
+          }
+          $msi = @(Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle -Recurse -Filter '*.msi')
+          $nsis = @(Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle -Recurse -Filter '*-setup.exe')
+          if ($msi.Count -ne 1) { throw "Expected one MSI, found $($msi.Count)" }
+          if ($nsis.Count -ne 1) { throw "Expected one NSIS installer, found $($nsis.Count)" }
 
-      - name: Run Go race tests
-        run: go test -race ./...
-
-      - name: Run Go vet
-        run: go vet ./...
-
-      - name: Build Windows x64
-        shell: pwsh
-        run: |
-          $version = (Get-Content VERSION -Raw).Trim()
-          # Wails otherwise preserves prior build/bin contents. Clean only the
-          # generated target before producing the signed installer payload.
-          go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -clean -platform windows/amd64 -trimpath -o "XIASS Tools-v$version.exe"
-
-      - name: Verify generated Wails bindings
-        working-directory: windows/source/frontend
-        run: node --test test/wailsBindings.verify.mjs
-
-      - name: Install NSIS
-        run: choco install nsis -y --no-progress
-
-      - name: Build NSIS installer
-        working-directory: windows/source/build/windows
-        shell: pwsh
-        run: |
-          $version = (Get-Content ../../VERSION -Raw).Trim()
-          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 "/DAPP_VERSION=$version" installer.nsi
-
-      - name: Smoke-test Windows installer lifecycle
-        if: ${{ runner.environment == 'github-hosted' }}
-        shell: pwsh
-        run: ./build/windows/smoke-installer.ps1
-
-      - name: Refuse installer smoke test on persistent runner
-        if: ${{ runner.environment != 'github-hosted' }}
-        shell: pwsh
-        run: throw "Installer smoke tests may run only on an ephemeral GitHub-hosted Windows runner."
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: XIASS-Tools-Windows-x64
-          path: |
-            windows/source/build/bin/XIASS-Tools-Windows-x64-v*-Setup.exe
+          name: XIASS-Tools-Nextgen-Windows-x64
+          path: nextgen/target/x86_64-pc-windows-msvc/release/bundle
           if-no-files-found: error
+          retention-days: 7

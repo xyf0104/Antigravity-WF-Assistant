@@ -39,6 +39,7 @@ import {
 
 const props = defineProps({
   open: Boolean,
+  inline: Boolean,
 });
 
 const emit = defineEmits(["close", "changed"]);
@@ -1303,7 +1304,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Modal :open="open" title="配置 Codex" wide persistent :closable="!saving && !removingXIASSProvider && !migratingLegacyProvider && !discovering && !repairingHistory && !desktopBusy" @close="close">
+  <Modal :open="open" title="配置 Codex" wide persistent :inline="inline" :closable="!saving && !removingXIASSProvider && !migratingLegacyProvider && !discovering && !repairingHistory && !desktopBusy" @close="close">
     <div class="codex-config">
       <p class="intro">XIASS Tools 仅管理 <code>config.toml</code> 中独立的 <code>xiass_tools</code> Provider。不会读取 <code>auth.json</code>、不会替换无关 Provider；Codex Desktop 的打开、退出与重启只会在你主动确认后执行。</p>
 
@@ -1591,7 +1592,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.codex-config { display: grid; max-height: min(68vh, 700px); gap: 15px; overflow: auto; padding-right: 3px; }
+.codex-config { display: grid; max-height: min(72vh, 760px); gap: 20px; overflow: auto; padding: 2px 8px 18px 2px; }
 .intro { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
 	.intro code, .section-title code, .model-tools code, .legacy-migration code { color: var(--accent-strong); font-family: var(--font-num); font-size: .94em; }
 .state-block { border: 1px dashed var(--separator-strong); border-radius: 10px; color: var(--text-tertiary); padding: 22px; text-align: center; }
@@ -1775,5 +1776,5 @@ onBeforeUnmount(() => {
 .legacy-backup-group { display: grid; gap: 1px; margin-top: 11px; }
 .legacy-backup-group > strong { color: var(--text-primary); font-size: 11px; }
 .legacy-backup-group .backup-row:last-child { border-bottom: 1px solid var(--separator); }
-	@media (max-width: 680px) { .split-fields { grid-template-columns: 1fr; } .config-status > div { display: grid; } .config-status span { text-align: left; } .desktop-status { grid-template-columns: auto minmax(0, 1fr); } .desktop-status code { grid-column: 2; } .desktop-actions { align-items: stretch; flex-direction: column; } .desktop-actions :deep(.btn), .desktop-refresh, .manual-desktop-path :deep(.btn), .lifecycle-panel :deep(.btn) { justify-content: center; width: 100%; } .xiass-key-actions, .manual-callback > div, .manual-desktop-path > div, .legacy-migration { align-items: stretch; flex-direction: column; } .context-heading { align-items: flex-start; flex-direction: column; } .context-heading > span { text-align: left; } .history-flow ol { grid-template-columns: 1fr; } }
+	@media (max-width: 680px) { .split-fields { grid-template-columns: 1fr; } .config-status > div { display: grid; } .config-status span { text-align: left; } .desktop-status { grid-template-columns: auto minmax(0, 1fr); } .desktop-status code { grid-column: 2; } .desktop-actions { align-items: stretch; flex-direction: column; } .desktop-actions :deep(.btn), .desktop-refresh, .manual-desktop-path :deep(.btn), .lifecycle-panel :deep(.btn) { justify-content: center; width: 100%; } .xiass-key-actions, .manual-callback > div, .manual-desktop-path > div, .legacy-migration, .model-tools { align-items: stretch; flex-direction: column; } .site-field, .manual-callback > div input, .manual-desktop-path input { flex: 0 0 auto; width: 100%; } .model-tools :deep(.btn) { width: 100%; } .context-heading { align-items: flex-start; flex-direction: column; } .context-heading > span { text-align: left; } .history-flow ol { grid-template-columns: 1fr; } }
 </style>

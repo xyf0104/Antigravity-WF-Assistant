@@ -68,6 +68,7 @@ type App struct {
 	codexDesktopMu                 sync.Mutex
 	codexDesktopControl            codexDesktopControlService
 	codexDesktopOperation          sync.Mutex
+	eventSink                      func(string, any)
 	exitRequested                  atomic.Bool
 }
 
@@ -197,6 +198,19 @@ func (a *App) startup(ctx context.Context) {
 		log.Printf("[xiass-tools] 代理启动失败: %v", err)
 	}
 	go a.syncHistory()
+}
+
+// emitRuntimeEvent keeps the existing Wails event bridge for the standalone
+// application while allowing the XIASS Tools headless bridge to forward the
+// same events over its authenticated loopback transport.
+func (a *App) emitRuntimeEvent(name string, payload any) {
+	if a.eventSink != nil {
+		a.eventSink(name, payload)
+		return
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, name, payload)
+	}
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -599,7 +613,7 @@ func (a *App) InstallLatestUpdate() Result {
 
 func (a *App) emitUpdateProgress(progress UpdateProgress) {
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "wf:update-progress", progress)
+		a.emitRuntimeEvent("wf:update-progress", progress)
 	}
 }
 
@@ -1886,7 +1900,7 @@ func (a *App) runPatchAction(actionName string, operation string, action func() 
 
 func (a *App) emitPatchProgress(progress PatchProgress) {
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "wf:patch-progress", progress)
+		a.emitRuntimeEvent("wf:patch-progress", progress)
 	}
 }
 

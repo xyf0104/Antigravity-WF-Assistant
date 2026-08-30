@@ -6,6 +6,7 @@ import Models from "@/views/Models.vue";
 import Accounts from "@/views/Accounts.vue";
 import Permissions from "@/views/Permissions.vue";
 import Settings from "@/views/Settings.vue";
+import TOTPSettingsCard from "@/components/TOTPSettingsCard.vue";
 import CodexConfigurationModal from "@/components/CodexConfigurationModal.vue";
 import ClaudeCodeConfigurationModal from "@/components/ClaudeCodeConfigurationModal.vue";
 import MCPConfigurationModal from "@/components/MCPConfigurationModal.vue";
@@ -27,8 +28,15 @@ import {
 	launchDetectedAgent,
 } from "@/state/appState";
 
-const activeModuleID = ref("antigravity");
-const antigravityTab = ref("dashboard");
+const embeddedParams = new URLSearchParams(window.location.search);
+const embeddedMode = embeddedParams.get("embedded") === "1";
+if (embeddedMode) document.documentElement.dataset.embedded = "true";
+const embeddedModuleID = embeddedParams.get("module") || "antigravity";
+const supportedEmbeddedModules = new Set(["antigravity", "codex", "claude-code", "cursor", "windsurf"]);
+const activeModuleID = ref(supportedEmbeddedModules.has(embeddedModuleID) ? embeddedModuleID : "antigravity");
+const embeddedSection = embeddedParams.get("section") || "dashboard";
+const supportedAntigravitySections = new Set(["dashboard", "models", "accounts", "permissions", "totp"]);
+const antigravityTab = ref(supportedAntigravitySections.has(embeddedSection) ? embeddedSection : "dashboard");
 const exitDialogOpen = ref(false);
 const updateDialogOpen = ref(false);
 const updateDialogError = ref("");
@@ -63,7 +71,12 @@ const themeOptions = [
   { label: "跟随系统", value: "system" },
 ];
 const storedTheme = localStorage.getItem("wf-theme");
-const themeMode = ref(["light", "dark", "system"].includes(storedTheme) ? storedTheme : "system");
+const embeddedTheme = embeddedParams.get("theme");
+const themeMode = ref(
+  embeddedMode && ["light", "dark"].includes(embeddedTheme)
+    ? embeddedTheme
+    : (["light", "dark", "system"].includes(storedTheme) ? storedTheme : "system"),
+);
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 const activeModule = computed(() => agentModules.find((item) => item.id === activeModuleID.value) || null);
@@ -268,7 +281,15 @@ watch(
 
 onMounted(() => {
   systemTheme.addEventListener?.("change", handleSystemThemeChange);
-  bootstrap().catch(console.error);
+  bootstrap().then(() => {
+    if (!embeddedMode) return;
+    if (activeModuleID.value === "codex") codexConfigurationOpen.value = true;
+    if (activeModuleID.value === "claude-code") claudeCodeConfigurationOpen.value = true;
+    if (activeModuleID.value === "cursor" || activeModuleID.value === "windsurf") {
+      mcpConfigurationTarget.value = activeModuleID.value;
+      mcpConfigurationOpen.value = true;
+    }
+  }).catch(console.error);
 	const runtime = window.runtime;
 	if (typeof runtime?.EventsOn === "function") {
 		const unsubscribe = runtime.EventsOn("wf:main-window-shown", handleMainWindowShown);
@@ -286,7 +307,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="shell">
+  <div class="shell" :class="{ embedded: embeddedMode }">
     <aside class="sidebar" :class="{ mac: isMac }" style="--wails-draggable: drag">
       <div class="brand-mark" title="XIASS Tools">
         <img src="/xiass-tools-logo.png" alt="XIASS Tools" />
@@ -376,6 +397,7 @@ onUnmounted(() => {
           <Models v-else-if="activeModuleID === 'antigravity' && antigravityTab === 'models'" key="antigravity-models" />
           <Accounts v-else-if="activeModuleID === 'antigravity' && antigravityTab === 'accounts'" key="antigravity-accounts" />
           <Permissions v-else-if="activeModuleID === 'antigravity' && antigravityTab === 'permissions'" key="antigravity-permissions" />
+          <TOTPSettingsCard v-else-if="activeModuleID === 'antigravity' && antigravityTab === 'totp'" key="antigravity-totp" />
           <Settings v-else-if="activeModuleID === 'settings'" key="settings" />
           <Tools
             v-else
@@ -428,18 +450,21 @@ onUnmounted(() => {
 
 	<CodexConfigurationModal
 		:open="codexConfigurationOpen"
+		:inline="embeddedMode"
 		@close="codexConfigurationOpen = false"
 		@changed="handleCodexConfigurationChanged"
 	/>
 
 	<ClaudeCodeConfigurationModal
 		:open="claudeCodeConfigurationOpen"
+		:inline="embeddedMode"
 		@close="claudeCodeConfigurationOpen = false"
 		@changed="handleClaudeCodeConfigurationChanged"
 	/>
 
 	<MCPConfigurationModal
 		:open="mcpConfigurationOpen"
+		:inline="embeddedMode"
 		:target="mcpConfigurationTarget"
 		@close="mcpConfigurationOpen = false"
 		@changed="handleMCPConfigurationChanged"
@@ -484,6 +509,31 @@ onUnmounted(() => {
   grid-template-columns: 184px minmax(0, 1fr);
   height: 100vh;
   background: var(--bg-base);
+}
+
+.shell.embedded {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  background: transparent;
+}
+
+.shell.embedded > .sidebar,
+.shell.embedded .topbar {
+  display: none;
+}
+
+.shell.embedded .workspace {
+  min-width: 0;
+  height: 100vh;
+}
+
+.shell.embedded .agent-subnav {
+  display: none;
+}
+
+.shell.embedded .main {
+  min-height: 0;
+  padding-top: 14px;
 }
 
 .agent-detail-copy {

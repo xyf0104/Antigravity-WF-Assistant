@@ -1,3 +1,5 @@
+//go:build darwin && !wfbridge
+
 #import <Cocoa/Cocoa.h>
 #include "_cgo_export.h"
 

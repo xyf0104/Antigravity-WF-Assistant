@@ -20,6 +20,7 @@ import {
 
 const props = defineProps({
   open: Boolean,
+  inline: Boolean,
   target: { type: String, default: "" },
 });
 const emit = defineEmits(["close", "changed"]);
@@ -430,7 +431,7 @@ watch(() => [props.open, props.target], ([open, target]) => {
 </script>
 
 <template>
-  <Modal :open="open" :title="`配置 ${displayName} MCP`" wide persistent :closable="!busy" @close="close">
+  <Modal :open="open" :title="`配置 ${displayName} MCP`" wide persistent :inline="inline" :closable="!busy" @close="close">
     <div class="mcp-config">
       <p class="intro">
         XIASS Tools 只管理一个保留的远程 MCP 条目，不读取或改写账号、Cookie、令牌、聊天记录、数据库或其他 MCP 条目。
@@ -546,7 +547,7 @@ watch(() => [props.open, props.target], ([open, target]) => {
 </template>
 
 <style scoped>
-.mcp-config { display: grid; gap: 13px; }
+.mcp-config { display: grid; width: 100%; min-width: 0; gap: 16px; padding: 2px; overflow-x: clip; overflow-wrap: anywhere; }
 .intro { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
 .scope-ribbon { display: grid; gap: 10px; border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--separator)); border-radius: 10px; background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 7%, var(--bg-inset)), color-mix(in srgb, var(--teal) 5%, var(--bg-inset))); padding: 11px 12px; }
 .scope-ribbon-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.scope-ribbon-head > div:first-child { display: grid; min-width: 0; gap: 2px; }.scope-ribbon-head strong { color: var(--text-primary); font-size: 12px; }.scope-ribbon-head span { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
@@ -569,15 +570,15 @@ watch(() => [props.open, props.target], ([open, target]) => {
 .notice, .error { margin: 0; border-radius: 8px; font-size: 11px; line-height: 1.5; padding: 8px 10px; }
 .notice { border: 1px solid color-mix(in srgb, var(--green) 35%, var(--separator)); background: color-mix(in srgb, var(--green) 7%, transparent); color: var(--green); }
 .error { border: 1px solid color-mix(in srgb, var(--red) 42%, var(--separator)); background: color-mix(in srgb, var(--red) 8%, transparent); color: var(--red); }
-.configuration-section { display: grid; gap: 10px; border-top: 1px solid var(--separator); padding-top: 12px; }
-.section-heading { display: flex; justify-content: space-between; gap: 12px; }.section-heading > div { display: grid; gap: 2px; }
+.configuration-section { display: grid; min-width: 0; gap: 12px; border: 1px solid var(--separator); border-radius: 14px; background: var(--bg-inset); padding: 14px 16px 16px; }
+.section-heading { display: flex; min-width: 0; justify-content: space-between; gap: 12px; }.section-heading > div { display: grid; min-width: 0; gap: 3px; }
 .section-heading strong { color: var(--text-primary); font-size: 12px; }.section-heading span { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
-.field { display: grid; gap: 5px; }.field > span { color: var(--text-secondary); font-size: 11px; }
+.field { display: grid; min-width: 0; gap: 6px; }.field > span { color: var(--text-secondary); font-size: 11px; }
 .field input { width: 100%; min-width: 0; border: 1px solid var(--separator-strong); border-radius: 8px; outline: none; background: var(--bg-base); color: var(--text-primary); font: inherit; font-family: var(--font-num); font-size: 12px; padding: 9px 10px; }
 .field input:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 3px var(--accent-soft); }.field input:disabled { cursor: not-allowed; opacity: .58; }
 .field small { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 .recovery-points { border: 1px solid var(--separator); border-left: 3px solid var(--teal); border-radius: 10px; background: color-mix(in srgb, var(--teal) 5%, var(--bg-inset)); overflow: clip; }
-.recovery-points summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; color: var(--text-primary); font-size: 12px; font-weight: 700; list-style: none; padding: 11px 12px; }
+.recovery-points summary { display: flex; min-height: 40px; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; color: var(--text-primary); font-size: 12px; font-weight: 700; list-style: none; padding: 11px 12px; }
 .recovery-points summary::-webkit-details-marker { display: none; }
 .recovery-points summary::before { width: 7px; height: 7px; border: 1px solid color-mix(in srgb, var(--teal) 58%, var(--separator)); border-radius: 50%; background: color-mix(in srgb, var(--teal) 24%, transparent); content: ""; }
 .recovery-points summary > span { flex: 1 1 auto; }.recovery-points summary small { color: var(--teal); font-size: 10px; font-weight: 700; }
@@ -594,6 +595,20 @@ watch(() => [props.open, props.target], ([open, target]) => {
 .recovery-actions { display: flex; flex: 0 0 auto; gap: 6px; }.recovery-actions :deep(.btn:focus-visible), .recovery-refresh:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
 .recovery-refresh { justify-self: start; display: inline-flex; min-height: 26px; align-items: center; gap: 5px; border: 0; border-radius: 7px; color: var(--text-tertiary); font: inherit; font-size: 10px; padding: 0 6px; transition: color .16s var(--ease), background .16s var(--ease); }
 .recovery-refresh svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }.recovery-refresh:hover:not(:disabled) { background: var(--bg-fill-hover); color: var(--accent-strong); }.recovery-refresh:disabled { cursor: wait; opacity: .48; }
-.safety-note { border-top: 1px solid var(--separator); padding-top: 12px; }.safety-note summary { cursor: pointer; color: var(--text-primary); font-size: 12px; font-weight: 700; }.safety-note p { margin: 8px 0 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.5; }
+.safety-note { border-top: 1px solid var(--separator); padding-top: 12px; }.safety-note summary { display: flex; min-height: 40px; align-items: center; cursor: pointer; color: var(--text-primary); font-size: 12px; font-weight: 700; }.safety-note p { margin: 8px 0 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.5; }
+
+/* Embedded workspaces keep their own readable rhythm even at narrow desktop widths. */
+.mcp-config { gap: 18px; padding: 4px 8px 20px; }
+.intro { font-size: 13px; }
+.scope-ribbon-head strong { font-size: 13px; }
+.scope-ribbon-head span,
+.project-handle-copy span,
+.section-heading span,
+.field small { font-size: 12px; line-height: 1.55; }
+.scope-options { gap: 4px; border-radius: 10px; padding: 4px; }
+.scope-options button { min-height: 40px; border-radius: 7px; font-size: 12px; padding-inline: 12px; }
+.section-heading strong { font-size: 14px; }
+.field > span { font-size: 13px; }
+.field input { min-height: 42px; border-radius: 9px; font-size: 13px; padding: 10px 12px; }
 @media (max-width: 560px) { .scope-ribbon-head, .project-handle { align-items: stretch; flex-direction: column; }.scope-options { align-self: stretch; }.scope-options button { flex: 1 1 0; }.project-handle :deep(.btn) { justify-content: center; width: 100%; }.facts { grid-template-columns: 1fr; }.recovery-row { align-items: stretch; flex-direction: column; }.recovery-actions :deep(.btn), .recovery-refresh { justify-content: center; width: 100%; } }
 </style>

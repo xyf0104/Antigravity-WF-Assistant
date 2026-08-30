@@ -112,11 +112,11 @@ func TestMCPAgentStatusOnlyEnablesVerifiedGlobalConfiguration(t *testing.T) {
 			if agentCapabilityAvailable(status, agent.CapabilityBackup) {
 				t.Fatalf("generic backup capability was advertised despite only global MCP recovery points being supported")
 			}
-			if reason := agentCapabilityReason(status, agent.CapabilityBackup); !strings.Contains(reason, "selected project MCP") {
+			if reason := agentCapabilityReason(status, agent.CapabilityBackup); !strings.Contains(reason, "所选项目 MCP") {
 				t.Fatalf("Cursor backup capability reason did not accurately scope recovery points: %q", reason)
 			}
 			if testCase.name == "missing client prevents configuration creation" {
-				if reason := agentCapabilityReason(status, agent.CapabilityConfiguration); !strings.Contains(reason, "selected project") {
+				if reason := agentCapabilityReason(status, agent.CapabilityConfiguration); !strings.Contains(reason, "项目 MCP") {
 					t.Fatalf("Cursor undetected capability reason omitted explicit project route: %q", reason)
 				}
 			}
@@ -127,10 +127,10 @@ func TestMCPAgentStatusOnlyEnablesVerifiedGlobalConfiguration(t *testing.T) {
 func TestMCPAgentStatusKeepsWindsurfGlobalOnly(t *testing.T) {
 	metadata := newWindsurfMCPAgentAdapter().Metadata()
 	status := mcpAgentStatus(metadata, agent.Status{State: agent.StateReady}, mcpconfig.Snapshot{Target: mcpconfig.TargetWindsurf, Valid: true}, true, true)
-	if reason := agentCapabilityReason(status, agent.CapabilityConfiguration); !strings.Contains(reason, "global MCP configuration") || strings.Contains(reason, "project") {
+	if reason := agentCapabilityReason(status, agent.CapabilityConfiguration); !strings.Contains(reason, "全局 MCP 配置") || strings.Contains(reason, "项目") {
 		t.Fatalf("Windsurf configuration reason incorrectly advertised project configuration: %q", reason)
 	}
-	if reason := agentCapabilityReason(status, agent.CapabilityBackup); !strings.Contains(reason, "global MCP configuration") || strings.Contains(reason, "project") {
+	if reason := agentCapabilityReason(status, agent.CapabilityBackup); !strings.Contains(reason, "全局 MCP 配置") || strings.Contains(reason, "项目") {
 		t.Fatalf("Windsurf recovery point reason incorrectly advertised project configuration: %q", reason)
 	}
 }
