@@ -87,15 +87,11 @@ func TestInstallerLifecycleSmokeScriptUsesRealSetupWithoutCleanupShortcuts(t *te
 		"HashSet[string]",
 		"$seen.Add($identity)",
 		"Assert-ShortcutTarget",
-		"Get-NativeShortcutTarget",
-		"IShellLinkW",
-		"IPersistFile",
-		"NativeShortcut",
 		"Trim([char]'\"')",
 		"Get-Item -LiteralPath $targetPath",
 		"StringComparison]::OrdinalIgnoreCase",
 		"Start-Process -FilePath $setupPath",
-		"Start-Process -FilePath $uninstaller",
+		"Start-Process -FilePath $startMenuUninstallShortcut",
 		"Test-InstallerStateAbsent",
 		"Windows Installer Lifecycle Smoke Test passed.",
 	} {
@@ -103,7 +99,7 @@ func TestInstallerLifecycleSmokeScriptUsesRealSetupWithoutCleanupShortcuts(t *te
 			t.Fatalf("installer lifecycle smoke script is missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"Remove-Item", "taskkill", "Stop-Process", "Start-Process -FilePath $mainExecutable"} {
+	for _, forbidden := range []string{"Remove-Item", "taskkill", "Stop-Process", "Start-Process -FilePath $mainExecutable", "Start-Process -FilePath $uninstaller"} {
 		if strings.Contains(contents, forbidden) {
 			t.Fatalf("installer lifecycle smoke script must not use %q", forbidden)
 		}

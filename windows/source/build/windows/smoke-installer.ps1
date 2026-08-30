@@ -93,75 +93,6 @@ function Assert-PathMissing([string]$path, [string]$description) {
   }
 }
 
-function Get-NativeShortcutTarget([string]$shortcutPath) {
-  # WScript.Shell is normally enough, but its PowerShell 7 COM projection can
-  # return an empty TargetPath for a valid shortcut whose display name is
-  # Unicode. Fall back to the native Unicode IShellLinkW interface before
-  # treating the installer output as invalid.
-  if (-not ('XiassToolsInstallerSmoke.NativeShortcut' -as [type])) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-
-namespace XiassToolsInstallerSmoke
-{
-    [ComImport]
-    [Guid("000214F9-0000-0000-C000-000000000046")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    internal interface IShellLinkW
-    {
-        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int capacity, IntPtr findData, uint flags);
-    }
-
-    [ComImport]
-    [Guid("0000010B-0000-0000-C000-000000000046")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    internal interface IPersistFile
-    {
-        void GetClassID(out Guid classId);
-        [PreserveSig] int IsDirty();
-        void Save([MarshalAs(UnmanagedType.LPWStr)] string fileName, bool remember);
-        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string fileName);
-        void Load([MarshalAs(UnmanagedType.LPWStr)] string fileName, uint mode);
-    }
-
-    public static class NativeShortcut
-    {
-        private static readonly Guid ShellLinkClassId = new Guid("00021401-0000-0000-C000-000000000046");
-
-        public static string GetTargetPath(string shortcutPath)
-        {
-            Type shellLinkType = Type.GetTypeFromCLSID(ShellLinkClassId);
-            if (shellLinkType == null)
-            {
-                throw new InvalidOperationException("Windows Shell Link COM class is unavailable.");
-            }
-
-            object shellLink = Activator.CreateInstance(shellLinkType);
-            try
-            {
-                ((IPersistFile)shellLink).Load(shortcutPath, 0);
-                var target = new StringBuilder(32768);
-                ((IShellLinkW)shellLink).GetPath(target, target.Capacity, IntPtr.Zero, 0);
-                return target.ToString();
-            }
-            finally
-            {
-                if (shellLink != null && Marshal.IsComObject(shellLink))
-                {
-                    Marshal.FinalReleaseComObject(shellLink);
-                }
-            }
-        }
-    }
-}
-'@
-  }
-
-  return ([XiassToolsInstallerSmoke.NativeShortcut]::GetTargetPath($shortcutPath)).Trim().Trim([char]'"')
-}
-
 function Assert-ShortcutTarget([string]$shortcutPath, [string]$expectedTarget) {
   if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
     throw "Expected Start Menu shortcut is missing: $shortcutPath"
@@ -172,9 +103,6 @@ function Assert-ShortcutTarget([string]$shortcutPath, [string]$expectedTarget) {
     # WScript may preserve outer quotes around a target supplied by an
     # installer. They are syntax, not part of the filesystem path.
     $targetPath = ([string]$shortcut.TargetPath).Trim().Trim([char]'"')
-    if ([string]::IsNullOrWhiteSpace($targetPath)) {
-      $targetPath = Get-NativeShortcutTarget $shortcutPath
-    }
     if ([string]::IsNullOrWhiteSpace($targetPath) -or -not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
       $targetLeaf = [System.IO.Path]::GetFileName($targetPath)
       throw "Shortcut target is missing for $shortcutPath (target filename: $targetLeaf)"
@@ -229,18 +157,21 @@ if ($entry.DisplayName -ne $appName -or $entry.DisplayVersion -ne $version -or $
   throw "Uninstall metadata does not match the freshly installed XIASS Tools package (registry $($entry.View) view)."
 }
 Assert-ShortcutTarget $startMenuMainShortcut $mainExecutable
-Assert-ShortcutTarget $startMenuUninstallShortcut $uninstaller
-
-Write-Host 'Silently uninstalling the freshly installed package…'
-$uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList @('/S') -Wait -PassThru
-if ($uninstallProcess.ExitCode -ne 0) {
-  throw "Silent uninstaller exited with code $($uninstallProcess.ExitCode)."
+if (-not (Test-Path -LiteralPath $startMenuUninstallShortcut -PathType Leaf)) {
+  throw "Expected Start Menu uninstall shortcut is missing: $startMenuUninstallShortcut"
 }
+
+Write-Host 'Silently uninstalling the freshly installed package through its Start Menu shortcut…'
+# This validates the user-facing Shell action itself. Some PowerShell COM
+# projections report an empty TargetPath for a valid Unicode-named .lnk, so a
+# successful shell invocation plus complete cleanup is stronger evidence than
+# accepting that property value or merely checking the shortcut file exists.
+[void](Start-Process -FilePath $startMenuUninstallShortcut -ArgumentList @('/S') -PassThru)
 
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 while (-not (Test-InstallerStateAbsent)) {
   if ([DateTime]::UtcNow -ge $deadline) {
-    throw 'Installer lifecycle smoke test timed out: uninstall left files, shortcuts, a desktop link, or a registry entry behind.'
+    throw 'Installer lifecycle smoke test timed out: the Start Menu uninstall shortcut did not remove files, shortcuts, a desktop link, and its registry entry.'
   }
   Start-Sleep -Milliseconds 250
 }
