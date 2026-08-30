@@ -48,10 +48,14 @@ jobs:
         run: npm ci
 
       - name: Run release preflight and packaging unit tests
+        shell: pwsh
         run: |
           npm run release:preflight
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --test scripts/release/*.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check_brand_and_license.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build unsigned Windows x64 installers
         run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target x86_64-pc-windows-msvc

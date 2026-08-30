@@ -34,14 +34,14 @@ const dependencyMarkerPath = path.join(
   '.xiass-package-lock.sha256',
 );
 const distDirectory = path.join(frontendDirectory, 'dist');
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const npmCommand = 'npm';
 
 function run(command, args) {
   console.log(`$ ${command} ${args.join(' ')}`);
   const result = spawnSync(command, args, {
     cwd: frontendDirectory,
     stdio: 'inherit',
-    shell: false,
+    shell: process.platform === 'win32',
     env: process.env,
   });
 
