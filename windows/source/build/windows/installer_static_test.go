@@ -80,6 +80,8 @@ func TestInstallerLifecycleSmokeScriptUsesRealSetupWithoutCleanupShortcuts(t *te
 		"Get-UninstallEntries",
 		"Registry64",
 		"Registry32",
+		"HashSet[string]",
+		"$seen.Add($identity)",
 		"Assert-ShortcutTarget",
 		"Start-Process -FilePath $setupPath",
 		"Start-Process -FilePath $uninstaller",

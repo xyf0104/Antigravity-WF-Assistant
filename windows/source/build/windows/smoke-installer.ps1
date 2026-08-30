@@ -44,13 +44,19 @@ if ((Get-Item -LiteralPath $setupPath).Length -le 0) {
 
 function Get-UninstallEntries {
   $entries = @()
+  # A current-user uninstall key can be surfaced through both Registry64 and
+  # Registry32 on a 64-bit runner even when it is one physical entry. Inspect
+  # both views, but de-duplicate exact metadata aliases so the smoke test does
+  # not mistake a single successful install for two separate registrations.
+  # Different metadata remains a separate entry and still fails the test.
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
   foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
     $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
     try {
       $key = $base.OpenSubKey($legacyUninstallSubKey, $false)
       if ($null -ne $key) {
         try {
-          $entries += [pscustomobject]@{
+          $entry = [pscustomobject]@{
             View = $view.ToString()
             DisplayName = [string]$key.GetValue('DisplayName', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             DisplayVersion = [string]$key.GetValue('DisplayVersion', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
@@ -58,6 +64,17 @@ function Get-UninstallEntries {
             InstallLocation = [string]$key.GetValue('InstallLocation', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             DisplayIcon = [string]$key.GetValue('DisplayIcon', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             UninstallString = [string]$key.GetValue('UninstallString', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          }
+          $identity = [string]::Join("`0", @(
+            $entry.DisplayName,
+            $entry.DisplayVersion,
+            $entry.Publisher,
+            $entry.InstallLocation,
+            $entry.DisplayIcon,
+            $entry.UninstallString
+          ))
+          if ($seen.Add($identity)) {
+            $entries += $entry
           }
         } finally {
           $key.Dispose()
