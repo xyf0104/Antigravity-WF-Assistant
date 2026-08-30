@@ -8,6 +8,19 @@ import (
 	"antigravity-wf-assistant/internal/claudeconfig"
 )
 
+func TestClaudeCodeProductionAdapterUsesPlatformAwareCLIDiscovery(t *testing.T) {
+	adapter := newClaudeCodeAgentAdapter()
+	called := false
+	adapter.discoverCLI = func() (string, error) {
+		called = true
+		return `C:\Users\test\AppData\Roaming\npm\claude.cmd`, nil
+	}
+	path, err := adapter.discoverCLIPath()
+	if err != nil || path != `C:\Users\test\AppData\Roaming\npm\claude.cmd` || !called {
+		t.Fatalf("discover CLI = %q, %v, called=%v", path, err, called)
+	}
+}
+
 func TestClaudeCodeAgentCapabilityStatusIsConservative(t *testing.T) {
 	metadata := newClaudeCodeAgentAdapter().Metadata()
 	cases := []struct {

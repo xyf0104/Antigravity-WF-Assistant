@@ -124,6 +124,11 @@ test("account center exposes a direct OAuth entry and preserves default-selectio
   assert.match(accountsSource, /@click="openOAuthNew">OAuth 登录<\/Button>/);
 });
 
+test("OAuth chooser copy does not advertise provider presets that the native profile list hides", () => {
+  assert.match(accountsSource, /当前内置一键登录仅开放 OpenAI \/ Codex/);
+  assert.doesNotMatch(accountsSource, /也可选择 Claude、Grok 等安全预设/);
+});
+
 test("account editor keeps OAuth, API credentials and JSON import as explicit peer entry modes", () => {
   assert.match(accountsSource, /const credentialEntryOptions = \[/);
   assert.match(accountsSource, /\{ label: "OAuth 授权", value: "oauth" \}/);

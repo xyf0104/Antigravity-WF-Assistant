@@ -69,6 +69,17 @@ func NewClaudeCodeAdapter(options ...Options) *Adapter {
 	return newAdapter(agent.ClaudeCodeID, firstOptions(options))
 }
 
+// DiscoverClaudeCodeCLI resolves the installed Claude Code command using the
+// same platform-aware, inspection-only path rules as the read-only adapter.
+// PATH is checked first. Known fallback files are only stat'ed and are never
+// executed, which lets the production Claude configuration adapter detect a
+// newly installed npm/user-local CLI before the desktop process inherits an
+// updated shell PATH.
+func DiscoverClaudeCodeCLI() (string, error) {
+	path, _, err := resolveClaudeCodeCLI(systemFileSystem{}, systemCommandRunner{})
+	return path, err
+}
+
 // NewCursorAdapter returns a read-only Cursor detector.
 func NewCursorAdapter(options ...Options) *Adapter {
 	return newAdapter(agent.CursorID, firstOptions(options))

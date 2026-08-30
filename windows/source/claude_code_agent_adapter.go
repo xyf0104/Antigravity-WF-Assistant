@@ -2,25 +2,35 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 
 	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/agentdiscovery"
 	"antigravity-wf-assistant/internal/claudeconfig"
 )
 
 // claudeCodeAgentAdapter is the concrete Claude Code integration. It owns no
 // account state and only reports the safe state of the documented user
 // settings.json target managed by claudeconfig.
-type claudeCodeAgentAdapter struct{}
+type claudeCodeAgentAdapter struct {
+	discoverCLI func() (string, error)
+}
 
-func newClaudeCodeAgentAdapter() *claudeCodeAgentAdapter { return &claudeCodeAgentAdapter{} }
+func newClaudeCodeAgentAdapter() *claudeCodeAgentAdapter {
+	return &claudeCodeAgentAdapter{discoverCLI: agentdiscovery.DiscoverClaudeCodeCLI}
+}
+
+func (adapter *claudeCodeAgentAdapter) discoverCLIPath() (string, error) {
+	if adapter == nil || adapter.discoverCLI == nil {
+		return agentdiscovery.DiscoverClaudeCodeCLI()
+	}
+	return adapter.discoverCLI()
+}
 
 func (adapter *claudeCodeAgentAdapter) Metadata() agent.Metadata {
 	for _, metadata := range agent.BuiltinMetadata() {
@@ -54,10 +64,10 @@ func (adapter *claudeCodeAgentAdapter) Detect(ctx context.Context) (agent.Status
 		}
 	}
 
-	cliPath, cliErr := exec.LookPath("claude")
+	cliPath, cliErr := adapter.discoverCLIPath()
 	cliPath = strings.TrimSpace(cliPath)
 	cliFound := cliPath != "" && cliErr == nil
-	cliDiscoveryIssue := cliErr != nil && !errors.Is(cliErr, exec.ErrNotFound)
+	cliDiscoveryIssue := cliErr != nil
 	return claudeCodeAgentSnapshotStatus(metadata, snapshot, inspectErr, cliPath, cliFound, cliDiscoveryIssue, backupAvailable), nil
 }
 

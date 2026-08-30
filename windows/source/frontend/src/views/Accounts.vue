@@ -2091,7 +2091,7 @@ onBeforeUnmount(() => {
 			  <div class="row between" style="gap: 8px">
 				<div>
 				  <div class="compact-label">切换 OAuth 登录方式</div>
-				  <div class="t-caption">默认使用 OpenAI / Codex；也可选择 Claude、Grok 等安全预设。</div>
+				  <div class="t-caption">当前内置一键登录仅开放 OpenAI / Codex；其他提供方需在专用运行时完成验证后才会显示。</div>
 				</div>
 				<Button variant="plain" size="sm" :loading="oauthProfilesLoading" @click="refreshOAuthLoginProfiles">刷新预设</Button>
 			  </div>
