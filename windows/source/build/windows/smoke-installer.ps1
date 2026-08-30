@@ -100,7 +100,13 @@ function Assert-ShortcutTarget([string]$shortcutPath, [string]$expectedTarget) {
   $shell = New-Object -ComObject WScript.Shell
   try {
     $shortcut = $shell.CreateShortcut($shortcutPath)
-    if ($shortcut.TargetPath -ne $expectedTarget) {
+    $targetPath = [string]$shortcut.TargetPath
+    if ([string]::IsNullOrWhiteSpace($targetPath) -or -not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+      throw "Shortcut target is missing for $shortcutPath"
+    }
+    $actualTarget = (Get-Item -LiteralPath $targetPath).FullName
+    $expectedResolvedTarget = (Get-Item -LiteralPath $expectedTarget).FullName
+    if (-not [string]::Equals($actualTarget, $expectedResolvedTarget, [System.StringComparison]::OrdinalIgnoreCase)) {
       throw "Shortcut target mismatch for $shortcutPath"
     }
   } finally {
