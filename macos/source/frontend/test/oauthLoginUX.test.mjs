@@ -11,9 +11,9 @@ import {
   usesSimplifiedOAuthLogin,
 } from "../src/state/oauthLoginUX.js";
 
-const [accountsSource, modelsSource] = await Promise.all([
+const [accountsSource, storageSettingsSource] = await Promise.all([
   readFile(new URL("../src/views/Accounts.vue", import.meta.url), "utf8"),
-  readFile(new URL("../wailsjs/go/models.ts", import.meta.url), "utf8"),
+  readFile(new URL("../../internal/storage/settings.go", import.meta.url), "utf8"),
 ]);
 
 const profiles = [
@@ -85,8 +85,8 @@ test("bring-your-own-client OAuth exposes only the public Client ID quick path",
   assert.match(accountsSource, /不需要 Client Secret/);
 	assert.match(accountsSource, /state\.settings\?\.oauth\?\.googleDesktopClientId/);
 	assert.match(accountsSource, /首次填写你自己注册的 Desktop Client ID 后会保存在本机/);
-  assert.match(modelsSource, /export class OAuthSettings[\s\S]*googleDesktopClientId\?: string;/);
-  assert.match(modelsSource, /export class AppSettings[\s\S]*oauth: OAuthSettings;/);
+  assert.match(storageSettingsSource, /type OAuthSettings struct \{[\s\S]*GoogleDesktopClientID string `json:"googleDesktopClientId,omitempty"`/);
+  assert.match(storageSettingsSource, /type AppSettings struct \{[\s\S]*OAuth\s+OAuthSettings\s+`json:"oauth"`/);
   assert.doesNotMatch(accountsSource, /请主动点击“高级自定义 OAuth”后填写/);
 });
 
