@@ -4,11 +4,11 @@ import { readFile } from "node:fs/promises";
 
 const globalStyles = await readFile(new URL("../src/style/global.css", import.meta.url), "utf8");
 
-test("dark theme keeps the requested navy card and orange action language", () => {
-  assert.match(globalStyles, /--bg-base: #111a29;/);
-  assert.match(globalStyles, /--bg-sidebar: rgba\(15, 27, 45, 0\.97\);/);
-  assert.match(globalStyles, /--bg-card: rgba\(29, 44, 65, 0\.94\);/);
-  assert.match(globalStyles, /--bg-inset: rgba\(10, 20, 35, 0\.72\);/);
+test("dark theme keeps the XIASS translucent teal surfaces and orange action language", () => {
+  assert.match(globalStyles, /--bg-base: rgba\(4, 25, 33, 0\.56\);/);
+  assert.match(globalStyles, /--bg-sidebar: rgba\(7, 31, 41, 0\.68\);/);
+  assert.match(globalStyles, /--bg-card: rgba\(12, 43, 55, 0\.62\);/);
+  assert.match(globalStyles, /--bg-inset: rgba\(3, 24, 33, 0\.58\);/);
   assert.match(globalStyles, /--accent: #f59b48;/);
   assert.match(globalStyles, /--blue: #5da5ff;/);
   assert.match(globalStyles, /--green: #38d77a;/);

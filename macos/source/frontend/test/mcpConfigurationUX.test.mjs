@@ -57,7 +57,10 @@ test("MCP modal keeps the endpoint local, clears it before native result renderi
   assert.match(save, /applyCursorProjectMCPConfiguration\(activeSelectionID\(\), request\.remoteUrl\)/);
   assert.match(save, /applyTargetMCPConfiguration\(props\.target, request\.remoteUrl\)/);
   assert.match(modalSource, /request\.remoteUrl = ""/);
-  assert.match(modalSource, /persistent :closable="!busy"/);
+  const modalOpenTag = modalSource.match(/<Modal\s[^>]*>/)?.[0] || "";
+  assert.match(modalOpenTag, /\bpersistent\b/);
+  assert.match(modalOpenTag, /:inline="inline"/);
+  assert.match(modalOpenTag, /:closable="!busy"/);
   assert.doesNotMatch(modalSource, /\blocalStorage\s*\.|state\.[A-Za-z]+\s*=\s*remoteURL|snapshot\.remoteUrl|snapshot\.endpoint|data\?\.message|result\?\.message/);
 });
 

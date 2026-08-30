@@ -105,8 +105,10 @@ test("every Agent uses the shared local vector icon and only implemented actions
 });
 
 test("the left rail selects one independent Agent and Antigravity owns a horizontal sub-navigation", () => {
-  assert.match(appSource, /const activeModuleID = ref\("antigravity"\)/);
-  assert.match(appSource, /const antigravityTab = ref\("dashboard"\)/);
+  assert.match(appSource, /const embeddedModuleID = embeddedParams\.get\("module"\) \|\| "antigravity"/);
+  assert.match(appSource, /const activeModuleID = ref\(supportedEmbeddedModules\.has\(embeddedModuleID\) \? embeddedModuleID : "antigravity"\)/);
+  assert.match(appSource, /const embeddedSection = embeddedParams\.get\("section"\) \|\| "dashboard"/);
+  assert.match(appSource, /const antigravityTab = ref\(supportedAntigravitySections\.has\(embeddedSection\) \? embeddedSection : "dashboard"\)/);
   for (const agent of ["antigravity", "codex", "claude-code", "cursor", "windsurf"]) {
     assert.match(appSource, new RegExp(`id: "${agent}"`));
   }
