@@ -96,20 +96,20 @@ if (!hasFlag('--skip-build')) {
   });
 }
 
+if (!hasFlag('--skip-cargo') || !hasFlag('--skip-cargo-test')) {
+  steps.push({
+    name: 'WF bridge frontend build',
+    command: 'node',
+    args: ['scripts/prepare-wf-bridge-frontend.cjs'],
+  });
+}
+
 if (!hasFlag('--skip-wf-frontend-test')) {
   steps.push({
     name: 'WF bridge frontend regression tests',
     command: 'node',
     args: ['--test', ...wfFrontendTests],
     cwd: wfFrontendDirectory,
-  });
-}
-
-if (!hasFlag('--skip-cargo') || !hasFlag('--skip-cargo-test')) {
-  steps.push({
-    name: 'WF bridge frontend build',
-    command: 'node',
-    args: ['scripts/prepare-wf-bridge-frontend.cjs'],
   });
 }
 

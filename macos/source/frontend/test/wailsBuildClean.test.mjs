@@ -24,11 +24,12 @@ function assertTauriBuildOrder(source, label, buildStepName, target) {
 }
 
 test("macOS workflows rebuild and validate embedded assets before Tauri packaging", async () => {
-  const [buildWorkflow, releaseWorkflow, tauriConfigSource, prepareSource] = await Promise.all([
+  const [buildWorkflow, releaseWorkflow, tauriConfigSource, prepareSource, preflightSource] = await Promise.all([
     readFile(new URL("../../../../.github/workflows/build-macos.yml", import.meta.url), "utf8"),
     readFile(new URL("../../../../.github/workflows/release.yml", import.meta.url), "utf8"),
     readFile(new URL("../../../../nextgen/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
     readFile(new URL("../../../../nextgen/scripts/prepare-wf-bridge-frontend.cjs", import.meta.url), "utf8"),
+    readFile(new URL("../../../../nextgen/scripts/release/preflight.cjs", import.meta.url), "utf8"),
   ]);
 
   assertTauriBuildOrder(
@@ -49,4 +50,9 @@ test("macOS workflows rebuild and validate embedded assets before Tauri packagin
   assert.match(prepareSource, /platform === 'darwin' \|\| platform === 'macos'/);
   assert.match(prepareSource, /run\(npmCommand, \['run', 'build'\]\)/);
   assert.match(prepareSource, /verifyDist\(\)/);
+  assert.ok(
+    preflightSource.indexOf("name: 'WF bridge frontend build'") <
+      preflightSource.indexOf("name: 'WF bridge frontend regression tests'"),
+    "embedded dependencies and assets must be prepared before regression tests run",
+  );
 });
