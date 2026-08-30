@@ -93,6 +93,75 @@ function Assert-PathMissing([string]$path, [string]$description) {
   }
 }
 
+function Get-NativeShortcutTarget([string]$shortcutPath) {
+  # WScript.Shell is normally enough, but its PowerShell 7 COM projection can
+  # return an empty TargetPath for a valid shortcut whose display name is
+  # Unicode. Fall back to the native Unicode IShellLinkW interface before
+  # treating the installer output as invalid.
+  if (-not ('XiassToolsInstallerSmoke.NativeShortcut' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace XiassToolsInstallerSmoke
+{
+    [ComImport]
+    [Guid("000214F9-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int capacity, IntPtr findData, uint flags);
+    }
+
+    [ComImport]
+    [Guid("0000010B-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IPersistFile
+    {
+        void GetClassID(out Guid classId);
+        [PreserveSig] int IsDirty();
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string fileName, bool remember);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string fileName);
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string fileName, uint mode);
+    }
+
+    public static class NativeShortcut
+    {
+        private static readonly Guid ShellLinkClassId = new Guid("00021401-0000-0000-C000-000000000046");
+
+        public static string GetTargetPath(string shortcutPath)
+        {
+            Type shellLinkType = Type.GetTypeFromCLSID(ShellLinkClassId);
+            if (shellLinkType == null)
+            {
+                throw new InvalidOperationException("Windows Shell Link COM class is unavailable.");
+            }
+
+            object shellLink = Activator.CreateInstance(shellLinkType);
+            try
+            {
+                ((IPersistFile)shellLink).Load(shortcutPath, 0);
+                var target = new StringBuilder(32768);
+                ((IShellLinkW)shellLink).GetPath(target, target.Capacity, IntPtr.Zero, 0);
+                return target.ToString();
+            }
+            finally
+            {
+                if (shellLink != null && Marshal.IsComObject(shellLink))
+                {
+                    Marshal.FinalReleaseComObject(shellLink);
+                }
+            }
+        }
+    }
+}
+'@
+  }
+
+  return ([XiassToolsInstallerSmoke.NativeShortcut]::GetTargetPath($shortcutPath)).Trim().Trim([char]'"')
+}
+
 function Assert-ShortcutTarget([string]$shortcutPath, [string]$expectedTarget) {
   if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
     throw "Expected Start Menu shortcut is missing: $shortcutPath"
@@ -103,6 +172,9 @@ function Assert-ShortcutTarget([string]$shortcutPath, [string]$expectedTarget) {
     # WScript may preserve outer quotes around a target supplied by an
     # installer. They are syntax, not part of the filesystem path.
     $targetPath = ([string]$shortcut.TargetPath).Trim().Trim([char]'"')
+    if ([string]::IsNullOrWhiteSpace($targetPath)) {
+      $targetPath = Get-NativeShortcutTarget $shortcutPath
+    }
     if ([string]::IsNullOrWhiteSpace($targetPath) -or -not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
       $targetLeaf = [System.IO.Path]::GetFileName($targetPath)
       throw "Shortcut target is missing for $shortcutPath (target filename: $targetLeaf)"
