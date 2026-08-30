@@ -83,6 +83,14 @@ if (!hasFlag('--skip-build')) {
   });
 }
 
+if (!hasFlag('--skip-cargo') || !hasFlag('--skip-cargo-test')) {
+  steps.push({
+    name: 'WF bridge frontend build',
+    command: 'node',
+    args: ['scripts/prepare-wf-bridge-frontend.cjs'],
+  });
+}
+
 if (!hasFlag('--skip-cargo')) {
   steps.push({
     name: 'Rust cargo check',

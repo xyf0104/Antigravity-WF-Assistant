@@ -4,9 +4,9 @@
   "version": "1.7.0",
   "identifier": "com.xiass.tools",
   "build": {
-    "beforeDevCommand": "node scripts/prepare-tauri.cjs && npm run dev",
+    "beforeDevCommand": "node scripts/prepare-tauri.cjs && node scripts/prepare-wf-bridge-frontend.cjs && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "node scripts/prepare-tauri.cjs && npm run build",
+    "beforeBuildCommand": "node scripts/prepare-tauri.cjs && node scripts/prepare-wf-bridge-frontend.cjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
