@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // QuotaResult is deliberately conservative. It only exposes recognised

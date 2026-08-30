@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/codexconfig"
-	"antigravity-byok/internal/codexselection"
+	"antigravity-wf-assistant/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexselection"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )

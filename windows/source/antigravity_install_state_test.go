@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/patcher"
+	"antigravity-wf-assistant/internal/patcher"
 )
 
 func TestAntigravityProductRepatchStateTracksVersionAndExecutable(t *testing.T) {

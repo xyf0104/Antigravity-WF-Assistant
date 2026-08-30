@@ -5,6 +5,8 @@ import Button from "@/components/ui/Button.vue";
 import {
   getClaudeCodeConfiguration,
   applyClaudeCodeConfiguration,
+  getClaudeCodeAccountCandidates,
+  applyClaudeCodeConfigurationFromAccount,
   discoverClaudeCodeGatewayModels,
   testClaudeCodeGateway,
   restoreClaudeCodeConfiguration,
@@ -32,6 +34,15 @@ const notice = ref("");
 const gatewayModels = ref([]);
 const gatewayModelStatus = ref(null);
 const gatewayTestStatus = ref(null);
+// Only explicitly redacted account metadata is allowed into this component.
+// Credentials, endpoints, headers and OAuth materials stay in the native
+// account vault and are never added to Vue state.
+const savedAccountCandidates = ref([]);
+const savedAccountCandidatesLoading = ref(false);
+const savedAccountCandidatesMessage = ref("");
+const selectedSavedAccountID = ref("");
+const selectedSavedAccountModel = ref("");
+const applyingSavedAccount = ref(false);
 
 const credentialModes = Object.freeze([
   { value: "auth_token", label: "Bearer 令牌", hint: "写入 ANTHROPIC_AUTH_TOKEN，并以 Authorization: Bearer 发送。" },
@@ -40,7 +51,7 @@ const credentialModes = Object.freeze([
 ]);
 
 const snapshot = computed(() => data.value?.snapshot || {});
-const busy = computed(() => loading.value || saving.value || Boolean(actionID.value));
+const busy = computed(() => loading.value || saving.value || applyingSavedAccount.value || Boolean(actionID.value));
 const valid = computed(() => Boolean(snapshot.value.valid));
 // A readable settings.json alone is not enough to permit a mutation. The
 // native result also proves that a verified rollback point can be created.
@@ -75,6 +86,14 @@ const readyToDiscover = computed(() => Boolean(draft.value.baseUrl.trim()) && di
 const readyToTest = computed(() => readyToDiscover.value && Boolean(draft.value.model.trim()));
 const backups = computed(() => data.value?.backups || []);
 const legacyBackups = computed(() => data.value?.legacyBackups || []);
+const selectedSavedAccount = computed(() => savedAccountCandidates.value.find((candidate) => candidate.id === selectedSavedAccountID.value) || null);
+const selectedSavedAccountModels = computed(() => selectedSavedAccount.value?.models || []);
+const canApplySavedAccount = computed(() => Boolean(
+  canManage.value
+  && selectedSavedAccount.value?.id
+  && selectedSavedAccountModel.value
+  && !busy.value,
+));
 
 // Claude's native backup DTO deliberately uses the established created_at
 // field. Accept the former camel-case spelling only for an already-running
@@ -98,6 +117,119 @@ function resetGatewayResults() {
   gatewayModels.value = [];
   gatewayModelStatus.value = null;
   gatewayTestStatus.value = null;
+}
+
+function cleanText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSavedAccountModel(value) {
+  const id = cleanText(value?.id);
+  if (!id) return null;
+  return { id, displayName: cleanText(value?.displayName) || id };
+}
+
+// Treat the native response as an untrusted boundary even though the backend
+// is deliberately redacted: select and retain only the four display fields
+// this view needs. A future bridge field cannot accidentally enter reactive
+// state, devtools, logs, or browser storage through this component.
+function normalizeSavedAccountCandidate(value) {
+  const id = cleanText(value?.id);
+  if (!id) return null;
+  const seenModels = new Set();
+  const models = Array.isArray(value?.models)
+    ? value.models
+      .map(normalizeSavedAccountModel)
+      .filter((model) => model && !seenModels.has(model.id) && (seenModels.add(model.id), true))
+    : [];
+  return {
+    id,
+    label: cleanText(value?.label) || "Claude 兼容账户",
+    credentialMode: cleanText(value?.credentialMode) || "凭据已保存",
+    models,
+  };
+}
+
+function clearSavedAccountSelection({ clearCandidates = false } = {}) {
+  selectedSavedAccountID.value = "";
+  selectedSavedAccountModel.value = "";
+  if (clearCandidates) {
+    savedAccountCandidates.value = [];
+    savedAccountCandidatesMessage.value = "";
+  }
+}
+
+async function refreshSavedAccountCandidates() {
+  savedAccountCandidatesLoading.value = true;
+  try {
+    const result = await getClaudeCodeAccountCandidates();
+    const candidates = Array.isArray(result?.candidates)
+      ? result.candidates.map(normalizeSavedAccountCandidate).filter(Boolean)
+      : [];
+    savedAccountCandidates.value = candidates;
+    savedAccountCandidatesMessage.value = cleanText(result?.message)
+      || (candidates.length ? "已读取可复用的 Claude Code 兼容账户。" : "没有可直接用于 Claude Code 的已启用账户。");
+    const selected = candidates.find((candidate) => candidate.id === selectedSavedAccountID.value);
+    if (!selected) {
+      clearSavedAccountSelection();
+    } else if (!selected.models.some((model) => model.id === selectedSavedAccountModel.value)) {
+      selectedSavedAccountModel.value = selected.models.length === 1 ? selected.models[0].id : "";
+    }
+  } catch {
+    savedAccountCandidates.value = [];
+    savedAccountCandidatesMessage.value = "无法读取本机账户池；你仍可使用下方手动配置。";
+    clearSavedAccountSelection();
+  } finally {
+    savedAccountCandidatesLoading.value = false;
+  }
+}
+
+function selectSavedAccount(candidate) {
+  if (!candidate?.id || busy.value) return;
+  selectedSavedAccountID.value = candidate.id;
+  selectedSavedAccountModel.value = candidate.models.length === 1 ? candidate.models[0].id : "";
+}
+
+function chooseSavedAccountModel(model) {
+  if (!model?.id || busy.value) return;
+  selectedSavedAccountModel.value = model.id;
+}
+
+async function applySavedAccount() {
+  error.value = "";
+  notice.value = "";
+  const candidate = selectedSavedAccount.value;
+  const model = cleanText(selectedSavedAccountModel.value);
+  if (!canManage.value || !candidate?.id || !model) {
+    error.value = "请选择一个已启用的 Claude 兼容账户及其已绑定模型。";
+    return;
+  }
+  const request = {
+    accountId: candidate.id,
+    model,
+    enableGatewayModelDiscovery: Boolean(draft.value.enableGatewayModelDiscovery),
+  };
+  applyingSavedAccount.value = true;
+  try {
+    const result = await applyClaudeCodeConfigurationFromAccount(request);
+    request.accountId = "";
+    request.model = "";
+    applyStatus(result);
+    if (!result?.ok) {
+      error.value = "未将已保存账户应用到 Claude Code。请刷新账户池后重新选择，或改用手动配置。";
+      return;
+    }
+    notice.value = "已将所选账户安全应用到 Claude Code，并创建可恢复备份。凭据未进入界面。";
+    emit("changed");
+  } catch {
+    request.accountId = "";
+    request.model = "";
+    error.value = "未将已保存账户应用到 Claude Code。";
+  } finally {
+    request.accountId = "";
+    request.model = "";
+    applyingSavedAccount.value = false;
+  }
 }
 
 function applyStatus(result, { updateDraft = true } = {}) {
@@ -331,16 +463,19 @@ function close() {
   if (busy.value) return;
   resetVisibleCredentials();
   resetGatewayResults();
+  clearSavedAccountSelection({ clearCandidates: true });
   emit("close");
 }
 
 watch(() => props.open, (open) => {
   if (open) {
     void refresh();
+    void refreshSavedAccountCandidates();
     return;
   }
   resetVisibleCredentials();
   resetGatewayResults();
+  clearSavedAccountSelection({ clearCandidates: true });
   error.value = "";
   notice.value = "";
 });
@@ -379,6 +514,61 @@ watch(() => draft.value.credentialMode, () => {
           <div><span>凭据方式</span><strong :class="snapshot.credentialConfigured ? 'configured' : 'missing'">{{ currentCredentialLabel }}</strong></div>
           <div><span>网关模型目录</span><strong :class="gatewayDiscoveryClass">{{ gatewayDiscoveryLabel }}</strong></div>
         </div>
+
+        <section class="saved-account-section" :aria-busy="savedAccountCandidatesLoading ? 'true' : 'false'">
+          <div class="section-heading">
+            <div>
+              <strong>使用已保存的上游账户</strong>
+              <span>仅列出已启用、Claude Messages 兼容且可无损映射的账户。界面只接收名称、认证方式与已绑定模型；密钥、地址、请求头和 OAuth 凭据始终留在本机原生层。</span>
+            </div>
+            <button type="button" class="saved-account-refresh" :disabled="savedAccountCandidatesLoading || busy" @click="refreshSavedAccountCandidates">{{ savedAccountCandidatesLoading ? "读取中…" : "刷新账户" }}</button>
+          </div>
+
+          <p v-if="savedAccountCandidatesMessage" class="saved-account-message">{{ savedAccountCandidatesMessage }}</p>
+
+          <div v-if="savedAccountCandidates.length" class="saved-account-grid" role="group" aria-label="可复用 Claude Code 账户">
+            <button
+              v-for="candidate in savedAccountCandidates"
+              :key="candidate.id"
+              type="button"
+              class="saved-account-card"
+              :class="{ selected: selectedSavedAccountID === candidate.id }"
+              :aria-pressed="selectedSavedAccountID === candidate.id"
+              :disabled="busy"
+              @click="selectSavedAccount(candidate)"
+            >
+              <strong>{{ candidate.label }}</strong>
+              <span>{{ candidate.credentialMode }}</span>
+              <small>{{ candidate.models.length ? `${candidate.models.length} 个已绑定模型` : "暂无已绑定模型" }}</small>
+            </button>
+          </div>
+
+          <div v-if="selectedSavedAccount" class="saved-account-selection">
+            <div class="saved-account-selection-copy">
+              <strong>选择 {{ selectedSavedAccount.label }} 的模型</strong>
+              <span>仅可选用该账户已绑定的 Claude / Anthropic 模型；“启动时从网关发现模型”使用下方的同一开关。</span>
+            </div>
+            <div v-if="selectedSavedAccountModels.length" class="saved-account-models" role="group" aria-label="已绑定 Claude 模型">
+              <button
+                v-for="model in selectedSavedAccountModels"
+                :key="model.id"
+                type="button"
+                :class="{ selected: selectedSavedAccountModel === model.id }"
+                :aria-pressed="selectedSavedAccountModel === model.id"
+                :disabled="busy"
+                @click="chooseSavedAccountModel(model)"
+              >
+                <strong>{{ model.displayName }}</strong>
+                <span v-if="model.displayName !== model.id">{{ model.id }}</span>
+              </button>
+            </div>
+            <p v-else class="saved-account-empty">该账户尚未绑定 Claude 模型。请先在“模型”页面为它添加模型，或使用下方手动配置。</p>
+            <div class="saved-account-actions">
+              <span>应用时会先创建可恢复的 <code>settings.json</code> 备份，不会触碰 Claude Code 登录、会话、MCP 或项目配置。</span>
+              <Button variant="filled" size="sm" :disabled="!canApplySavedAccount" :loading="applyingSavedAccount" @click="applySavedAccount">应用到 Claude Code</Button>
+            </div>
+          </div>
+        </section>
 
         <p v-if="notice" class="notice" role="status">{{ notice }}</p>
         <p v-if="error" class="error" role="alert">{{ error }}</p>
@@ -530,6 +720,25 @@ watch(() => draft.value.credentialMode, () => {
 .configured { color: var(--green); }
 .blocked { color: var(--orange); }
 .missing { color: var(--text-tertiary); }
+.saved-account-section { display: grid; gap: 9px; border: 1px solid color-mix(in srgb, var(--accent-strong) 30%, var(--separator)); border-left: 3px solid var(--accent-strong); border-radius: 10px; background: color-mix(in srgb, var(--accent-soft) 42%, var(--bg-inset)); padding: 10px 11px; }
+.saved-account-refresh { flex: 0 0 auto; border: 1px solid var(--accent-border); border-radius: 7px; background: var(--bg-base); color: var(--accent-strong); font: inherit; font-size: 10px; font-weight: 700; padding: 6px 8px; }
+.saved-account-refresh:hover:not(:disabled) { border-color: var(--accent-strong); background: var(--accent-soft); }
+.saved-account-refresh:disabled { cursor: wait; opacity: .5; }
+.saved-account-message { margin: 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+.saved-account-grid, .saved-account-models { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; }
+.saved-account-card, .saved-account-models button { display: grid; min-width: 0; gap: 2px; border: 1px solid var(--separator); border-radius: 8px; background: var(--bg-base); color: var(--text-secondary); text-align: left; padding: 8px 9px; }
+.saved-account-card:hover:not(:disabled), .saved-account-card.selected, .saved-account-models button:hover:not(:disabled), .saved-account-models button.selected { border-color: var(--accent-strong); background: var(--accent-soft); color: var(--accent-strong); }
+.saved-account-card:disabled, .saved-account-models button:disabled { cursor: not-allowed; opacity: .5; }
+.saved-account-card strong, .saved-account-card span, .saved-account-card small, .saved-account-models strong, .saved-account-models span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-account-card strong, .saved-account-models strong { font-size: 11px; }
+.saved-account-card span, .saved-account-card small, .saved-account-models span { color: var(--text-tertiary); font-family: var(--font-num); font-size: 9px; }
+.saved-account-selection { display: grid; gap: 8px; border-top: 1px solid var(--separator); margin-top: 1px; padding-top: 9px; }
+.saved-account-selection-copy { display: grid; gap: 3px; }
+.saved-account-selection-copy strong { color: var(--text-primary); font-size: 11px; }
+.saved-account-selection-copy span, .saved-account-empty { margin: 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+.saved-account-actions { display: flex; align-items: center; justify-content: space-between; gap: 9px; border: 1px solid var(--separator); border-radius: 8px; background: var(--bg-base); padding: 8px 9px; }
+.saved-account-actions span { color: var(--text-tertiary); font-size: 9.5px; line-height: 1.4; }
+.saved-account-actions code { color: var(--accent-strong); font-family: var(--font-num); font-size: .95em; }
 .notice, .error { margin: 0; border-radius: 8px; font-size: 11px; line-height: 1.5; padding: 8px 10px; }
 .notice { border: 1px solid color-mix(in srgb, var(--green) 35%, var(--separator)); background: color-mix(in srgb, var(--green) 7%, transparent); color: var(--green); }
 .error { border: 1px solid color-mix(in srgb, var(--red) 42%, var(--separator)); background: color-mix(in srgb, var(--red) 8%, transparent); color: var(--red); }
@@ -591,6 +800,6 @@ watch(() => draft.value.credentialMode, () => {
 .backup-row button { border: 1px solid var(--separator); border-radius: 6px; color: var(--text-secondary); font: inherit; font-size: 10px; padding: 4px 7px; }
 .backup-row button:hover:not(:disabled) { border-color: var(--accent-border); color: var(--accent-strong); }
 .backup-row button:disabled { cursor: wait; opacity: .5; }
-@media (max-width: 640px) { .current-state { grid-template-columns: repeat(2, minmax(0, 1fr)); } .gateway-heading { align-items: flex-start; flex-direction: column; } .gateway-actions { justify-content: flex-start; } }
+@media (max-width: 640px) { .current-state { grid-template-columns: repeat(2, minmax(0, 1fr)); } .gateway-heading { align-items: flex-start; flex-direction: column; } .gateway-actions { justify-content: flex-start; } .saved-account-actions { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 560px) { .current-state { grid-template-columns: 1fr; } .gateway-result { align-items: flex-start; flex-direction: column; } .gateway-result span { white-space: normal; } .backup-row { align-items: flex-start; flex-direction: column; } .backup-row > div:last-child { align-self: stretch; } .backup-row button { flex: 1; } }
 </style>

@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"time"
 
-	"antigravity-byok/internal/agent"
-	"antigravity-byok/internal/agentdiscovery"
-	"antigravity-byok/internal/mcpconfig"
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/agentdiscovery"
+	"antigravity-wf-assistant/internal/mcpconfig"
 )
 
-// mcpAgentAdapter binds Cursor and Windsurf only to their documented global
-// MCP configuration. It deliberately does not inspect private account data,
+// mcpAgentAdapter binds Cursor to its documented global MCP configuration and
+// a project MCP file only after an explicit native project selection. Windsurf
+// remains global-only. Neither integration inspects private account data,
 // browser storage, conversations, or undocumented client files.
 type mcpAgentAdapter struct {
 	id        agent.ID
@@ -68,7 +69,7 @@ func (adapter *mcpAgentAdapter) Diagnose(ctx context.Context) ([]agent.Diagnosti
 		diagnostics = append(diagnostics, agent.Diagnostic{
 			AgentID: adapter.id, Code: string(adapter.id) + ".not-installed", Severity: agent.SeverityInfo,
 			Summary:     adapter.Metadata().DisplayName + " was not found",
-			Detail:      "XIASS Tools will not create or change this client's global MCP configuration until the client is locally detected.",
+			Detail:      mcpNotInstalledDetail(adapter.Metadata()),
 			Remediation: "Install or open the client, then run the local check again.", CreatedAt: now,
 		})
 		return diagnostics, nil
@@ -134,7 +135,7 @@ func mcpAgentCapabilities(metadata agent.Metadata, clientDetected, configuration
 	for _, declaration := range metadata.Capabilities {
 		status := agent.CapabilityStatus{
 			Capability: declaration.Capability, Availability: declaration.Availability,
-			Reason: "This capability is not implemented for the documented global MCP configuration.",
+			Reason: mcpUnsupportedCapabilityReason(metadata),
 		}
 		switch declaration.Capability {
 		case agent.CapabilityDiscovery:
@@ -145,29 +146,83 @@ func mcpAgentCapabilities(metadata agent.Metadata, clientDetected, configuration
 			status.Availability = agent.CapabilityAvailable
 			status.Available = clientDetected && configurationSafe
 			if status.Available {
-				status.Reason = "The documented global MCP configuration can be changed with an atomic backup and rollback."
+				status.Reason = mcpAvailableConfigurationReason(metadata)
 			} else if !clientDetected {
-				status.Reason = "The client must be locally detected before its MCP configuration can be changed."
+				status.Reason = mcpUndetectedConfigurationReason(metadata)
 			} else {
-				status.Reason = "The existing MCP configuration must be safe and valid before it can be changed."
+				status.Reason = mcpUnsafeConfigurationReason(metadata)
 			}
 		case agent.CapabilityDiagnostics:
 			status.Availability = agent.CapabilityAvailable
 			status.Available = true
-			status.Reason = "Credential-free local MCP configuration diagnostics are available."
+			status.Reason = mcpDiagnosticsReason(metadata)
 		case agent.CapabilityBackup:
 			// The bridge can list, restore, and delete only verified recovery
-			// points created by explicit global MCP Apply/Restore operations. It
+			// points created by explicit MCP Apply/Restore operations. It
 			// intentionally does not implement the registry's broad BackupProvider
-			// contract, which could imply account, session, project, or arbitrary
-			// filesystem backups.
+			// contract, which could imply account, session, or arbitrary filesystem
+			// backups. Cursor keeps global and explicit-project recovery points
+			// isolated; Windsurf has only global recovery points.
 			status.Availability = agent.CapabilityNotImplemented
 			status.Available = false
-			status.Reason = "Verified recovery points are limited to explicit global MCP configuration Apply or Restore actions; no general agent backup provider is exposed."
+			status.Reason = mcpRecoveryPointReason(metadata)
 		}
 		statuses = append(statuses, status)
 	}
 	return statuses
+}
+
+func mcpSupportsExplicitProjectConfiguration(metadata agent.Metadata) bool {
+	return metadata.ID == agent.CursorID
+}
+
+func mcpNotInstalledDetail(metadata agent.Metadata) string {
+	if mcpSupportsExplicitProjectConfiguration(metadata) {
+		return "XIASS Tools will not create or change the global MCP configuration until Cursor is locally detected. A separately selected Cursor project can still be configured through the explicit project MCP action."
+	}
+	return "XIASS Tools will not create or change this client's global MCP configuration until the client is locally detected."
+}
+
+func mcpUnsupportedCapabilityReason(metadata agent.Metadata) string {
+	if mcpSupportsExplicitProjectConfiguration(metadata) {
+		return "This capability is not implemented for Cursor's documented global MCP configuration or an explicitly selected project MCP configuration."
+	}
+	return "This capability is not implemented for the documented global MCP configuration."
+}
+
+func mcpAvailableConfigurationReason(metadata agent.Metadata) string {
+	if mcpSupportsExplicitProjectConfiguration(metadata) {
+		return "The documented global MCP configuration can be changed with an atomic backup and rollback. A separately selected project's .cursor/mcp.json can be handled through an explicit native project selection."
+	}
+	return "The documented global MCP configuration can be changed with an atomic backup and rollback."
+}
+
+func mcpUndetectedConfigurationReason(metadata agent.Metadata) string {
+	if mcpSupportsExplicitProjectConfiguration(metadata) {
+		return "Cursor must be locally detected before its global MCP configuration can be changed. A separately selected project can still use the explicit project MCP action."
+	}
+	return "The client must be locally detected before its MCP configuration can be changed."
+}
+
+func mcpUnsafeConfigurationReason(metadata agent.Metadata) string {
+	if mcpSupportsExplicitProjectConfiguration(metadata) {
+		return "The existing global MCP configuration must be safe and valid before it can be changed. Project MCP configuration is checked separately after an explicit project selection."
+	}
+	return "The existing MCP configuration must be safe and valid before it can be changed."
+}
+
+func mcpDiagnosticsReason(metadata agent.Metadata) string {
+	if mcpSupportsExplicitProjectConfiguration(metadata) {
+		return "Credential-free global MCP diagnostics are available. Project MCP diagnostics occur only after an explicit project selection."
+	}
+	return "Credential-free local MCP configuration diagnostics are available."
+}
+
+func mcpRecoveryPointReason(metadata agent.Metadata) string {
+	if mcpSupportsExplicitProjectConfiguration(metadata) {
+		return "Verified recovery points are limited to explicit global MCP or explicitly selected project MCP Apply or Restore actions; no general agent backup provider is exposed."
+	}
+	return "Verified recovery points are limited to explicit global MCP configuration Apply or Restore actions; no general agent backup provider is exposed."
 }
 
 func mcpClientDetected(status agent.Status) bool {

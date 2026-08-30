@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"antigravity-byok/internal/codexconfig"
-	"antigravity-byok/internal/codexdesktop"
+	"antigravity-wf-assistant/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexdesktop"
 )
 
 func TestLegacyProviderMigrationLifecycleRequiresConfirmationBeforeAnyMutation(t *testing.T) {

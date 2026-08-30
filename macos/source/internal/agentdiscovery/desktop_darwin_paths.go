@@ -15,6 +15,8 @@ type desktopSpec struct {
 	id                 agent.ID
 	displayName        string
 	bundleName         string
+	bundleNames        []string
+	bundleIdentifiers  []string
 	fallbackExecutable string
 	dataNames          []string
 }
@@ -24,6 +26,8 @@ var (
 		id:                 agent.CursorID,
 		displayName:        "Cursor",
 		bundleName:         "Cursor.app",
+		bundleNames:        []string{"Cursor.app", "Cursor Nightly.app"},
+		bundleIdentifiers:  []string{"com.todesktop.230313mzl4w4u92", "co.anysphere.cursor.nightly"},
 		fallbackExecutable: "Cursor",
 		dataNames:          []string{"Cursor"},
 	}
@@ -31,6 +35,8 @@ var (
 		id:                 agent.WindsurfID,
 		displayName:        "Windsurf",
 		bundleName:         "Windsurf.app",
+		bundleNames:        []string{"Windsurf.app"},
+		bundleIdentifiers:  []string{"com.exafunction.windsurf"},
 		fallbackExecutable: "Windsurf",
 		dataNames:          []string{"Windsurf"},
 	}
@@ -38,6 +44,24 @@ var (
 
 func joinClaudeConfigPath(home string) string {
 	return filepath.Join(home, ".claude")
+}
+
+// knownClaudeCodeCLICandidates deliberately stays short and exact. These are
+// the standard native-installer and user-level npm prefix locations used on
+// macOS; we never walk a package directory or execute a fallback candidate.
+func knownClaudeCodeCLICandidates(filesystem FileSystem) []string {
+	candidates := []string{
+		"/opt/homebrew/bin/claude",
+		"/usr/local/bin/claude",
+	}
+	home, err := filesystem.UserHomeDir()
+	if err == nil && strings.TrimSpace(home) != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "bin", "claude"),
+			filepath.Join(home, ".npm-global", "bin", "claude"),
+		)
+	}
+	return uniqueNonEmpty(candidates)
 }
 
 func pathDirectory(path string) string {
@@ -202,6 +226,85 @@ func findFirstDirectory(filesystem FileSystem, candidates []string) (string, err
 		}
 	}
 	return "", firstErr
+}
+
+// validatePlatformDesktopSelection accepts only a real Cursor/Windsurf app
+// package returned by the native chooser. It reads the public Info.plist and
+// declared executable inside that package; it never inspects user settings,
+// account data, workspaces, or a client process.
+func validatePlatformDesktopSelection(filesystem FileSystem, spec desktopSpec, selectedPath string) (DesktopSelection, error) {
+	bundle := macDesktopBundleFromSelection(selectedPath)
+	if bundle == "" || !filepath.IsAbs(bundle) || !matchesMacDesktopBundleName(spec, filepath.Base(bundle)) {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	present, err := existingDirectory(filesystem, bundle)
+	if err != nil || !present {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	data, err := filesystem.ReadFile(filepath.Join(bundle, "Contents", "Info.plist"))
+	if err != nil || len(data) == 0 || len(data) > 1<<20 {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	identifier := plistString(data, "CFBundleIdentifier")
+	if !matchesMacDesktopBundleIdentifier(spec, identifier) {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	executableName := plistString(data, "CFBundleExecutable")
+	if !strings.EqualFold(strings.TrimSpace(executableName), strings.TrimSpace(spec.fallbackExecutable)) {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	executable := filepath.Join(bundle, "Contents", "MacOS", executableName)
+	present, err = existingRegularFile(filesystem, executable)
+	if err != nil || !present {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	version := parseVersion(plistString(data, "CFBundleShortVersionString"))
+	if version == "" {
+		version = parseVersion(plistString(data, "CFBundleVersion"))
+	}
+	return DesktopSelection{
+		agentID:      spec.id,
+		root:         bundle,
+		executable:   executable,
+		launchTarget: bundle,
+		version:      version,
+	}, nil
+}
+
+func macDesktopBundleFromSelection(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsRune(value, '\x00') {
+		return ""
+	}
+	current := filepath.Clean(value)
+	for {
+		if strings.EqualFold(filepath.Ext(current), ".app") {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
+		}
+		current = parent
+	}
+}
+
+func matchesMacDesktopBundleName(spec desktopSpec, value string) bool {
+	for _, allowed := range spec.bundleNames {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(allowed)) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesMacDesktopBundleIdentifier(spec desktopSpec, value string) bool {
+	for _, allowed := range spec.bundleIdentifiers {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(allowed)) {
+			return true
+		}
+	}
+	return false
 }
 
 func uniqueNonEmpty(values []string) []string {

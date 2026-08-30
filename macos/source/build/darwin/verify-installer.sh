@@ -33,11 +33,24 @@ trap cleanup EXIT
 EXPANDED_PATH="$VERIFY_DIR/expanded"
 /usr/sbin/pkgutil --expand-full "$INSTALLER_PATH" "$EXPANDED_PATH"
 
-PAYLOAD_APP="$EXPANDED_PATH/xiass-tools.pkg/Payload/Applications/XIASS Tools.app"
+PAYLOAD_ROOT="$EXPANDED_PATH/xiass-tools.pkg/Payload"
+APPLICATIONS_ROOT="$PAYLOAD_ROOT/Applications"
+PAYLOAD_APP="$APPLICATIONS_ROOT/XIASS Tools.app"
 INFO_PLIST="$PAYLOAD_APP/Contents/Info.plist"
 EXECUTABLE="$PAYLOAD_APP/Contents/MacOS/XIASS Tools"
 if [[ ! -f "$INFO_PLIST" || ! -f "$EXECUTABLE" || ! -x "$EXECUTABLE" ]]; then
   echo "Installer payload has no complete XIASS Tools application layout." >&2
+  exit 1
+fi
+
+# The release contract is a single self-contained application. Checking only
+# the expected path would not detect a stale second app or another top-level
+# payload copied into the component package by a contaminated build tree.
+UNEXPECTED_PAYLOAD_ENTRY="$(/usr/bin/find "$PAYLOAD_ROOT" -mindepth 1 -maxdepth 1 ! -name Applications -print -quit)"
+UNEXPECTED_APPLICATION_ENTRY="$(/usr/bin/find "$APPLICATIONS_ROOT" -mindepth 1 -maxdepth 1 ! -name 'XIASS Tools.app' -print -quit)"
+APPLICATION_ENTRY_COUNT="$(/usr/bin/find "$APPLICATIONS_ROOT" -mindepth 1 -maxdepth 1 -print | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
+if [[ -n "$UNEXPECTED_PAYLOAD_ENTRY" || -n "$UNEXPECTED_APPLICATION_ENTRY" || "$APPLICATION_ENTRY_COUNT" != "1" ]]; then
+  echo "Installer payload must contain exactly one XIASS Tools application and no additional top-level payload." >&2
   exit 1
 fi
 

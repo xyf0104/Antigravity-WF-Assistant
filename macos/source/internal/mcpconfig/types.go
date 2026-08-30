@@ -18,6 +18,16 @@ const (
 	backupManifestVersion = 1
 )
 
+// configurationScope distinguishes the documented global MCP file from a
+// user-selected Cursor project file. It stays internal: paths and project
+// identities must never be serialized to the renderer.
+type configurationScope string
+
+const (
+	configurationScopeGlobal  configurationScope = "global"
+	configurationScopeProject configurationScope = "project"
+)
+
 // Target identifies one documented client MCP configuration file.
 type Target string
 
@@ -102,6 +112,11 @@ type backupManifest struct {
 	OriginalMode    uint32    `json:"originalMode,omitempty"`
 	OriginalSHA256  string    `json:"originalSHA256,omitempty"`
 	AppliedSHA256   string    `json:"appliedSHA256,omitempty"`
+	// Scope and ProjectID make a copied recovery point unusable outside the
+	// exact configuration scope that created it. ProjectID is a one-way digest
+	// rather than a local filesystem path.
+	Scope     configurationScope `json:"scope,omitempty"`
+	ProjectID string             `json:"projectId,omitempty"`
 }
 
 type verifiedBackup struct {
@@ -110,12 +125,15 @@ type verifiedBackup struct {
 }
 
 type manager struct {
-	target     Target
-	userHome   string
-	appConfig  string
-	configPath string
-	backupRoot string
-	lockPath   string
+	target      Target
+	scope       configurationScope
+	userHome    string
+	appConfig   string
+	projectRoot string
+	projectID   string
+	configPath  string
+	backupRoot  string
+	lockPath    string
 
 	// Tests may force a post-write failure to assert that rollback restores the
 	// original configuration. Production managers never set this hook.

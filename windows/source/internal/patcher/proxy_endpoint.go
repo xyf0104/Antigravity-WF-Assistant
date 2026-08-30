@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"antigravity-byok/internal/proxyendpoint"
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/proxyendpoint"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // Patch execution resolves this once from the non-secret runtime state before

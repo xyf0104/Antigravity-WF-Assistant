@@ -148,7 +148,7 @@ onMounted(async () => {
 
 <template>
   <div class="page fade-up">
-    <Card title="流式稳定性与防重复">
+    <Card title="Antigravity WF · 流式稳定性与防重复">
       <template #action>
         <Badge :tone="form.streamRecovery.enabled ? 'ok' : 'neutral'" :label="form.streamRecovery.enabled ? '安全重试已开启' : '自动重试已关闭'" />
       </template>

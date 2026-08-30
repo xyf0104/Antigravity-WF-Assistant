@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/oauthflow"
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/oauthflow"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 )
 
-func TestOAuthProfilesArePublicAndPreserveUserOAuthOverrides(t *testing.T) {
+func TestOAuthProfilesArePublicAndReviewedPresetReplacesHiddenOverrides(t *testing.T) {
 	app := &App{}
 	profiles := app.GetOAuthProviderProfiles()
 	if len(profiles) == 0 {
@@ -42,7 +43,9 @@ func TestOAuthProfilesArePublicAndPreserveUserOAuthOverrides(t *testing.T) {
 	}
 
 	draft := storage.UpstreamAccount{
-		APIURL: "https://gateway.example.test/v1",
+		APIURL: "https://gateway.example.test/v1", EndpointMode: "manual", APIStyle: "chat_completions",
+		MessagePathMode: "compat", AuthMode: "custom_header", AuthHeader: "X-Old-Token",
+		Headers: map[string]string{"X-Old-Route": "must-be-cleared"}, QuotaURL: "https://gateway.example.test/usage",
 		APIKey: "must-not-return-to-renderer",
 		Credentials: map[string]any{
 			"refresh_token": "must-not-return-to-renderer",
@@ -62,23 +65,109 @@ func TestOAuthProfilesArePublicAndPreserveUserOAuthOverrides(t *testing.T) {
 	if applied.Account.APIKey != "" || applied.Account.Credentials != nil {
 		t.Fatal("applied OAuth draft leaked existing account credentials")
 	}
-	if got, want := applied.Account.OAuth.AuthorizationURL, draft.OAuth.AuthorizationURL; got != want {
-		t.Fatalf("authorization URL override = %q, want %q", got, want)
+	profile, found := oauthProviderProfile("openai-codex")
+	if !found {
+		t.Fatal("OpenAI/Codex OAuth profile missing")
 	}
-	if got, want := applied.Account.OAuth.TokenURL, draft.OAuth.TokenURL; got != want {
-		t.Fatalf("token URL override = %q, want %q", got, want)
+	if got, want := applied.Account.APIURL, profile.APIURL; got != want {
+		t.Fatalf("reviewed API route = %q, want %q", got, want)
 	}
-	if got, want := applied.Account.OAuth.ClientID, draft.OAuth.ClientID; got != want {
-		t.Fatalf("client ID override = %q, want %q", got, want)
+	if applied.Account.EndpointMode != profile.EndpointMode || applied.Account.APIStyle != profile.APIStyle || applied.Account.MessagePathMode != "auto" || applied.Account.AuthMode != profile.AuthMode {
+		t.Fatalf("reviewed request contract was not applied: %#v", applied.Account)
 	}
-	if got, want := applied.Account.OAuth.RedirectURI, draft.OAuth.RedirectURI; got != want {
-		t.Fatalf("redirect URI override = %q, want %q", got, want)
+	if applied.Account.AuthHeader != "" || applied.Account.QuotaURL != "" || applied.Account.Headers == nil || len(applied.Account.Headers) != 0 {
+		t.Fatalf("hidden route/header state was not explicitly cleared: %#v", applied.Account)
 	}
-	if got, want := applied.Account.OAuth.Scopes, draft.OAuth.Scopes; got != want {
-		t.Fatalf("scope override = %q, want %q", got, want)
+	if got, want := applied.Account.OAuth.AuthorizationURL, profile.OAuth.AuthorizationURL; got != want {
+		t.Fatalf("authorization URL = %q, want reviewed %q", got, want)
 	}
-	if got, want := applied.Account.OAuth.RefreshScopes, "openid profile email"; got != want {
-		t.Fatalf("profile refresh scopes = %q, want %q", got, want)
+	if got, want := applied.Account.OAuth.TokenURL, profile.OAuth.TokenURL; got != want {
+		t.Fatalf("token URL = %q, want reviewed %q", got, want)
+	}
+	if got, want := applied.Account.OAuth.ClientID, profile.OAuth.ClientID; got != want {
+		t.Fatalf("client ID = %q, want reviewed %q", got, want)
+	}
+	if got, want := applied.Account.OAuth.RedirectURI, profile.OAuth.RedirectURI; got != want {
+		t.Fatalf("redirect URI = %q, want reviewed %q", got, want)
+	}
+	if got, want := applied.Account.OAuth.Scopes, profile.OAuth.Scopes; got != want {
+		t.Fatalf("scopes = %q, want reviewed %q", got, want)
+	}
+	if got, want := applied.Account.OAuth.RefreshScopes, profile.RefreshScopes; got != want {
+		t.Fatalf("refresh scopes = %q, want reviewed %q", got, want)
+	}
+}
+
+func TestOAuthLoginProfilesExposeOnlyEndToEndSupportedProviders(t *testing.T) {
+	profiles := (&App{}).GetOAuthLoginProfiles()
+	byID := make(map[string]OAuthLoginProfile, len(profiles))
+	for _, profile := range profiles {
+		byID[profile.ID] = profile
+	}
+
+	if _, found := byID["openai-codex"]; !found {
+		t.Fatal("expected user-visible OpenAI/Codex OAuth profile")
+	}
+	for _, identifier := range []string{"grok-cli", "claude-code", "gemini-google", "antigravity", "custom"} {
+		if _, found := byID[identifier]; found {
+			t.Fatalf("OAuth profile without an end-to-end native runtime %q must not be presented as a one-click login", identifier)
+		}
+	}
+
+	if profile := byID["openai-codex"]; profile.Available != oauthProfileReady || !profile.AutomaticCallback || profile.ManualCompletionRequired || profile.RequiresClientID {
+		t.Fatalf("OpenAI/Codex login mode = %+v", profile)
+	}
+	for _, profile := range (&App{}).GetOAuthProviderProfiles() {
+		if profile.ID == "openai-codex" || profile.ID == "antigravity" || profile.ID == "custom" {
+			continue
+		}
+		if profile.Available != oauthProfileUnavailable {
+			t.Fatalf("incomplete native OAuth runtime %q availability = %q, want unavailable", profile.ID, profile.Available)
+		}
+		if profile.APIURL == upstream.DefaultXIASSBaseURL {
+			t.Fatalf("incomplete native OAuth profile %q must not describe the generic XIASS API as its provider runtime", profile.ID)
+		}
+	}
+}
+
+func TestPublicOAuthProfilesUseXIASSBranding(t *testing.T) {
+	for _, profile := range (&App{}).GetOAuthProviderProfiles() {
+		visible := strings.Join([]string{profile.Name, profile.Description, profile.Message}, " ")
+		if strings.Contains(visible, "WF") || strings.Contains(visible, "BYOK") {
+			t.Fatalf("public OAuth profile %q contains retired branding: %q", profile.ID, visible)
+		}
+	}
+}
+
+func TestOAuthProfileAuthorizationSupportIsAllowListed(t *testing.T) {
+	tests := []struct {
+		name      string
+		available string
+		want      bool
+	}{
+		{name: "automatic callback", available: oauthProfileReady, want: true},
+		{name: "manual callback", available: oauthProfileManual, want: true},
+		{name: "user supplied client", available: oauthProfileNeedsClientID, want: true},
+		{name: "advanced custom only", available: oauthProfileCustomOnly, want: false},
+		{name: "explicitly unavailable", available: oauthProfileUnavailable, want: false},
+		{name: "future unknown mode", available: "experimental", want: false},
+		{name: "missing mode", available: "", want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := OAuthProviderProfile{Available: test.available}
+			if got := oauthProfileSupportsAuthorization(profile); got != test.want {
+				t.Fatalf("authorization support for %q = %t, want %t", test.available, got, test.want)
+			}
+		})
+	}
+
+	if got := oauthProfileUnsupportedMessage(OAuthProviderProfile{}); !strings.Contains(got, "高级自定义 OAuth") {
+		t.Fatalf("fallback message = %q", got)
+	}
+	if got := oauthProfileUnsupportedMessage(OAuthProviderProfile{Message: "use an owned client"}); got != "use an owned client" {
+		t.Fatalf("profile-specific unavailable message = %q", got)
 	}
 }
 
@@ -93,8 +182,9 @@ func TestProfileAuthorizationUsesPKCEAndSafeProviderParameters(t *testing.T) {
 	if !started.OK || started.SessionID == "" || started.AuthorizationURL == "" {
 		t.Fatalf("begin profile OAuth result = %+v", started)
 	}
-	if started.RedirectURI == "" || !strings.HasPrefix(started.RedirectURI, "http://127.0.0.1:") {
-		t.Fatalf("loopback redirect URI = %q, want an allocated local port", started.RedirectURI)
+	profile, _ := oauthProviderProfile("openai-codex")
+	if got, want := started.RedirectURI, profile.OAuth.RedirectURI; got != want {
+		t.Fatalf("loopback redirect URI = %q, want reviewed preset %q", got, want)
 	}
 
 	parsed, err := url.Parse(started.AuthorizationURL)
@@ -126,6 +216,20 @@ func TestProfileAuthorizationUsesPKCEAndSafeProviderParameters(t *testing.T) {
 	}
 }
 
+func TestUnavailableNativeOAuthProfilesCannotStartAuthorization(t *testing.T) {
+	storage.Init(t.TempDir())
+	app := &App{}
+	for _, profileID := range []string{"grok-cli", "claude-code", "gemini-google"} {
+		started := app.BeginOAuthProviderAuthorization(profileID, storage.UpstreamAccount{
+			APIURL: "https://gateway.example.test/v1",
+			OAuth:  storage.OAuthConfiguration{ClientID: "user-owned-public-client"},
+		})
+		if started.OK || started.SessionID != "" || strings.TrimSpace(started.Message) == "" {
+			t.Fatalf("unavailable profile %q unexpectedly started authorization: %+v", profileID, started)
+		}
+	}
+}
+
 func TestOpenAICodexProfileUsesReviewedHexPKCEFormat(t *testing.T) {
 	profile, found := oauthProviderProfile("openai-codex")
 	if !found {
@@ -149,7 +253,7 @@ func TestOpenAICodexProfileUsesReviewedHexPKCEFormat(t *testing.T) {
 	}
 }
 
-func TestProfileAllowsManualCompletionAfterExternalRedirectOverride(t *testing.T) {
+func TestReviewedProfileIgnoresHiddenExternalRedirectOverride(t *testing.T) {
 	storage.Init(t.TempDir())
 	app := &App{}
 	started := app.BeginOAuthProviderAuthorization("openai-codex", storage.UpstreamAccount{
@@ -160,17 +264,18 @@ func TestProfileAllowsManualCompletionAfterExternalRedirectOverride(t *testing.T
 	if !started.OK {
 		t.Fatalf("begin profile OAuth with external redirect = %+v", started)
 	}
-	if started.AutomaticCallback || !started.ManualCompletionRequired {
-		t.Fatalf("external redirect completion mode = %+v, want manual", started)
+	if !started.AutomaticCallback || started.ManualCompletionRequired {
+		t.Fatalf("reviewed profile completion mode = %+v, want automatic", started)
 	}
-	if got, want := started.RedirectURI, "https://desktop.example.test/oauth/callback"; got != want {
-		t.Fatalf("external redirect URI = %q, want %q", got, want)
+	profile, _ := oauthProviderProfile("openai-codex")
+	if got, want := started.RedirectURI, profile.OAuth.RedirectURI; got != want {
+		t.Fatalf("redirect URI = %q, want reviewed preset %q", got, want)
 	}
 	app.oauthMu.Lock()
 	callback := app.oauthLoopbacks[started.SessionID]
 	app.oauthMu.Unlock()
-	if callback != nil {
-		t.Fatal("external redirect unexpectedly started a local loopback listener")
+	if callback == nil {
+		t.Fatal("reviewed profile did not start its local loopback listener")
 	}
 }
 

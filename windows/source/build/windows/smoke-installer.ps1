@@ -13,6 +13,20 @@ if ($env:GITHUB_ACTIONS -ne 'true') {
 }
 
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+$webView2DownloaderPath = Join-Path $PSScriptRoot 'download-webview2-bootstrapper.ps1'
+if (-not (Test-Path -LiteralPath $webView2DownloaderPath -PathType Leaf)) {
+  throw 'WebView2 Bootstrapper downloader script is missing.'
+}
+$webView2Tokens = $null
+$webView2ParseErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+  $webView2DownloaderPath,
+  [ref]$webView2Tokens,
+  [ref]$webView2ParseErrors
+)
+if ($webView2ParseErrors.Count -ne 0) {
+  throw "WebView2 Bootstrapper downloader has PowerShell syntax errors: $($webView2ParseErrors[0].Message)"
+}
 $versionPath = Join-Path $sourceRoot 'VERSION'
 if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
   throw 'VERSION file is missing.'
@@ -87,6 +101,31 @@ function Get-UninstallEntries {
   return @($entries)
 }
 
+function Get-WebView2RuntimeVersions {
+  $versions = @()
+  $clientKey = 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+  foreach ($hive in @([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryHive]::CurrentUser)) {
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, [Microsoft.Win32.RegistryView]::Registry32)
+    try {
+      $key = $base.OpenSubKey($clientKey, $false)
+      if ($null -ne $key) {
+        try {
+          $version = [string]$key.GetValue('pv', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          $parsed = [version]'0.0.0.0'
+          if ([version]::TryParse($version, [ref]$parsed) -and $parsed -gt [version]'0.0.0.0') {
+            $versions += $parsed.ToString()
+          }
+        } finally {
+          $key.Dispose()
+        }
+      }
+    } finally {
+      $base.Dispose()
+    }
+  }
+  return @($versions | Sort-Object -Unique)
+}
+
 function Assert-PathMissing([string]$path, [string]$description) {
   if (Test-Path -LiteralPath $path) {
     throw "Pre-existing $description was found. The smoke test will not overwrite or remove it: $path"
@@ -123,10 +162,20 @@ function Assert-VersionMetadata([string]$path, [string]$description) {
     throw "$description is missing: $path"
   }
   $versionInfo = (Get-Item -LiteralPath $path).VersionInfo
+  # Wails' neutral-language resource may expose FileVersion/ProductVersion
+  # strings as empty through the current Windows locale even while the PE
+  # fixed-version block is correct. Include both surfaces; the fixed block is
+  # the authoritative version resource consumed by Windows itself.
+  $fixedVersions = @(
+    "$($versionInfo.FileMajorPart).$($versionInfo.FileMinorPart).$($versionInfo.FileBuildPart).$($versionInfo.FilePrivatePart)",
+    "$($versionInfo.ProductMajorPart).$($versionInfo.ProductMinorPart).$($versionInfo.ProductBuildPart).$($versionInfo.ProductPrivatePart)"
+  )
   $versionValues = @(
     [string]$versionInfo.FileVersion,
     [string]$versionInfo.ProductVersion
-  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  ) + $fixedVersions
+  $versionValues = @($versionValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  Write-Host "$description version metadata: $($versionValues -join '; ')"
   $expectedPattern = '(^|[^0-9])' + [regex]::Escape($version) + '(?:\.0)?($|[^0-9])'
   if (-not ($versionValues | Where-Object { $_ -match $expectedPattern })) {
     throw "$description version metadata does not include $version."
@@ -177,6 +226,11 @@ Assert-ShortcutTarget $startMenuMainShortcut $mainExecutable
 if (-not (Test-Path -LiteralPath $startMenuUninstallShortcut -PathType Leaf)) {
   throw "Expected Start Menu uninstall shortcut is missing: $startMenuUninstallShortcut"
 }
+$webView2Versions = @(Get-WebView2RuntimeVersions)
+if ($webView2Versions.Count -eq 0) {
+  throw 'WebView2 Runtime was not available after installation.'
+}
+Write-Host "Detected WebView2 Runtime after installation: $($webView2Versions -join ', ')"
 
 Write-Host 'Silently uninstalling the freshly installed package through its Start Menu shortcut…'
 # This validates the user-facing Shell action itself. Some PowerShell COM

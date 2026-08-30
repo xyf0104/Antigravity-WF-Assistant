@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"antigravity-byok/internal/agent"
-	"antigravity-byok/internal/claudeconfig"
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/claudeconfig"
 )
 
 func TestClaudeCodeAgentCapabilityStatusIsConservative(t *testing.T) {

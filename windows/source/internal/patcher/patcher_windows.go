@@ -1113,7 +1113,7 @@ func windowsWriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-byok-*")
+	temp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-wf-*")
 	if err != nil {
 		return err
 	}
@@ -1260,7 +1260,8 @@ func mergeWindowsHistoryAt(home string) error {
 	for _, entry := range entries {
 		name := strings.ToLower(entry.Name())
 		if !entry.IsDir() || !strings.HasPrefix(name, "antigravity") ||
-			name == "antigravity" || strings.Contains(name, "antigravity-byok-backup") {
+			name == "antigravity" || strings.Contains(name, "antigravity-wf-backup") ||
+			strings.Contains(name, "antigravity-"+legacyPatcherProductToken()+"-backup") {
 			continue
 		}
 		source := filepath.Join(geminiRoot, entry.Name())
@@ -1279,11 +1280,21 @@ func mergeWindowsHistoryAt(home string) error {
 		return err
 	}
 	for _, source := range sources {
-		backup := source + ".antigravity-byok-backup"
+		backup := source + ".antigravity-wf-backup"
+		legacyBackup := source + ".antigravity-" + legacyPatcherProductToken() + "-backup"
 		if _, statErr := os.Stat(backup); os.IsNotExist(statErr) {
-			if err := copyWindowsTreeMissing(source, backup); err != nil {
-				return err
+			// A pre-WF release may already have captured this source. Preserve it
+			// unchanged instead of treating its already-patched contents as a new
+			// original snapshot. New sources always receive the canonical name.
+			if _, legacyErr := os.Stat(legacyBackup); os.IsNotExist(legacyErr) {
+				if err := copyWindowsTreeMissing(source, backup); err != nil {
+					return err
+				}
+			} else if legacyErr != nil {
+				return legacyErr
 			}
+		} else if statErr != nil {
+			return statErr
 		}
 		for _, resource := range resources {
 			if err := copyWindowsTreeMissing(filepath.Join(source, resource), filepath.Join(target, resource)); err != nil {
@@ -1362,7 +1373,7 @@ func copyWindowsFile(source, target string) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(target), ".antigravity-byok-copy-*")
+	temp, err := os.CreateTemp(filepath.Dir(target), ".antigravity-wf-copy-*")
 	if err != nil {
 		return err
 	}

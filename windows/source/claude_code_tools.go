@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 
-	"antigravity-byok/internal/claudeconfig"
+	"antigravity-wf-assistant/internal/claudeconfig"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // ClaudeCodeApplyInput is an inbound-only Wails DTO. Credential and AuthToken
@@ -33,6 +35,44 @@ type ClaudeCodeGatewayRequestInput struct {
 	Credential     string `json:"credential"`
 	AuthToken      string `json:"authToken"`
 	Model          string `json:"model"`
+}
+
+// ClaudeCodeAccountCandidate is a deliberately redacted, reusable upstream
+// account. It lets a person apply one of their existing Claude-compatible
+// XIASS Tools accounts to Claude Code without moving that account's credential
+// through the renderer. API URLs, headers, tokens and OAuth material stay
+// native-only.
+type ClaudeCodeAccountCandidate struct {
+	ID             string                            `json:"id"`
+	Label          string                            `json:"label"`
+	CredentialMode string                            `json:"credentialMode"`
+	Models         []ClaudeCodeAccountCandidateModel `json:"models"`
+}
+
+// ClaudeCodeAccountCandidateModel is public model-selection metadata from an
+// already account-bound Antigravity model. It is never a model test result and
+// never includes route or credential data.
+type ClaudeCodeAccountCandidateModel struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+}
+
+// ClaudeCodeAccountCandidatesStatus is safe for the renderer. Unsupported or
+// paused accounts are omitted rather than exposed with internal reasons that
+// could reveal a private API route or header setup.
+type ClaudeCodeAccountCandidatesStatus struct {
+	OK         bool                         `json:"ok"`
+	Message    string                       `json:"message"`
+	Candidates []ClaudeCodeAccountCandidate `json:"candidates"`
+}
+
+// ClaudeCodeApplyAccountInput contains only an opaque local account ID and
+// the user-selected public model ID. The account credential is looked up and
+// consumed entirely on the native side.
+type ClaudeCodeApplyAccountInput struct {
+	AccountID                   string `json:"accountId"`
+	Model                       string `json:"model"`
+	EnableGatewayModelDiscovery bool   `json:"enableGatewayModelDiscovery"`
 }
 
 // ClaudeCodeConfigurationStatus contains only the manager's redacted
@@ -160,6 +200,75 @@ func (a *App) ApplyClaudeCodeConfiguration(input ClaudeCodeApplyInput) ClaudeCod
 		config.APIKeyHelper = ""
 	}()
 
+	return a.applyClaudeCodeConfiguration(manager, config)
+}
+
+// GetClaudeCodeAccountCandidates lists only locally saved accounts that can
+// be mapped losslessly to Claude Code's documented settings.json fields. In
+// particular, custom headers, manual endpoint paths, paused accounts and
+// non-Messages protocols are not offered because silently dropping any of
+// those settings could produce a different request from the one the user
+// configured in the account pool.
+func (a *App) GetClaudeCodeAccountCandidates() ClaudeCodeAccountCandidatesStatus {
+	accounts, err := storage.LoadUpstreamAccounts()
+	if err != nil {
+		return ClaudeCodeAccountCandidatesStatus{Candidates: emptyClaudeCodeAccountCandidates(), Message: "无法读取本机账户池。"}
+	}
+	models, modelErr := storage.LoadModels()
+	if modelErr != nil {
+		// An account remains usable even when the optional Antigravity model
+		// catalog is unavailable. The user can still enter a known model ID.
+		models = nil
+	}
+	candidates := make([]ClaudeCodeAccountCandidate, 0, len(accounts))
+	for _, account := range accounts {
+		if !claudeCodeAccountReusable(account) {
+			continue
+		}
+		candidates = append(candidates, ClaudeCodeAccountCandidate{
+			ID:             account.ID,
+			Label:          claudeCodeAccountLabel(account),
+			CredentialMode: claudeCodeCredentialModeLabel(account.AuthMode),
+			Models:         claudeCodeCandidateModels(account.ID, models),
+		})
+	}
+	sort.Slice(candidates, func(left, right int) bool {
+		return strings.ToLower(candidates[left].Label+"\x00"+candidates[left].ID) < strings.ToLower(candidates[right].Label+"\x00"+candidates[right].ID)
+	})
+	if len(candidates) == 0 {
+		return ClaudeCodeAccountCandidatesStatus{OK: true, Candidates: emptyClaudeCodeAccountCandidates(), Message: "没有可直接用于 Claude Code 的已启用账户。"}
+	}
+	message := "已读取可复用的 Claude Code 兼容账户。"
+	if modelErr != nil {
+		message = "已读取可复用账户；本机模型目录暂不可用，可手动填写模型 ID。"
+	}
+	return ClaudeCodeAccountCandidatesStatus{OK: true, Candidates: candidates, Message: message}
+}
+
+// ApplyClaudeCodeConfigurationFromAccount is an explicit transfer of one
+// user-selected, compatible XIASS Tools upstream account into the narrowly
+// documented Claude Code settings surface. It never reads a third-party
+// account/session file and never returns the source credential to Vue.
+func (a *App) ApplyClaudeCodeConfigurationFromAccount(input ClaudeCodeApplyAccountInput) ClaudeCodeConfigurationStatus {
+	manager, err := a.claudeCodeManager()
+	if err != nil {
+		return ClaudeCodeConfigurationUnavailable()
+	}
+	account, err := storage.GetUpstreamAccount(strings.TrimSpace(input.AccountID))
+	input.AccountID = ""
+	if err != nil {
+		return claudeCodeConfigurationAfterError(manager, "无法使用该账户配置 Claude Code。请刷新账户池后重新选择。")
+	}
+	config, err := claudeCodeApplyConfigFromAccount(account, input.Model, input.EnableGatewayModelDiscovery)
+	input.Model = ""
+	if err != nil {
+		return claudeCodeConfigurationAfterError(manager, "该账户无法无损应用到 Claude Code。请使用兼容的 Claude Messages 账户，或手动填写配置。")
+	}
+	defer clearClaudeCodeApplyConfig(&config)
+	return a.applyClaudeCodeConfiguration(manager, config)
+}
+
+func (a *App) applyClaudeCodeConfiguration(manager *claudeconfig.Manager, config claudeconfig.ApplyConfig) ClaudeCodeConfigurationStatus {
 	result, err := manager.Apply(config)
 	if err != nil {
 		return claudeCodeConfigurationAfterError(manager, "未保存 Claude Code 用户设置。请检查 API 根地址、授权令牌、模型名称及现有 settings.json。")
@@ -171,6 +280,158 @@ func (a *App) ApplyClaudeCodeConfiguration(input ClaudeCodeApplyInput) ClaudeCod
 	}
 	status.Message = "Claude Code 用户设置已安全保存，已创建可恢复备份 " + result.BackupID + "。"
 	return status
+}
+
+func emptyClaudeCodeAccountCandidates() []ClaudeCodeAccountCandidate {
+	return []ClaudeCodeAccountCandidate{}
+}
+
+func claudeCodeAccountReusable(account storage.UpstreamAccount) bool {
+	config, err := claudeCodeApplyConfigFromAccount(account, "claude-account-candidate", false)
+	if err != nil {
+		return false
+	}
+	clearClaudeCodeApplyConfig(&config)
+	return true
+}
+
+func claudeCodeApplyConfigFromAccount(account storage.UpstreamAccount, model string, enableGatewayModelDiscovery bool) (claudeconfig.ApplyConfig, error) {
+	if !account.Enabled {
+		return claudeconfig.ApplyConfig{}, errors.New("upstream account is paused")
+	}
+	provider := strings.ToLower(strings.TrimSpace(account.Provider))
+	apiStyle := strings.ToLower(strings.TrimSpace(account.APIStyle))
+	// Claude Code always sends the Anthropic Messages protocol.  Both parts of
+	// the source contract must therefore agree: accepting either an Anthropic
+	// label *or* a Messages label would silently rewrite a saved account into a
+	// different request shape.
+	if provider != "anthropic" || apiStyle != "messages" {
+		return claudeconfig.ApplyConfig{}, errors.New("upstream account does not use Claude Messages")
+	}
+	// A browser OAuth access token and a refresh-token account have a lifecycle
+	// that Claude Code's static settings file cannot represent.  Do not copy a
+	// short-lived credential into its configuration; the user can continue to
+	// use that account through XIASS Tools instead.
+	if !claudeCodeStaticCredentialAccountType(account.Type) {
+		return claudeconfig.ApplyConfig{}, errors.New("OAuth or non-static account credentials cannot be mapped to Claude Code")
+	}
+	if strings.EqualFold(strings.TrimSpace(account.EndpointMode), "manual") {
+		return claudeconfig.ApplyConfig{}, errors.New("manual endpoint cannot be mapped to Claude Code")
+	}
+	switch strings.ToLower(strings.TrimSpace(account.MessagePathMode)) {
+	case "", "auto", "standard":
+	default:
+		return claudeconfig.ApplyConfig{}, errors.New("nonstandard message path cannot be mapped to Claude Code")
+	}
+	if len(account.Headers) != 0 || strings.EqualFold(strings.TrimSpace(account.AuthMode), "custom_header") {
+		return claudeconfig.ApplyConfig{}, errors.New("custom headers cannot be mapped to Claude Code")
+	}
+	baseURL, err := claudeconfig.NormalizeBaseURL(strings.TrimSpace(account.APIURL))
+	if err != nil {
+		return claudeconfig.ApplyConfig{}, err
+	}
+	credential := account.EffectiveAPIKey()
+	if strings.TrimSpace(credential) == "" {
+		return claudeconfig.ApplyConfig{}, errors.New("upstream account has no credential")
+	}
+	mode := claudeconfig.CredentialModeAuthToken
+	switch strings.ToLower(strings.TrimSpace(account.AuthMode)) {
+	case "", "bearer":
+		mode = claudeconfig.CredentialModeAuthToken
+	case "x_api_key":
+		mode = claudeconfig.CredentialModeAPIKey
+	default:
+		return claudeconfig.ApplyConfig{}, errors.New("upstream account authentication cannot be mapped to Claude Code")
+	}
+	return claudeconfig.ApplyConfig{
+		BaseURL:                     baseURL,
+		CredentialMode:              mode,
+		Credential:                  credential,
+		EnableGatewayModelDiscovery: enableGatewayModelDiscovery,
+		Model:                       model,
+	}, nil
+}
+
+func clearClaudeCodeApplyConfig(config *claudeconfig.ApplyConfig) {
+	if config == nil {
+		return
+	}
+	config.BaseURL = ""
+	config.Credential = ""
+	config.AuthToken = ""
+	config.APIKeyHelper = ""
+	config.Model = ""
+}
+
+func claudeCodeAccountLabel(account storage.UpstreamAccount) string {
+	if label := strings.TrimSpace(account.Name); label != "" {
+		return label
+	}
+	return "Claude 兼容账户"
+}
+
+func claudeCodeCredentialModeLabel(authMode string) string {
+	if strings.EqualFold(strings.TrimSpace(authMode), "x_api_key") {
+		return "API Key"
+	}
+	return "Bearer 令牌"
+}
+
+// claudeCodeStaticCredentialAccountType is deliberately narrower than the
+// account-pool credential formats.  It admits only credentials that remain
+// valid as a static Claude Code settings value; OAuth and refresh flows must
+// retain their managed lifecycle inside XIASS Tools.
+func claudeCodeStaticCredentialAccountType(accountType string) bool {
+	switch strings.ToLower(strings.TrimSpace(accountType)) {
+	case "api_key", "x_api_key", "setup_token", "codex_pat":
+		return true
+	default:
+		return false
+	}
+}
+
+func claudeCodeCandidateModels(accountID string, models []storage.CustomModel) []ClaudeCodeAccountCandidateModel {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" || len(models) == 0 {
+		return []ClaudeCodeAccountCandidateModel{}
+	}
+	seen := make(map[string]struct{})
+	result := make([]ClaudeCodeAccountCandidateModel, 0)
+	for _, model := range models {
+		if !claudeCodeModelBoundToAccount(model, accountID) || !claudeCodeCompatibleModel(model) {
+			continue
+		}
+		id := strings.TrimSpace(model.ExternalModelName)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		label := strings.TrimSpace(model.DisplayName)
+		if label == "" {
+			label = id
+		}
+		result = append(result, ClaudeCodeAccountCandidateModel{ID: id, DisplayName: label})
+	}
+	sort.Slice(result, func(left, right int) bool {
+		return strings.ToLower(result[left].DisplayName+"\x00"+result[left].ID) < strings.ToLower(result[right].DisplayName+"\x00"+result[right].ID)
+	})
+	return result
+}
+
+func claudeCodeModelBoundToAccount(model storage.CustomModel, accountID string) bool {
+	for _, bound := range model.AccountIDs {
+		if strings.TrimSpace(bound) == accountID {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeCodeCompatibleModel(model storage.CustomModel) bool {
+	return strings.EqualFold(strings.TrimSpace(model.Provider), "anthropic") && strings.EqualFold(strings.TrimSpace(model.APIStyle), "messages")
 }
 
 // DiscoverClaudeCodeGatewayModels performs an explicit, one-shot /v1/models

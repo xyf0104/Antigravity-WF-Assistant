@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"antigravity-byok/internal/agent"
-	"antigravity-byok/internal/patcher"
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/patcher"
 )
 
 func TestAntigravityAgentStatusReflectsVerifiedSnapshot(t *testing.T) {

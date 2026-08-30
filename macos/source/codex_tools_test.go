@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +17,7 @@ import (
 
 	"antigravity-wf-assistant/internal/codexconfig"
 	"antigravity-wf-assistant/internal/codexdesktop"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func TestRestoreCodexConfigurationRefusesWhileDesktopIsRunningOrUnverified(t *testing.T) {
@@ -113,6 +116,197 @@ func TestCodexModelCatalogMessageDoesNotClaimResponsesInference(t *testing.T) {
 	}
 	if strings.Contains(message, "可用模型") || strings.Contains(message, "测试通过") {
 		t.Fatalf("catalog message must not claim model inference availability: %q", message)
+	}
+}
+
+func TestCodexSavedAccountCandidatesDiscoverAndApplyWithoutLeakingCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	storage.Init(filepath.Join(home, "xiass-state"))
+
+	const secret = "saved-codex-account-secret-must-not-render"
+	const authSentinel = "external-codex-auth-json-must-not-be-read"
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		authorization = request.Header.Get("Authorization")
+		if request.URL.Path != "/v1/models" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":[{"id":"gpt-saved-codex"}]}`))
+	}))
+	defer server.Close()
+
+	account := storage.UpstreamAccount{
+		ID: "saved-codex-account", Name: "团队 Codex Responses", Provider: "openai", Type: "api_key",
+		APIURL: server.URL, EndpointMode: "auto", APIStyle: "responses", MessagePathMode: "auto",
+		AuthMode: "bearer", APIKey: secret, Enabled: true, MaxConcurrency: 1,
+	}
+	if err := storage.SaveUpstreamAccount(account); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.AddOrUpdateModel(storage.CustomModel{
+		Name: "saved-codex-model", DisplayName: "GPT Saved Codex", Provider: "openai", APIStyle: "responses",
+		EndpointMode: "auto", MessagePathMode: "auto", ExternalModelName: "gpt-saved-codex", AccountIDs: []string{account.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(authSentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{}
+	candidates := app.GetCodexAccountCandidates()
+	if !candidates.OK || len(candidates.Candidates) != 1 {
+		t.Fatalf("saved-account candidates = %#v", candidates)
+	}
+	candidate := candidates.Candidates[0]
+	if candidate.ID != account.ID || candidate.Label != account.Name || candidate.CredentialMode != "Bearer API Key" {
+		t.Fatalf("candidate metadata = %#v", candidate)
+	}
+	if len(candidate.Models) != 1 || candidate.Models[0].ID != "gpt-saved-codex" || candidate.Models[0].DisplayName != "GPT Saved Codex" {
+		t.Fatalf("candidate models = %#v", candidate.Models)
+	}
+	encodedCandidates, err := json.Marshal(candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{secret, server.URL, authSentinel, home} {
+		if strings.Contains(string(encodedCandidates), forbidden) {
+			t.Fatalf("candidate response leaked %q: %s", forbidden, encodedCandidates)
+		}
+	}
+
+	discovery := app.DiscoverCodexAccountModels(account.ID)
+	if !discovery.OK || len(discovery.Models) != 1 || discovery.Models[0] != "gpt-saved-codex" {
+		t.Fatalf("saved-account discovery = %#v", discovery)
+	}
+	if authorization != "Bearer "+secret {
+		t.Fatalf("saved-account discovery authorization = %q", authorization)
+	}
+	encodedDiscovery, err := json.Marshal(discovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{secret, server.URL, authSentinel, home} {
+		if strings.Contains(string(encodedDiscovery), forbidden) {
+			t.Fatalf("discovery response leaked %q: %s", forbidden, encodedDiscovery)
+		}
+	}
+
+	status := app.ApplyCodexConfigurationFromAccount(CodexApplyAccountInput{
+		AccountID: account.ID, Model: "gpt-saved-codex", ReviewModel: "gpt-saved-codex", WebSearch: "cached",
+		ModelContextWindow: 512000, ModelAutoCompactTokenLimit: 460800,
+	})
+	if !status.OK || status.Snapshot.ModelProvider != codexconfig.DefaultProviderID || !status.Snapshot.ManagedProviderVerified {
+		t.Fatalf("saved-account apply status = %#v", status)
+	}
+	encodedStatus, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Codex's established, non-secret status projection includes the configured
+	// provider root. It must never reveal the account credential, external
+	// auth.json sentinel or local config directory.
+	for _, forbidden := range []string{secret, authSentinel, home} {
+		if strings.Contains(string(encodedStatus), forbidden) {
+			t.Fatalf("apply response leaked %q: %s", forbidden, encodedStatus)
+		}
+	}
+	manager := codexconfig.NewManager(home)
+	written := readBridgeTestFile(t, manager.ConfigPath)
+	for _, required := range []string{
+		`base_url = "` + server.URL + `/v1"`,
+		`experimental_bearer_token = "` + secret + `"`,
+		`model = "gpt-saved-codex"`,
+		`review_model = "gpt-saved-codex"`,
+	} {
+		if !bytes.Contains(written, []byte(required)) {
+			t.Fatalf("saved account did not map %q into config:\n%s", required, written)
+		}
+	}
+	backups, err := manager.ListBackups()
+	if err != nil || len(backups) != 1 || backups[0].Reason != "apply" {
+		t.Fatalf("apply backups = %#v / %v", backups, err)
+	}
+	if got := readBridgeTestFile(t, filepath.Join(home, "auth.json")); string(got) != authSentinel {
+		t.Fatalf("saved-account apply touched external auth.json: %q", got)
+	}
+}
+
+func TestCodexSavedAccountLifecycleApplyUsesNativeMapping(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	storage.Init(filepath.Join(home, "xiass-state"))
+	const secret = "saved-codex-lifecycle-secret"
+	account := storage.UpstreamAccount{
+		ID: "saved-codex-lifecycle", Name: "Lifecycle Responses", Provider: "openai", Type: "api_key",
+		APIURL: "https://gateway.example.test", EndpointMode: "auto", APIStyle: "responses", MessagePathMode: "auto",
+		AuthMode: "bearer", APIKey: secret, Enabled: true,
+	}
+	if err := storage.SaveUpstreamAccount(account); err != nil {
+		t.Fatal(err)
+	}
+	manager := codexconfig.NewManager(home)
+	if err := os.WriteFile(manager.ConfigPath, []byte("model_provider = \"official\"\nmodel = \"previous\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{ctx: context.Background(), codexDesktopControl: newCodexLifecycleFakeDesktop(false)}
+	result := app.ApplyCodexConfigurationFromAccountWithLifecycle(CodexApplyAccountLifecycleInput{
+		Account:     CodexApplyAccountInput{AccountID: account.ID, Model: "gpt-lifecycle", WebSearch: "live"},
+		LaunchAfter: false,
+	})
+	if !result.OK || !result.Applied || result.RolledBack || result.Configuration.Snapshot.ModelProvider != codexconfig.DefaultProviderID {
+		t.Fatalf("saved-account lifecycle result = %#v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{secret, home, manager.ConfigPath} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("lifecycle response leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestCodexSavedAccountReuseRejectsLossyAndOAuthMappings(t *testing.T) {
+	base := storage.UpstreamAccount{
+		ID: "candidate", Name: "candidate", Provider: "openai", Type: "api_key", APIURL: "https://gateway.example.test",
+		EndpointMode: "auto", APIStyle: "responses", MessagePathMode: "auto", AuthMode: "bearer", APIKey: "test-key", Enabled: true,
+	}
+	for _, testCase := range []struct {
+		name   string
+		mutate func(*storage.UpstreamAccount)
+	}{
+		{name: "paused", mutate: func(account *storage.UpstreamAccount) { account.Enabled = false }},
+		{name: "non OpenAI provider", mutate: func(account *storage.UpstreamAccount) { account.Provider = "anthropic" }},
+		{name: "chat completions", mutate: func(account *storage.UpstreamAccount) { account.APIStyle = "chat_completions" }},
+		{name: "manual endpoint", mutate: func(account *storage.UpstreamAccount) { account.EndpointMode = "manual" }},
+		{name: "manual message path", mutate: func(account *storage.UpstreamAccount) { account.MessagePathMode = "manual" }},
+		{name: "x api key", mutate: func(account *storage.UpstreamAccount) { account.AuthMode = "x_api_key" }},
+		{name: "custom header", mutate: func(account *storage.UpstreamAccount) {
+			account.Headers = map[string]string{"X-Token": "must-not-copy"}
+		}},
+		{name: "generic OAuth refresh", mutate: func(account *storage.UpstreamAccount) { account.Type = "oauth" }},
+		{name: "direct Codex OAuth", mutate: func(account *storage.UpstreamAccount) {
+			account.Type = "oauth"
+			account.OAuth = storage.OAuthConfiguration{Upstream: storage.OpenAICodexOAuthUpstream}
+			account.APIURL = storage.OpenAICodexResponsesURL
+		}},
+		{name: "query route", mutate: func(account *storage.UpstreamAccount) {
+			account.APIURL = "https://gateway.example.test/v1?tenant=private"
+		}},
+		{name: "non v1 path", mutate: func(account *storage.UpstreamAccount) { account.APIURL = "https://gateway.example.test/tenant" }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			account := base
+			testCase.mutate(&account)
+			if codexAccountReusable(account) {
+				t.Fatalf("lossy saved-account mapping was accepted: %#v", account)
+			}
+		})
 	}
 }
 
@@ -362,6 +556,134 @@ func TestImportCodexLegacyHistoryBackupRefreshesVisibleBackupWithoutMutatingActi
 	}
 }
 
+func TestRestoreCodexConfigurationForwardMigratesImportedActiveLegacyProviderWithoutLeakingSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	manager := codexconfig.NewManager(home)
+	activeConfig := []byte("model_provider = \"openai\"\nmodel = \"before-restore\"\n")
+	if err := os.WriteFile(manager.ConfigPath, activeConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyID := "20260830T030405.123456789Z-cdef1234"
+	legacySecret := "restored-legacy-provider-secret-must-not-leak"
+	legacyConfig := []byte(`model_provider = "codex_local_access"
+model = "gpt-5.6-sol"
+review_model = "gpt-5.6-luna"
+model_context_window = 372000
+model_auto_compact_token_limit = 334800
+web_search = "live"
+
+[model_providers.codex_local_access]
+name = "XIASS API"
+base_url = "https://api.xiass.com/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "` + legacySecret + `"
+http_headers = { "x-openai-actor-authorization" = "api.xiass.com" }
+supports_websockets = false
+`)
+	writeBridgeLegacyConfigBackup(t, manager, legacyID, legacyConfig)
+
+	authPath := filepath.Join(home, "auth.json")
+	historyPath := filepath.Join(home, "sessions", "restore-sentinel.jsonl")
+	if err := os.WriteFile(authPath, []byte("auth-must-not-be-read-or-modified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(historyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(historyPath, []byte("history-must-not-be-read-or-modified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	imported := (&App{}).ImportCodexLegacyConfigBackup(legacyID)
+	if !imported.OK {
+		t.Fatalf("ImportCodexLegacyConfigBackup() = %#v", imported)
+	}
+	var importedID string
+	for _, backup := range imported.Backups {
+		if backup.Reason == "imported_legacy_config" {
+			importedID = backup.ID
+			break
+		}
+	}
+	if importedID == "" {
+		t.Fatalf("imported legacy backup not listed: %#v", imported.Backups)
+	}
+
+	app := &App{ctx: context.Background(), codexDesktopControl: newCodexLifecycleFakeDesktop(false)}
+	status := app.RestoreCodexConfiguration(importedID)
+	if !status.OK || !status.LegacyProviderMigrationCompleted || !status.LegacyProviderMigrationWasActive || status.Snapshot.ModelProvider != codexconfig.DefaultProviderID {
+		t.Fatalf("restore-and-forward-migrate status = %#v", status)
+	}
+	written := readBridgeTestFile(t, manager.ConfigPath)
+	if !bytes.Contains(written, []byte(`model_provider = "xiass_tools"`)) || bytes.Contains(written, []byte("codex_local_access")) || !bytes.Contains(written, []byte(legacySecret)) {
+		t.Fatalf("restored legacy provider was not safely forward-migrated: %s", written)
+	}
+	if got := readBridgeTestFile(t, authPath); string(got) != "auth-must-not-be-read-or-modified" {
+		t.Fatalf("restore migration changed auth sentinel: %q", got)
+	}
+	if got := readBridgeTestFile(t, historyPath); string(got) != "history-must-not-be-read-or-modified" {
+		t.Fatalf("restore migration changed history sentinel: %q", got)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{legacySecret, home, manager.ConfigPath, "auth-must-not-be-read-or-modified", "history-must-not-be-read-or-modified"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("restore migration response leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRestoreCodexConfigurationLegacyMigrationFailureRestoresSafetyBackup(t *testing.T) {
+	fake := &codexRestoreForwardMigrationFake{
+		restoreResults: []codexconfig.RestoreResult{
+			{RestoredBackupID: "selected-backup", SafetyBackupID: "pre-restore-backup"},
+			{RestoredBackupID: "pre-restore-backup", SafetyBackupID: "rollback-safety-backup"},
+		},
+		legacyMigrationStatus: codexconfig.LegacyProviderMigrationStatus{
+			Available: true,
+			WasActive: true,
+		},
+		migrationErr: fmt.Errorf("test-only migration failure"),
+	}
+
+	outcome, err := restoreCodexConfigurationWithLegacyForwardMigration(fake, "selected-backup")
+	if err != nil {
+		t.Fatalf("restore helper error = %v", err)
+	}
+	if !outcome.LegacyProviderMigrationFailed || !outcome.MigrationRollbackWasSuccessful || outcome.LegacyProviderMigrated {
+		t.Fatalf("restore helper outcome = %#v", outcome)
+	}
+	if fake.migrateCalls != 1 || strings.Join(fake.restoreIDs, ",") != "selected-backup,pre-restore-backup" {
+		t.Fatalf("restore/migration sequence = restores=%#v migrations=%d", fake.restoreIDs, fake.migrateCalls)
+	}
+}
+
+func TestRestoreCodexConfigurationDoesNotAutoMigrateInactiveLegacyProvider(t *testing.T) {
+	fake := &codexRestoreForwardMigrationFake{
+		restoreResults: []codexconfig.RestoreResult{{RestoredBackupID: "selected-backup", SafetyBackupID: "pre-restore-backup"}},
+		legacyMigrationStatus: codexconfig.LegacyProviderMigrationStatus{
+			Available: true,
+			WasActive: false,
+		},
+	}
+
+	outcome, err := restoreCodexConfigurationWithLegacyForwardMigration(fake, "selected-backup")
+	if err != nil {
+		t.Fatalf("restore helper error = %v", err)
+	}
+	if outcome.LegacyProviderMigrationFailed || outcome.LegacyProviderMigrated || outcome.MigrationRollbackWasSuccessful {
+		t.Fatalf("inactive legacy provider outcome = %#v", outcome)
+	}
+	if fake.migrateCalls != 0 || len(fake.restoreIDs) != 1 || fake.restoreIDs[0] != "selected-backup" {
+		t.Fatalf("inactive legacy provider unexpectedly mutated: restores=%#v migrations=%d", fake.restoreIDs, fake.migrateCalls)
+	}
+}
+
 func TestCodexConfigurationModelCount(t *testing.T) {
 	if got := formatCodexModelCount(42); got != "42" {
 		t.Fatalf("model count = %q", got)
@@ -503,4 +825,36 @@ func writeBridgeJSON(t *testing.T, path string, value any) {
 
 func fmtSHA256(sum [sha256.Size]byte) string {
 	return strings.ToLower(fmt.Sprintf("%x", sum))
+}
+
+type codexRestoreForwardMigrationFake struct {
+	restoreResults        []codexconfig.RestoreResult
+	restoreErrs           []error
+	restoreIDs            []string
+	legacyMigrationStatus codexconfig.LegacyProviderMigrationStatus
+	legacyMigrationErr    error
+	migration             codexconfig.LegacyProviderMigrationResult
+	migrationErr          error
+	migrateCalls          int
+}
+
+func (fake *codexRestoreForwardMigrationFake) Restore(backupID string) (codexconfig.RestoreResult, error) {
+	index := len(fake.restoreIDs)
+	fake.restoreIDs = append(fake.restoreIDs, backupID)
+	if index < len(fake.restoreErrs) && fake.restoreErrs[index] != nil {
+		return codexconfig.RestoreResult{}, fake.restoreErrs[index]
+	}
+	if index >= len(fake.restoreResults) {
+		return codexconfig.RestoreResult{}, fmt.Errorf("unexpected Restore(%q)", backupID)
+	}
+	return fake.restoreResults[index], nil
+}
+
+func (fake *codexRestoreForwardMigrationFake) InspectLegacyProviderMigration() (codexconfig.LegacyProviderMigrationStatus, error) {
+	return fake.legacyMigrationStatus, fake.legacyMigrationErr
+}
+
+func (fake *codexRestoreForwardMigrationFake) MigrateLegacyProvider() (codexconfig.LegacyProviderMigrationResult, error) {
+	fake.migrateCalls++
+	return fake.migration, fake.migrationErr
 }

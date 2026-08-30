@@ -117,6 +117,38 @@ func TestDisableBeforeEnableDoesNotChangeConfig(t *testing.T) {
 	}
 }
 
+func TestLegacyBackupIsPreservedAndPromotedToCanonicalName(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, ".gemini", "config", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"userSettings":{"globalPermissionGrants":{"allow":["command(existing)"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := configPath + ".antigravity-" + legacyBackupProductToken() + "-backup"
+	legacyOriginal := []byte(`{"userSettings":{"autoExecutionPolicy":"CASCADE_COMMANDS_AUTO_EXECUTION_ASK"}}`)
+	if err := os.WriteFile(legacyPath, legacyOriginal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(home, filepath.Join(home, "state"))
+	if _, err := m.Apply(Settings{Enabled: true, Mode: "development"}); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := os.ReadFile(configPath + ".antigravity-wf-backup")
+	if err != nil {
+		t.Fatalf("canonical backup missing after migration: %v", err)
+	}
+	if string(canonical) != string(legacyOriginal) {
+		t.Fatalf("canonical backup did not preserve legacy original: %s", canonical)
+	}
+	legacy, err := os.ReadFile(legacyPath)
+	if err != nil || string(legacy) != string(legacyOriginal) {
+		t.Fatalf("legacy backup was modified during migration: %q, %v", legacy, err)
+	}
+}
+
 func readTestConfig(t *testing.T, path string) map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(path)

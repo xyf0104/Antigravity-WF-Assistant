@@ -10,6 +10,10 @@ import {
 	 migrateCodexLegacyProvider,
 	 migrateCodexLegacyProviderWithLifecycle,
   discoverCodexModels,
+  getCodexAccountCandidates,
+  discoverCodexAccountModels,
+  applyCodexConfigurationFromAccount,
+  applyCodexConfigurationFromAccountWithLifecycle,
   restoreCodexConfiguration,
   deleteCodexConfigurationBackup,
   repairCodexHistory,
@@ -27,6 +31,7 @@ import {
   applyCodexXIASSSelectionWithLifecycle,
   getCodexDesktopControlStatus,
   selectCodexDesktopApp,
+  selectCodexDesktopPath,
   launchCodexDesktop,
   stopCodexDesktop,
   restartCodexDesktop,
@@ -54,6 +59,7 @@ const completingXIASSKey = ref(false);
 const xiassSiteURL = ref("https://api.xiass.com");
 const xiassSelection = ref(null);
 const manualCallbackURL = ref("");
+const manualCodexDesktopPath = ref("");
 const restartRequired = ref(false);
 const contextMode = ref("372000");
 const apiKeyInput = ref(null);
@@ -67,6 +73,13 @@ const lifecycleAcknowledged = ref(false);
 const lifecycleLaunchAfter = ref(true);
 const lifecycleRepairHistory = ref(true);
 const lifecycleOutcome = ref(null);
+// The native bridge returns only these redacted fields. Endpoint URLs, API
+// keys, custom headers, OAuth tokens and refresh state never enter Vue.
+const savedCodexAccountCandidates = ref([]);
+const savedCodexAccountCandidatesLoading = ref(false);
+const savedCodexAccountCandidatesMessage = ref("");
+const selectedSavedCodexAccountID = ref("");
+const selectedSavedCodexAccountModel = ref("");
 let xiassSelectionPoll = null;
 
 const contextPresetOptions = [
@@ -116,7 +129,10 @@ const configStatusDescription = computed(() => {
 const xiassSelectionReady = computed(() => xiassSelection.value?.status === "ready");
 const xiassSelectionPending = computed(() => xiassSelection.value?.status === "pending");
 const xiassSelectionSessionID = computed(() => xiassSelection.value?.sessionId || "");
-const hasConfiguredCredential = computed(() => xiassSelectionReady.value || Boolean(draft.value.api_key?.trim()));
+const selectedSavedCodexAccount = computed(() => savedCodexAccountCandidates.value.find((candidate) => candidate.id === selectedSavedCodexAccountID.value) || null);
+const selectedSavedCodexAccountModels = computed(() => selectedSavedCodexAccount.value?.models || []);
+const usingSavedCodexAccount = computed(() => Boolean(selectedSavedCodexAccount.value?.id));
+const hasConfiguredCredential = computed(() => usingSavedCodexAccount.value || xiassSelectionReady.value || Boolean(draft.value.api_key?.trim()));
 const legacyProviderMigration = computed(() => {
   const raw = snapshot.value?.legacy_provider_migration;
   const providerID = String(raw?.provider_id || "").trim();
@@ -220,6 +236,121 @@ function createDraft(snapshot = {}) {
     model_context_window: context.model_context_window || 372000,
     model_auto_compact_token_limit: context.model_auto_compact_token_limit || 334800,
   };
+}
+
+function cleanSavedCodexAccountText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSavedCodexAccountModel(value) {
+  const id = cleanSavedCodexAccountText(value?.id);
+  if (!id) return null;
+  return { id, displayName: cleanSavedCodexAccountText(value?.displayName) || id };
+}
+
+// Treat native output as an untrusted boundary even though it is purposely
+// redacted. Keep only the exact four display fields used by this modal so a
+// future native field cannot accidentally enter reactive state or devtools.
+function normalizeSavedCodexAccountCandidate(value) {
+  const id = cleanSavedCodexAccountText(value?.id);
+  if (!id) return null;
+  const seenModels = new Set();
+  const models = Array.isArray(value?.models)
+    ? value.models
+      .map(normalizeSavedCodexAccountModel)
+      .filter((model) => model && !seenModels.has(model.id) && (seenModels.add(model.id), true))
+    : [];
+  return {
+    id,
+    label: cleanSavedCodexAccountText(value?.label) || "OpenAI Responses 账户",
+    credentialMode: cleanSavedCodexAccountText(value?.credentialMode) || "凭据已保存",
+    models,
+  };
+}
+
+function clearSavedCodexAccountSelection({ clearCandidates = false } = {}) {
+  selectedSavedCodexAccountID.value = "";
+  selectedSavedCodexAccountModel.value = "";
+  if (clearCandidates) {
+    savedCodexAccountCandidates.value = [];
+    savedCodexAccountCandidatesMessage.value = "";
+  }
+}
+
+function savedCodexAccountRequest(candidate = selectedSavedCodexAccount.value) {
+  if (!candidate?.id) return null;
+  return {
+    accountId: candidate.id,
+    model: String(draft.value.model || "").trim(),
+    reviewModel: String(draft.value.review_model || "").trim(),
+    webSearch: String(draft.value.web_search || "").trim(),
+    modelContextWindow: Number(draft.value.model_context_window) || 0,
+    modelAutoCompactTokenLimit: Number(draft.value.model_auto_compact_token_limit) || 0,
+  };
+}
+
+function clearSavedCodexAccountRequest(request) {
+  if (!request || typeof request !== "object") return;
+  request.accountId = "";
+  request.model = "";
+  request.reviewModel = "";
+  request.webSearch = "";
+  request.modelContextWindow = 0;
+  request.modelAutoCompactTokenLimit = 0;
+}
+
+async function refreshSavedCodexAccountCandidates() {
+  savedCodexAccountCandidatesLoading.value = true;
+  try {
+    const result = await getCodexAccountCandidates();
+    const candidates = Array.isArray(result?.candidates)
+      ? result.candidates.map(normalizeSavedCodexAccountCandidate).filter(Boolean)
+      : [];
+    savedCodexAccountCandidates.value = candidates;
+    savedCodexAccountCandidatesMessage.value = cleanSavedCodexAccountText(result?.message)
+      || (candidates.length ? "已读取可复用的 OpenAI Responses 账户。" : "没有可直接用于 Codex 的已启用账户。");
+    const selected = candidates.find((candidate) => candidate.id === selectedSavedCodexAccountID.value);
+    if (!selected) {
+      clearSavedCodexAccountSelection();
+    } else if (!selected.models.some((model) => model.id === selectedSavedCodexAccountModel.value)) {
+      selectedSavedCodexAccountModel.value = selected.models.length === 1 ? selected.models[0].id : "";
+    }
+  } catch {
+    savedCodexAccountCandidates.value = [];
+    savedCodexAccountCandidatesMessage.value = "无法读取本机账户池；你仍可使用下方手动配置。";
+    clearSavedCodexAccountSelection();
+  } finally {
+    savedCodexAccountCandidatesLoading.value = false;
+  }
+}
+
+function selectSavedCodexAccount(candidate) {
+  if (!candidate?.id || saving.value || discovering.value || lifecycleApplying.value) return;
+  // Key selection and saved-account selection are mutually exclusive. A
+  // browser-selected Key remains native-only, but cancelling the selection
+  // avoids an ambiguous save path and clears any short-lived callback state.
+  cancelXIASSKeySelection();
+  draft.value.api_key = "";
+  selectedSavedCodexAccountID.value = candidate.id;
+  selectedSavedCodexAccountModel.value = candidate.models.length === 1 ? candidate.models[0].id : "";
+  if (selectedSavedCodexAccountModel.value) chooseSavedCodexAccountModel(candidate.models[0]);
+}
+
+function chooseSavedCodexAccountModel(model) {
+  if (!model?.id || saving.value || discovering.value || lifecycleApplying.value) return;
+  const id = String(model.id).trim();
+  if (!id) return;
+  selectedSavedCodexAccountModel.value = id;
+  draft.value.model = id;
+  if (!String(draft.value.review_model || "").trim() || !selectedSavedCodexAccountModels.value.some((item) => item.id === draft.value.review_model)) {
+    draft.value.review_model = id;
+  }
+}
+
+function stopUsingSavedCodexAccount() {
+  if (saving.value || discovering.value || lifecycleApplying.value) return;
+  clearSavedCodexAccountSelection();
+  draft.value.api_key = "";
 }
 
 function createDesktopStatus() {
@@ -418,6 +549,7 @@ async function load() {
     const [result] = await Promise.all([
       getCodexConfiguration(),
       refreshCodexDesktopStatus(),
+		  refreshSavedCodexAccountCandidates(),
     ]);
     data.value = result;
     if (!result?.ok) {
@@ -456,11 +588,46 @@ function desktopActionFailure(action, status) {
     error.value = "当前安装包尚未包含 Codex Desktop 控制功能。配置和备份功能不受影响。";
     return;
   }
-  if (action === "select") {
+  if (action === "select" || action === "manual-path") {
     error.value = "未能验证所选 Codex App。现有配置和会话没有被更改。";
     return;
   }
   error.value = "Codex Desktop 操作未完成。请刷新状态后再试。";
+}
+
+async function useManualCodexDesktopPath() {
+  if (removingXIASSProvider.value || desktopBusy.value) return;
+  error.value = "";
+  notice.value = "";
+  let selectedPath = manualCodexDesktopPath.value.trim();
+  // Do not retain a filesystem path in component state while the native
+  // validator runs. It is never copied into appState, logs, or diagnostics.
+  manualCodexDesktopPath.value = "";
+  if (!selectedPath) {
+    error.value = "请粘贴 Codex.app、Codex.exe 或 ChatGPT.exe 的本机路径。";
+    return;
+  }
+
+  desktopAction.value = "manual-path";
+  try {
+    const status = applyDesktopStatus(await selectCodexDesktopPath(selectedPath));
+    if (!status.ok) {
+      desktopActionFailure("manual-path", status);
+      return;
+    }
+    const refreshed = await refreshCodexDesktopStatus();
+    if (!refreshed.bridgeAvailable) {
+      desktopActionFailure("manual-path", refreshed);
+      return;
+    }
+    notice.value = "已验证手动粘贴的 Codex Desktop 应用路径。";
+    emit("changed");
+  } catch {
+    desktopActionFailure("manual-path", desktopStatus.value);
+  } finally {
+    selectedPath = "";
+    desktopAction.value = "";
+  }
 }
 
 async function runDesktopAction(action) {
@@ -522,6 +689,7 @@ function applyXIASSSelectionStatus(result) {
   if (!selection) return;
   xiassSelection.value = selection;
   if (selection.status === "ready") {
+	clearSavedCodexAccountSelection();
     draft.value.api_key = "";
     if (selection.baseUrl) draft.value.base_url = selection.baseUrl;
     if (selection.keyName && (!draft.value.provider_name?.trim() || draft.value.provider_name === "XIASS Tools")) draft.value.provider_name = selection.keyName;
@@ -550,6 +718,8 @@ async function refreshXIASSSelectionStatus() {
 async function startXIASSKeySelection() {
   error.value = "";
   notice.value = "";
+  clearSavedCodexAccountSelection();
+  draft.value.api_key = "";
   stopXIASSSelectionPolling();
   const oldSessionID = xiassSelectionSessionID.value;
   if (oldSessionID) {
@@ -614,16 +784,21 @@ async function discoverModels() {
   error.value = "";
   notice.value = "";
   if (!hasConfiguredCredential.value) {
-    error.value = "请先输入用于此次请求的 API Key。";
+    error.value = "请先选择已保存的兼容账户，或输入用于此次请求的 API Key。";
     return;
   }
   discovering.value = true;
   try {
-    const result = xiassSelectionReady.value
-      ? await discoverCodexXIASSSelectionModels(xiassSelectionSessionID.value)
-      : await discoverCodexModels(draft.value.base_url, draft.value.api_key);
+    const selectedAccount = selectedSavedCodexAccount.value;
+    const result = selectedAccount?.id
+      ? await discoverCodexAccountModels(selectedAccount.id)
+      : xiassSelectionReady.value
+        ? await discoverCodexXIASSSelectionModels(xiassSelectionSessionID.value)
+        : await discoverCodexModels(draft.value.base_url, draft.value.api_key);
     if (!result?.ok) {
-      error.value = "获取上游模型失败。请检查 API 地址与本次 Key 后重试。";
+      error.value = selectedAccount?.id
+        ? "获取所选账户的 Codex 上游模型失败。请刷新账户池或检查上游后重试。"
+        : "获取上游模型失败。请检查 API 地址与本次 Key 后重试。";
       return;
     }
     models.value = result.models || [];
@@ -635,7 +810,9 @@ async function discoverModels() {
     }
     notice.value = `已发现 ${models.value.length} 个模型 ID（尚未验证 Responses 推理）。`;
   } catch (cause) {
-    error.value = "获取上游模型失败。请检查 API 地址与本次 Key 后重试。";
+    error.value = usingSavedCodexAccount.value
+      ? "获取所选账户的 Codex 上游模型失败。请刷新账户池或检查上游后重试。"
+      : "获取上游模型失败。请检查 API 地址与本次 Key 后重试。";
   } finally {
     discovering.value = false;
   }
@@ -646,18 +823,24 @@ async function save() {
   error.value = "";
   notice.value = "";
   if (!hasConfiguredCredential.value) {
-    error.value = "为安全写入 Codex 配置，请输入 API Key。";
+    error.value = "为安全写入 Codex 配置，请选择已保存的兼容账户，或输入 API Key。";
     return;
   }
   saving.value = true;
   const previousProvider = providerID(snapshot.value?.model_provider);
+	const selectedAccount = selectedSavedCodexAccount.value;
+	const accountRequest = selectedAccount?.id ? savedCodexAccountRequest(selectedAccount) : null;
   try {
-    const result = xiassSelectionReady.value
-      ? await applyCodexXIASSSelection(xiassSelectionSessionID.value, { ...draft.value, api_key: "", base_url: "" })
-      : await applyCodexConfiguration({ ...draft.value });
+    const result = accountRequest
+      ? await applyCodexConfigurationFromAccount(accountRequest)
+      : xiassSelectionReady.value
+        ? await applyCodexXIASSSelection(xiassSelectionSessionID.value, { ...draft.value, api_key: "", base_url: "" })
+        : await applyCodexConfiguration({ ...draft.value });
     data.value = result;
     if (!result?.ok) {
-      error.value = "保存 Codex 配置失败。请检查填写内容与 config.toml 状态后重试。";
+      error.value = accountRequest
+        ? "未将所选账户应用到 Codex。请刷新账户池后重新选择，或改用手动配置。"
+        : "保存 Codex 配置失败。请检查填写内容与 config.toml 状态后重试。";
       return;
     }
     draft.value.api_key = "";
@@ -669,8 +852,11 @@ async function save() {
 		applyRestartGuidance("Codex 配置已安全保存。", { providerChanged: providerChangePending.value });
     emit("changed");
   } catch (cause) {
-    error.value = "保存 Codex 配置失败。请检查填写内容与 config.toml 状态后重试。";
+    error.value = accountRequest
+      ? "未将所选账户应用到 Codex。请刷新账户池后重新选择，或改用手动配置。"
+      : "保存 Codex 配置失败。请检查填写内容与 config.toml 状态后重试。";
   } finally {
+	clearSavedCodexAccountRequest(accountRequest);
     saving.value = false;
   }
 }
@@ -804,8 +990,8 @@ function confirmLifecycleApply() {
   notice.value = "";
   lifecycleOutcome.value = null;
   if (!hasConfiguredCredential.value) {
-    error.value = "高级操作需要本次 API Key，或先通过 XIASS API 网站完成安全选择。";
-    void nextTick(() => apiKeyInput.value?.focus());
+    error.value = "高级操作需要已保存的兼容账户、本次 API Key，或先通过 XIASS API 网站完成安全选择。";
+    if (!usingSavedCodexAccount.value) void nextTick(() => apiKeyInput.value?.focus());
     return;
   }
   if (!lifecycleAcknowledged.value) {
@@ -836,18 +1022,28 @@ async function applyLifecycleConfiguration() {
   lifecycleApplying.value = true;
   const previousProvider = providerID(snapshot.value?.model_provider);
   const providerChanged = providerWillChange.value;
+	const selectedAccount = selectedSavedCodexAccount.value;
+	const accountRequest = selectedAccount?.id ? savedCodexAccountRequest(selectedAccount) : null;
   const lifecycleConfig = xiassSelectionReady.value
     ? { ...draft.value, api_key: "", base_url: "" }
     : { ...draft.value };
-  const lifecycleInput = {
-    config: lifecycleConfig,
-    repairHistoryOnProviderChange: providerChanged && lifecycleRepairHistory.value,
-    launchAfter: lifecycleLaunchAfter.value,
-  };
+  const lifecycleInput = accountRequest
+		? {
+			account: accountRequest,
+			repairHistoryOnProviderChange: providerChanged && lifecycleRepairHistory.value,
+			launchAfter: lifecycleLaunchAfter.value,
+		}
+		: {
+			config: lifecycleConfig,
+			repairHistoryOnProviderChange: providerChanged && lifecycleRepairHistory.value,
+			launchAfter: lifecycleLaunchAfter.value,
+		};
   try {
-    const result = xiassSelectionReady.value
-      ? await applyCodexXIASSSelectionWithLifecycle(xiassSelectionSessionID.value, lifecycleInput, true)
-      : await applyCodexConfigurationWithLifecycle(lifecycleInput, true);
+    const result = accountRequest
+		? await applyCodexConfigurationFromAccountWithLifecycle(lifecycleInput, true)
+      : xiassSelectionReady.value
+        ? await applyCodexXIASSSelectionWithLifecycle(xiassSelectionSessionID.value, lifecycleInput, true)
+        : await applyCodexConfigurationWithLifecycle(lifecycleInput, true);
     const outcome = applyLifecycleStatus(result, providerChanged);
     if (!outcome.ok) {
       error.value = lifecycleOutcomeCopy(outcome);
@@ -878,7 +1074,8 @@ async function applyLifecycleConfiguration() {
     error.value = lifecycleOutcomeCopy(outcome);
   } finally {
     // The nested request copy is short-lived even when an operation fails.
-    lifecycleInput.config.api_key = "";
+	if (lifecycleInput?.config) lifecycleInput.config.api_key = "";
+	clearSavedCodexAccountRequest(accountRequest);
     lifecycleAcknowledged.value = false;
     lifecycleApplying.value = false;
   }
@@ -914,7 +1111,13 @@ async function runConfigurationBackupAction(action, backupID) {
 		draft.value = { ...next, api_key: "" };
 		contextMode.value = contextModeFor(next.model_context_window);
 		markProviderChange(previousProvider, result.snapshot?.model_provider);
-		applyRestartGuidance("已恢复 Codex 配置备份。", { providerChanged: providerChangePending.value });
+		const restoredLegacyProvider = result?.legacyProviderMigrationCompleted === true;
+		applyRestartGuidance(
+			restoredLegacyProvider
+				? "已恢复 Codex 配置备份，并完成已验证旧版 XIASS Provider 的前向迁移。"
+				: "已恢复 Codex 配置备份。",
+			{ providerChanged: providerChangePending.value },
+		);
 	} else {
 			notice.value = "已删除选定的 Codex 配置备份。";
 		}
@@ -1058,7 +1261,9 @@ function confirmHistoryDelete(backupID) {
 
 function close() {
   cancelXIASSKeySelection();
+	clearSavedCodexAccountSelection({ clearCandidates: true });
   draft.value.api_key = "";
+  manualCodexDesktopPath.value = "";
   error.value = "";
   notice.value = "";
 	 restartRequired.value = false;
@@ -1081,6 +1286,8 @@ watch(
     if (open) void load();
     else {
       draft.value.api_key = "";
+      manualCodexDesktopPath.value = "";
+		clearSavedCodexAccountSelection({ clearCandidates: true });
       providerChangePending.value = false;
       historyCompatibilityChecked.value = false;
       resetLifecycleOptions();
@@ -1088,7 +1295,11 @@ watch(
   },
 );
 
-onBeforeUnmount(() => cancelXIASSKeySelection());
+onBeforeUnmount(() => {
+  manualCodexDesktopPath.value = "";
+  clearSavedCodexAccountSelection({ clearCandidates: true });
+  cancelXIASSKeySelection();
+});
 </script>
 
 <template>
@@ -1110,7 +1321,7 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
         <section class="desktop-control-section" aria-labelledby="codex-desktop-title">
           <div class="section-title">
             <strong id="codex-desktop-title">Codex Desktop 协作</strong>
-            <span>先验证本机 App，再由你主动打开、退出或重启。不会展示安装路径、进程 ID、启动参数或账号信息。</span>
+            <span>先验证本机 App，再由你主动打开、退出或重启。安装路径仅在原生选择或手动粘贴时短暂用于本机校验，不会写入状态、日志或诊断。</span>
           </div>
           <div class="desktop-status" :class="{ running: desktopRunning, present: desktopPresent, unavailable: !desktopBridgeAvailable }" role="status" aria-live="polite">
             <div class="desktop-signal" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -1130,6 +1341,14 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
               <span>刷新状态</span>
             </button>
           </div>
+          <details v-if="desktopBridgeAvailable" class="manual-desktop-path">
+            <summary>自动检测不到？粘贴本机 App 路径</summary>
+            <div>
+              <input v-model="manualCodexDesktopPath" autocomplete="off" spellcheck="false" :disabled="desktopBusy" placeholder="Codex.app、Codex.exe 或 ChatGPT.exe 的完整路径" />
+              <Button variant="plain" size="sm" :loading="desktopAction === 'manual-path'" :disabled="!desktopCanSelect || !manualCodexDesktopPath.trim()" @click="useManualCodexDesktopPath">验证路径</Button>
+            </div>
+            <p>路径只用于本次原生结构验证，提交后立即从页面清除；不会保存、显示在状态中或导出到日志与诊断。</p>
+          </details>
         </section>
 
         <div v-if="restartRequired" class="restart-guidance" role="status">
@@ -1152,16 +1371,67 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
           </div>
         </section>
 
+        <section class="saved-codex-account-section" :aria-busy="savedCodexAccountCandidatesLoading ? 'true' : 'false'">
+          <div class="section-title saved-codex-account-heading">
+            <div>
+              <strong>使用已保存的上游账户</strong>
+              <span>仅列出已启用、OpenAI Responses + Bearer 静态凭据且可无损映射的账户。账户地址、密钥、请求头、OAuth 与刷新令牌不会进入界面；每次保存前都会在原生层重新验证。</span>
+            </div>
+            <button type="button" class="saved-codex-account-refresh" :disabled="savedCodexAccountCandidatesLoading || saving || discovering || lifecycleApplying" @click="refreshSavedCodexAccountCandidates">{{ savedCodexAccountCandidatesLoading ? "读取中…" : "刷新账户" }}</button>
+          </div>
+          <p v-if="savedCodexAccountCandidatesMessage" class="saved-codex-account-message">{{ savedCodexAccountCandidatesMessage }}</p>
+          <div v-if="savedCodexAccountCandidates.length" class="saved-codex-account-grid" role="group" aria-label="可复用 Codex 上游账户">
+            <button
+              v-for="candidate in savedCodexAccountCandidates"
+              :key="candidate.id"
+              type="button"
+              class="saved-codex-account-card"
+              :class="{ selected: selectedSavedCodexAccountID === candidate.id }"
+              :aria-pressed="selectedSavedCodexAccountID === candidate.id"
+              :disabled="saving || discovering || lifecycleApplying"
+              @click="selectSavedCodexAccount(candidate)"
+            >
+              <strong>{{ candidate.label }}</strong>
+              <span>{{ candidate.credentialMode }}</span>
+              <small>{{ candidate.models.length ? `${candidate.models.length} 个已绑定 Responses 模型` : "可在下方手动填写模型 ID" }}</small>
+            </button>
+          </div>
+          <div v-if="selectedSavedCodexAccount" class="saved-codex-account-selection">
+            <div class="saved-codex-account-selection-copy">
+              <strong>已选择 {{ selectedSavedCodexAccount.label }}</strong>
+              <span>“获取上游模型”“安全保存配置”和“高级：安全保存、检查历史并启动 Codex”都会使用该账户；不会使用表单中的 API 地址或 API Key。</span>
+            </div>
+            <div v-if="selectedSavedCodexAccountModels.length" class="saved-codex-account-models" role="group" aria-label="已绑定 Codex Responses 模型">
+              <button
+                v-for="model in selectedSavedCodexAccountModels"
+                :key="model.id"
+                type="button"
+                :class="{ selected: selectedSavedCodexAccountModel === model.id }"
+                :disabled="saving || discovering || lifecycleApplying"
+                @click="chooseSavedCodexAccountModel(model)"
+              >
+                <strong>{{ model.displayName }}</strong>
+                <span v-if="model.displayName !== model.id">{{ model.id }}</span>
+              </button>
+            </div>
+            <p v-else class="saved-codex-account-empty">该账户暂无已绑定的 Responses 模型。可先在“模型”页面绑定模型，或在下方手动填写明确的 Responses 模型 ID。</p>
+            <div class="saved-codex-account-actions">
+              <span>应用时会先创建可恢复的 <code>config.toml</code> 备份，并进行原子写入与回读校验；不会读取 <code>auth.json</code>、Cookie、客户端会话或外部账号文件。</span>
+              <Button variant="plain" size="sm" :disabled="saving || discovering || lifecycleApplying" @click="stopUsingSavedCodexAccount">改用其他连接方式</Button>
+            </div>
+          </div>
+        </section>
+
         <section class="form-section">
-          <div class="section-title"><strong>上游连接</strong><span>可直接从 XIASS API 网站选择自己的 Key，或手动填写兼容 API。网站选择的 Key 不会回传或保存到页面中。</span></div>
+          <div class="section-title"><strong>上游连接</strong><span>{{ usingSavedCodexAccount ? "当前使用已保存的兼容账户。你仍可改用 XIASS API 网站选择 Key，或手动填写兼容 API；切换后会清除本次账户选择。" : "可直接从 XIASS API 网站选择自己的 Key，或手动填写兼容 API。网站选择的 Key 不会回传或保存到页面中。" }}</span></div>
           <div class="xiass-key-selection" :class="{ ready: xiassSelectionReady, pending: xiassSelectionPending }">
             <div class="xiass-key-copy">
               <strong>{{ xiassSelectionReady ? "XIASS API Key 已安全选择" : xiassSelectionPending ? "正在等待 XIASS API 网站完成选择" : "从 XIASS API 选择 Key" }}</strong>
               <span>{{ xiassSelection?.message || "浏览器会打开你的 XIASS API Key 选择页；完成后自动回到这里。" }}</span>
             </div>
             <div class="xiass-key-actions">
-              <label class="site-field"><span>XIASS 网站</span><input v-model.trim="xiassSiteURL" :disabled="selectingXIASSKey || xiassSelectionPending || xiassSelectionReady" autocomplete="url" placeholder="https://api.xiass.com" /></label>
-              <Button variant="plain" :loading="selectingXIASSKey" :disabled="selectingXIASSKey || saving || discovering" @click="startXIASSKeySelection">{{ xiassSelectionPending || xiassSelectionReady ? "重新选择 Key" : "在浏览器选择 Key" }}</Button>
+              <label class="site-field"><span>XIASS 网站</span><input v-model.trim="xiassSiteURL" :disabled="usingSavedCodexAccount || selectingXIASSKey || xiassSelectionPending || xiassSelectionReady" autocomplete="url" placeholder="https://api.xiass.com" /></label>
+              <Button variant="plain" :loading="selectingXIASSKey" :disabled="usingSavedCodexAccount || selectingXIASSKey || saving || discovering" @click="startXIASSKeySelection">{{ xiassSelectionPending || xiassSelectionReady ? "重新选择 Key" : "在浏览器选择 Key" }}</Button>
               <button v-if="xiassSelectionPending || xiassSelectionReady" type="button" class="text-action" :disabled="completingXIASSKey" @click="cancelXIASSKeySelection">取消</button>
             </div>
             <details v-if="xiassSelectionPending" class="manual-callback">
@@ -1173,14 +1443,14 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
               <p>地址只用于本次原生验证，提交后立即从页面清除，不会写入日志或本地存储。</p>
             </details>
           </div>
-          <label class="field wide"><span>API 地址</span><input v-model.trim="draft.base_url" :disabled="xiassSelectionReady" autocomplete="url" placeholder="https://api.xiass.com" /><small v-if="xiassSelectionReady">当前地址来自已验证的网站选择；如需改用其他地址，请先取消此选择后手动填写。</small></label>
+          <label class="field wide"><span>API 地址</span><input v-model.trim="draft.base_url" :disabled="usingSavedCodexAccount || xiassSelectionReady" autocomplete="url" placeholder="https://api.xiass.com" /><small v-if="usingSavedCodexAccount">当前地址来自已保存账户，保存时由原生层重新读取并验证；如需改用手动地址，请先点击“改用其他连接方式”。</small><small v-else-if="xiassSelectionReady">当前地址来自已验证的网站选择；如需改用其他地址，请先取消此选择后手动填写。</small></label>
           <div class="split-fields">
-            <label class="field"><span>API Key</span><input v-if="!xiassSelectionReady" ref="apiKeyInput" v-model="draft.api_key" type="password" autocomplete="off" placeholder="仅用于当前操作，不会回显" /><span v-else class="selection-key-state">已由 XIASS API 网站安全选择；Key 不会显示在此处。</span></label>
-            <label class="field"><span>显示名称</span><input v-model.trim="draft.provider_name" maxlength="200" placeholder="XIASS Tools" /></label>
+            <label class="field"><span>API Key</span><input v-if="!usingSavedCodexAccount && !xiassSelectionReady" ref="apiKeyInput" v-model="draft.api_key" type="password" autocomplete="off" placeholder="仅用于当前操作，不会回显" /><span v-else class="selection-key-state">{{ usingSavedCodexAccount ? "已选择本机保存的兼容账户；凭据不会显示在此处。" : "已由 XIASS API 网站安全选择；Key 不会显示在此处。" }}</span></label>
+            <label class="field"><span>显示名称</span><input v-model.trim="draft.provider_name" :disabled="usingSavedCodexAccount" maxlength="200" placeholder="XIASS Tools" /><small v-if="usingSavedCodexAccount">保存时使用已选择账户的名称，避免界面名称与实际凭据来源不一致。</small></label>
           </div>
           <div class="model-tools">
             <Button variant="plain" :loading="discovering" :disabled="discovering || saving" @click="discoverModels">获取上游模型</Button>
-            <span>模型发现只请求一次 <code>/v1/models</code>，不会缓存 API Key；它只发现模型 ID，不会自动调用或验证 Responses 推理。网站选择模式全程由原生层持有 Key。</span>
+            <span>{{ usingSavedCodexAccount ? "模型发现只会使用已选择账户在原生层保存的凭据请求一次 /v1/models；凭据不会回传页面。它只发现模型 ID，不会自动调用或验证 Responses 推理。" : "模型发现只请求一次 /v1/models，不会缓存 API Key；它只发现模型 ID，不会自动调用或验证 Responses 推理。网站选择模式全程由原生层持有 Key。" }}</span>
           </div>
           <div v-if="canMigrateLegacyProvider" class="legacy-migration" aria-live="polite">
             <div>
@@ -1353,8 +1623,14 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
 	.desktop-refresh { display: inline-flex; min-height: 26px; align-items: center; gap: 5px; border: 0; border-radius: 7px; color: var(--text-tertiary); font: inherit; font-size: 11px; padding: 0 5px; transition: color .16s var(--ease), background .16s var(--ease); }
 	.desktop-refresh svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 	.desktop-refresh:hover:not(:disabled) { background: var(--bg-fill-hover); color: var(--accent-strong); }
-	.desktop-refresh:focus-visible, .desktop-actions :deep(.btn:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+	.desktop-refresh:focus-visible, .desktop-actions :deep(.btn:focus-visible), .manual-desktop-path :deep(.btn:focus-visible), .manual-desktop-path input:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
 	.desktop-refresh:disabled { cursor: wait; opacity: .48; }
+	.manual-desktop-path { border-top: 1px solid var(--separator); padding-top: 9px; }
+	.manual-desktop-path summary { cursor: pointer; color: var(--text-secondary); font-size: 11px; }
+	.manual-desktop-path > div { display: flex; align-items: center; gap: 7px; margin-top: 8px; }
+	.manual-desktop-path input { flex: 1 1 auto; width: 100%; min-width: 0; border: 1px solid var(--separator-strong); border-radius: 7px; outline: none; background: var(--bg-base); color: var(--text-primary); font: inherit; font-size: 11px; padding: 8px 9px; }
+	.manual-desktop-path input:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 3px var(--accent-soft); }
+	.manual-desktop-path p { margin: 7px 0 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 	.restart-guidance { display: grid; gap: 3px; border: 1px solid color-mix(in srgb, var(--orange) 34%, var(--separator)); border-left: 3px solid var(--orange); border-radius: 10px; background: color-mix(in srgb, var(--orange) 7%, var(--bg-inset)); padding: 10px 11px; }
 	.restart-guidance strong { color: var(--text-primary); font-size: 12px; }
 	.restart-guidance span { color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
@@ -1362,10 +1638,31 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
 .feedback.error { border-color: color-mix(in srgb, var(--red) 35%, transparent); background: color-mix(in srgb, var(--red) 8%, transparent); color: var(--red); }
 .feedback.success { border-color: color-mix(in srgb, var(--green) 35%, transparent); background: color-mix(in srgb, var(--green) 8%, transparent); color: var(--green); }
 .form-section, .history-section, .lifecycle-section, .remove-provider-section { display: grid; gap: 10px; border-top: 1px solid var(--separator); padding-top: 14px; }
+.saved-codex-account-section { display: grid; gap: 9px; border: 1px solid color-mix(in srgb, var(--accent-strong) 30%, var(--separator)); border-left: 3px solid var(--accent-strong); border-radius: 10px; background: color-mix(in srgb, var(--accent-soft) 34%, var(--bg-inset)); padding: 10px 11px; }
+.saved-codex-account-heading { align-items: start; display: flex; justify-content: space-between; gap: 12px; }
+.saved-codex-account-heading > div { display: grid; min-width: 0; gap: 3px; }
+.saved-codex-account-refresh { flex: 0 0 auto; border: 1px solid var(--accent-border); border-radius: 7px; background: var(--bg-base); color: var(--accent-strong); font: inherit; font-size: 10px; font-weight: 700; padding: 6px 8px; }
+.saved-codex-account-refresh:hover:not(:disabled) { border-color: var(--accent-strong); background: var(--accent-soft); }
+.saved-codex-account-refresh:focus-visible, .saved-codex-account-card:focus-visible, .saved-codex-account-models button:focus-visible, .saved-codex-account-actions :deep(.btn:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.saved-codex-account-refresh:disabled, .saved-codex-account-card:disabled, .saved-codex-account-models button:disabled { cursor: not-allowed; opacity: .52; }
+.saved-codex-account-message { margin: 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+.saved-codex-account-grid, .saved-codex-account-models { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 6px; }
+.saved-codex-account-card, .saved-codex-account-models button { display: grid; min-width: 0; gap: 2px; border: 1px solid var(--separator); border-radius: 8px; background: var(--bg-base); color: var(--text-secondary); text-align: left; padding: 8px 9px; }
+.saved-codex-account-card:hover:not(:disabled), .saved-codex-account-card.selected, .saved-codex-account-models button:hover:not(:disabled), .saved-codex-account-models button.selected { border-color: var(--accent-strong); background: var(--accent-soft); color: var(--accent-strong); }
+.saved-codex-account-card strong, .saved-codex-account-card span, .saved-codex-account-card small, .saved-codex-account-models strong, .saved-codex-account-models span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-codex-account-card strong, .saved-codex-account-models strong { font-size: 11px; }
+.saved-codex-account-card span, .saved-codex-account-card small, .saved-codex-account-models span { color: var(--text-tertiary); font-family: var(--font-num); font-size: 9px; }
+.saved-codex-account-selection { display: grid; gap: 8px; border-top: 1px solid var(--separator); margin-top: 1px; padding-top: 9px; }
+.saved-codex-account-selection-copy { display: grid; gap: 3px; }
+.saved-codex-account-selection-copy strong { color: var(--text-primary); font-size: 11px; }
+.saved-codex-account-selection-copy span, .saved-codex-account-empty { margin: 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+.saved-codex-account-actions { display: flex; align-items: center; justify-content: space-between; gap: 9px; border: 1px solid var(--separator); border-radius: 8px; background: var(--bg-base); padding: 8px 9px; }
+.saved-codex-account-actions span { color: var(--text-tertiary); font-size: 9.5px; line-height: 1.4; }
+.saved-codex-account-actions code { color: var(--accent-strong); font-family: var(--font-num); font-size: .95em; }
 .remove-provider-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid color-mix(in srgb, var(--red) 28%, var(--separator)); border-radius: 10px; background: color-mix(in srgb, var(--red) 5%, var(--bg-inset)); padding: 10px 11px; }
 .remove-provider-actions p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .remove-provider-actions :deep(.btn:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
-@media (max-width: 620px) { .remove-provider-actions { align-items: stretch; flex-direction: column; } .remove-provider-actions :deep(.btn) { width: 100%; } }
+@media (max-width: 620px) { .remove-provider-actions, .saved-codex-account-actions, .saved-codex-account-heading { align-items: stretch; flex-direction: column; } .remove-provider-actions :deep(.btn), .saved-codex-account-actions :deep(.btn), .saved-codex-account-refresh { width: 100%; } }
 .section-title { display: grid; gap: 3px; }
 .section-title strong { color: var(--text-primary); font-size: 13px; }
 .section-title span { color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
@@ -1478,5 +1775,5 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
 .legacy-backup-group { display: grid; gap: 1px; margin-top: 11px; }
 .legacy-backup-group > strong { color: var(--text-primary); font-size: 11px; }
 .legacy-backup-group .backup-row:last-child { border-bottom: 1px solid var(--separator); }
-	@media (max-width: 680px) { .split-fields { grid-template-columns: 1fr; } .config-status > div { display: grid; } .config-status span { text-align: left; } .desktop-status { grid-template-columns: auto minmax(0, 1fr); } .desktop-status code { grid-column: 2; } .desktop-actions { align-items: stretch; flex-direction: column; } .desktop-actions :deep(.btn), .desktop-refresh, .lifecycle-panel :deep(.btn) { justify-content: center; width: 100%; } .xiass-key-actions, .manual-callback > div, .legacy-migration { align-items: stretch; flex-direction: column; } .context-heading { align-items: flex-start; flex-direction: column; } .context-heading > span { text-align: left; } .history-flow ol { grid-template-columns: 1fr; } }
+	@media (max-width: 680px) { .split-fields { grid-template-columns: 1fr; } .config-status > div { display: grid; } .config-status span { text-align: left; } .desktop-status { grid-template-columns: auto minmax(0, 1fr); } .desktop-status code { grid-column: 2; } .desktop-actions { align-items: stretch; flex-direction: column; } .desktop-actions :deep(.btn), .desktop-refresh, .manual-desktop-path :deep(.btn), .lifecycle-panel :deep(.btn) { justify-content: center; width: 100%; } .xiass-key-actions, .manual-callback > div, .manual-desktop-path > div, .legacy-migration { align-items: stretch; flex-direction: column; } .context-heading { align-items: flex-start; flex-direction: column; } .context-heading > span { text-align: left; } .history-flow ol { grid-template-columns: 1fr; } }
 </style>

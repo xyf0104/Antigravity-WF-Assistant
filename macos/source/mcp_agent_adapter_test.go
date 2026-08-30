@@ -10,15 +10,27 @@ import (
 	"antigravity-wf-assistant/internal/mcpconfig"
 )
 
-func TestMCPAgentMetadataOnlyDeclaresGlobalMCPConfiguration(t *testing.T) {
-	for _, adapter := range []*mcpAgentAdapter{newCursorMCPAgentAdapter(), newWindsurfMCPAgentAdapter()} {
-		metadata := adapter.Metadata()
-		if !strings.Contains(metadata.Description, "global MCP configuration") || !strings.Contains(metadata.Description, "no account, OAuth, or session integration") {
-			t.Fatalf("metadata did not accurately scope %s: %q", metadata.ID, metadata.Description)
-		}
-		if declaration := mcpCapabilityDeclaration(metadata, agent.CapabilityConfiguration); declaration.Availability != agent.CapabilityRequiresBinding || !strings.Contains(declaration.Summary, "global MCP configuration") {
-			t.Fatalf("configuration declaration for %s = %#v", metadata.ID, declaration)
-		}
+func TestMCPAgentMetadataScopesCursorProjectAndWindsurfGlobalConfiguration(t *testing.T) {
+	cursor := newCursorMCPAgentAdapter().Metadata()
+	if !strings.Contains(cursor.Description, "global and explicitly selected project MCP configuration") || !strings.Contains(cursor.Description, "no account, OAuth, or session integration") {
+		t.Fatalf("Cursor metadata did not accurately scope supported configuration: %q", cursor.Description)
+	}
+	if declaration := mcpCapabilityDeclaration(cursor, agent.CapabilityConfiguration); declaration.Availability != agent.CapabilityRequiresBinding || !strings.Contains(declaration.Summary, ".cursor/mcp.json") {
+		t.Fatalf("Cursor configuration declaration = %#v", declaration)
+	}
+	if declaration := mcpCapabilityDeclaration(cursor, agent.CapabilityBackup); declaration.Availability != agent.CapabilityNotImplemented || !strings.Contains(declaration.Summary, "user-selected project") {
+		t.Fatalf("Cursor recovery-point declaration = %#v", declaration)
+	}
+
+	windsurf := newWindsurfMCPAgentAdapter().Metadata()
+	if !strings.Contains(windsurf.Description, "global MCP configuration") || strings.Contains(windsurf.Description, "project MCP") || !strings.Contains(windsurf.Description, "no account, OAuth, or session integration") {
+		t.Fatalf("Windsurf metadata did not accurately scope global-only configuration: %q", windsurf.Description)
+	}
+	if declaration := mcpCapabilityDeclaration(windsurf, agent.CapabilityConfiguration); declaration.Availability != agent.CapabilityRequiresBinding || !strings.Contains(declaration.Summary, "global MCP configuration") || strings.Contains(declaration.Summary, "project") {
+		t.Fatalf("Windsurf configuration declaration = %#v", declaration)
+	}
+
+	for _, metadata := range []agent.Metadata{cursor, windsurf} {
 		for _, capability := range []agent.Capability{agent.CapabilityLocalProxy, agent.CapabilityModelCatalog, agent.CapabilityBackup, agent.CapabilityOAuth, agent.CapabilityUsage, agent.CapabilityTwoFactorAuth} {
 			declaration := mcpCapabilityDeclaration(metadata, capability)
 			if declaration.Availability != agent.CapabilityNotImplemented {
@@ -100,10 +112,26 @@ func TestMCPAgentStatusOnlyEnablesVerifiedGlobalConfiguration(t *testing.T) {
 			if agentCapabilityAvailable(status, agent.CapabilityBackup) {
 				t.Fatalf("generic backup capability was advertised despite only global MCP recovery points being supported")
 			}
-			if reason := agentCapabilityReason(status, agent.CapabilityBackup); !strings.Contains(reason, "global MCP configuration") {
-				t.Fatalf("backup capability reason did not accurately scope recovery points: %q", reason)
+			if reason := agentCapabilityReason(status, agent.CapabilityBackup); !strings.Contains(reason, "selected project MCP") {
+				t.Fatalf("Cursor backup capability reason did not accurately scope recovery points: %q", reason)
+			}
+			if testCase.name == "missing client prevents configuration creation" {
+				if reason := agentCapabilityReason(status, agent.CapabilityConfiguration); !strings.Contains(reason, "selected project") {
+					t.Fatalf("Cursor undetected capability reason omitted explicit project route: %q", reason)
+				}
 			}
 		})
+	}
+}
+
+func TestMCPAgentStatusKeepsWindsurfGlobalOnly(t *testing.T) {
+	metadata := newWindsurfMCPAgentAdapter().Metadata()
+	status := mcpAgentStatus(metadata, agent.Status{State: agent.StateReady}, mcpconfig.Snapshot{Target: mcpconfig.TargetWindsurf, Valid: true}, true, true)
+	if reason := agentCapabilityReason(status, agent.CapabilityConfiguration); !strings.Contains(reason, "global MCP configuration") || strings.Contains(reason, "project") {
+		t.Fatalf("Windsurf configuration reason incorrectly advertised project configuration: %q", reason)
+	}
+	if reason := agentCapabilityReason(status, agent.CapabilityBackup); !strings.Contains(reason, "global MCP configuration") || strings.Contains(reason, "project") {
+		t.Fatalf("Windsurf recovery point reason incorrectly advertised project configuration: %q", reason)
 	}
 }
 

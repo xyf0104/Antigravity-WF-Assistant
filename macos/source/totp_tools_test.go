@@ -95,3 +95,79 @@ func TestTOTPBridgeDoesNotSerializeCredentialStoreErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestTOTPEncryptedImportBridgeRestoresMetadataWithoutLeakingSecret(t *testing.T) {
+	source, err := totp.NewWithStore(t.TempDir(), &appTOTPStore{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Add(totp.ImportInput{Secret: "JBSWY3DPEHPK3PXP", Label: "XIASS backup"}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := source.ExportEncrypted("long-enough-export-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := totp.NewWithStore(t.TempDir(), &appTOTPStore{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := (&App{totpVault: target}).importTOTPEncryptedData(payload, "long-enough-export-password")
+	if !status.OK || len(status.Entries) != 1 || status.Entries[0].Label != "XIASS backup" {
+		t.Fatalf("status = %#v", status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "JBSWY3DPEHPK3PXP") {
+		t.Fatalf("TOTP import bridge leaked a secret: %s", encoded)
+	}
+}
+
+func TestTOTPEncryptedImportBridgeRedactsCredentialStoreFailure(t *testing.T) {
+	source, err := totp.NewWithStore(t.TempDir(), &appTOTPStore{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Add(totp.ImportInput{Secret: "JBSWY3DPEHPK3PXP", Label: "XIASS backup"}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := source.ExportEncrypted("long-enough-export-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := totp.NewWithStore(t.TempDir(), failingAppTOTPStore{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := (&App{totpVault: target}).importTOTPEncryptedData(payload, "long-enough-export-password")
+	if status.OK {
+		t.Fatalf("unexpected successful status: %#v", status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"JBSWY3DPEHPK3PXP", "totp-private-value", "/private/user", "credential secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("TOTP import bridge leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestReadSensitiveTOTPImportAcceptsRegularFileWithinLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "totp-backup.json")
+	want := []byte(`{"version":1}`)
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := readSensitiveTOTPImport(path, int64(len(want)))
+	if err != nil || string(data) != string(want) {
+		t.Fatalf("data = %q, err = %v", data, err)
+	}
+	wipeTOTPImportData(data)
+	if _, err := readSensitiveTOTPImport(path, int64(len(want)-1)); err == nil {
+		t.Fatal("oversized import was accepted")
+	}
+}

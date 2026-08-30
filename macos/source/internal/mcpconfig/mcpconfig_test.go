@@ -33,6 +33,99 @@ func TestFixedGlobalPathsOnly(t *testing.T) {
 	}
 }
 
+func TestCursorProjectManagerUsesOnlySelectedProjectAndIsolatesRecoveryPoints(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "workspace")
+	appConfig := filepath.Join(root, "app-config")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(appConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := newCursorProjectManager(project, appConfig)
+	if err := manager.validatePaths(); err != nil {
+		t.Fatalf("project manager validation failed: %v", err)
+	}
+	if got, want := manager.configPath, filepath.Join(normalizeProjectRoot(project), ".cursor", "mcp.json"); got != want {
+		t.Fatalf("project configuration path = %q, want %q", got, want)
+	}
+	if manager.scope != configurationScopeProject || manager.projectID == "" || strings.Contains(manager.backupRoot, project) {
+		t.Fatalf("project manager leaked scope or project path into backup location: %#v", manager)
+	}
+
+	result, err := manager.ApplyRemote(ApplyInput{RemoteURL: "https://xiass.example/mcp"})
+	if err != nil || !result.BackupCreated || !result.Snapshot.ManagedServerConfigured {
+		t.Fatalf("project apply = %#v / %v", result, err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDoesNotContain(t, encoded, project, "xiass.example", ".cursor", "mcp.json")
+
+	backup := onlyBackupInfo(t, manager)
+	backupDirectory, err := manager.backupDirectory(backup.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := readBackupManifestForTest(t, backupDirectory)
+	if manifest.Scope != configurationScopeProject || manifest.ProjectID != manager.projectID {
+		t.Fatalf("project recovery point was not bound to selected project: %#v", manifest)
+	}
+
+	globalHome := filepath.Join(root, "home")
+	if err := os.MkdirAll(globalHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	global := newManager(TargetCursor, globalHome, appConfig)
+	if err := global.validatePaths(); err != nil {
+		t.Fatal(err)
+	}
+	if global.backupRoot == manager.backupRoot {
+		t.Fatal("global and project recovery points must not share a backup root")
+	}
+	if _, err := global.Restore(backup.ID); !errors.Is(err, ErrUnsafeConfiguration) {
+		t.Fatalf("global manager accepted a project recovery point: %v", err)
+	}
+}
+
+func TestCursorProjectManagerRejectsMissingFileAndSymlinkRoots(t *testing.T) {
+	root := t.TempDir()
+	appConfig := filepath.Join(root, "app-config")
+	if err := os.MkdirAll(appConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	missing := newCursorProjectManager(filepath.Join(root, "missing"), appConfig)
+	if err := missing.validatePaths(); !errors.Is(err, ErrUnsafeConfiguration) {
+		t.Fatalf("missing project root validation = %v", err)
+	}
+	file := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fileManager := newCursorProjectManager(file, appConfig)
+	if err := fileManager.validatePaths(); !errors.Is(err, ErrUnsafeConfiguration) {
+		t.Fatalf("file project root validation = %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "project-link")
+	if err := os.Symlink(project, link); err != nil {
+		t.Fatal(err)
+	}
+	symlinkManager := newCursorProjectManager(link, appConfig)
+	if err := symlinkManager.validatePaths(); !errors.Is(err, ErrUnsafeConfiguration) {
+		t.Fatalf("symlink project root validation = %v", err)
+	}
+}
+
 func TestInspectRedactsAllConfigurationValues(t *testing.T) {
 	manager := newTestManager(t, TargetCursor)
 	writeTestConfiguration(t, manager, []byte(`{

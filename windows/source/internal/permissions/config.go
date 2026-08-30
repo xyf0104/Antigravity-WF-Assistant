@@ -49,17 +49,19 @@ type managedState struct {
 }
 
 type Manager struct {
-	configPath string
-	statePath  string
-	backupPath string
+	configPath        string
+	statePath         string
+	backupPath        string
+	legacyBackupPaths []string
 }
 
 func New(home, storageDir string) *Manager {
 	configPath := filepath.Join(home, ".gemini", "config", "config.json")
 	return &Manager{
-		configPath: configPath,
-		statePath:  filepath.Join(storageDir, "auto-approval-state.json"),
-		backupPath: configPath + ".antigravity-byok-backup",
+		configPath:        configPath,
+		statePath:         filepath.Join(storageDir, "auto-approval-state.json"),
+		backupPath:        configPath + ".antigravity-wf-backup",
+		legacyBackupPaths: []string{configPath + ".antigravity-" + legacyBackupProductToken() + "-backup"},
 	}
 }
 
@@ -221,10 +223,36 @@ func (m *Manager) loadState() (managedState, error) {
 }
 
 func (m *Manager) ensureBackup(raw []byte) error {
-	if _, err := os.Stat(m.backupPath); err == nil {
+	if info, err := os.Stat(m.backupPath); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("Antigravity 配置备份不是常规文件：%s", m.backupPath)
+		}
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	// A supported pre-WF build may already have a clean backup. Preserve that
+	// original snapshot and promote a byte-for-byte copy to the canonical name;
+	// never replace it with the currently patched configuration.
+	for _, legacyPath := range m.legacyBackupPaths {
+		info, err := os.Stat(legacyPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("旧版 Antigravity 配置备份不是常规文件：%s", legacyPath)
+		}
+		legacyData, err := os.ReadFile(legacyPath)
+		if err != nil {
+			return err
+		}
+		if err := atomicWrite(m.backupPath, legacyData, 0o600); err != nil {
+			return fmt.Errorf("迁移旧版 Antigravity 配置备份失败：%w", err)
+		}
+		return nil
 	}
 	if err := atomicWrite(m.backupPath, raw, 0o600); err != nil {
 		return fmt.Errorf("创建 Antigravity 配置备份失败：%w", err)
@@ -256,7 +284,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-byok-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".antigravity-wf-*")
 	if err != nil {
 		return err
 	}

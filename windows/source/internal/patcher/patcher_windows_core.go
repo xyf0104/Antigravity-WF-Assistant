@@ -20,17 +20,32 @@ const (
 	windowsPublicEndpoint        = "https://cloudcode-pa.googleapis.com"
 	windowsAutopushEndpoint      = "https://autopush-cloudcode-pa.sandbox.googleapis.com"
 	windowsBaseProxyEndpoint     = "http://127.0.0.1:50999"
-	windowsTextProxyEndpoint     = "http://127.0.0.1:50999/v1internal/antigravity-byok"
-	windowsBinaryProxyEndpoint   = "http://127.0.0.1:50999/v1internal/byokxxx"
-	windowsBinarySandboxEndpoint = "http://127.0.0.1:50999/v1internal/byokxxx-sandbox"
-	windowsExtensionMarker       = "antigravity-byok:windows-extension-endpoint"
-	windowsMainMarker            = "antigravity-byok:windows-main-endpoint"
-	windowsASARMarker            = "antigravity-byok:windows-asar-endpoint"
-	windowsLegacyASARMarker      = "antigravity-byok:proxy-hook"
-	windowsLegacyExtensionMarker = "antigravity-byok:ide-proxy-hook"
-	windowsLegacyMainMarker      = "antigravity-byok:ide-main-proxy-hook"
+	windowsTextProxyEndpoint     = "http://127.0.0.1:50999/v1internal/antigravity-wf"
+	windowsBinaryProxyEndpoint   = "http://127.0.0.1:50999/v1internal/wfproxy"
+	windowsBinarySandboxEndpoint = "http://127.0.0.1:50999/v1internal/wfproxy-sandbox"
+	windowsExtensionMarker       = "antigravity-wf:windows-extension-endpoint"
+	windowsMainMarker            = "antigravity-wf:windows-main-endpoint"
+	windowsASARMarker            = "antigravity-wf:windows-asar-endpoint"
 	windowsSharedDataArgument    = `"--app_data_dir","antigravity"`
 	windowsIDECloudCodeSetting   = `this._configurationService.getValue("jetski.cloudCodeUrl")`
+)
+
+var (
+	windowsOldTextProxyEndpoint     = "http://127.0.0.1:50999/v1internal/antigravity-" + legacyPatcherProductToken()
+	windowsOldBinaryProxyEndpoint   = "http://127.0.0.1:50999/v1internal/" + legacyPatcherProductToken() + "xxx"
+	windowsOldBinarySandboxEndpoint = "http://127.0.0.1:50999/v1internal/" + legacyPatcherProductToken() + "xxx-sandbox"
+	windowsOldExtensionMarker       = "antigravity-" + legacyPatcherProductToken() + ":windows-extension-endpoint"
+	windowsOldMainMarker            = "antigravity-" + legacyPatcherProductToken() + ":windows-main-endpoint"
+	windowsOldASARMarker            = "antigravity-" + legacyPatcherProductToken() + ":windows-asar-endpoint"
+	windowsLegacyASARMarker         = "antigravity-" + legacyPatcherProductToken() + ":proxy-hook"
+	windowsLegacyExtensionMarker    = "antigravity-" + legacyPatcherProductToken() + ":ide-proxy-hook"
+	windowsLegacyMainMarker         = "antigravity-" + legacyPatcherProductToken() + ":ide-main-proxy-hook"
+	// Keep the delimiter as group 2. Legacy URLs occur both as a prefix before
+	// another API path and as a complete JavaScript string literal, so a slash
+	// or end-of-input alone is too narrow for safe in-place migration.
+	windowsLegacyTextEndpointPattern  = regexp.MustCompile(`(http://127\.0\.0\.1:[1-9][0-9]{4}/v1internal/antigravity-` + regexp.QuoteMeta(legacyPatcherProductToken()) + `)(/|[^A-Za-z0-9_-]|$)`)
+	windowsLegacyBinarySandboxPattern = regexp.MustCompile(`(http://127\.0\.0\.1:[1-9][0-9]{4}/v1internal/` + regexp.QuoteMeta(legacyPatcherProductToken()) + `xxx-sandbox)(/|[^A-Za-z0-9_-]|$)`)
+	windowsLegacyBinaryPattern        = regexp.MustCompile(`(http://127\.0\.0\.1:[1-9][0-9]{4}/v1internal/` + regexp.QuoteMeta(legacyPatcherProductToken()) + `xxx)(/|[^A-Za-z0-9_-]|$)`)
 )
 
 var windowsCloudCodeCallPattern = regexp.MustCompile(`await [A-Za-z_$][\w$]*\.getCloudCodeUrl\(\)`)
@@ -211,6 +226,7 @@ func windowsLauncherManagedLiteralPattern(source string) (*regexp.Regexp, bool) 
 
 func patchWindowsCloudCodeSource(source string) string {
 	endpoint := currentPatchProxyEndpoint()
+	source = migrateWindowsLegacyProxyEndpoints(source)
 	source = windowsCloudCodeURLPattern.ReplaceAllString(source, endpoint.Base)
 	source = windowsCloudCodeSettingPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
 	source = windowsFlexibleCloudCodeCallPattern.ReplaceAllString(source, `"`+endpoint.Base+`"`)
@@ -222,6 +238,21 @@ func patchWindowsCloudCodeSource(source string) string {
 	if literalPattern, ok := windowsLauncherManagedLiteralPattern(source); ok {
 		source = literalPattern.ReplaceAllString(source, `${1}`+endpoint.Base+`${3}`)
 	}
+	return source
+}
+
+// migrateWindowsLegacyProxyEndpoints rewrites old injected routes while the
+// current transaction already has the selected runtime endpoint in hand. It
+// supports any historic five-digit loopback port, so an installation patched
+// during a fallback-port run is upgraded in one reapply operation as well.
+func migrateWindowsLegacyProxyEndpoints(source string) string {
+	endpoint := currentPatchProxyEndpoint()
+	// Apply the more specific sandbox pattern first. The generic binary pattern
+	// shares its complete prefix and would otherwise leave an invalid trailing
+	// "-sandbox" on the canonical route.
+	source = windowsLegacyTextEndpointPattern.ReplaceAllString(source, endpoint.Text+"${2}")
+	source = windowsLegacyBinarySandboxPattern.ReplaceAllString(source, endpoint.BinarySandbox+"${2}")
+	source = windowsLegacyBinaryPattern.ReplaceAllString(source, endpoint.Binary+"${2}")
 	return source
 }
 
@@ -293,6 +324,10 @@ func prepareWindowsMainPatch(path string) (*windowsPatchPlan, error) {
 		return nil, err
 	}
 	source := patchWindowsCloudCodeSource(string(data))
+	// A re-apply upgrades released pre-WF markers in place. The active file is
+	// still covered by the transaction rollback snapshot, while the canonical
+	// restore point remains the original pre-helper bytes.
+	source = strings.ReplaceAll(source, windowsOldMainMarker, windowsMainMarker)
 	source = strings.ReplaceAll(source, authEligibilityOriginal, authEligibilityPatched)
 	if windowsMainDataPattern.MatchString(source) {
 		source = windowsMainDataPattern.ReplaceAllString(source, windowsSharedDataArgument)
@@ -370,6 +405,7 @@ func prepareWindowsExtensionPatch(path string) (*windowsPatchPlan, error) {
 		return nil, err
 	}
 	source := patchWindowsCloudCodeSource(string(data))
+	source = strings.ReplaceAll(source, windowsOldExtensionMarker, windowsExtensionMarker)
 	if windowsExtensionDataPattern.MatchString(source) {
 		source = windowsExtensionDataPattern.ReplaceAllString(source, windowsSharedDataArgument)
 	}
@@ -412,6 +448,7 @@ func prepareWindowsASARCandidate(sourcePath, destinationPath string) (string, er
 		return "", err
 	}
 	mainSource := patchWindowsCloudCodeSource(string(mainData))
+	mainSource = strings.ReplaceAll(mainSource, windowsOldASARMarker, windowsASARMarker)
 	mainSource = strings.ReplaceAll(mainSource, authEligibilityOriginal, authEligibilityPatched)
 	if !strings.Contains(mainSource, windowsASARMarker) {
 		mainSource = addWindowsSourceMarker(mainSource, windowsASARMarker)
@@ -425,7 +462,7 @@ func prepareWindowsASARCandidate(sourcePath, destinationPath string) (string, er
 	}
 	// A clean backup may live on another volume. Create the candidate beside
 	// the destination so replacement remains an atomic same-volume operation.
-	temp, err := os.CreateTemp(filepath.Dir(destinationPath), ".antigravity-byok-windows-asar-*")
+	temp, err := os.CreateTemp(filepath.Dir(destinationPath), ".antigravity-wf-windows-asar-*")
 	if err != nil {
 		return "", err
 	}
@@ -456,6 +493,11 @@ func windowsContainsKnownPatch(data []byte) bool {
 		windowsBaseProxyEndpoint, windowsTextProxyEndpoint, windowsBinaryProxyEndpoint,
 		windowsBinarySandboxEndpoint, authEligibilityPatched,
 		windowsExtensionMarker, windowsMainMarker, windowsASARMarker,
+		// Read compatibility: all of these were emitted by supported releases
+		// before the XIASS Tools/WF rename. They must remain detectable so an
+		// upgrade never mistakes a patched file for original vendor content.
+		windowsOldTextProxyEndpoint, windowsOldBinaryProxyEndpoint, windowsOldBinarySandboxEndpoint,
+		windowsOldExtensionMarker, windowsOldMainMarker, windowsOldASARMarker,
 		windowsLegacyASARMarker, windowsLegacyExtensionMarker, windowsLegacyMainMarker,
 		// A renderer fallback is an application modification too.  Keep every
 		// released revision here so status and restore can recognise an active
@@ -485,6 +527,7 @@ func windowsBackupPath(sourcePath string) string {
 func windowsLegacyBackupPaths(sourcePath string) []string {
 	return []string{
 		sourcePath + ".orig",
+		sourcePath + ".antigravity-wf.orig",
 		sourcePath + ".antigravity-byok.orig",
 	}
 }

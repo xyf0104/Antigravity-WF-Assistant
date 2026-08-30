@@ -1,11 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexconfig"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 )
 
 // CodexConfigurationStatus is a credential-safe view for the renderer. The
@@ -19,10 +23,10 @@ type CodexConfigurationStatus struct {
 	HistoryBackups      []codexconfig.HistoryBackupInfo `json:"historyBackups,omitempty"`
 	LegacyBackups       []codexconfig.LegacyBackupInfo  `json:"legacyBackups"`
 	LegacyBackupWarning string                          `json:"legacyBackupWarning,omitempty"`
-	// LegacyProviderMigrationCompleted is set only by the explicit migration
-	// action. It is a boolean acknowledgement, not a copy of a Provider or its
-	// data, so the renderer never has to infer a successful migration from a
-	// generic config snapshot.
+	// LegacyProviderMigrationCompleted is set when either an explicit migration
+	// or a restore-required forward migration completes. It is a boolean
+	// acknowledgement, not a copy of a Provider or its data, so the renderer
+	// never has to infer a successful migration from a generic config snapshot.
 	LegacyProviderMigrationCompleted bool `json:"legacyProviderMigrationCompleted,omitempty"`
 	LegacyProviderMigrationWasActive bool `json:"legacyProviderMigrationWasActive,omitempty"`
 }
@@ -33,10 +37,115 @@ type CodexModelDiscoveryResult struct {
 	Models  []string `json:"models,omitempty"`
 }
 
+// CodexAccountCandidate is the intentionally small renderer-safe projection
+// of one reusable XIASS Tools account. Endpoint data, headers, API keys,
+// OAuth material and refresh state never leave the native layer.
+type CodexAccountCandidate struct {
+	ID             string                       `json:"id"`
+	Label          string                       `json:"label"`
+	CredentialMode string                       `json:"credentialMode"`
+	Models         []CodexAccountCandidateModel `json:"models"`
+}
+
+// CodexAccountCandidateModel is already-bound, public model metadata. It is
+// not a connection test and intentionally omits its route, account and
+// capability internals.
+type CodexAccountCandidateModel struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+}
+
+// CodexAccountCandidatesStatus is safe to pass through Wails. Accounts that
+// cannot be copied exactly into Codex's documented Responses provider are
+// omitted rather than listed with potentially sensitive implementation detail.
+type CodexAccountCandidatesStatus struct {
+	OK         bool                    `json:"ok"`
+	Message    string                  `json:"message"`
+	Candidates []CodexAccountCandidate `json:"candidates"`
+}
+
+// CodexApplyAccountInput lets the renderer choose a saved account by opaque
+// ID and configure only public Codex preferences. It deliberately has no URL,
+// credential, custom-header, OAuth or provider-ID fields: native code resolves
+// and revalidates the selected account before every write.
+type CodexApplyAccountInput struct {
+	AccountID                  string `json:"accountId"`
+	Model                      string `json:"model"`
+	ReviewModel                string `json:"reviewModel"`
+	WebSearch                  string `json:"webSearch"`
+	ModelContextWindow         int64  `json:"modelContextWindow"`
+	ModelAutoCompactTokenLimit int64  `json:"modelAutoCompactTokenLimit"`
+}
+
+// CodexApplyAccountLifecycleInput adds the existing explicit Desktop lifecycle
+// controls to a saved-account apply. Credentials remain resolved and cleared
+// entirely in native memory.
+type CodexApplyAccountLifecycleInput struct {
+	Account                       CodexApplyAccountInput `json:"account"`
+	Confirmation                  string                 `json:"confirmation,omitempty"`
+	RepairHistoryOnProviderChange bool                   `json:"repairHistoryOnProviderChange"`
+	LaunchAfter                   bool                   `json:"launchAfter"`
+}
+
 type CodexHistoryRepairStatus struct {
 	OK      bool                            `json:"ok"`
 	Message string                          `json:"message"`
 	Result  codexconfig.HistoryRepairResult `json:"result"`
+}
+
+// codexConfigurationRestoreManager is the narrow, non-secret portion of the
+// configuration manager required by the restore forward-migration sequence.
+// Keeping this boundary explicit lets the transaction be tested without
+// substituting a real config.toml, credential, or desktop process.
+type codexConfigurationRestoreManager interface {
+	Restore(string) (codexconfig.RestoreResult, error)
+	InspectLegacyProviderMigration() (codexconfig.LegacyProviderMigrationStatus, error)
+	MigrateLegacyProvider() (codexconfig.LegacyProviderMigrationResult, error)
+}
+
+// codexConfigurationRestoreOutcome records only control-flow facts from a
+// restore. It deliberately omits raw config, Provider contents, credentials,
+// paths, and implementation errors so callers cannot accidentally surface
+// them through the Wails boundary.
+type codexConfigurationRestoreOutcome struct {
+	RestoreResult                  codexconfig.RestoreResult
+	LegacyProviderMigrated         bool
+	LegacyProviderMigrationFailed  bool
+	MigrationRollbackWasSuccessful bool
+}
+
+// restoreCodexConfigurationWithLegacyForwardMigration restores a selected
+// configuration backup and then forward-migrates it only when it proves to be
+// an active, structurally verified first-party legacy XIASS Provider. This is
+// the compatibility behavior used by the first-party helper after restoring a
+// legacy backup. Inactive, ambiguous, or unverified legacy entries are left
+// unchanged: automatically changing an unrelated Provider would be unsafe.
+//
+// If a required forward migration cannot be completed, the pre-restore safety
+// backup is restored before this function returns. The result contains no raw
+// failure because config.toml can include an API key or private endpoint.
+func restoreCodexConfigurationWithLegacyForwardMigration(manager codexConfigurationRestoreManager, backupID string) (codexConfigurationRestoreOutcome, error) {
+	result, err := manager.Restore(backupID)
+	if err != nil {
+		return codexConfigurationRestoreOutcome{}, err
+	}
+
+	outcome := codexConfigurationRestoreOutcome{RestoreResult: result}
+	eligibility, inspectErr := manager.InspectLegacyProviderMigration()
+	if inspectErr != nil || !eligibility.Available || !eligibility.WasActive {
+		return outcome, nil
+	}
+
+	migration, migrationErr := manager.MigrateLegacyProvider()
+	if migrationErr == nil && migration.Migrated {
+		outcome.LegacyProviderMigrated = true
+		return outcome, nil
+	}
+
+	outcome.LegacyProviderMigrationFailed = true
+	_, rollbackErr := manager.Restore(result.SafetyBackupID)
+	outcome.MigrationRollbackWasSuccessful = rollbackErr == nil
+	return outcome, nil
 }
 
 func (a *App) codexManager() (*codexconfig.Manager, error) {
@@ -167,6 +276,340 @@ func (a *App) DiscoverCodexModels(baseURL, apiKey string) CodexModelDiscoveryRes
 	return CodexModelDiscoveryResult{OK: true, Message: codexModelCatalogMessage(len(models)), Models: models}
 }
 
+// GetCodexAccountCandidates lists only saved XIASS Tools accounts whose
+// complete request contract is representable by Codex's managed Responses
+// provider. The renderer receives no API URL, key, header, OAuth token or
+// refresh metadata, and every account is validated again at apply time.
+func (a *App) GetCodexAccountCandidates() CodexAccountCandidatesStatus {
+	accounts, err := storage.LoadUpstreamAccounts()
+	if err != nil {
+		return CodexAccountCandidatesStatus{Candidates: emptyCodexAccountCandidates(), Message: "无法读取本机账户池。"}
+	}
+	models, modelErr := storage.LoadModels()
+	if modelErr != nil {
+		// A readable account can still be applied with a manually entered model
+		// ID. The optional Antigravity model catalog is only a convenience list.
+		models = nil
+	}
+	candidates := make([]CodexAccountCandidate, 0, len(accounts))
+	for _, account := range accounts {
+		if !codexAccountReusable(account) {
+			continue
+		}
+		candidates = append(candidates, CodexAccountCandidate{
+			ID:             strings.TrimSpace(account.ID),
+			Label:          codexAccountLabel(account),
+			CredentialMode: codexAccountCredentialModeLabel(account),
+			Models:         codexAccountCandidateModels(account.ID, models),
+		})
+	}
+	sort.Slice(candidates, func(left, right int) bool {
+		return strings.ToLower(candidates[left].Label+"\x00"+candidates[left].ID) < strings.ToLower(candidates[right].Label+"\x00"+candidates[right].ID)
+	})
+	if len(candidates) == 0 {
+		return CodexAccountCandidatesStatus{OK: true, Candidates: emptyCodexAccountCandidates(), Message: "没有可无损应用到 Codex 的已启用 OpenAI Responses 账户。"}
+	}
+	message := "已读取可无损应用到 Codex 的已启用 OpenAI Responses 账户。"
+	if modelErr != nil {
+		message = "已读取可复用账户；本机模型目录暂不可用，可手动填写 Responses 模型 ID。"
+	}
+	return CodexAccountCandidatesStatus{OK: true, Candidates: candidates, Message: message}
+}
+
+// DiscoverCodexAccountModels performs one explicit /v1/models request with a
+// selected compatible account. The saved credential remains native-only and
+// is cleared from the temporary config after the request completes.
+func (a *App) DiscoverCodexAccountModels(accountID string) CodexModelDiscoveryResult {
+	account, err := storage.GetUpstreamAccount(strings.TrimSpace(accountID))
+	accountID = ""
+	if err != nil {
+		return CodexModelDiscoveryResult{OK: false, Message: "无法使用该账户获取 Codex 上游模型。请刷新账户池后重新选择。"}
+	}
+	config, err := codexApplyConfigFromAccount(account, CodexApplyAccountInput{Model: codexconfig.DefaultModel})
+	if err != nil {
+		return CodexModelDiscoveryResult{OK: false, Message: "该账户无法无损用于 Codex。请使用已启用的 OpenAI Responses 账户，或手动填写配置。"}
+	}
+	defer clearCodexApplyConfig(&config)
+	ctx, cancel := a.upstreamContext(10 * time.Second)
+	defer cancel()
+	models, err := codexconfig.DiscoverModels(ctx, config.BaseURL, config.APIKey, codexconfig.ModelDiscoveryOptions{})
+	if err != nil {
+		return CodexModelDiscoveryResult{OK: false, Message: "获取 Codex 上游模型失败。请检查账户状态、网络和上游服务后重试。"}
+	}
+	return CodexModelDiscoveryResult{OK: true, Message: codexModelCatalogMessage(len(models)), Models: models}
+}
+
+// ApplyCodexConfigurationFromAccount applies one explicitly selected,
+// currently compatible XIASS Tools account without accepting its endpoint or
+// credential from Vue. The existing non-secret Codex configuration projection
+// may still show its provider root after a successful save; the account
+// candidate and request DTO never contain it. Manager.Apply creates a backup,
+// atomically writes config.toml, reads it back and rolls back a failed
+// validation.
+func (a *App) ApplyCodexConfigurationFromAccount(input CodexApplyAccountInput) CodexConfigurationStatus {
+	manager, err := a.codexManager()
+	if err != nil {
+		return codexConfigurationUnavailableStatus()
+	}
+	account, err := storage.GetUpstreamAccount(strings.TrimSpace(input.AccountID))
+	input.AccountID = ""
+	if err != nil {
+		return codexConfigurationAfterError(manager, "无法使用该账户配置 Codex。请刷新账户池后重新选择。")
+	}
+	config, err := codexApplyConfigFromAccount(account, input)
+	clearCodexApplyAccountInput(&input)
+	if err != nil {
+		return codexConfigurationAfterError(manager, "该账户无法无损应用到 Codex。请使用已启用的 OpenAI Responses 账户，或手动填写配置。")
+	}
+	defer clearCodexApplyConfig(&config)
+	result, err := manager.Apply(config)
+	if err != nil {
+		return codexConfigurationAfterError(manager, "未保存所选账户的 Codex 配置。现有配置保持可恢复状态；请检查账户和 config.toml 后重试。")
+	}
+	status := a.GetCodexConfiguration()
+	if !status.OK {
+		status.Message = "所选账户的 Codex 配置已安全写入并通过校验，但刷新状态失败：" + status.Message
+		return status
+	}
+	status.Message = "已使用已保存的 XIASS Tools 账户安全配置 Codex，并创建可恢复备份 " + result.BackupID + "。"
+	return status
+}
+
+// ApplyCodexConfigurationFromAccountWithLifecycle is the saved-account
+// counterpart of the existing confirmed Codex lifecycle transaction. The
+// account is reloaded and mapped natively under the same operation lock, so a
+// stale card selection can never apply a paused or incompatible credential.
+func (a *App) ApplyCodexConfigurationFromAccountWithLifecycle(input CodexApplyAccountLifecycleInput) CodexConfigurationLifecycleStatus {
+	if a == nil || a.ctx == nil || a.exitRequested.Load() {
+		return CodexConfigurationLifecycleStatus{OK: false, Message: "XIASS Tools 尚未完成启动，无法应用 Codex 配置。"}
+	}
+	a.codexDesktopOperation.Lock()
+	defer a.codexDesktopOperation.Unlock()
+	manager, err := a.codexManager()
+	if err != nil {
+		return CodexConfigurationLifecycleStatus{OK: false, Message: "无法识别本机 Codex 配置目录；未执行任何操作。"}
+	}
+	account, err := storage.GetUpstreamAccount(strings.TrimSpace(input.Account.AccountID))
+	input.Account.AccountID = ""
+	if err != nil {
+		clearCodexApplyAccountInput(&input.Account)
+		return CodexConfigurationLifecycleStatus{OK: false, Message: "无法使用该账户配置 Codex。请刷新账户池后重新选择。"}
+	}
+	config, err := codexApplyConfigFromAccount(account, input.Account)
+	clearCodexApplyAccountInput(&input.Account)
+	if err != nil {
+		return CodexConfigurationLifecycleStatus{OK: false, Message: "该账户无法无损应用到 Codex。请使用已启用的 OpenAI Responses 账户，或手动填写配置。"}
+	}
+	defer clearCodexApplyConfig(&config)
+	return a.applyCodexConfigurationWithLifecycleLocked(CodexConfigurationLifecycleInput{
+		Config:                        config,
+		Confirmation:                  input.Confirmation,
+		RepairHistoryOnProviderChange: input.RepairHistoryOnProviderChange,
+		LaunchAfter:                   input.LaunchAfter,
+	}, manager, manager.Apply)
+}
+
+func emptyCodexAccountCandidates() []CodexAccountCandidate {
+	return []CodexAccountCandidate{}
+}
+
+// codexAccountReusable intentionally asks the exact mapping function used by
+// Apply. If this predicate returns true, a second revalidation during Apply
+// still protects against account edits, disablement or credential removal.
+func codexAccountReusable(account storage.UpstreamAccount) bool {
+	config, err := codexApplyConfigFromAccount(account, CodexApplyAccountInput{Model: codexconfig.DefaultModel})
+	if err != nil {
+		return false
+	}
+	clearCodexApplyConfig(&config)
+	return true
+}
+
+// codexApplyConfigFromAccount permits only the account contract that Codex's
+// managed provider can reproduce exactly: an enabled, automatic OpenAI
+// Responses endpoint with a stable Bearer credential and no custom headers.
+// Direct ChatGPT/Codex OAuth is deliberately excluded: it needs its own
+// manual path, account identity header and refresh lifecycle, none of which a
+// standard Codex provider table can represent without silently changing it.
+func codexApplyConfigFromAccount(account storage.UpstreamAccount, input CodexApplyAccountInput) (codexconfig.ApplyConfig, error) {
+	if !account.Enabled {
+		return codexconfig.ApplyConfig{}, errors.New("upstream account is paused")
+	}
+	if !strings.EqualFold(strings.TrimSpace(account.Provider), "openai") {
+		return codexconfig.ApplyConfig{}, errors.New("upstream account is not OpenAI-compatible")
+	}
+	if account.IsOpenAICodexOAuth() || !codexStableBearerAccountType(account.Type) {
+		return codexconfig.ApplyConfig{}, errors.New("OAuth or non-static account credentials cannot be mapped to Codex")
+	}
+	if !strings.EqualFold(strings.TrimSpace(account.APIStyle), "responses") {
+		return codexconfig.ApplyConfig{}, errors.New("upstream account does not use Responses")
+	}
+	if !codexAutomaticEndpointMode(account.EndpointMode) || !codexAutomaticMessagePathMode(account.MessagePathMode) {
+		return codexconfig.ApplyConfig{}, errors.New("manual endpoint contract cannot be mapped to Codex")
+	}
+	if !strings.EqualFold(strings.TrimSpace(account.AuthMode), "bearer") || strings.TrimSpace(account.AuthHeader) != "" || len(account.Headers) != 0 {
+		return codexconfig.ApplyConfig{}, errors.New("upstream authentication headers cannot be mapped to Codex")
+	}
+	credential := account.EffectiveAPIKey()
+	if strings.TrimSpace(credential) == "" {
+		return codexconfig.ApplyConfig{}, errors.New("upstream account has no credential")
+	}
+
+	baseURL, err := codexconfig.NormalizeBaseURL(strings.TrimSpace(account.APIURL))
+	if err != nil {
+		return codexconfig.ApplyConfig{}, err
+	}
+	// Compare the actual endpoint generated by the account's auto contract
+	// with the endpoint Codex will derive from its normalized base URL. This
+	// rejects query-string routing and non-/v1 custom paths that would otherwise
+	// look valid but route to a different server request after import.
+	sourceEndpoint, err := upstream.ResolveResponsesURLForConfig(upstream.ConfigFromAccount(account))
+	if err != nil {
+		return codexconfig.ApplyConfig{}, err
+	}
+	mappedEndpoint, err := upstream.ResolveResponsesURL(baseURL)
+	if err != nil || sourceEndpoint != mappedEndpoint {
+		return codexconfig.ApplyConfig{}, errors.New("upstream endpoint would change when mapped to Codex")
+	}
+
+	config, err := codexconfig.NormalizeApplyConfig(codexconfig.ApplyConfig{
+		BaseURL:                    baseURL,
+		APIKey:                     credential,
+		KeyName:                    codexAccountLabel(account),
+		ProviderName:               codexAccountLabel(account),
+		ProviderID:                 codexconfig.DefaultProviderID,
+		Model:                      strings.TrimSpace(input.Model),
+		ReviewModel:                strings.TrimSpace(input.ReviewModel),
+		WireAPI:                    codexconfig.DefaultWireAPI,
+		WebSearch:                  strings.TrimSpace(input.WebSearch),
+		ModelContextWindow:         input.ModelContextWindow,
+		ModelAutoCompactTokenLimit: input.ModelAutoCompactTokenLimit,
+	})
+	credential = ""
+	return config, err
+}
+
+func codexStableBearerAccountType(accountType string) bool {
+	switch strings.ToLower(strings.TrimSpace(accountType)) {
+	case "api_key", "codex_pat", "setup_token":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexAutomaticEndpointMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexAutomaticMessagePathMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexAccountLabel(account storage.UpstreamAccount) string {
+	if label := strings.TrimSpace(account.Name); label != "" {
+		return label
+	}
+	return "XIASS Tools OpenAI 账户"
+}
+
+func codexAccountCredentialModeLabel(account storage.UpstreamAccount) string {
+	switch strings.ToLower(strings.TrimSpace(account.Type)) {
+	case "codex_pat":
+		return "Codex PAT"
+	case "setup_token":
+		return "Setup Token"
+	default:
+		return "Bearer API Key"
+	}
+}
+
+func codexAccountCandidateModels(accountID string, models []storage.CustomModel) []CodexAccountCandidateModel {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" || len(models) == 0 {
+		return []CodexAccountCandidateModel{}
+	}
+	seen := make(map[string]struct{})
+	result := make([]CodexAccountCandidateModel, 0)
+	for _, model := range models {
+		if !model.IsEnabled() || !codexModelBoundToAccount(model, accountID) || !codexResponsesCompatibleModel(model) {
+			continue
+		}
+		id := strings.TrimSpace(model.ExternalModelName)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		label := strings.TrimSpace(model.DisplayName)
+		if label == "" {
+			label = id
+		}
+		result = append(result, CodexAccountCandidateModel{ID: id, DisplayName: label})
+	}
+	sort.Slice(result, func(left, right int) bool {
+		return strings.ToLower(result[left].DisplayName+"\x00"+result[left].ID) < strings.ToLower(result[right].DisplayName+"\x00"+result[right].ID)
+	})
+	return result
+}
+
+func codexModelBoundToAccount(model storage.CustomModel, accountID string) bool {
+	for _, bound := range model.AccountIDs {
+		if strings.TrimSpace(bound) == accountID {
+			return true
+		}
+	}
+	return false
+}
+
+func codexResponsesCompatibleModel(model storage.CustomModel) bool {
+	return strings.EqualFold(strings.TrimSpace(model.Provider), "openai") &&
+		strings.EqualFold(strings.TrimSpace(model.APIStyle), "responses") &&
+		codexAutomaticEndpointMode(model.EndpointMode) &&
+		codexAutomaticMessagePathMode(model.MessagePathMode)
+}
+
+func clearCodexApplyAccountInput(input *CodexApplyAccountInput) {
+	if input == nil {
+		return
+	}
+	input.AccountID = ""
+	input.Model = ""
+	input.ReviewModel = ""
+	input.WebSearch = ""
+	input.ModelContextWindow = 0
+	input.ModelAutoCompactTokenLimit = 0
+}
+
+func clearCodexApplyConfig(config *codexconfig.ApplyConfig) {
+	if config == nil {
+		return
+	}
+	config.BaseURL = ""
+	config.APIKey = ""
+	config.KeyName = ""
+	config.ProviderID = ""
+	config.ProviderName = ""
+	config.Model = ""
+	config.ReviewModel = ""
+	config.WireAPI = ""
+	config.WebSearch = ""
+	config.ModelContextWindow = 0
+	config.ModelAutoCompactTokenLimit = 0
+}
+
 // codexModelCatalogMessage deliberately distinguishes a readable /v1/models
 // catalog from a successful Responses inference request. Discovery is a
 // user-requested metadata request only; it must never be presented as a model
@@ -198,16 +641,32 @@ func (a *App) RestoreCodexConfiguration(backupID string) CodexConfigurationStatu
 	if err != nil {
 		return codexConfigurationUnavailableStatus()
 	}
-	result, err := manager.Restore(strings.TrimSpace(backupID))
+	outcome, err := restoreCodexConfigurationWithLegacyForwardMigration(manager, strings.TrimSpace(backupID))
 	if err != nil {
 		return codexConfigurationAfterError(manager, "未恢复 Codex 配置。该备份可能已损坏、已被删除或不适用于当前配置。")
 	}
+	if outcome.LegacyProviderMigrationFailed {
+		if outcome.MigrationRollbackWasSuccessful {
+			return codexConfigurationAfterError(manager, "已恢复的旧版 XIASS Codex Provider 无法安全前向迁移；已恢复到本次操作前的配置。请保持 Codex 退出并检查配置后重试。")
+		}
+		return codexConfigurationAfterError(manager, "已恢复的旧版 XIASS Codex Provider 无法安全前向迁移，且无法验证恢复到本次操作前的配置。请保持 Codex 退出并先手动检查配置。")
+	}
 	status := a.GetCodexConfiguration()
 	if !status.OK {
-		status.Message = "配置备份已恢复，但刷新状态失败：" + status.Message
+		if outcome.LegacyProviderMigrated {
+			status.Message = "配置备份已恢复并完成旧版 XIASS Provider 前向迁移，但刷新状态失败：" + status.Message
+		} else {
+			status.Message = "配置备份已恢复，但刷新状态失败：" + status.Message
+		}
 		return status
 	}
-	status.Message = "已恢复 Codex 配置备份 " + result.RestoredBackupID + "，并创建新的安全备份。"
+	if outcome.LegacyProviderMigrated {
+		status.LegacyProviderMigrationCompleted = true
+		status.LegacyProviderMigrationWasActive = true
+		status.Message = "已恢复 Codex 配置备份 " + outcome.RestoreResult.RestoredBackupID + "，并将已验证的旧版 XIASS Provider 前向迁移为 XIASS Tools；已创建新的安全备份。"
+		return status
+	}
+	status.Message = "已恢复 Codex 配置备份 " + outcome.RestoreResult.RestoredBackupID + "，并创建新的安全备份。"
 	return status
 }
 

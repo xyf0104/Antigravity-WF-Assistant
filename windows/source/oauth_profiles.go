@@ -15,20 +15,20 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/oauthflow"
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/oauthflow"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
-	oauthProfileReady             = "ready"
-	oauthProfileManual            = "manual"
-	oauthProfileNeedsClientID     = "requires_client_id"
-	oauthProfileCustomOnly        = "custom_only"
-	oauthResultRetention          = 10 * time.Minute
-	defaultCustomOAuthRedirectURI = "http://localhost:1455/auth/callback"
+	oauthProfileReady         = "ready"
+	oauthProfileManual        = "manual"
+	oauthProfileNeedsClientID = "requires_client_id"
+	oauthProfileCustomOnly    = "custom_only"
+	oauthProfileUnavailable   = "unavailable"
+	oauthResultRetention      = 10 * time.Minute
 )
 
 // errOAuthLoopbackPortUnavailable is deliberately narrower than invalid
@@ -152,13 +152,14 @@ func (a *App) GetOAuthProviderProfiles() []OAuthProviderProfile {
 }
 
 // GetOAuthLoginProfiles is the renderer-compatible, redacted list of OAuth
-// login choices. Custom OAuth is intentionally omitted because it is already
-// represented by the editable advanced form.
+// login choices. Only profiles with a reviewed, supported completion path are
+// exposed here: Custom OAuth remains in the editable advanced form, and an
+// unknown/unavailable profile must never be presented as a usable login.
 func (a *App) GetOAuthLoginProfiles() []OAuthLoginProfile {
 	profiles := builtInOAuthProviderProfiles()
 	result := make([]OAuthLoginProfile, 0, len(profiles))
 	for _, profile := range profiles {
-		if profile.Available == oauthProfileCustomOnly {
+		if !oauthProfileSupportsAuthorization(profile) {
 			continue
 		}
 		result = append(result, OAuthLoginProfile{
@@ -176,22 +177,26 @@ func (a *App) GetOAuthLoginProfiles() []OAuthLoginProfile {
 	return result
 }
 
-// ApplyOAuthProviderProfile fills an account draft with a profile while
-// retaining a user-supplied OAuth client ID, endpoint URLs, redirect URI, and
-// scopes. The caller can therefore use a preset as a starting point and still
-// modify every public OAuth setting.
+// ApplyOAuthProviderProfile fills an account draft with one reviewed profile's
+// complete transport contract. Hidden custom endpoints and headers are not
+// retained. The sole exception is a profile such as Google Desktop OAuth that
+// explicitly requires the account owner's public client ID.
 func (a *App) ApplyOAuthProviderProfile(profileID string, draft storage.UpstreamAccount) OAuthProfileApplyResult {
 	profile, found := oauthProviderProfile(profileID)
 	if !found {
 		return OAuthProfileApplyResult{Message: "未找到 OAuth 预设"}
 	}
-	if profile.Available == oauthProfileCustomOnly {
-		return OAuthProfileApplyResult{Message: profile.Message, Profile: cloneOAuthProviderProfile(profile)}
+	if !oauthProfileSupportsAuthorization(profile) {
+		return OAuthProfileApplyResult{Message: oauthProfileUnsupportedMessage(profile), Profile: cloneOAuthProviderProfile(profile)}
 	}
 	applied := applyOAuthProviderProfile(draft, profile)
+	message := "已应用受审 OAuth 预设；授权、令牌、回调和 API 路由由预设固定。如需自定义公开客户端或端点，请使用高级自定义 OAuth。"
+	if profile.RequiresClientID {
+		message = "已应用受审 OAuth 预设并保留你的公开 Desktop Client ID；授权、令牌、回调和 API 路由由预设固定。"
+	}
 	return OAuthProfileApplyResult{
 		OK:      true,
-		Message: "已应用 OAuth 预设；仍可修改公开客户端 ID、授权地址、令牌地址、回调地址和范围。",
+		Message: message,
 		Profile: cloneOAuthProviderProfile(profile),
 		Account: redactOAuthDraft(applied),
 	}
@@ -205,14 +210,42 @@ func (a *App) BeginOAuthProviderAuthorization(profileID string, draft storage.Up
 	if !found {
 		return OAuthAuthorizationResult{Message: "未找到 OAuth 预设"}
 	}
-	if profile.Available == oauthProfileCustomOnly {
-		return OAuthAuthorizationResult{Message: profile.Message}
+	if !oauthProfileSupportsAuthorization(profile) {
+		return OAuthAuthorizationResult{Message: oauthProfileUnsupportedMessage(profile)}
 	}
 	draft = applyOAuthProviderProfile(draft, profile)
 	if profile.RequiresClientID && strings.TrimSpace(draft.OAuth.ClientID) == "" {
 		return OAuthAuthorizationResult{Message: "该预设需要你自己的公开 OAuth Client ID；不会要求或保存 Client Secret。"}
 	}
-	return a.beginProfileOAuthAuthorization(profile, draft)
+	result := a.beginProfileOAuthAuthorization(profile, draft)
+	if result.OK && profile.ID == "gemini-google" {
+		a.rememberGoogleDesktopOAuthClientID(draft.OAuth.ClientID)
+	}
+	return result
+}
+
+// rememberGoogleDesktopOAuthClientID makes the user-owned Google Desktop
+// Client ID a one-time setup step. It intentionally persists only this public
+// identifier after a flow has started successfully; no OAuth token, refresh
+// token or secret is written to the general settings file.
+func (a *App) rememberGoogleDesktopOAuthClientID(clientID string) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return
+	}
+	settings, err := storage.LoadAppSettings()
+	if err != nil {
+		settings = storage.DefaultAppSettings()
+	}
+	if settings.OAuth.GoogleDesktopClientID == clientID {
+		return
+	}
+	settings.OAuth.GoogleDesktopClientID = clientID
+	if err := storage.SaveAppSettings(settings); err != nil {
+		// OAuth itself has already started and should not be disrupted by an
+		// optional convenience preference failing to persist.
+		return
+	}
 }
 
 // StartOAuthProviderAuthorization retains the frontend API name while the
@@ -619,9 +652,9 @@ func builtInOAuthProviderProfiles() []OAuthProviderProfile {
 			Message:                 "仅包含公开 OAuth 客户端信息；不会嵌入 Client Secret 或账户令牌。",
 		},
 		{
-			ID: "grok-cli", Name: "Grok", Provider: "grok", APIURL: upstream.DefaultXIASSBaseURL,
-			APIStyle: "responses", AuthMode: "bearer", Available: oauthProfileReady, AutoLoopback: true,
-			Description: "公开客户端的 OAuth 2.0 + PKCE 登录，授权完成后自动回到本机。",
+			ID: "grok-cli", Name: "Grok", Provider: "grok", APIURL: "https://cli-chat-proxy.grok.com/v1",
+			EndpointMode: "manual", APIStyle: "responses", AuthMode: "bearer", Available: oauthProfileUnavailable, AutoLoopback: true,
+			Description: "公开 OAuth 参数已审计，但桌面版尚未接入 Grok CLI 专用推理、模型和额度运行时。",
 			OAuth: storage.OAuthConfiguration{
 				AuthorizationURL: "https://auth.x.ai/oauth2/authorize", TokenURL: "https://auth.x.ai/oauth2/token",
 				ClientID: "b1a00492-073a-47ea-816f-4c329264a828", RedirectURI: "http://127.0.0.1:56121/callback",
@@ -629,36 +662,36 @@ func builtInOAuthProviderProfiles() []OAuthProviderProfile {
 			},
 			AuthorizationParameters: map[string]string{"plan": "generic"},
 			NonceParameter:          "nonce",
-			Message:                 "每次授权都会生成一次性 nonce；不会伪造第三方 referrer 或嵌入任何令牌。",
+			Message:                 "Grok OAuth 暂不可直接授权：完成专用 Responses、模型、刷新和额度链路前，不会把 OAuth Token 当作通用 API Key 使用。",
 		},
 		{
-			ID: "claude-code", Name: "Claude Code", Provider: "anthropic", APIURL: upstream.DefaultXIASSBaseURL,
-			APIStyle: "messages", AuthMode: "bearer", Available: oauthProfileManual, AutoLoopback: false,
-			Description: "公开 PKCE 参数预设。该客户端使用提供方固定回调，因此完成后需要粘贴完整回调。",
+			ID: "claude-code", Name: "Claude Code", Provider: "anthropic", APIURL: "https://api.anthropic.com",
+			EndpointMode: "manual", APIStyle: "messages", AuthMode: "bearer", Available: oauthProfileUnavailable, AutoLoopback: false,
+			Description: "公开 PKCE 参数已审计，但 Claude OAuth 需要 JSON Token 交换和 Claude Code 专用 Messages 运行时。",
 			OAuth: storage.OAuthConfiguration{
-				AuthorizationURL: "https://claude.ai/oauth/authorize", TokenURL: "https://platform.claude.com/v1/oauth/token",
+				AuthorizationURL: "https://claude.com/cai/oauth/authorize", TokenURL: "https://platform.claude.com/v1/oauth/token",
 				ClientID: "9d1c250a-e61b-44d9-88ed-5944d1962f5e", RedirectURI: "https://platform.claude.com/oauth/code/callback",
 				Scopes: "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
 			},
 			AuthorizationParameters: map[string]string{"code": "true"},
-			Message:                 "该预设不启动本机监听器；可在账户页面改为你已注册的公开客户端和回调。",
+			Message:                 "Claude OAuth 暂不可直接授权：当前通用表单令牌交换不符合 Claude 的 JSON 协议，也不会把 OAuth Token 当作 Anthropic API Key 使用。",
 		},
 		{
-			ID: "gemini-google", Name: "Gemini / Google OAuth", Provider: "openai", APIURL: upstream.DefaultXIASSBaseURL,
-			APIStyle: "auto", AuthMode: "bearer", Available: oauthProfileNeedsClientID, RequiresClientID: true, AutoLoopback: true,
-			Description: "使用你在 Google Cloud 创建的 Desktop OAuth Client，并通过随机本机端口回调。",
+			ID: "gemini-google", Name: "Google / Gemini（自有客户端）", Provider: "gemini", APIURL: "https://generativelanguage.googleapis.com",
+			EndpointMode: "manual", APIStyle: "gemini", AuthMode: "bearer", Available: oauthProfileUnavailable, RequiresClientID: true, AutoLoopback: true,
+			Description: "用户自有 Google OAuth Client 仍需要 Gemini 原生模型、generateContent、流式和额度运行时；不会读取 Antigravity 原生登录会话。",
 			OAuth: storage.OAuthConfiguration{
 				AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth", TokenURL: "https://oauth2.googleapis.com/token",
 				RedirectURI: "http://127.0.0.1:0/oauth/callback",
 				Scopes:      "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever",
 			},
 			AuthorizationParameters: map[string]string{"access_type": "offline", "prompt": "consent", "include_granted_scopes": "true"},
-			Message:                 "请填入自己的公开 Desktop Client ID，并在 Google Cloud 启用所需 API；不需要也不会保存 Client Secret。",
+			Message:                 "Google / Gemini OAuth 暂不可直接授权：完成原生 Gemini 协议桥接前，不会把 Google Token 发送到 OpenAI 兼容接口。",
 		},
 		{
 			ID: "antigravity", Name: "Antigravity", Provider: "openai", APIURL: upstream.DefaultXIASSBaseURL,
 			Available:   oauthProfileCustomOnly,
-			Description: "此提供方的 XIASS 实现依赖 secret-bound OAuth client，WF 不会复制或嵌入该 Secret。",
+			Description: "此提供方的 XIASS Tools 实现依赖 secret-bound OAuth client，不会复制或嵌入该 Secret。",
 			Message:     "请使用 Custom OAuth，并填写你自己注册的公开客户端；无法安全预设 Antigravity 的 secret-bound 流程。",
 		},
 		{
@@ -693,6 +726,25 @@ func cloneOAuthParameters(values map[string]string) map[string]string {
 		clone[key] = value
 	}
 	return clone
+}
+
+// oauthProfileSupportsAuthorization is intentionally an allow-list. A future
+// profile that has not declared one of these tested completion routes must not
+// accidentally appear as a one-click login or start a partial OAuth flow.
+func oauthProfileSupportsAuthorization(profile OAuthProviderProfile) bool {
+	switch strings.ToLower(strings.TrimSpace(profile.Available)) {
+	case oauthProfileReady, oauthProfileManual, oauthProfileNeedsClientID:
+		return true
+	default:
+		return false
+	}
+}
+
+func oauthProfileUnsupportedMessage(profile OAuthProviderProfile) string {
+	if message := strings.TrimSpace(profile.Message); message != "" {
+		return message
+	}
+	return "该 OAuth 预设未提供可安全完成的授权流程；请使用高级自定义 OAuth。"
 }
 
 type oauthCompletionEvent struct {
@@ -731,16 +783,15 @@ func applyOAuthProviderProfile(draft storage.UpstreamAccount, profile OAuthProvi
 	if strings.TrimSpace(profile.Provider) != "" {
 		draft.Provider = profile.Provider
 	}
-	// A new account draft starts with the generic XIASS base URL. The built-in
-	// Codex OAuth flow must replace that legacy default so its access token is
-	// never saved for, or sent to, an API-key gateway. A deliberate non-XIASS
-	// endpoint is preserved to support a user-owned local relay/test server.
-	if strings.TrimSpace(draft.APIURL) == "" ||
-		(strings.EqualFold(strings.TrimSpace(profile.OAuth.Upstream), storage.OpenAICodexOAuthUpstream) && strings.Contains(strings.ToLower(draft.APIURL), "api.xiass.com")) {
-		draft.APIURL = profile.APIURL
-	}
-	if strings.TrimSpace(profile.EndpointMode) != "" {
-		draft.EndpointMode = profile.EndpointMode
+	// A reviewed provider preset owns its complete authorization and inference
+	// transport.  Never inherit a hidden URL or request header from a previous
+	// custom/edited account: doing so could send the authorization code or the
+	// resulting access token to a destination that is not shown by the simplified
+	// preset UI. User overrides remain available through Custom OAuth only.
+	draft.APIURL = profile.APIURL
+	draft.EndpointMode = strings.TrimSpace(profile.EndpointMode)
+	if draft.EndpointMode == "" {
+		draft.EndpointMode = "auto"
 	}
 	if strings.TrimSpace(profile.APIStyle) != "" {
 		draft.APIStyle = profile.APIStyle
@@ -748,41 +799,36 @@ func applyOAuthProviderProfile(draft storage.UpstreamAccount, profile OAuthProvi
 	if strings.TrimSpace(profile.AuthMode) != "" {
 		draft.AuthMode = profile.AuthMode
 	}
+	if strings.EqualFold(strings.TrimSpace(profile.Provider), "anthropic") {
+		draft.MessagePathMode = "standard"
+	} else {
+		draft.MessagePathMode = "auto"
+	}
+	draft.AuthHeader = ""
+	// A non-nil empty map is intentional: storage treats it as an explicit clear
+	// when the preset replaces an existing account whose headers are redacted.
+	draft.Headers = map[string]string{}
+	draft.QuotaURL = ""
 	oauthDefaults := profile.OAuth
 	if strings.TrimSpace(oauthDefaults.RefreshScopes) == "" {
 		oauthDefaults.RefreshScopes = profile.RefreshScopes
 	}
-	draft.OAuth = mergeOAuthProfileConfiguration(draft.OAuth, oauthDefaults, profile.AutoLoopback)
-	// Profiles own their transport marker. In particular, switching away from
-	// the direct Codex profile must not leave its special request headers on a
-	// generic OAuth account.
-	draft.OAuth.Upstream = strings.TrimSpace(profile.OAuth.Upstream)
+	clientID := strings.TrimSpace(oauthDefaults.ClientID)
+	if profile.RequiresClientID {
+		// Google Desktop OAuth deliberately uses the account owner's public client
+		// ID. It is the only reviewed preset field retained from the draft.
+		clientID = strings.TrimSpace(draft.OAuth.ClientID)
+	}
+	draft.OAuth = storage.OAuthConfiguration{
+		Upstream:         strings.TrimSpace(oauthDefaults.Upstream),
+		AuthorizationURL: strings.TrimSpace(oauthDefaults.AuthorizationURL),
+		TokenURL:         strings.TrimSpace(oauthDefaults.TokenURL),
+		ClientID:         clientID,
+		RedirectURI:      strings.TrimSpace(oauthDefaults.RedirectURI),
+		Scopes:           strings.TrimSpace(oauthDefaults.Scopes),
+		RefreshScopes:    strings.TrimSpace(oauthDefaults.RefreshScopes),
+	}
 	return draft
-}
-
-func mergeOAuthProfileConfiguration(current, defaults storage.OAuthConfiguration, autoLoopback bool) storage.OAuthConfiguration {
-	if strings.TrimSpace(current.Upstream) == "" {
-		current.Upstream = defaults.Upstream
-	}
-	if strings.TrimSpace(current.AuthorizationURL) == "" {
-		current.AuthorizationURL = defaults.AuthorizationURL
-	}
-	if strings.TrimSpace(current.TokenURL) == "" {
-		current.TokenURL = defaults.TokenURL
-	}
-	if strings.TrimSpace(current.ClientID) == "" {
-		current.ClientID = defaults.ClientID
-	}
-	if strings.TrimSpace(current.RedirectURI) == "" || (autoLoopback && strings.EqualFold(strings.TrimSpace(current.RedirectURI), defaultCustomOAuthRedirectURI)) {
-		current.RedirectURI = defaults.RedirectURI
-	}
-	if strings.TrimSpace(current.Scopes) == "" || strings.EqualFold(strings.Join(strings.Fields(current.Scopes), " "), "openid profile email offline_access") {
-		current.Scopes = defaults.Scopes
-	}
-	if strings.TrimSpace(current.RefreshScopes) == "" {
-		current.RefreshScopes = defaults.RefreshScopes
-	}
-	return current
 }
 
 func redactOAuthDraft(account storage.UpstreamAccount) storage.UpstreamAccount {

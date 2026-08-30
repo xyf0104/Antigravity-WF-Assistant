@@ -7,8 +7,11 @@ import "time"
 const (
 	ServiceName      = "com.xiass.tools.totp"
 	indexFileName    = "totp-index.json"
+	cleanupFileName  = "totp-pending-cleanup.json"
 	indexVersion     = 1
 	exportVersion    = 1
+	cleanupVersion   = 1
+	maxTOTPEntries   = 1024
 	defaultAlgorithm = "SHA1"
 	defaultDigits    = 6
 	defaultPeriod    = 30
@@ -81,4 +84,12 @@ type encryptedExport struct {
 	Salt       string `json:"salt"`
 	Nonce      string `json:"nonce"`
 	Ciphertext string `json:"ciphertext"`
+}
+
+// pendingCleanupDocument records only generated credential-vault IDs. It is
+// written before a multi-store change so an interrupted import can be resumed
+// safely on the next vault operation. It never contains a TOTP secret.
+type pendingCleanupDocument struct {
+	Version int      `json:"version"`
+	IDs     []string `json:"ids"`
 }

@@ -102,6 +102,57 @@ func TestWindowsDynamicProxyEndpointPatchesTextBinaryAndState(t *testing.T) {
 	}
 }
 
+func TestWindowsLegacyRoutesAndMarkersMigrateToCanonicalWF(t *testing.T) {
+	restoreEndpoint := setPatchProxyPortForTest(51042)
+	t.Cleanup(restoreEndpoint)
+	endpoint := currentPatchProxyEndpoint()
+	legacyToken := legacyPatcherProductToken()
+
+	mainPath := filepath.Join(t.TempDir(), "main.js")
+	mainSource := `"use strict";const endpoint="http://127.0.0.1:50999/v1internal/antigravity-` + legacyToken + `";// antigravity-` + legacyToken + `:windows-main-endpoint`
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mainPlan, err := prepareWindowsMainPatch(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := string(mainPlan.updated)
+	if !strings.Contains(updated, endpoint.Text) || !strings.Contains(updated, windowsMainMarker) {
+		t.Fatalf("legacy main was not migrated to canonical endpoint/marker: %s", updated)
+	}
+	if strings.Contains(updated, "antigravity-"+legacyToken+":windows-main-endpoint") ||
+		strings.Contains(updated, "/antigravity-"+legacyToken+`"`) {
+		t.Fatalf("legacy main identity remained after migration: %s", updated)
+	}
+
+	extensionPath := filepath.Join(t.TempDir(), "extension.js")
+	extensionSource := `"use strict";const endpoint="http://127.0.0.1:50999/v1internal/` + legacyToken + `xxx-sandbox";// antigravity-` + legacyToken + `:windows-extension-endpoint;args.push("--cloud_code_endpoint",endpoint);`
+	if err := os.WriteFile(extensionPath, []byte(extensionSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	extensionPlan, err := prepareWindowsExtensionPatch(extensionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extensionUpdated := string(extensionPlan.updated)
+	if !strings.Contains(extensionUpdated, endpoint.BinarySandbox) || !strings.Contains(extensionUpdated, windowsExtensionMarker) {
+		t.Fatalf("legacy extension was not migrated to canonical sandbox endpoint/marker: %s", extensionUpdated)
+	}
+	if strings.Contains(extensionUpdated, legacyToken+"xxx-sandbox") {
+		t.Fatalf("legacy binary sandbox route remained after migration: %s", extensionUpdated)
+	}
+
+	for _, known := range []string{
+		windowsOldTextProxyEndpoint, windowsOldBinaryProxyEndpoint, windowsOldBinarySandboxEndpoint,
+		windowsOldMainMarker, windowsOldExtensionMarker, windowsOldASARMarker,
+	} {
+		if !windowsContainsKnownPatch([]byte(known)) {
+			t.Fatalf("legacy release marker must stay protected for backup migration: %s", known)
+		}
+	}
+}
+
 func TestWindowsExtensionPatchHandlesNestedAndOptionalCloudCodeCalls(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "extension.js")
 	source := "/*! For license information please see extension.js.LICENSE.txt */\n" +

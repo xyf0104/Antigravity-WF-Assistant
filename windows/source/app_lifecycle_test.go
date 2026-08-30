@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/proxy"
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/updater"
+	"antigravity-wf-assistant/internal/proxy"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/updater"
 )
 
 func TestApplicationQuitIsOnlyInterceptedUntilNativeExitIsRequested(t *testing.T) {
@@ -50,6 +50,33 @@ func TestExitResourceCleanupClosesOAuthLoopbacks(t *testing.T) {
 	if err == nil {
 		_ = connection.Close()
 		t.Fatalf("OAuth loopback %s still accepts connections after exit cleanup", address)
+	}
+}
+
+func TestExitResourceCleanupStopsOwnedProxyListener(t *testing.T) {
+	_ = proxy.Stop()
+	t.Cleanup(func() { _ = proxy.Stop() })
+
+	stateDir := t.TempDir()
+	storage.Init(stateDir)
+	reserved, port := reserveFiveDigitLoopback(t)
+	if err := reserved.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SaveProxyRuntimePort(port); err != nil {
+		t.Fatal(err)
+	}
+	if err := proxy.Start(stateDir); err != nil {
+		t.Fatalf("start owned proxy: %v", err)
+	}
+	if !proxy.OwnsListener() || !proxy.IsManagedListener() {
+		t.Fatal("test proxy did not start as an owned managed listener")
+	}
+
+	(&App{}).releaseExitResources()
+
+	if proxy.OwnsListener() || proxy.IsListening() {
+		t.Fatal("explicit exit cleanup retained the owned proxy listener")
 	}
 }
 

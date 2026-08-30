@@ -241,7 +241,7 @@ const apiURLHint = computed(() => {
   if (form.value.provider === "anthropic") {
     return "只填域名即可；会自动使用 Claude Messages 路径。";
   }
-  return "只填域名或基础路径即可；WF 会自动补全对应的 /v1 接口。";
+  return "只填域名或基础路径即可；XIASS Tools 会自动补全对应的 /v1 接口。";
 });
 const apiURLPlaceholder = computed(() =>
   form.value.endpointMode === "manual"
@@ -604,13 +604,13 @@ function onProviderChange(provider) {
 function onEndpointModeChange(mode) {
   form.value.endpointMode = mode;
   if (mode === "manual") {
-    editorNotice.value = "手动完整路径已启用：WF 会原样使用你填写的 API 地址，不再补全或替换路径。";
+    editorNotice.value = "手动完整路径已启用：XIASS Tools 会原样使用你填写的 API 地址，不再补全或替换路径。";
   } else {
     const originalURL = String(form.value.apiUrl || "").trim();
     form.value.apiUrl = normalizeAutoBaseURL(originalURL);
     editorNotice.value = form.value.apiUrl !== originalURL
-      ? "智能补全已启用：已将完整接口尾缀收敛为基础地址，WF 会按当前协议补全请求路径。"
-      : "智能补全已启用：只需填写域名或基础路径，WF 会按当前协议补全请求地址。";
+      ? "智能补全已启用：已将完整接口尾缀收敛为基础地址，XIASS Tools 会按当前协议补全请求路径。"
+      : "智能补全已启用：只需填写域名或基础路径，XIASS Tools 会按当前协议补全请求地址。";
   }
 }
 
@@ -630,7 +630,7 @@ function parseHeaders() {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error("附加请求头必须是 JSON 对象，例如 {\"X-Client\": \"WF\"}");
+    throw new Error("附加请求头必须是 JSON 对象，例如 {\"X-Client\": \"XIASS Tools\"}");
   }
   if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
     throw new Error("附加请求头必须是 JSON 对象");

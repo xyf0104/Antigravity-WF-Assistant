@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"antigravity-byok/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexconfig"
 )
 
 func TestGetCodexConfigurationOnlyReportsSafeLegacyMigrationEligibility(t *testing.T) {

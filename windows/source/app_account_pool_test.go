@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 )
 
 func saveModelTestAccount(t *testing.T, id, provider, token string) {

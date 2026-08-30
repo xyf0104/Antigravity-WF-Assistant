@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 const (

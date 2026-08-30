@@ -2,6 +2,8 @@ package totp
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,90 @@ type memoryStore struct {
 	setErr    error
 	getErr    error
 	deleteErr error
+}
+
+type failAfterSetStore struct {
+	mu      sync.Mutex
+	values  map[string]string
+	failAt  int
+	setCall int
+}
+
+// cleanupRecoveryStore simulates the one failure mode that must never leave a
+// credential invisible forever: a multi-entry import cannot remove its newly
+// written Keychain/Credential Manager records immediately. The vault journal
+// must retain the non-secret IDs and finish cleanup on the next safe operation.
+type cleanupRecoveryStore struct {
+	mu           sync.Mutex
+	values       map[string]string
+	failAt       int
+	setCall      int
+	failDeletion bool
+}
+
+func (store *cleanupRecoveryStore) Set(_ string, account, secret string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.setCall++
+	if store.failAt > 0 && store.setCall == store.failAt {
+		return errors.New("credential store write failed")
+	}
+	if store.values == nil {
+		store.values = map[string]string{}
+	}
+	store.values[account] = secret
+	return nil
+}
+
+func (store *cleanupRecoveryStore) Get(_ string, account string) (string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	value, ok := store.values[account]
+	if !ok {
+		return "", errors.New("not found")
+	}
+	return value, nil
+}
+
+func (store *cleanupRecoveryStore) Delete(_ string, account string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.failDeletion {
+		return errors.New("credential store deletion failed")
+	}
+	delete(store.values, account)
+	return nil
+}
+
+func (store *failAfterSetStore) Set(_ string, account, secret string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.setCall++
+	if store.failAt > 0 && store.setCall == store.failAt {
+		return errors.New("credential store write failed")
+	}
+	if store.values == nil {
+		store.values = map[string]string{}
+	}
+	store.values[account] = secret
+	return nil
+}
+
+func (store *failAfterSetStore) Get(_ string, account string) (string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	value, ok := store.values[account]
+	if !ok {
+		return "", errors.New("not found")
+	}
+	return value, nil
+}
+
+func (store *failAfterSetStore) Delete(_ string, account string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	delete(store.values, account)
+	return nil
 }
 
 func (store *memoryStore) Set(_ string, account, secret string) error {
@@ -150,5 +236,209 @@ func TestVaultEncryptedExportDoesNotExposeSecretInCleartext(t *testing.T) {
 	}
 	if strings.Contains(string(data), "JBSWY3DPEHPK3PXP") || !strings.Contains(string(data), "ciphertext") {
 		t.Fatalf("encrypted export = %s", data)
+	}
+}
+
+func TestVaultEncryptedExportRoundTripsIntoFreshCredentialStore(t *testing.T) {
+	sourceStore := &memoryStore{}
+	source, err := NewWithStore(t.TempDir(), sourceStore, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceEntry, err := source.Add(ImportInput{Secret: "JBSWY3DPEHPK3PXP", Label: "XIASS API", Issuer: "XIASS", Account: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := source.ExportEncrypted("long-enough-export-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetStore := &memoryStore{}
+	target, err := NewWithStore(t.TempDir(), targetStore, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := target.ImportEncrypted(payload, "long-enough-export-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imported) != 1 || imported[0].ID == sourceEntry.ID || imported[0].Label != sourceEntry.Label {
+		t.Fatalf("imported entries = %#v", imported)
+	}
+	entries, err := target.List()
+	if err != nil || len(entries) != 1 || entries[0].ID != imported[0].ID {
+		t.Fatalf("target entries = %#v, %v", entries, err)
+	}
+	if targetStore.values[imported[0].ID] != "JBSWY3DPEHPK3PXP" {
+		t.Fatal("imported secret was not written to the target credential store")
+	}
+	if _, err := target.Generate(imported[0].ID, time.Now()); err != nil {
+		t.Fatalf("imported entry cannot generate a code: %v", err)
+	}
+}
+
+func TestVaultEncryptedImportRejectsWrongPasswordWithoutChanges(t *testing.T) {
+	source, err := NewWithStore(t.TempDir(), &memoryStore{}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Add(ImportInput{Secret: "JBSWY3DPEHPK3PXP", Label: "XIASS"}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := source.ExportEncrypted("long-enough-export-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetStore := &memoryStore{}
+	target, err := NewWithStore(t.TempDir(), targetStore, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.ImportEncrypted(payload, "different-export-password"); err == nil {
+		t.Fatal("wrong password unexpectedly imported a backup")
+	}
+	entries, err := target.List()
+	if err != nil || len(entries) != 0 || len(targetStore.values) != 0 {
+		t.Fatalf("wrong password changed target state: entries=%#v, store=%#v, err=%v", entries, targetStore.values, err)
+	}
+}
+
+func TestVaultEncryptedImportRejectsDuplicateWithoutChanges(t *testing.T) {
+	source, err := NewWithStore(t.TempDir(), &memoryStore{}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Add(ImportInput{Secret: "JBSWY3DPEHPK3PXP", Label: "XIASS", Issuer: "XIASS", Account: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := source.ExportEncrypted("long-enough-export-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetStore := &memoryStore{}
+	target, err := NewWithStore(t.TempDir(), targetStore, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.Add(ImportInput{Secret: "JBSWY3DPEHPK3PXP", Label: "XIASS", Issuer: "XIASS", Account: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.ImportEncrypted(payload, "long-enough-export-password"); err == nil {
+		t.Fatal("duplicate import unexpectedly succeeded")
+	}
+	entries, err := target.List()
+	if err != nil || len(entries) != 1 || len(targetStore.values) != 1 {
+		t.Fatalf("duplicate import changed target state: entries=%#v, store=%#v, err=%v", entries, targetStore.values, err)
+	}
+}
+
+func TestVaultEncryptedImportRollsBackStoredSecretsAfterWriteFailure(t *testing.T) {
+	source, err := NewWithStore(t.TempDir(), &memoryStore{}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []ImportInput{
+		{Secret: "JBSWY3DPEHPK3PXP", Label: "XIASS A"},
+		{Secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", Label: "XIASS B"},
+	} {
+		if _, err := source.Add(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload, err := source.ExportEncrypted("long-enough-export-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetStore := &failAfterSetStore{failAt: 2}
+	target, err := NewWithStore(t.TempDir(), targetStore, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.ImportEncrypted(payload, "long-enough-export-password"); err == nil {
+		t.Fatal("credential-store failure unexpectedly succeeded")
+	}
+	entries, err := target.List()
+	if err != nil || len(entries) != 0 || len(targetStore.values) != 0 {
+		t.Fatalf("failed import was not rolled back: entries=%#v, store=%#v, err=%v", entries, targetStore.values, err)
+	}
+}
+
+func TestVaultEncryptedImportRecoversDeferredCredentialCleanup(t *testing.T) {
+	source, err := NewWithStore(t.TempDir(), &memoryStore{}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []ImportInput{
+		{Secret: "JBSWY3DPEHPK3PXP", Label: "XIASS A"},
+		{Secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", Label: "XIASS B"},
+	} {
+		if _, err := source.Add(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload, err := source.ExportEncrypted("long-enough-export-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetStore := &cleanupRecoveryStore{failAt: 2, failDeletion: true}
+	target, err := NewWithStore(t.TempDir(), targetStore, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.ImportEncrypted(payload, "long-enough-export-password"); err == nil {
+		t.Fatal("credential-store failure unexpectedly succeeded")
+	}
+	if _, err := os.Stat(target.cleanup); err != nil {
+		t.Fatalf("missing non-secret cleanup journal after failed cleanup: %v", err)
+	}
+	if len(targetStore.values) != 1 {
+		t.Fatalf("want one temporary credential before recovery, got %#v", targetStore.values)
+	}
+	targetStore.failDeletion = false
+	entries, err := target.List()
+	if err != nil || len(entries) != 0 || len(targetStore.values) != 0 {
+		t.Fatalf("deferred credential cleanup was not recovered: entries=%#v, store=%#v, err=%v", entries, targetStore.values, err)
+	}
+	if _, err := os.Stat(target.cleanup); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup journal remained after recovery: %v", err)
+	}
+}
+
+func TestVaultEncryptedExportAndImportSupportExactEntryLimit(t *testing.T) {
+	store := &memoryStore{}
+	source, err := NewWithStore(t.TempDir(), store, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.values = map[string]string{}
+	document := indexDocument{Version: indexVersion, Entries: make([]Entry, 0, maxTOTPEntries)}
+	stamp := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	for index := 0; index < maxTOTPEntries; index++ {
+		id := fmt.Sprintf("totp-%032x", index+1)
+		document.Entries = append(document.Entries, Entry{
+			ID: id, Label: fmt.Sprintf("Entry %04d", index), Algorithm: "SHA1", Digits: 6, Period: 30,
+			CreatedAt: stamp, UpdatedAt: stamp,
+		})
+		store.values[id] = "JBSWY3DPEHPK3PXP"
+	}
+	if err := source.saveLocked(document); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := source.ExportEncrypted("long-enough-export-password")
+	if err != nil {
+		t.Fatalf("exact-limit export failed: %v", err)
+	}
+	targetStore := &memoryStore{}
+	target, err := NewWithStore(t.TempDir(), targetStore, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := target.ImportEncrypted(payload, "long-enough-export-password")
+	if err != nil || len(imported) != maxTOTPEntries || len(targetStore.values) != maxTOTPEntries {
+		t.Fatalf("exact-limit backup did not fully restore: imported=%d, stored=%d, err=%v", len(imported), len(targetStore.values), err)
+	}
+	if _, err := target.Add(ImportInput{Secret: "JBSWY3DPEHPK3PXP", Label: "Over capacity"}); err == nil {
+		t.Fatal("entry above the supported capacity was accepted")
 	}
 }

@@ -28,9 +28,11 @@ function assertBindingGateOrder(source, label) {
   assert.ok(nativeBuildIndex < bindingGateIndex, `${label} must verify bindings after the native Wails build`);
 
   const preNativeStep = source.slice(preNativeIndex, nativeBuildIndex);
+  const nativeBuildStep = source.slice(nativeBuildIndex, bindingGateIndex);
   const bindingGateStep = source.slice(bindingGateIndex);
   assert.match(preNativeStep, /Get-ChildItem -Path test -Filter '\*\.test\.mjs' -File/, `${label} must enumerate only source-level regression tests before native generation`);
   assert.doesNotMatch(preNativeStep, /wailsBindings\.verify\.mjs/, `${label} must not rely on generated bindings before native generation`);
+  assert.match(nativeBuildStep, /wails@v2\.13\.0 build -clean -platform windows\/amd64/, `${label} must clean generated Windows output before creating a release artifact`);
   assert.match(bindingGateStep, /node --test test\/wailsBindings\.verify\.mjs/, `${label} must run the real generated-binding verifier after native generation`);
 }
 

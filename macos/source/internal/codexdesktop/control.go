@@ -107,9 +107,12 @@ func (controller *Controller) Status(ctx context.Context) ControlStatus {
 	return status
 }
 
-// SelectPath accepts an internal path obtained from a native picker. The path
-// is never copied into ControlStatus or an error message. Callers must use the
-// platform picker rather than exposing arbitrary path entry in the renderer.
+// SelectPath validates one local candidate obtained through the native picker
+// or an explicit, one-shot manual renderer action. The path is never copied
+// into ControlStatus or an error message, and the validated target remains in
+// memory only for the current process. A caller must always use this strict
+// structural validation path before treating any user-provided path as
+// launchable.
 func (controller *Controller) SelectPath(ctx context.Context, value string) (ControlStatus, error) {
 	if controller == nil || strings.TrimSpace(value) == "" {
 		return ControlStatus{CanSelect: false}, ErrSelectionRejected

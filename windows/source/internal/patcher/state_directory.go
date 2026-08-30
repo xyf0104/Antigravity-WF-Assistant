@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // xiassPatcherStorageDir is the one source of truth for non-secret patcher

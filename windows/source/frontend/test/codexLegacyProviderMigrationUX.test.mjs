@@ -59,6 +59,13 @@ test("running Desktop path can only use the confirmed native lifecycle migration
   assert.doesNotMatch(confirmation, /api_key|base_url|experimental_bearer_token/);
 });
 
+test("restoring a legacy backup reports only the native migration acknowledgement", () => {
+  const restoreAction = sourceSlice(modalSource, "async function runConfigurationBackupAction", "async function repairHistory");
+  assert.match(restoreAction, /result\?\.legacyProviderMigrationCompleted === true/);
+  assert.match(restoreAction, /完成已验证旧版 XIASS Provider 的前向迁移/);
+  assert.doesNotMatch(restoreAction, /result\?\.message|result\.message|result\?\.api_key|result\.api_key|result\?\.base_url|result\.base_url|result\?\.experimental_bearer_token|result\.experimental_bearer_token|auth\.json/);
+});
+
 test("migration UI remains theme-safe and blocks competing modal controls", () => {
   assert.match(modalSource, /migratingLegacyProvider/);
   assert.match(modalSource, /:closable="!saving && !removingXIASSProvider && !migratingLegacyProvider/);

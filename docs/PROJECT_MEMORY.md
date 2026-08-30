@@ -11,10 +11,10 @@
 当前受支持的本机集成包括：
 
 - Antigravity IDE / Antigravity 2.x：保留经过验证的本地代理、补丁、模型、账户池、图片、重试、历史、启动与诊断工作流。
-- Codex：管理独立的 `xiass_tools` Provider、本机模型发现、校验备份/恢复、可选历史兼容检查，以及经过确认的 Desktop 生命周期协作。
-- Claude Code：只管理明确的用户 `settings.json` API 根地址、授权令牌和模型字段，包含校验备份/恢复。
-- Cursor / Windsurf：只管理文档化的全局 MCP JSON 中由 XIASS Tools 自己拥有的远程 MCP 条目，包含校验恢复点。
-- 本地验证器（2FA）：标准 TOTP 导入、验证码显示与用户主动发起的加密导出；密钥只能存入系统凭据库。
+- Codex：管理独立的 `xiass_tools` Provider、本机模型发现、校验备份/恢复、可选历史兼容检查、静态 OpenAI Responses 账户复用，以及经过确认的 Desktop 生命周期协作。
+- Claude Code：只管理明确的用户 `settings.json` API 根地址、授权令牌和模型字段，包含校验备份/恢复及静态 Anthropic Messages 账户复用。
+- Cursor / Windsurf：只管理文档化 MCP JSON 中由 XIASS Tools 自己拥有的远程 MCP 条目，包含校验恢复点；Cursor 另支持用户通过原生目录选择器明确选择的项目 `.cursor/mcp.json`，Windsurf 仅支持全局设置。
+- 本地验证器（2FA）：标准 TOTP 导入、验证码显示、用户主动发起的加密导出，以及经密码验证和事务回滚保护的加密备份导入恢复；密钥只能存入系统凭据库。
 
 ## 最高优先级
 
@@ -48,10 +48,10 @@
 
 | 集成 | 可以做 | 不可以声称或实现为自动能力 |
 | --- | --- | --- |
-| Codex | `config.toml` Provider、上游模型发现、校验备份/恢复、显式历史兼容、已验证 Desktop 正常退出/启动 | 读取 `auth.json`、导入官方会话、伪造订阅/额度、强制结束进程 |
-| Claude Code | 明确的用户 `settings.json` 字段与校验备份/恢复 | OAuth、账号导入、会话、项目设置、MCP、用量/订阅读取 |
-| Cursor / Windsurf | 固定全局 MCP 路径中的 XIASS Tools 条目与校验恢复点 | 账号、Cookie、Token、聊天、数据库、任意文件路径或私有存储 |
-| TOTP | 本机系统凭据库、标准 TOTP、加密导出 | 将密钥写入 `localStorage`、日志、诊断、共享状态或明文文件 |
+| Codex | `config.toml` Provider、上游模型发现、校验备份/恢复、显式历史兼容、静态 OpenAI Responses 账户复用、已验证 Desktop 正常退出/启动 | 读取 `auth.json`、导入官方会话、将 OAuth/刷新令牌当静态凭据、伪造订阅/额度、强制结束进程 |
+| Claude Code | 明确的用户 `settings.json` 字段、校验备份/恢复及静态 Anthropic Messages 账户复用 | 客户端 OAuth/账号导入、将 OAuth/刷新令牌当静态凭据、会话、项目设置、MCP、用量/订阅读取 |
+| Cursor / Windsurf | 固定全局 MCP 路径中的 XIASS Tools 条目与校验恢复点；已发现且再次验证的安装可从工具中心打开 | 账号、Cookie、Token、聊天、数据库、任意文件路径或私有存储 |
+| TOTP | 本机系统凭据库、标准 TOTP、加密导出与加密备份导入恢复 | 将密钥写入 `localStorage`、日志、诊断、共享状态或明文文件 |
 
 ## 品牌与兼容性规则
 

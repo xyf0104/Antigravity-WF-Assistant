@@ -3,8 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 
-	"antigravity-byok/internal/codexdesktop"
+	"antigravity-wf-assistant/internal/codexdesktop"
 )
 
 // CodexDesktopControlStatus is the Wails-safe projection of desktop lifecycle
@@ -83,6 +84,28 @@ func (a *App) SelectCodexDesktopInstallation() CodexDesktopControlStatus {
 		return codexDesktopStatusForRenderer(status, false, codexDesktopMessageForError(err, "select"))
 	}
 	return codexDesktopStatusForRenderer(status, true, "已选择并验证 Codex Desktop 应用；路径仅保留在当前助手进程内。")
+}
+
+// SelectCodexDesktopInstallationPath validates one user-pasted local app path
+// through the same native Controller.SelectPath path as the file picker. The
+// path is deliberately request-local: it is not retained by App, returned to
+// the renderer, logged, added to diagnostics, or persisted anywhere.
+func (a *App) SelectCodexDesktopInstallationPath(value string) CodexDesktopControlStatus {
+	if a == nil || a.ctx == nil {
+		return CodexDesktopControlStatus{OK: false, Message: "助手尚未完成启动，暂时无法验证 Codex 应用路径。"}
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return a.codexDesktopFailureStatus("请粘贴 Codex 或 ChatGPT Desktop 的本机应用路径。")
+	}
+
+	a.codexDesktopOperation.Lock()
+	defer a.codexDesktopOperation.Unlock()
+	status, err := a.codexDesktopController().SelectPath(a.codexDesktopContext(), value)
+	if err != nil {
+		return codexDesktopStatusForRenderer(status, false, codexDesktopMessageForError(err, "select"))
+	}
+	return codexDesktopStatusForRenderer(status, true, "已验证手动粘贴的 Codex Desktop 应用路径；路径不会保存或显示。")
 }
 
 // LaunchCodexDesktop starts only a currently structure-validated Codex.exe /

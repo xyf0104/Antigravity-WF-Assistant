@@ -12,55 +12,60 @@ import (
 	"sync/atomic"
 	"time"
 
-	"antigravity-byok/internal/agent"
-	"antigravity-byok/internal/agentdiscovery"
-	"antigravity-byok/internal/codexdesktop"
-	"antigravity-byok/internal/codexselection"
-	"antigravity-byok/internal/diagnostics"
-	"antigravity-byok/internal/launcher"
-	"antigravity-byok/internal/patcher"
-	"antigravity-byok/internal/permissions"
-	"antigravity-byok/internal/proxy"
-	"antigravity-byok/internal/stats"
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/totp"
-	"antigravity-byok/internal/updater"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/agentdiscovery"
+	"antigravity-wf-assistant/internal/codexdesktop"
+	"antigravity-wf-assistant/internal/codexselection"
+	"antigravity-wf-assistant/internal/diagnostics"
+	"antigravity-wf-assistant/internal/launcher"
+	"antigravity-wf-assistant/internal/patcher"
+	"antigravity-wf-assistant/internal/permissions"
+	"antigravity-wf-assistant/internal/proxy"
+	"antigravity-wf-assistant/internal/stats"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/totp"
+	"antigravity-wf-assistant/internal/updater"
+	"antigravity-wf-assistant/internal/upstream"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App holds all Wails-exposed methods.
 type App struct {
-	ctx                   context.Context
-	storageDir            string
-	permissions           *permissions.Manager
-	totpVault             *totp.Vault
-	agentRegistry         *agent.Registry
-	antigravityAgent      *antigravityAgentAdapter
-	agentRefreshMu        sync.Mutex
-	historyMu             sync.RWMutex
-	historyRunMu          sync.Mutex
-	historyStatus         HistorySyncStatus
-	launchMu              sync.Mutex
-	patchMu               sync.Mutex
-	installStateMu        sync.Mutex
-	updateMu              sync.Mutex
-	updateCheckMu         sync.Mutex
-	updateCheckCancel     context.CancelFunc
-	updateCheckGeneration uint64
-	accountTestMu         sync.Mutex
-	accountTestCancels    map[string]*activeAccountTest
-	oauthMu               sync.Mutex
-	oauthSessions         map[string]*pendingOAuthSession
-	oauthResults          map[string]oauthAuthorizationRecord
-	oauthLoopbacks        map[string]*oauthLoopbackListener
-	codexSelectionMu      sync.Mutex
-	codexKeySelection     *codexselection.Service
-	codexDesktopMu        sync.Mutex
-	codexDesktopControl   codexDesktopControlService
-	codexDesktopOperation sync.Mutex
-	exitRequested         atomic.Bool
+	ctx                            context.Context
+	storageDir                     string
+	permissions                    *permissions.Manager
+	totpVault                      *totp.Vault
+	agentRegistry                  *agent.Registry
+	antigravityAgent               *antigravityAgentAdapter
+	agentRefreshMu                 sync.Mutex
+	agentDesktopSelectionMu        sync.Mutex
+	agentDesktopSelections         map[agent.ID]agentdiscovery.DesktopSelection
+	agentDesktopSelectionOperation sync.Mutex
+	historyMu                      sync.RWMutex
+	historyRunMu                   sync.Mutex
+	historyStatus                  HistorySyncStatus
+	launchMu                       sync.Mutex
+	patchMu                        sync.Mutex
+	installStateMu                 sync.Mutex
+	updateMu                       sync.Mutex
+	updateCheckMu                  sync.Mutex
+	updateCheckCancel              context.CancelFunc
+	updateCheckGeneration          uint64
+	accountTestMu                  sync.Mutex
+	accountTestCancels             map[string]*activeAccountTest
+	oauthMu                        sync.Mutex
+	oauthSessions                  map[string]*pendingOAuthSession
+	oauthResults                   map[string]oauthAuthorizationRecord
+	oauthLoopbacks                 map[string]*oauthLoopbackListener
+	cursorProjectMCPMu             sync.Mutex
+	cursorProjectMCP               map[string]cursorProjectMCPSelection
+	codexSelectionMu               sync.Mutex
+	codexKeySelection              *codexselection.Service
+	codexDesktopMu                 sync.Mutex
+	codexDesktopControl            codexDesktopControlService
+	codexDesktopOperation          sync.Mutex
+	exitRequested                  atomic.Bool
 }
 
 // activeAccountTest is deliberately keyed by an opaque renderer-generated
@@ -81,15 +86,17 @@ func newApp() *App {
 		log.Printf("[xiass-tools] 无法初始化本地诊断日志: %v", err)
 	}
 	application := &App{
-		storageDir:          dir,
-		permissions:         permissions.New(home, dir),
-		accountTestCancels:  make(map[string]*activeAccountTest),
-		oauthSessions:       make(map[string]*pendingOAuthSession),
-		oauthResults:        make(map[string]oauthAuthorizationRecord),
-		oauthLoopbacks:      make(map[string]*oauthLoopbackListener),
-		codexKeySelection:   codexselection.New(),
-		codexDesktopControl: codexdesktop.NewController(),
-		historyStatus:       HistorySyncStatus{State: "pending", Message: "等待启动时同步历史会话"},
+		storageDir:             dir,
+		permissions:            permissions.New(home, dir),
+		accountTestCancels:     make(map[string]*activeAccountTest),
+		oauthSessions:          make(map[string]*pendingOAuthSession),
+		oauthResults:           make(map[string]oauthAuthorizationRecord),
+		oauthLoopbacks:         make(map[string]*oauthLoopbackListener),
+		cursorProjectMCP:       make(map[string]cursorProjectMCPSelection),
+		agentDesktopSelections: make(map[agent.ID]agentdiscovery.DesktopSelection),
+		codexKeySelection:      codexselection.New(),
+		codexDesktopControl:    codexdesktop.NewController(),
+		historyStatus:          HistorySyncStatus{State: "pending", Message: "等待启动时同步历史会话"},
 	}
 	if vault, vaultErr := totp.New(dir); vaultErr != nil {
 		log.Printf("[xiass-tools] 无法初始化系统凭据库：%v", vaultErr)
@@ -204,6 +211,7 @@ func (a *App) requestQuit() {
 // safe on that fallback path as well.
 func (a *App) releaseExitResources() {
 	a.stopOAuthLoopbacks()
+	a.clearCursorProjectMCPSelections()
 	a.closeCodexKeySelections()
 	_ = proxy.Stop()
 }
@@ -804,11 +812,14 @@ func (a *App) GetUpstreamAccounts() []UpstreamAccountView {
 	// credential field is merged with the existing secret below.
 	views := make([]UpstreamAccountView, 0, len(accounts))
 	for _, account := range accounts {
+		hasPrivateHeaders := len(account.Headers) != 0
 		account.APIKey = ""
 		account.Credentials = nil
+		account.Headers = nil
 		views = append(views, UpstreamAccountView{
-			UpstreamAccount: account,
-			LocalUsage:      localUsage[account.ID],
+			UpstreamAccount:   account,
+			LocalUsage:        localUsage[account.ID],
+			HasPrivateHeaders: hasPrivateHeaders,
 		})
 	}
 	return views
@@ -826,6 +837,9 @@ func (a *App) DefaultUpstreamAccount() storage.UpstreamAccount {
 func (a *App) SaveUpstreamAccount(account storage.UpstreamAccount) Result {
 	if strings.EqualFold(strings.TrimSpace(account.Type), "refresh_token") {
 		return Result{OK: false, Message: "Refresh Token / Mobile RT 必须通过“兑换并保存 OAuth 账户”导入，不能作为 API Key 直接保存。"}
+	}
+	if err := storage.ValidateAdditionalHeaders(account.Headers); err != nil {
+		return Result{OK: false, Message: err.Error()}
 	}
 	if strings.TrimSpace(account.ID) != "" {
 		existing, err := storage.GetUpstreamAccount(account.ID)
@@ -886,6 +900,10 @@ func (a *App) DiscoverAccountModels(accountID string) upstream.DiscoveryResult {
 	// repaired before being re-enabled in the pool.
 	ctx, cancel := a.upstreamContext(30 * time.Second)
 	defer cancel()
+	account, err = refreshExplicitUpstreamAccount(ctx, account)
+	if err != nil {
+		return upstream.DiscoveryResult{Message: err.Error()}
+	}
 	return upstream.DiscoverModels(ctx, upstream.ConfigFromAccount(account))
 }
 
@@ -902,13 +920,20 @@ func (a *App) SyncUpstreamAccountModels(accountID string) BatchModelResult {
 	if err != nil {
 		return BatchModelResult{Message: err.Error()}
 	}
+	ctx, cancel := a.upstreamContext(30 * time.Second)
+	defer cancel()
+	account, err = refreshExplicitUpstreamAccount(ctx, account)
+	if err != nil {
+		return BatchModelResult{Message: err.Error()}
+	}
+	// Capture only connection-routing metadata after a possible OAuth refresh.
+	// The storage merge revalidates this snapshot under its account lock, so a
+	// deleted or reconfigured account can never receive stale models.
 	snapshot := storage.NewAccountSyncSnapshot(account)
 	config := upstream.ConfigFromAccount(account)
 	if err := upstream.ValidateConfig(config); err != nil {
 		return BatchModelResult{Message: err.Error()}
 	}
-	ctx, cancel := a.upstreamContext(30 * time.Second)
-	defer cancel()
 	discovery := upstream.DiscoverModels(ctx, config)
 	if !discovery.OK {
 		return BatchModelResult{Message: "无法获取该账户的模型列表：" + strings.TrimSpace(discovery.Message)}
@@ -931,7 +956,17 @@ func (a *App) TestUpstreamAccount(accountID, model string) upstream.TestResult {
 	if err != nil {
 		return upstream.TestResult{Message: err.Error()}
 	}
-	return a.TestUpstreamModel(upstream.ConfigFromAccount(account), model)
+	ctx, cancel := a.upstreamContext(45 * time.Second)
+	defer cancel()
+	account, err = refreshExplicitUpstreamAccount(ctx, account)
+	if err != nil {
+		return upstream.TestResult{Message: err.Error()}
+	}
+	resolved, err := a.resolveUpstreamConfig(upstream.ConfigFromAccount(account))
+	if err != nil {
+		return upstream.TestResult{Message: err.Error()}
+	}
+	return upstream.TestModel(ctx, resolved, model)
 }
 
 // TestUpstreamAccountDetailed resolves the reusable account on the Go side
@@ -966,6 +1001,10 @@ func (a *App) TestUpstreamAccountDetailed(request upstream.AccountTestRequest) u
 		return failedAccountTestRequest(request, err)
 	}
 	defer release()
+	account, err = refreshExplicitUpstreamAccount(ctx, account)
+	if err != nil {
+		return failedAccountTestRequest(request, err)
+	}
 	return upstream.RunAccountTest(ctx, upstream.ConfigFromAccount(account), request)
 }
 
@@ -1130,6 +1169,17 @@ func (a *App) upstreamContext(timeout time.Duration) (context.Context, context.C
 		parent = context.Background()
 	}
 	return context.WithTimeout(parent, timeout)
+}
+
+// refreshExplicitUpstreamAccount keeps user-triggered account actions on the
+// same OAuth lifecycle as proxy scheduling. The caller owns ctx and its
+// timeout; after a possible token rotation the account is loaded again so no
+// upstream request can retain the stale access token captured before refresh.
+func refreshExplicitUpstreamAccount(ctx context.Context, account storage.UpstreamAccount) (storage.UpstreamAccount, error) {
+	if err := storage.EnsureAccountAccessToken(ctx, account.ID); err != nil {
+		return storage.UpstreamAccount{}, fmt.Errorf("OAuth 访问令牌刷新失败：%w", err)
+	}
+	return storage.GetUpstreamAccount(account.ID)
 }
 
 func cloneHeaders(headers map[string]string) map[string]string {

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 const (

@@ -4,9 +4,9 @@ import (
 	"errors"
 	"testing"
 
-	"antigravity-byok/internal/agent"
-	"antigravity-byok/internal/codexconfig"
-	"antigravity-byok/internal/codexdesktop"
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexdesktop"
 )
 
 func TestCodexAgentSnapshotStatusIsConservative(t *testing.T) {

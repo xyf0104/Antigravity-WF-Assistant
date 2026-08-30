@@ -9,6 +9,7 @@ import Settings from "@/views/Settings.vue";
 import CodexConfigurationModal from "@/components/CodexConfigurationModal.vue";
 import ClaudeCodeConfigurationModal from "@/components/ClaudeCodeConfigurationModal.vue";
 import MCPConfigurationModal from "@/components/MCPConfigurationModal.vue";
+import AgentIcon from "@/components/AgentIcon.vue";
 import Button from "@/components/ui/Button.vue";
 import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
@@ -22,9 +23,12 @@ import {
 	loadPatchStatus,
 	refreshAgentStatuses,
 	diagnoseAgent,
+	selectAgentDesktopInstallation,
+	launchDetectedAgent,
 } from "@/state/appState";
 
-const tab = ref("dashboard");
+const activeModuleID = ref("antigravity");
+const antigravityTab = ref("dashboard");
 const exitDialogOpen = ref(false);
 const updateDialogOpen = ref(false);
 const updateDialogError = ref("");
@@ -40,13 +44,18 @@ const selectedAgentID = ref("");
 const selectedAgentDiagnostics = ref([]);
 let removeMainWindowShownListener = null;
 const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
-const tabs = [
-  { label: "总览", value: "dashboard", hint: "运行状态与快捷操作" },
-  { label: "工具", value: "tools", hint: "本机 Agent 检测与配置入口" },
-  { label: "模型", value: "models", hint: "管理自定义上游模型" },
-  { label: "账户池", value: "accounts", hint: "凭据、健康状态与自动调度" },
+const agentModules = [
+  { id: "antigravity", label: "Antigravity WF", hint: "本地代理、模型注入与兼容补丁" },
+  { id: "codex", label: "Codex", hint: "Codex Provider 与桌面控制" },
+  { id: "claude-code", label: "Claude Code", hint: "Claude Code 网关配置" },
+  { id: "cursor", label: "Cursor", hint: "Cursor MCP 配置" },
+  { id: "windsurf", label: "Windsurf", hint: "Windsurf MCP 配置" },
+];
+const antigravityTabs = [
+  { label: "总览", value: "dashboard", hint: "运行状态、补丁与快捷启动" },
+  { label: "模型", value: "models", hint: "自定义上游模型" },
+  { label: "上游", value: "accounts", hint: "上游账户与自动调度" },
   { label: "权限", value: "permissions", hint: "终端命令自动批准" },
-  { label: "设置", value: "settings", hint: "稳定性、缓存与软件更新" },
 ];
 const themeOptions = [
   { label: "浅色", value: "light" },
@@ -57,9 +66,37 @@ const storedTheme = localStorage.getItem("wf-theme");
 const themeMode = ref(["light", "dark", "system"].includes(storedTheme) ? storedTheme : "system");
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
-const currentTab = computed(() => tabs.find((item) => item.value === tab.value) || tabs[0]);
+const activeModule = computed(() => agentModules.find((item) => item.id === activeModuleID.value) || null);
+const activeAntigravityTab = computed(() => antigravityTabs.find((item) => item.value === antigravityTab.value) || antigravityTabs[0]);
+const currentWorkspace = computed(() => {
+  if (activeModuleID.value === "settings") {
+    return { label: "设置", hint: "主题、更新、诊断与本机安全服务" };
+  }
+  if (activeModuleID.value === "antigravity") {
+    return { label: "Antigravity WF", hint: activeAntigravityTab.value.hint };
+  }
+  return activeModule.value || { label: "Agent", hint: "本机 Agent 独立功能区" };
+});
 const updateProgressPercent = computed(() => Math.min(100, Math.max(0, Number(state.update.progress?.percent) || 0)));
 const selectedAgent = computed(() => state.agents.platforms.find((platform) => (platform.agentId || platform.id) === selectedAgentID.value) || null);
+
+function activateAgent(agentID) {
+  if (!agentModules.some((item) => item.id === agentID)) return;
+  activeModuleID.value = agentID;
+}
+
+function agentNavigationState(agentID) {
+  return state.agents.platforms.find((platform) => (platform.agentId || platform.id) === agentID)?.state || "unknown";
+}
+
+function agentNavigationTone(agentID) {
+  return {
+    ready: "ok",
+    detected: "info",
+    degraded: "warn",
+    error: "danger",
+  }[agentNavigationState(agentID)] || "muted";
+}
 
 function applyTheme() {
   const resolved = themeMode.value === "system"
@@ -105,7 +142,6 @@ function dismissRepatchDialog() {
 }
 
 function handleMainWindowShown() {
-	tab.value = "dashboard";
 	void loadPatchStatus();
 	if (state.settings?.updates?.autoCheck !== false) void checkForUpdates();
 }
@@ -121,9 +157,37 @@ async function handleAgentDiagnose(agentID) {
 	agentDetailOpen.value = true;
 }
 
+function setAgentActionMessage(agentID, tone, message) {
+	state.agents.actionMessages = {
+		...state.agents.actionMessages,
+		[agentID]: { tone, message },
+	};
+}
+
+async function handleAgentLaunch(agentID) {
+	setAgentActionMessage(agentID, "progress", "正在请求打开应用…");
+	const result = await launchDetectedAgent(agentID);
+	setAgentActionMessage(
+		agentID,
+		result?.ok ? "ok" : "error",
+		result?.ok ? "已请求打开应用。" : (result?.message || "无法启动该应用。"),
+	);
+}
+
+async function handleAgentChoose(agentID) {
+	setAgentActionMessage(agentID, "progress", "正在打开系统应用选择窗口…");
+	const result = await selectAgentDesktopInstallation(agentID);
+	setAgentActionMessage(
+		agentID,
+		result?.ok ? "ok" : "error",
+		result?.message || "无法选择应用。",
+	);
+}
+
 function handleAgentConfigure(agentID) {
 	if (agentID === "antigravity") {
-		tab.value = "models";
+		activeModuleID.value = "antigravity";
+		antigravityTab.value = "models";
 		return;
 	}
 	if (agentID === "codex") {
@@ -142,6 +206,17 @@ function handleAgentConfigure(agentID) {
 	selectedAgentID.value = agentID;
 	selectedAgentDiagnostics.value = state.agents.diagnostics.filter((item) => item.agentId === agentID);
 	agentDetailOpen.value = true;
+}
+
+// The top-level account page belongs to the Antigravity WF module. Codex and
+// Claude Code may choose a compatible redacted credential only inside their
+// own configuration modules; they must never be routed into the Antigravity
+// account UI or presented as sharing a native client login.
+function handleAgentAccounts(agentID) {
+	if (agentID === "antigravity") {
+		activeModuleID.value = "antigravity";
+		antigravityTab.value = "accounts";
+	}
 }
 
 function handleAgentOpen(agentID) {
@@ -183,7 +258,8 @@ watch(
 			repatchDialogOpen.value = false;
 			return;
 		}
-		tab.value = "dashboard";
+		activeModuleID.value = "antigravity";
+		antigravityTab.value = "dashboard";
 		updateDialogOpen.value = false;
 		repatchError.value = "";
 		repatchDialogOpen.value = true;
@@ -216,38 +292,38 @@ onUnmounted(() => {
         <img src="/xiass-tools-logo.png" alt="XIASS Tools" />
       </div>
 
-      <nav class="nav-stack" aria-label="主导航" style="--wails-draggable: no-drag">
+      <nav class="nav-stack" aria-label="Agent 模块" style="--wails-draggable: no-drag">
         <button
-          v-for="item in tabs"
-          :key="item.value"
+          v-for="item in agentModules"
+          :key="item.id"
           class="nav-item"
-          :class="{ active: tab === item.value }"
-          :aria-current="tab === item.value ? 'page' : undefined"
-          @click="tab = item.value"
+          :data-agent="item.id"
+          :class="{ active: activeModuleID === item.id }"
+          :aria-current="activeModuleID === item.id ? 'page' : undefined"
+          :title="item.hint"
+          @click="activateAgent(item.id)"
         >
-          <svg v-if="item.value === 'dashboard'" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z" />
-          </svg>
-          <svg v-else-if="item.value === 'tools'" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M13.4 6.6a4.1 4.1 0 0 0-5.8 5.8l-4.1 4.1a2 2 0 0 0 2.8 2.8l4.1-4.1a4.1 4.1 0 0 0 5.8-5.8l-2.5 2.5-2.3-.6-.6-2.3 2.5-2.4Z" />
-          </svg>
-          <svg v-else-if="item.value === 'models'" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 3 3.8 7.4 12 11.8l8.2-4.4L12 3Zm-8.2 8L12 15.4l8.2-4.4M3.8 14.6 12 19l8.2-4.4" />
-          </svg>
-          <svg v-else-if="item.value === 'accounts'" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M5 7.5A2.5 2.5 0 0 1 7.5 5h9A2.5 2.5 0 0 1 19 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 16.5v-9ZM5 10h14M8 15h3" />
-          </svg>
-          <svg v-else-if="item.value === 'permissions'" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 3 5 6v5c0 4.6 2.9 8.2 7 10 4.1-1.8 7-5.4 7-10V6l-7-3Zm-3 9 2 2 4-5" />
-          </svg>
-          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm8.6 4a6.7 6.7 0 0 0-.08-1l2-1.56-2-3.46-2.4.97a7.3 7.3 0 0 0-1.72-1L6.04 3H2.05L1.68 5.95a7.3 7.3 0 0 0-1.72 1l-2.4-.97-2 3.46 2 1.56a6.7 6.7 0 0 0 0 2l-2 1.56 2 3.46 2.4-.97a7.3 7.3 0 0 0 1.72 1L2.05 21h3.99l.36-2.95a7.3 7.3 0 0 0 1.72-1l2.4.97 2-3.46-2-1.56c.05-.33.08-.66.08-1Z" transform="translate(5.7 0) scale(.63)" />
-          </svg>
-          <span>{{ item.label }}</span>
+          <span class="agent-nav-glyph"><AgentIcon :agent-id="item.id" /></span>
+          <span class="agent-nav-copy">{{ item.label }}</span>
+          <i class="agent-nav-status" :class="agentNavigationTone(item.id)" :title="agentNavigationState(item.id)" aria-hidden="true"></i>
         </button>
       </nav>
 
       <div class="sidebar-foot">
+        <button
+          class="settings-trigger"
+          :class="{ active: activeModuleID === 'settings' }"
+          type="button"
+          title="XIASS Tools 设置"
+          aria-label="XIASS Tools 设置"
+          style="--wails-draggable: no-drag"
+          @click="activeModuleID = 'settings'"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M19 12l2-1-2-3-2 .5-2-1L14 5h-4L9 7.5l-2 1L5 8l-2 3 2 1-2 1 2 3 2-.5 2 1 1 2.5h4l1-2.5 2-1 2 .5 2-3-2-1Z" />
+          </svg>
+          <span>设置</span>
+        </button>
         <button
           class="exit-trigger"
           type="button"
@@ -260,7 +336,7 @@ onUnmounted(() => {
             <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
           </svg>
         </button>
-        <span class="version-pill">v1.6.7</span>
+        <span class="version-pill">v1.6.8</span>
       </div>
     </aside>
 
@@ -269,8 +345,8 @@ onUnmounted(() => {
         <div class="page-title">
           <div class="eyebrow">XIASS TOOLS</div>
           <div class="title-row">
-            <h1>{{ currentTab.label }}</h1>
-            <span>{{ currentTab.hint }}</span>
+            <h1>{{ currentWorkspace.label }}</h1>
+            <span>{{ currentWorkspace.hint }}</span>
           </div>
         </div>
         <SegmentedControl
@@ -281,26 +357,45 @@ onUnmounted(() => {
         />
       </header>
 
+      <nav v-if="activeModuleID === 'antigravity'" class="agent-subnav" aria-label="Antigravity WF 功能导航" style="--wails-draggable: no-drag">
+        <button
+          v-for="item in antigravityTabs"
+          :key="item.value"
+          type="button"
+          :class="{ active: antigravityTab === item.value }"
+          :aria-current="antigravityTab === item.value ? 'page' : undefined"
+          @click="antigravityTab = item.value"
+        >
+          {{ item.label }}
+        </button>
+      </nav>
+
       <main class="main">
         <Transition name="page" mode="out-in">
-          <Dashboard v-if="tab === 'dashboard'" key="dashboard" />
+          <Dashboard v-if="activeModuleID === 'antigravity' && antigravityTab === 'dashboard'" key="antigravity-dashboard" />
+          <Models v-else-if="activeModuleID === 'antigravity' && antigravityTab === 'models'" key="antigravity-models" />
+          <Accounts v-else-if="activeModuleID === 'antigravity' && antigravityTab === 'accounts'" key="antigravity-accounts" />
+          <Permissions v-else-if="activeModuleID === 'antigravity' && antigravityTab === 'permissions'" key="antigravity-permissions" />
+          <Settings v-else-if="activeModuleID === 'settings'" key="settings" />
           <Tools
-            v-else-if="tab === 'tools'"
-            key="tools"
-            :platforms="state.agents.platforms"
-            :loading="state.agents.loading"
-            :action-busy="state.agents.actionBusy"
+            v-else
+            :key="`agent-${activeModuleID}`"
+			:platforms="state.agents.platforms"
+			:selected-agent-id="activeModuleID"
+			:loading="state.agents.loading"
+			:action-busy="state.agents.actionBusy"
+			:action-messages="state.agents.actionMessages"
+			:manual-selections="state.agents.manualSelections"
 			:preview="state.agents.preview"
 			:message="state.agents.message"
             @refresh="handleAgentRefresh"
-            @configure="handleAgentConfigure"
-            @diagnose="handleAgentDiagnose"
-            @open="handleAgentOpen"
+			@configure="handleAgentConfigure"
+			@diagnose="handleAgentDiagnose"
+			@choose="handleAgentChoose"
+			@launch="handleAgentLaunch"
+			@accounts="handleAgentAccounts"
+			@open="handleAgentOpen"
           />
-          <Models v-else-if="tab === 'models'" key="models" />
-          <Accounts v-else-if="tab === 'accounts'" key="accounts" />
-          <Permissions v-else-if="tab === 'permissions'" key="permissions" />
-          <Settings v-else key="settings" />
         </Transition>
       </main>
     </section>
@@ -386,7 +481,7 @@ onUnmounted(() => {
 <style scoped>
 .shell {
   display: grid;
-  grid-template-columns: 90px minmax(0, 1fr);
+  grid-template-columns: 184px minmax(0, 1fr);
   height: 100vh;
   background: var(--bg-base);
 }
@@ -434,9 +529,9 @@ onUnmounted(() => {
 .sidebar {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 20px;
-  padding: 18px 10px 14px;
+  align-items: stretch;
+  gap: 18px;
+  padding: 18px 12px 14px;
   border-right: 1px solid var(--separator);
   background: var(--bg-sidebar);
   position: relative;
@@ -448,7 +543,7 @@ onUnmounted(() => {
 }
 
 .brand-mark {
-  width: 58px;
+  width: 100%;
   height: 58px;
   display: grid;
   place-items: center;
@@ -464,20 +559,21 @@ onUnmounted(() => {
 .nav-stack {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 7px;
   width: 100%;
 }
 
 .nav-item {
   width: 100%;
-  min-height: 62px;
-  display: flex;
-  flex-direction: column;
+  min-height: 50px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 8px;
   align-items: center;
-  justify-content: center;
-  gap: 5px;
-  border-radius: 16px;
+  gap: 9px;
+  border-radius: 12px;
   color: var(--text-tertiary);
+  padding: 6px 9px;
+  text-align: left;
   transition: color 0.18s var(--ease), background 0.18s var(--ease), transform 0.18s var(--spring);
 }
 
@@ -496,24 +592,87 @@ onUnmounted(() => {
   box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 
-.nav-item svg {
-  width: 22px;
-  height: 22px;
+.agent-nav-glyph {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--separator);
+  border-radius: 10px;
+  background: var(--bg-inset);
+  color: var(--agent-icon-color, var(--accent-strong));
+}
+
+.nav-item[data-agent="antigravity"] { --agent-icon-color: #f59b48; }
+.nav-item[data-agent="codex"] { --agent-icon-color: #4ac7a4; }
+.nav-item[data-agent="claude-code"] { --agent-icon-color: #e99a64; }
+.nav-item[data-agent="cursor"] { --agent-icon-color: #9d93ff; }
+.nav-item[data-agent="windsurf"] { --agent-icon-color: #42c4e9; }
+
+.agent-nav-glyph :deep(.agent-icon) { width: 21px; height: 21px; }
+
+.nav-item.active .agent-nav-glyph {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--accent-soft) 76%, var(--bg-inset));
+}
+
+.agent-nav-copy {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.agent-nav-status {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+}
+
+.agent-nav-status.ok { background: var(--green); }
+.agent-nav-status.info { background: var(--blue); }
+.agent-nav-status.warn { background: var(--orange); }
+.agent-nav-status.danger { background: var(--red); }
+
+.agent-nav-status.muted { opacity: .55; }
+
+.settings-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-trigger:hover,
+.settings-trigger.active {
+  border-color: var(--separator);
+  background: var(--bg-fill);
+  color: var(--text-primary);
+}
+
+.settings-trigger.active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.settings-trigger svg {
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-
-.nav-item:first-child svg {
-  fill: currentColor;
-  stroke: none;
-}
-
-.nav-item span {
-  font-size: 11px;
-  font-weight: 650;
+  stroke-width: 1.65;
 }
 
 .sidebar-foot {
@@ -522,6 +681,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   gap: 10px;
+  width: 100%;
 }
 
 .exit-trigger {
@@ -691,6 +851,40 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+.agent-subnav {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--separator);
+  background: color-mix(in srgb, var(--topbar-bg) 82%, var(--bg-base));
+  padding: 7px 24px;
+  flex-shrink: 0;
+}
+
+.agent-subnav button {
+  min-width: 74px;
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--text-secondary);
+  padding: 0 13px;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.agent-subnav button:hover {
+  border-color: var(--separator);
+  background: var(--bg-fill-hover);
+  color: var(--text-primary);
+}
+
+.agent-subnav button.active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .page-enter-active,
 .page-leave-active {
   transition: opacity 0.18s var(--ease), transform 0.18s var(--ease);
@@ -708,7 +902,7 @@ onUnmounted(() => {
 
 @media (max-width: 940px) {
   .shell {
-    grid-template-columns: 78px minmax(0, 1fr);
+    grid-template-columns: 176px minmax(0, 1fr);
   }
 
   .sidebar {
@@ -716,7 +910,6 @@ onUnmounted(() => {
   }
 
   .brand-mark {
-    width: 52px;
     height: 52px;
   }
 
@@ -727,6 +920,16 @@ onUnmounted(() => {
 
   .title-row span {
     display: none;
+  }
+
+  .nav-item {
+    grid-template-columns: 30px minmax(0, 1fr) 7px;
+    padding-inline: 7px;
+  }
+
+  .agent-nav-glyph {
+    width: 30px;
+    height: 30px;
   }
 }
 </style>

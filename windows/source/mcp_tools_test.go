@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"antigravity-byok/internal/mcpconfig"
+	"antigravity-wf-assistant/internal/mcpconfig"
 )
 
 func TestTargetScopedMCPBridgeLifecycleUsesOnlyVerifiedRecoveryPoints(t *testing.T) {

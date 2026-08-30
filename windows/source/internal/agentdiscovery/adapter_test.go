@@ -2,14 +2,16 @@ package agentdiscovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/agent"
+	"antigravity-wf-assistant/internal/agent"
 )
 
 func TestClaudeCodeDetectsCLIAndConfiguration(t *testing.T) {
@@ -71,6 +73,32 @@ func TestClaudeCodePartialAndVersionFailureBoundaries(t *testing.T) {
 			t.Fatalf("state = %q, want %q", status.State, agent.StateDegraded)
 		}
 	})
+}
+
+func TestClaudeCodeDetectsKnownCandidateWithoutExecutingIt(t *testing.T) {
+	home := filepath.Join("C:", "Users", "fixture")
+	appData := filepath.Join(home, "AppData", "Roaming")
+	cli := filepath.Join(appData, "npm", "claude.cmd")
+	fixture := newWindowsFixture(home, filepath.Join(home, "AppData", "Local"), appData)
+	fixture.addDirectory(joinClaudeConfigPath(home))
+	fixture.addFile(cli)
+
+	// If discovery accidentally invokes the known-location fallback, this
+	// injected failure would degrade the result. A ready state proves the
+	// candidate was inspected but not executed.
+	status, err := NewClaudeCodeAdapter(Options{
+		FileSystem: fixture,
+		Commands: commandFixture{
+			outputErr: map[string]error{cli: errors.New("known fallback must not run")},
+		},
+		Now: fixedNow,
+	}).Detect(context.Background())
+	if err != nil || status.State != agent.StateReady {
+		t.Fatalf("status = %+v, err = %v; want ready known-candidate discovery", status, err)
+	}
+	if status.Installation.ExecutablePath != cli || status.Installation.Version != "" {
+		t.Fatalf("installation = %+v, want inspected candidate without version execution", status.Installation)
+	}
 }
 
 func TestWindowsDesktopDiscoveryStateBoundaries(t *testing.T) {
@@ -148,6 +176,44 @@ func TestWindowsUnreadableLocalDataIsDegraded(t *testing.T) {
 	}
 	if status.State != agent.StateDegraded {
 		t.Fatalf("state = %q, want degraded for unreadable local data", status.State)
+	}
+}
+
+func TestWindowsDesktopNativeSelectionRequiresVerifiedProductMetadata(t *testing.T) {
+	home := filepath.Join("C:", "Users", "fixture")
+	local := filepath.Join(home, "AppData", "Local")
+	roaming := filepath.Join(home, "AppData", "Roaming")
+	root := filepath.Join("D:", "Developer Tools", "Cursor")
+	executable := filepath.Join(root, "Cursor.exe")
+	product := filepath.Join(root, "resources", "app", "product.json")
+	fixture := newWindowsFixture(home, local, roaming)
+	fixture.addDirectory(root)
+	fixture.addFile(executable)
+	fixture.files[product] = []byte(`{"nameShort":"Cursor","version":"1.4.0"}`)
+
+	selection, err := validateDesktopSelectionWithFileSystem(fixture, agent.CursorID, executable)
+	if err != nil {
+		t.Fatalf("select verified Cursor executable: %v", err)
+	}
+	if selection.AgentID() != agent.CursorID || selection.Version() != "1.4.0" || selection.LaunchTarget() != executable {
+		t.Fatalf("selection = %#v, want verified Cursor executable", selection)
+	}
+	encoded, err := json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{root, executable, `D:\Developer Tools`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("selection JSON leaked path %q: %s", forbidden, encoded)
+		}
+	}
+
+	fixture.files[product] = []byte(`{"nameShort":"Lookalike","version":"1.4.0"}`)
+	if _, err := validateDesktopSelectionWithFileSystem(fixture, agent.CursorID, root); !errors.Is(err, ErrDesktopSelectionRejected) {
+		t.Fatalf("lookalike selection error = %v, want generic rejection", err)
+	}
+	if _, err := validateDesktopSelectionWithFileSystem(fixture, agent.WindsurfID, executable); !errors.Is(err, ErrDesktopSelectionRejected) {
+		t.Fatalf("wrong-agent selection error = %v, want generic rejection", err)
 	}
 }
 

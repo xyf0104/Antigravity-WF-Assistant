@@ -53,6 +53,33 @@ func TestExitResourceCleanupClosesOAuthLoopbacks(t *testing.T) {
 	}
 }
 
+func TestExitResourceCleanupStopsOwnedProxyListener(t *testing.T) {
+	_ = proxy.Stop()
+	t.Cleanup(func() { _ = proxy.Stop() })
+
+	stateDir := t.TempDir()
+	storage.Init(stateDir)
+	reserved, port := reserveFiveDigitLoopback(t)
+	if err := reserved.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SaveProxyRuntimePort(port); err != nil {
+		t.Fatal(err)
+	}
+	if err := proxy.Start(stateDir); err != nil {
+		t.Fatalf("start owned proxy: %v", err)
+	}
+	if !proxy.OwnsListener() || !proxy.IsManagedListener() {
+		t.Fatal("test proxy did not start as an owned managed listener")
+	}
+
+	(&App{}).releaseExitResources()
+
+	if proxy.OwnsListener() || proxy.IsListening() {
+		t.Fatal("explicit exit cleanup retained the owned proxy listener")
+	}
+}
+
 func TestFreshUpdateCacheMessageDoesNotClaimGitHubFailed(t *testing.T) {
 	message := cachedUpdateCheckMessage(updater.Info{
 		Cached: true, CacheReason: "fresh", CheckedAt: "2026-08-04T12:00:00Z",

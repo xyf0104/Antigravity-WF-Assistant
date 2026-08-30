@@ -94,30 +94,35 @@ func normalizeImportedCredentials(credentials map[string]any) map[string]any {
 	if len(credentials) == 0 {
 		return nil
 	}
-	result := cloneAnyMap(credentials)
-	if result == nil {
-		result = make(map[string]any)
-	}
-	canonicalizeImportedCredentials(result, importedCredentialMaps(credentials))
-	return result
+	return canonicalImportedCredentials(importedCredentialMaps(credentials))
 }
 
 func credentialsFromImportObject(value map[string]any) map[string]any {
 	if len(value) == 0 {
 		return nil
 	}
-	primary := value
-	for _, key := range []string{"credentials", "credential", "auth", "tokens"} {
-		if child, ok := value[key].(map[string]any); ok && len(child) > 0 {
-			primary = child
-			break
-		}
+	return canonicalImportedCredentials(importedCredentialMaps(value))
+}
+
+// canonicalImportedCredentials deliberately rebuilds the persisted map from a
+// small, explicit allow-list. An import dialog must not become a generic
+// storage path for an external application's browser cookies, desktop session,
+// client_secret, device identifiers, or arbitrary opaque state. The local
+// upstream pool only needs transport credentials, refresh metadata, the
+// public OAuth client identifier, and minimal display metadata.
+//
+// This function is also used while normalising already-saved accounts. That
+// means a future user-initiated save safely removes fields which an older build
+// may have accepted, while loading alone never mutates an existing file.
+func canonicalImportedCredentials(sources []map[string]any) map[string]any {
+	if len(sources) == 0 {
+		return nil
 	}
-	result := cloneAnyMap(primary)
-	if result == nil {
-		result = make(map[string]any)
+	result := make(map[string]any)
+	canonicalizeImportedCredentials(result, sources)
+	if len(result) == 0 {
+		return nil
 	}
-	canonicalizeImportedCredentials(result, importedCredentialMaps(value))
 	return result
 }
 
@@ -135,7 +140,6 @@ func canonicalizeImportedCredentials(target map[string]any, sources []map[string
 		{"token", []string{"token", "api_token", "apiToken"}},
 		{"setup_token", []string{"setup_token", "setupToken", "setup-token"}},
 		{"pat", []string{"pat", "personal_access_token", "personalAccessToken"}},
-		{"secret", []string{"secret"}},
 		{"token_type", []string{"token_type", "tokenType"}},
 		{"scope", []string{"scope", "scopes"}},
 		// XIASS records the public OAuth client in credentials so a later local
@@ -149,6 +153,9 @@ func canonicalizeImportedCredentials(target map[string]any, sources []map[string
 		{"plan_type", []string{"plan_type", "planType", "chatgpt_plan_type", "chatgptPlanType", "plan", "tier"}},
 		{"subscription_expires_at", []string{"subscription_expires_at", "subscriptionExpiresAt", "plan_expires_at", "planExpiresAt"}},
 		{"email", []string{"email", "user_email", "userEmail"}},
+		{"subject", []string{"sub", "subject", "user_id", "userId"}},
+		{"privacy_mode", []string{"privacy_mode", "privacyMode"}},
+		{"identity_source", []string{"identity_source", "identitySource"}},
 	} {
 		if text := importedStringFromMaps(sources, field.keys...); text != "" {
 			target[field.canonical] = text
@@ -158,7 +165,8 @@ func canonicalizeImportedCredentials(target map[string]any, sources []map[string
 		canonical string
 		keys      []string
 	}{
-		{"expires_at", []string{"auth_expires_at", "authExpiresAt", "expires_at", "expiresAt", "expiration"}},
+		{"auth_expires_at", []string{"auth_expires_at", "authExpiresAt"}},
+		{"expires_at", []string{"expires_at", "expiresAt", "expiration", "expires"}},
 		{"expires_in", []string{"expires_in", "expiresIn"}},
 	} {
 		if raw, ok := importedValueFromMaps(sources, field.keys...); ok {
@@ -176,7 +184,6 @@ func effectiveAPIKeyFromCredentials(credentials map[string]any) string {
 		{"token", "api_token", "apiToken"},
 		{"setup_token", "setupToken", "setup-token"},
 		{"pat", "personal_access_token", "personalAccessToken"},
-		{"secret"},
 	} {
 		if value := importedStringFromMaps(sources, keys...); value != "" {
 			return value
@@ -189,6 +196,40 @@ func effectiveAPIKeyFromCredentials(credentials map[string]any) string {
 		return authorization
 	}
 	return ""
+}
+
+// sanitizeImportedHeaders retains ordinary, non-secret protocol headers used
+// by compatible API gateways (for example, product/version headers) while
+// rejecting fields that would turn an account-credential import into browser
+// or desktop-session migration. API authentication always travels through the
+// explicit account credential and auth-header fields instead.
+func sanitizeImportedHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(headers))
+	for name, value := range headers {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" || importedHeaderIsSensitive(name) {
+			continue
+		}
+		result[name] = value
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func importedHeaderIsSensitive(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "authorization" || name == "proxy-authorization" ||
+		name == "cookie" || name == "set-cookie" || name == "x-api-key" ||
+		name == "api-key" || name == "x-goog-api-key" {
+		return true
+	}
+	return strings.Contains(name, "cookie") || strings.Contains(name, "token") || strings.Contains(name, "secret")
 }
 
 func importedOAuthCredentialsPresent(credentials map[string]any) bool {

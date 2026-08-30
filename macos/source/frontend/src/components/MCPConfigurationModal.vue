@@ -3,11 +3,18 @@ import { computed, ref, watch } from "vue";
 import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
 import {
+	applyCursorProjectMCPConfiguration,
   applyTargetMCPConfiguration,
+	chooseCursorProjectMCPConfiguration,
+	deleteCursorProjectMCPBackup,
   deleteTargetMCPBackup,
+	getCursorProjectMCPConfiguration,
   getTargetMCPConfiguration,
+	listCursorProjectMCPBackups,
   listTargetMCPBackups,
+	removeCursorProjectMCPConfiguration,
   removeTargetMCPConfiguration,
+	restoreCursorProjectMCPBackup,
   restoreTargetMCPBackup,
 } from "@/state/appState";
 
@@ -18,10 +25,13 @@ const props = defineProps({
 const emit = defineEmits(["close", "changed"]);
 
 const data = ref(null);
+const mcpScope = ref("global");
+const projectSelection = ref({ id: "", name: "", expiresAt: "" });
 // This is intentionally component-local. It never enters appState,
 // localStorage, logs, diagnostics, or a native response view model.
 const remoteURL = ref("");
 const loading = ref(false);
+const choosingProject = ref(false);
 const saving = ref(false);
 const removing = ref(false);
 const backupsLoading = ref(false);
@@ -35,32 +45,38 @@ const notice = ref("");
 const isCursor = computed(() => props.target === "cursor");
 const isSupportedTarget = computed(() => props.target === "cursor" || props.target === "windsurf");
 const displayName = computed(() => isCursor.value ? "Cursor" : "Windsurf");
+const isProjectScope = computed(() => isCursor.value && mcpScope.value === "project");
+const hasProjectSelection = computed(() => Boolean(projectSelection.value.id));
+const selectedProjectName = computed(() => projectSelection.value.name || "所选项目");
+const scopeLabel = computed(() => isProjectScope.value ? "项目 MCP" : "全局 MCP");
 const snapshot = computed(() => data.value?.snapshot || {});
-const busy = computed(() => loading.value || saving.value || removing.value || backupsLoading.value || Boolean(backupActionID.value));
+const busy = computed(() => loading.value || choosingProject.value || saving.value || removing.value || backupsLoading.value || Boolean(backupActionID.value));
 // A valid current MCP JSON is insufficient for a write: the same operation
 // must also be able to create and verify a recovery point. Until that check
 // succeeds, keep the configuration strictly read-only instead of letting the
 // native transaction reject an apparently enabled save button.
 const recoveryPointsVerified = computed(() => !backupsLoading.value && !backupUnavailable.value && !backupError.value);
-const configurationEligible = computed(() => Boolean(data.value?.canApply && recoveryPointsVerified.value));
+const configurationEligible = computed(() => Boolean((!isProjectScope.value || hasProjectSelection.value) && data.value?.canApply && recoveryPointsVerified.value));
 const canApply = computed(() => Boolean(configurationEligible.value && remoteURL.value.trim()));
 const canRemove = computed(() => Boolean(configurationEligible.value && snapshot.value.managedServerConfigured));
 const recoveryPointCount = computed(() => backupItems.value.length);
 
-const clientState = computed(() => data.value?.clientDetected ? "已确认" : "未确认");
+const clientState = computed(() => isProjectScope.value ? (hasProjectSelection.value ? "已选择" : "未选择") : (data.value?.clientDetected ? "已确认" : "未确认"));
 const configState = computed(() => {
+  if (isProjectScope.value && !hasProjectSelection.value) return "等待选择";
   if (!snapshot.value.valid) return "需要处理";
   if (snapshot.value.hasSensitiveConfiguration) return "只读保护";
   return snapshot.value.exists ? "结构已验证" : "准备创建";
 });
 const managedState = computed(() => snapshot.value.managedServerConfigured ? "已配置" : "未配置");
 const statusDescription = computed(() => {
+  if (isProjectScope.value && !hasProjectSelection.value) return "选择一个 Cursor 项目目录后，XIASS Tools 才会检查并管理该项目的 .cursor/mcp.json。";
   if (!data.value) return "等待本机检查。";
   if (!data.value.ok) return "本机 MCP 设置尚未通过安全检查；当前内容不会被修改。";
   if (backupsLoading.value) return "正在核验可恢复备份；核验完成前不会写入全局 MCP 设置。";
   if (backupUnavailable.value) return "当前安装包无法管理 MCP 恢复点；为保护现有设置，远程配置保持只读。";
   if (backupError.value) return "MCP 恢复点无法安全验证；为保护现有设置，远程配置保持只读。";
-  if (!data.value.clientDetected) return `尚未确认 ${displayName.value}；不会创建或修改全局 MCP 设置。`;
+  if (!isProjectScope.value && !data.value.clientDetected) return `尚未确认 ${displayName.value}；不会创建或修改全局 MCP 设置。`;
   if (snapshot.value.hasSensitiveConfiguration) return "检测到受保护的 MCP 设置。XIASS Tools 不会读取、展示或改写其中内容。";
   if (!snapshot.value.valid) return "全局 MCP 设置无法安全验证，修复前不会写入。";
   return snapshot.value.managedServerConfigured
@@ -70,6 +86,26 @@ const statusDescription = computed(() => {
 
 function clearEndpoint() {
   remoteURL.value = "";
+}
+
+function clearProjectSelection() {
+  projectSelection.value = { id: "", name: "", expiresAt: "" };
+}
+
+function applyProjectSelection(result) {
+  if (!result || typeof result !== "object") return false;
+  const id = typeof result.selectionId === "string" ? result.selectionId.trim() : "";
+  if (!id) return false;
+  projectSelection.value = {
+    id,
+    name: typeof result.projectName === "string" && result.projectName.trim() ? result.projectName.trim() : "所选项目",
+    expiresAt: typeof result.expiresAt === "string" ? result.expiresAt : "",
+  };
+  return true;
+}
+
+function activeSelectionID() {
+  return isProjectScope.value ? projectSelection.value.id : "";
 }
 
 function applyStatus(result) {
@@ -124,10 +160,18 @@ function formatRecoveryTime(value) {
 
 async function refreshBackups({ quiet = false } = {}) {
   if (!isSupportedTarget.value) return null;
+  if (isProjectScope.value && !hasProjectSelection.value) {
+    backupItems.value = [];
+    backupUnavailable.value = false;
+    backupError.value = "";
+    return null;
+  }
   backupsLoading.value = true;
   if (!quiet) backupError.value = "";
   try {
-    const result = await listTargetMCPBackups(props.target);
+    const result = isProjectScope.value
+      ? await listCursorProjectMCPBackups(activeSelectionID())
+      : await listTargetMCPBackups(props.target);
     if (!applyBackupList(result) && !backupUnavailable.value) {
       backupError.value = "无法读取经过校验的 MCP 恢复点；当前全局 MCP 设置未被修改。";
     }
@@ -144,15 +188,23 @@ async function refreshBackups({ quiet = false } = {}) {
 
 async function refresh() {
   if (!isSupportedTarget.value) return;
+  if (isProjectScope.value && !hasProjectSelection.value) {
+    data.value = null;
+    resetBackupView();
+    return;
+  }
   loading.value = true;
   error.value = "";
   notice.value = "";
   try {
     const [result] = await Promise.all([
-      getTargetMCPConfiguration(props.target),
+      isProjectScope.value
+        ? getCursorProjectMCPConfiguration(activeSelectionID())
+        : getTargetMCPConfiguration(props.target),
       refreshBackups({ quiet: true }),
     ]);
     applyStatus(result);
+    if (isProjectScope.value) applyProjectSelection(result);
     if (!result?.ok) {
       error.value = "无法读取本机 MCP 设置状态；当前设置没有被修改。";
       return;
@@ -169,11 +221,57 @@ async function refresh() {
 
 async function refreshAfterMutation() {
   const [result] = await Promise.all([
-    getTargetMCPConfiguration(props.target),
+    isProjectScope.value
+      ? getCursorProjectMCPConfiguration(activeSelectionID())
+      : getTargetMCPConfiguration(props.target),
     refreshBackups({ quiet: true }),
   ]);
-  if (result?.ok) applyStatus(result);
+  if (result?.ok) {
+    applyStatus(result);
+    if (isProjectScope.value) applyProjectSelection(result);
+  }
   return result;
+}
+
+async function chooseProjectDirectory() {
+  if (!isCursor.value || busy.value) return;
+  choosingProject.value = true;
+  error.value = "";
+  notice.value = "";
+  clearEndpoint();
+  try {
+    const result = await chooseCursorProjectMCPConfiguration();
+    if (!result?.ok) {
+      error.value = "无法选择可安全管理的 Cursor 项目目录；当前 MCP 设置没有被修改。";
+      return;
+    }
+    if (!applyProjectSelection(result)) {
+      notice.value = "已取消选择 Cursor 项目目录。";
+      return;
+    }
+    applyStatus(result);
+    await refreshBackups({ quiet: true });
+    notice.value = `已选择项目“${selectedProjectName.value}”。XIASS Tools 仅管理该项目的 .cursor/mcp.json。`;
+  } catch {
+    error.value = "无法选择可安全管理的 Cursor 项目目录；当前 MCP 设置没有被修改。";
+  } finally {
+    choosingProject.value = false;
+  }
+}
+
+function selectMCPScope(nextScope) {
+  if (busy.value || (nextScope !== "global" && nextScope !== "project") || (!isCursor.value && nextScope === "project")) return;
+  if (mcpScope.value === nextScope) return;
+  mcpScope.value = nextScope;
+  clearEndpoint();
+  error.value = "";
+  notice.value = "";
+  resetBackupView();
+  if (nextScope === "global" || hasProjectSelection.value) {
+    void refresh();
+    return;
+  }
+  data.value = null;
 }
 
 async function save() {
@@ -193,7 +291,9 @@ async function save() {
   // only inside this short-lived request and the native call stack.
   clearEndpoint();
   try {
-    const result = await applyTargetMCPConfiguration(props.target, request.remoteUrl);
+    const result = isProjectScope.value
+      ? await applyCursorProjectMCPConfiguration(activeSelectionID(), request.remoteUrl)
+      : await applyTargetMCPConfiguration(props.target, request.remoteUrl);
     request.remoteUrl = "";
     applyStatus(result);
     if (!result?.ok) {
@@ -228,7 +328,9 @@ async function removeManagedConnection() {
   clearEndpoint();
   removing.value = true;
   try {
-    const result = await removeTargetMCPConfiguration(props.target);
+    const result = isProjectScope.value
+      ? await removeCursorProjectMCPConfiguration(activeSelectionID())
+      : await removeTargetMCPConfiguration(props.target);
     if (!result?.ok) {
       error.value = "未能安全移除 XIASS Tools MCP 远程连接；现有设置已保持不变。";
       return;
@@ -249,7 +351,8 @@ async function removeManagedConnection() {
 
 function confirmManagedRemoval() {
   if (!canRemove.value) return;
-  if (!window.confirm(`将只移除 ${displayName.value} 全局 MCP 设置中名为 xiass-tools 的 XIASS Tools 保留条目；不会删除其他 MCP 条目。操作前会创建一个经过校验的恢复点，是否继续？`)) return;
+  const location = isProjectScope.value ? `项目“${selectedProjectName.value}”` : `${displayName.value} 全局 MCP 设置`;
+  if (!window.confirm(`将只移除 ${location}中名为 xiass-tools 的 XIASS Tools 保留条目；不会删除其他 MCP 条目。操作前会创建一个经过校验的恢复点，是否继续？`)) return;
   void removeManagedConnection();
 }
 
@@ -260,9 +363,13 @@ async function runRecoveryAction(action, backupID) {
   backupActionID.value = `${action}:${backupID}`;
   let opaqueID = String(backupID || "");
   try {
-    const result = action === "restore"
-      ? await restoreTargetMCPBackup(props.target, opaqueID)
-      : await deleteTargetMCPBackup(props.target, opaqueID);
+    const result = isProjectScope.value
+      ? (action === "restore"
+        ? await restoreCursorProjectMCPBackup(activeSelectionID(), opaqueID)
+        : await deleteCursorProjectMCPBackup(activeSelectionID(), opaqueID))
+      : (action === "restore"
+        ? await restoreTargetMCPBackup(props.target, opaqueID)
+        : await deleteTargetMCPBackup(props.target, opaqueID));
     opaqueID = "";
     if (!result?.ok) {
       backupError.value = action === "restore"
@@ -299,6 +406,8 @@ function confirmRecoveryDelete(backupID) {
 function close() {
   if (busy.value) return;
   clearEndpoint();
+  clearProjectSelection();
+  mcpScope.value = "global";
   emit("close");
 }
 
@@ -308,10 +417,15 @@ watch(() => [props.open, props.target], ([open, target]) => {
   notice.value = "";
   resetBackupView();
   if (open && target) {
+    if (target !== "cursor") mcpScope.value = "global";
     void refresh();
     return;
   }
-  if (!open) data.value = null;
+  if (!open) {
+    data.value = null;
+    clearProjectSelection();
+    mcpScope.value = "global";
+  }
 });
 </script>
 
@@ -322,20 +436,40 @@ watch(() => [props.open, props.target], ([open, target]) => {
         XIASS Tools 只管理一个保留的远程 MCP 条目，不读取或改写账号、Cookie、令牌、聊天记录、数据库或其他 MCP 条目。
       </p>
 
-      <div v-if="loading" class="state-block">正在检查本机 {{ displayName }} 与全局 MCP 设置…</div>
+      <section v-if="isCursor" class="scope-ribbon" aria-label="Cursor MCP 配置范围">
+        <div class="scope-ribbon-head">
+          <div>
+            <strong>配置范围</strong>
+            <span>全局 MCP 面向本机所有 Cursor 工作区；项目 MCP 只作用于你明确选择的一个项目。</span>
+          </div>
+          <div class="scope-options" role="group" aria-label="选择 MCP 配置范围">
+            <button type="button" :class="{ active: mcpScope === 'global' }" :aria-pressed="mcpScope === 'global'" :disabled="busy" @click="selectMCPScope('global')">全局 MCP</button>
+            <button type="button" :class="{ active: mcpScope === 'project' }" :aria-pressed="mcpScope === 'project'" :disabled="busy" @click="selectMCPScope('project')">项目 MCP</button>
+          </div>
+        </div>
+        <div v-if="isProjectScope" class="project-handle">
+          <div class="project-handle-copy">
+            <strong>{{ hasProjectSelection ? selectedProjectName : '尚未选择项目目录' }}</strong>
+            <span>{{ hasProjectSelection ? '只会写入该项目的 .cursor/mcp.json；完整本机路径不会显示、保存或导出。' : '从系统目录选择器选择一个真实存在的项目文件夹。' }}</span>
+          </div>
+          <Button variant="tinted" size="sm" :loading="choosingProject" :disabled="busy && !choosingProject" @click="chooseProjectDirectory">{{ hasProjectSelection ? '更换项目' : '选择项目' }}</Button>
+        </div>
+      </section>
+
+      <div v-if="loading" class="state-block">正在检查{{ isProjectScope ? '所选项目的' : '本机 ' + displayName + ' 与全局' }} MCP 设置…</div>
 
       <template v-else>
         <section class="status-card" :class="{ guarded: snapshot.hasSensitiveConfiguration || !snapshot.valid || !configurationEligible }">
           <div>
-            <strong>{{ configurationEligible ? "可以安全配置" : "暂不可写入" }}</strong>
+            <strong>{{ configurationEligible ? `可以安全配置${isProjectScope ? '项目' : ''}` : "暂不可写入" }}</strong>
             <span>{{ statusDescription }}</span>
           </div>
           <span class="status-pill" :class="configurationEligible ? 'ok' : 'warn'">{{ configurationEligible ? "可保存" : "只读保护" }}</span>
         </section>
 
         <dl class="facts" aria-label="MCP 本机状态">
-          <div><dt>客户端</dt><dd :class="data?.clientDetected ? 'ok' : 'muted'">{{ clientState }}</dd></div>
-          <div><dt>全局 MCP 设置</dt><dd :class="snapshot.valid && !snapshot.hasSensitiveConfiguration ? 'ok' : 'warn'">{{ configState }}</dd></div>
+          <div><dt>{{ isProjectScope ? '项目' : '客户端' }}</dt><dd :class="(isProjectScope ? hasProjectSelection : data?.clientDetected) ? 'ok' : 'muted'">{{ clientState }}</dd></div>
+          <div><dt>{{ isProjectScope ? '项目 MCP 设置' : '全局 MCP 设置' }}</dt><dd :class="snapshot.valid && !snapshot.hasSensitiveConfiguration ? 'ok' : 'warn'">{{ configState }}</dd></div>
           <div><dt>XIASS 条目</dt><dd :class="snapshot.managedServerConfigured ? 'ok' : 'muted'">{{ managedState }}</dd></div>
         </dl>
 
@@ -345,7 +479,7 @@ watch(() => [props.open, props.target], ([open, target]) => {
         <section class="configuration-section" :aria-disabled="!configurationEligible">
           <div class="section-heading">
             <div>
-              <strong>远程 MCP 地址</strong>
+              <strong>{{ isProjectScope ? '项目 MCP 远程地址' : '远程 MCP 地址' }}</strong>
               <span>只支持 HTTPS，或无凭据的本机 localhost/回环 HTTP 地址。保存只会管理名为 xiass-tools 的保留条目。</span>
             </div>
           </div>
@@ -363,13 +497,13 @@ watch(() => [props.open, props.target], ([open, target]) => {
           </label>
         </section>
 
-        <details class="recovery-points" aria-label="经过校验的 MCP 恢复点">
+        <details class="recovery-points" :aria-label="`经过校验的${isProjectScope ? '项目' : '全局'} MCP 恢复点`">
           <summary>
-            <span>经过校验的恢复点</span>
+            <span>经过校验的{{ isProjectScope ? '项目' : '全局' }}恢复点</span>
             <small>{{ backupsLoading ? "正在检查" : backupUnavailable ? "需要更新" : `${recoveryPointCount} 个` }}</small>
           </summary>
           <div class="recovery-panel">
-            <p>只列出 XIASS Tools 创建且通过校验的恢复点。列表不显示地址、路径、原始 JSON、请求头、环境变量或认证信息。</p>
+            <p>只列出 XIASS Tools 创建且通过校验的{{ isProjectScope ? '所选项目' : '全局' }}恢复点。列表不显示地址、路径、原始 JSON、请求头、环境变量或认证信息。</p>
 
             <p v-if="backupsLoading" class="recovery-state" role="status">正在读取经过校验的恢复点…</p>
             <p v-else-if="backupUnavailable" class="recovery-state warning" role="status">当前安装包尚未包含恢复点管理功能。现有 MCP 设置没有被修改。</p>
@@ -398,14 +532,14 @@ watch(() => [props.open, props.target], ([open, target]) => {
 
         <details class="safety-note">
           <summary>安全边界</summary>
-          <p>如果现有全局 MCP 设置含有环境变量、请求头、认证信息或其他敏感字段，XIASS Tools 会保持它不变。移除连接时也只会删除精确名称为 xiass-tools 的保留条目，不会删除或认领其他 MCP 条目。</p>
+          <p>如果现有{{ isProjectScope ? '项目' : '全局' }} MCP 设置含有环境变量、请求头、认证信息或其他敏感字段，XIASS Tools 会保持它不变。移除连接时也只会删除精确名称为 xiass-tools 的保留条目，不会删除或认领其他 MCP 条目。</p>
         </details>
       </template>
     </div>
 
     <template #footer>
       <Button variant="plain" :disabled="busy" @click="close">关闭</Button>
-      <Button v-if="snapshot.managedServerConfigured" variant="danger" :disabled="!canRemove || busy" :loading="removing" @click="confirmManagedRemoval">移除 XIASS 连接</Button>
+      <Button v-if="snapshot.managedServerConfigured" variant="danger" :disabled="!canRemove || busy" :loading="removing" @click="confirmManagedRemoval">移除{{ isProjectScope ? '项目 ' : '' }}XIASS 连接</Button>
       <Button variant="filled" :disabled="!canApply || busy" :loading="saving" @click="save">保存 MCP 连接</Button>
     </template>
   </Modal>
@@ -414,6 +548,10 @@ watch(() => [props.open, props.target], ([open, target]) => {
 <style scoped>
 .mcp-config { display: grid; gap: 13px; }
 .intro { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
+.scope-ribbon { display: grid; gap: 10px; border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--separator)); border-radius: 10px; background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 7%, var(--bg-inset)), color-mix(in srgb, var(--teal) 5%, var(--bg-inset))); padding: 11px 12px; }
+.scope-ribbon-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.scope-ribbon-head > div:first-child { display: grid; min-width: 0; gap: 2px; }.scope-ribbon-head strong { color: var(--text-primary); font-size: 12px; }.scope-ribbon-head span { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+.scope-options { display: inline-flex; flex: 0 0 auto; gap: 3px; border: 1px solid var(--separator-strong); border-radius: 8px; background: var(--bg-base); padding: 3px; }.scope-options button { min-height: 25px; border: 0; border-radius: 5px; background: transparent; color: var(--text-tertiary); font: inherit; font-size: 10px; font-weight: 700; padding: 0 8px; transition: color .16s var(--ease), background .16s var(--ease), box-shadow .16s var(--ease); }.scope-options button:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-fill-hover); }.scope-options button.active { background: color-mix(in srgb, var(--accent) 16%, var(--bg-fill)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent); color: var(--accent-strong); }.scope-options button:disabled { cursor: wait; opacity: .55; }.scope-options button:focus-visible, .project-handle :deep(.btn:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.project-handle { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px dashed color-mix(in srgb, var(--accent) 34%, var(--separator)); padding-top: 10px; }.project-handle-copy { display: grid; min-width: 0; gap: 2px; }.project-handle-copy strong { overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.project-handle-copy span { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 .state-block { min-height: 112px; display: grid; place-items: center; border: 1px dashed var(--separator-strong); border-radius: 10px; color: var(--text-tertiary); font-size: 12px; }
 .status-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid color-mix(in srgb, var(--green) 42%, var(--separator)); border-left: 3px solid var(--green); border-radius: 10px; background: color-mix(in srgb, var(--green) 6%, var(--bg-inset)); padding: 11px 12px; }
 .status-card.guarded { border-color: color-mix(in srgb, var(--orange) 52%, var(--separator)); border-left-color: var(--orange); background: color-mix(in srgb, var(--orange) 7%, var(--bg-inset)); }
@@ -457,5 +595,5 @@ watch(() => [props.open, props.target], ([open, target]) => {
 .recovery-refresh { justify-self: start; display: inline-flex; min-height: 26px; align-items: center; gap: 5px; border: 0; border-radius: 7px; color: var(--text-tertiary); font: inherit; font-size: 10px; padding: 0 6px; transition: color .16s var(--ease), background .16s var(--ease); }
 .recovery-refresh svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }.recovery-refresh:hover:not(:disabled) { background: var(--bg-fill-hover); color: var(--accent-strong); }.recovery-refresh:disabled { cursor: wait; opacity: .48; }
 .safety-note { border-top: 1px solid var(--separator); padding-top: 12px; }.safety-note summary { cursor: pointer; color: var(--text-primary); font-size: 12px; font-weight: 700; }.safety-note p { margin: 8px 0 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.5; }
-@media (max-width: 560px) { .facts { grid-template-columns: 1fr; }.recovery-row { align-items: stretch; flex-direction: column; }.recovery-actions :deep(.btn), .recovery-refresh { justify-content: center; width: 100%; } }
+@media (max-width: 560px) { .scope-ribbon-head, .project-handle { align-items: stretch; flex-direction: column; }.scope-options { align-self: stretch; }.scope-options button { flex: 1 1 0; }.project-handle :deep(.btn) { justify-content: center; width: 100%; }.facts { grid-template-columns: 1fr; }.recovery-row { align-items: stretch; flex-direction: column; }.recovery-actions :deep(.btn), .recovery-refresh { justify-content: center; width: 100%; } }
 </style>

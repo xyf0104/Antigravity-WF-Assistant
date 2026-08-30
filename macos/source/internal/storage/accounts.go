@@ -353,6 +353,52 @@ func normalizeAccountType(value string) string {
 	}
 }
 
+// ValidateAdditionalHeaders accepts only ordinary, non-authentication HTTP
+// metadata. Authentication belongs in the explicit account credential fields;
+// accepting Authorization, Cookie, token, or secret-like headers here would
+// make it too easy to persist a browser or desktop session by mistake. A nil
+// map intentionally means "not supplied" so a redacted account edit can retain
+// existing private metadata without sending it through the renderer.
+func ValidateAdditionalHeaders(headers map[string]string) error {
+	if headers == nil {
+		return nil
+	}
+	if len(headers) > 32 {
+		return fmt.Errorf("附加请求头最多可保存 32 项")
+	}
+	for rawName, rawValue := range headers {
+		name := strings.TrimSpace(rawName)
+		value := strings.TrimSpace(rawValue)
+		if name == "" || value == "" {
+			return fmt.Errorf("附加请求头的名称和值不能为空")
+		}
+		if len(name) > 256 || len(value) > 8192 {
+			return fmt.Errorf("附加请求头过长")
+		}
+		if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("附加请求头不能包含换行符")
+		}
+		if !validAdditionalHeaderName(name) {
+			return fmt.Errorf("附加请求头名称无效：%s", name)
+		}
+		if importedHeaderIsSensitive(name) {
+			return fmt.Errorf("附加请求头 %s 可能包含认证信息；请使用 API Key、Bearer、x-api-key 或自定义认证头", name)
+		}
+	}
+	return nil
+}
+
+func validAdditionalHeaderName(value string) bool {
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // compactAccountType deliberately treats punctuation and case variants as the
 // same account type. The UI is not the only caller of this package, so the
 // storage boundary must not rely on a renderer having normalized the value.
@@ -962,7 +1008,18 @@ func SaveUpstreamAccount(account UpstreamAccount) error {
 	if isRefreshTokenAccountType(account.Type) {
 		return fmt.Errorf("Refresh Token / Mobile RT 必须先兑换为 OAuth 访问令牌，不能作为 API Key 直接保存")
 	}
+	headersProvided := account.Headers != nil
+	if err := ValidateAdditionalHeaders(account.Headers); err != nil {
+		return err
+	}
 	account = normalizeAccount(account)
+	// normalizeAccount clones empty maps as nil for compact persistence. Here a
+	// non-nil empty map has a distinct update meaning: the caller explicitly
+	// cleared the private headers, so preserve that intent until the replacement
+	// record has been selected below.
+	if headersProvided && account.Headers == nil {
+		account.Headers = map[string]string{}
+	}
 	if account.EffectiveAPIKey() == "" {
 		return fmt.Errorf("请填写 API Key、访问令牌或导入含凭据的 JSON")
 	}
@@ -975,6 +1032,12 @@ func SaveUpstreamAccount(account UpstreamAccount) error {
 	for i, existing := range accounts {
 		if existing.ID == account.ID {
 			account.CreatedAt = existing.CreatedAt
+			// Account views never include request headers. A nil header map from
+			// an edit therefore means "preserve"; an explicit empty map clears
+			// the saved additional headers.
+			if account.Headers == nil {
+				account.Headers = cloneStringMap(existing.Headers)
+			}
 			accounts[i] = account
 			return saveAccountsLocked(accounts)
 		}
@@ -1416,7 +1479,7 @@ func accountFromImportObject(value map[string]any) (UpstreamAccount, bool) {
 		ExpiresAt:       importedAccountExpiresAt(value),
 	}
 	if headers := mapValue(value, "headers", "extraHeaders", "extra_headers"); headers != nil {
-		account.Headers = stringMap(headers)
+		account.Headers = sanitizeImportedHeaders(stringMap(headers))
 	}
 	if importedOAuthCredentialsPresent(credentials) && (account.Type == "" || isRawJSONAccountType(account.Type) || isRefreshTokenAccountType(account.Type)) {
 		// A JSON export is a transport format, not an auth scheme. Once we have

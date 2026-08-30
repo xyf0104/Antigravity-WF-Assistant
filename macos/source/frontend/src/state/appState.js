@@ -98,6 +98,7 @@ export const state = reactive({
     schemaVersion: 1,
     streamRecovery: { enabled: true, maxAttempts: 2, maxDelaySeconds: 20 },
     updates: { autoCheck: true, skippedVersion: "" },
+    oauth: { googleDesktopClientId: "" },
   },
   settingsLoading: false,
   settingsBusy: false,
@@ -129,6 +130,11 @@ export const state = reactive({
     diagnostics: [],
     loading: false,
     actionBusy: {},
+    actionMessages: {},
+		// Native Cursor/Windsurf selections are deliberately ephemeral and
+		// redacted. They contain only the safe status needed to reveal the
+		// launch action; no filesystem path ever enters Vue state.
+		manualSelections: {},
     preview: !go(),
     message: !go() ? agentPreviewRuntimeMessage : "",
     updatedAt: "",
@@ -457,6 +463,61 @@ export async function diagnoseAgent(agentID) {
   }
 }
 
+// The renderer may identify a supported application, but it never supplies an
+// executable path or launch arguments. The native side re-runs bounded local
+// discovery and only opens a verified Cursor or Windsurf installation.
+export async function launchDetectedAgent(agentID) {
+  const identifier = String(agentID || "").trim();
+  if (!identifier) return { ok: false, message: "未指定要打开的应用。" };
+  const key = `${identifier}:launch`;
+  state.agents.actionBusy = { ...state.agents.actionBusy, [key]: true };
+  try {
+    const result = await call("LaunchDetectedAgent", identifier);
+    if (result?.ok) void loadAgentStatuses();
+    return result || { ok: false, message: "无法启动该应用。" };
+  } catch {
+    // Do not expose bridge or platform errors here: they can contain a local
+    // path and are not useful to the person operating the tools center.
+    return { ok: false, message: "无法启动该应用。请刷新检查后重试。" };
+  } finally {
+    const next = { ...state.agents.actionBusy };
+    delete next[key];
+    state.agents.actionBusy = next;
+  }
+}
+
+// Cursor/Windsurf application selection stays native-only. The renderer sends
+// one fixed integration ID, never a filesystem path; the native dialog result
+// is structurally verified and reduced to this redacted status.
+export async function selectAgentDesktopInstallation(agentID) {
+	const identifier = String(agentID || "").trim();
+	if (!["cursor", "windsurf"].includes(identifier)) {
+		return { ok: false, message: "该工具不支持选择桌面应用。" };
+	}
+	const key = `${identifier}:choose`;
+	state.agents.actionBusy = { ...state.agents.actionBusy, [key]: true };
+	try {
+		const result = await call("SelectAgentDesktopInstallation", identifier);
+		if (result && typeof result === "object") {
+			state.agents.manualSelections = {
+				...state.agents.manualSelections,
+				[identifier]: {
+					selected: Boolean(result.selected),
+					canLaunch: Boolean(result.canLaunch),
+					version: typeof result.version === "string" ? result.version : "",
+				},
+			};
+		}
+		return result || { ok: false, message: "无法选择应用。" };
+	} catch {
+		return { ok: false, message: "无法打开应用选择窗口。请刷新检查后重试。" };
+	} finally {
+		const next = { ...state.agents.actionBusy };
+		delete next[key];
+		state.agents.actionBusy = next;
+	}
+}
+
 // ─── Codex local configuration ─────────────────────────────────────────────
 // The native bindings return redacted snapshots only. Callers intentionally
 // pass an API key only to the two explicit operations below; this state module
@@ -487,6 +548,33 @@ export async function migrateCodexLegacyProvider() {
 
 export async function discoverCodexModels(baseURL, apiKey) {
   return call("DiscoverCodexModels", baseURL, apiKey);
+}
+
+// Saved Codex-account candidates are reduced by native code to an opaque ID,
+// display label, credential-mode label and already-bound Responses model IDs.
+// This module deliberately never accepts or retains an endpoint, API key,
+// custom header, OAuth token or refresh state for that flow.
+export async function getCodexAccountCandidates() {
+  return call("GetCodexAccountCandidates");
+}
+
+export async function discoverCodexAccountModels(accountID) {
+  const id = typeof accountID === "string" ? accountID.trim() : "";
+  if (!id) return { ok: false, message: "请先选择一个已保存的 Codex 兼容账户。", models: [] };
+  try {
+    return await call("DiscoverCodexAccountModels", id);
+  } finally {
+    // The ID is opaque rather than secret, but keeping it request-local avoids
+    // accidental retention in global reactive state during a modal refresh.
+    accountID = "";
+  }
+}
+
+// Apply a selected saved account entirely on the native side. Do not extend
+// this DTO with endpoint or credential fields: native revalidates the account
+// and maps only the lossless OpenAI Responses + Bearer contract.
+export async function applyCodexConfigurationFromAccount(input) {
+  return call("ApplyCodexConfigurationFromAccount", input);
 }
 
 export async function restoreCodexConfiguration(backupID) {
@@ -557,6 +645,7 @@ export async function applyCodexXIASSSelection(sessionID, config) {
 const codexDesktopMethodAliases = Object.freeze({
   status: ["GetCodexDesktopControlStatus", "GetCodexDesktopStatus"],
   select: ["SelectCodexDesktopInstallation", "SelectCodexDesktopApp"],
+  manualPath: ["SelectCodexDesktopInstallationPath"],
   launch: ["LaunchCodexDesktop", "OpenCodexDesktop"],
   stop: ["StopCodexDesktop", "StopCodexDesktopApp"],
   restart: ["RestartCodexDesktop", "RestartCodexDesktopApp"],
@@ -619,6 +708,21 @@ export async function selectCodexDesktopApp() {
   return callCodexDesktop(codexDesktopMethodAliases.select);
 }
 
+// A pasted application path remains a component-local, one-shot value. This
+// wrapper has no reactive/global state and returns only the redacted native
+// selection result.
+export async function selectCodexDesktopPath(path) {
+  const value = typeof path === "string" ? path.trim() : "";
+  if (!value) {
+    return {
+      ok: false,
+      unavailable: false,
+      message: "请粘贴 Codex 或 ChatGPT Desktop 的本机应用路径。",
+    };
+  }
+  return callCodexDesktop(codexDesktopMethodAliases.manualPath, value);
+}
+
 export async function launchCodexDesktop() {
   return callCodexDesktop(codexDesktopMethodAliases.launch);
 }
@@ -639,6 +743,7 @@ export async function restartCodexDesktop(confirmed = false) {
 // it in reactive state, browser storage, diagnostics, or console output.
 const codexLifecycleMethodAliases = Object.freeze({
   manual: ["ApplyCodexConfigurationWithLifecycle"],
+  savedAccount: ["ApplyCodexConfigurationFromAccountWithLifecycle"],
   xiassSelection: ["ApplyCodexXIASSSelectionWithLifecycle"],
   legacyMigration: ["MigrateCodexLegacyProviderWithLifecycle"],
 });
@@ -685,6 +790,13 @@ export async function applyCodexConfigurationWithLifecycle(input, confirmed = fa
   );
 }
 
+export async function applyCodexConfigurationFromAccountWithLifecycle(input, confirmed = false) {
+  return callCodexLifecycle(
+    codexLifecycleMethodAliases.savedAccount,
+    lifecycleInputWithConfirmation(input, Boolean(confirmed)),
+  );
+}
+
 export async function applyCodexXIASSSelectionWithLifecycle(sessionID, input, confirmed = false) {
   return callCodexLifecycle(
     codexLifecycleMethodAliases.xiassSelection,
@@ -720,6 +832,22 @@ export async function getClaudeCodeConfiguration() {
 
 export async function applyClaudeCodeConfiguration(input) {
   return call("ApplyClaudeCodeConfiguration", input);
+}
+
+// A saved-account candidate is intentionally redacted by the native bridge.
+// The renderer receives only the opaque account ID, a local display label,
+// credential-mode label and already-bound model IDs — never an API URL, key,
+// header, OAuth token or refresh token.
+export async function getClaudeCodeAccountCandidates() {
+  return call("GetClaudeCodeAccountCandidates");
+}
+
+// Apply one explicitly selected compatible account entirely on the native
+// side. Do not extend this DTO with a credential: the native bridge resolves
+// it from the local account vault and clears it before returning a redacted
+// settings status.
+export async function applyClaudeCodeConfigurationFromAccount(input) {
+  return call("ApplyClaudeCodeConfigurationFromAccount", input);
 }
 
 // Gateway discovery and connection testing deliberately accept request-local
@@ -885,6 +1013,116 @@ export async function deleteTargetMCPBackup(target, backupID) {
     return result ?? mcpTargetScopedUnavailable("delete");
   } finally {
     // See restoreTargetMCPBackup: the opaque ID never reaches global state.
+  }
+}
+
+// Cursor project MCP is intentionally a separate bridge from global MCP. The
+// renderer never supplies a project path: the native directory chooser creates
+// a short-lived opaque selection ID, which is the only project selector used
+// by subsequent calls.
+function cursorProjectMCPUnavailable(message = "当前安装包尚未包含 Cursor 项目级 MCP 配置功能。") {
+  return {
+    ok: false,
+    unavailable: true,
+    message,
+    backups: [],
+    snapshot: { target: "cursor" },
+  };
+}
+
+function cursorProjectMCPSelectionID(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export async function chooseCursorProjectMCPConfiguration() {
+  try {
+    return await call("ChooseCursorProjectMCPConfiguration");
+  } catch {
+    return cursorProjectMCPUnavailable();
+  }
+}
+
+export async function getCursorProjectMCPConfiguration(selectionID) {
+  let opaqueID = cursorProjectMCPSelectionID(selectionID);
+  if (!opaqueID) return cursorProjectMCPUnavailable("请先选择 Cursor 项目目录。");
+  try {
+    return await call("GetCursorProjectMCPConfiguration", opaqueID);
+  } catch {
+    return cursorProjectMCPUnavailable();
+  } finally {
+    opaqueID = "";
+  }
+}
+
+export async function applyCursorProjectMCPConfiguration(selectionID, remoteURL) {
+  const request = {
+    selectionId: cursorProjectMCPSelectionID(selectionID),
+    remoteUrl: String(remoteURL || ""),
+  };
+  if (!request.selectionId) return cursorProjectMCPUnavailable("请先选择 Cursor 项目目录。");
+  try {
+    return await call("ApplyCursorProjectMCPConfiguration", request);
+  } catch {
+    return cursorProjectMCPUnavailable();
+  } finally {
+    request.selectionId = "";
+    request.remoteUrl = "";
+  }
+}
+
+export async function removeCursorProjectMCPConfiguration(selectionID) {
+  const request = { selectionId: cursorProjectMCPSelectionID(selectionID) };
+  if (!request.selectionId) return cursorProjectMCPUnavailable("请先选择 Cursor 项目目录。");
+  try {
+    return await call("RemoveCursorProjectMCPConfiguration", request);
+  } catch {
+    return cursorProjectMCPUnavailable();
+  } finally {
+    request.selectionId = "";
+  }
+}
+
+export async function listCursorProjectMCPBackups(selectionID) {
+  const request = { selectionId: cursorProjectMCPSelectionID(selectionID) };
+  if (!request.selectionId) return cursorProjectMCPUnavailable("请先选择 Cursor 项目目录。");
+  try {
+    return await call("ListCursorProjectMCPBackups", request);
+  } catch {
+    return cursorProjectMCPUnavailable();
+  } finally {
+    request.selectionId = "";
+  }
+}
+
+export async function restoreCursorProjectMCPBackup(selectionID, backupID) {
+  const request = {
+    selectionId: cursorProjectMCPSelectionID(selectionID),
+    backupId: String(backupID || ""),
+  };
+  if (!request.selectionId) return cursorProjectMCPUnavailable("请先选择 Cursor 项目目录。");
+  try {
+    return await call("RestoreCursorProjectMCPBackup", request);
+  } catch {
+    return cursorProjectMCPUnavailable();
+  } finally {
+    request.selectionId = "";
+    request.backupId = "";
+  }
+}
+
+export async function deleteCursorProjectMCPBackup(selectionID, backupID) {
+  const request = {
+    selectionId: cursorProjectMCPSelectionID(selectionID),
+    backupId: String(backupID || ""),
+  };
+  if (!request.selectionId) return cursorProjectMCPUnavailable("请先选择 Cursor 项目目录。");
+  try {
+    return await call("DeleteCursorProjectMCPBackup", request);
+  } catch {
+    return cursorProjectMCPUnavailable();
+  } finally {
+    request.selectionId = "";
+    request.backupId = "";
   }
 }
 
@@ -1102,6 +1340,10 @@ export function deleteTOTPEntry(id) {
 
 export function exportTOTPEncrypted(password) {
   return call("ExportTOTPEncrypted", password);
+}
+
+export function importTOTPEncrypted(password) {
+  return call("ImportTOTPEncrypted", password);
 }
 
 let updateCheckGeneration = 0;

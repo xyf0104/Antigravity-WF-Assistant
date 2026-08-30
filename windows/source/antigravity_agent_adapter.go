@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/agent"
-	"antigravity-byok/internal/patcher"
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/patcher"
 )
 
 // antigravityAgentAdapter projects the existing Antigravity integration onto

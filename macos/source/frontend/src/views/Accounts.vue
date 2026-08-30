@@ -7,6 +7,7 @@ import Modal from "@/components/ui/Modal.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import AccountTestModal from "@/components/accounts/AccountTestModal.vue";
 import AccountQuotaWindows from "@/components/accounts/AccountQuotaWindows.vue";
+import OAuthTOTPQuickPicker from "@/components/OAuthTOTPQuickPicker.vue";
 import {
   normalizeReasoningEffort,
   resolveReasoningProfile,
@@ -41,8 +42,18 @@ import {
   redactOAuthAuthorizationStatus,
 } from "@/state/oauthAuthorizationStatus";
 import {
+  ACCOUNT_SORT_OPTIONS,
+  ACCOUNT_STATUS_OPTIONS,
+  accountIsEnabled,
+  accountProviderFilterOptions,
+  accountProviderLabel,
+  selectDirectoryAccounts,
+} from "@/state/accountDirectory";
+import {
   canStartOAuthLogin,
   chooseOAuthProfileID,
+	isOAuthLoginProfileSupported,
+	oauthLoginProfileMode,
   usesSimplifiedOAuthLogin,
 } from "@/state/oauthLoginUX";
 
@@ -78,6 +89,17 @@ const accountTestError = ref("");
 const accountTestImages = ref([]);
 const accountTestDefaultModelID = ref("");
 const accountTestRequestID = ref("");
+const accountUsageDetailsAccount = ref(null);
+// Directory controls are intentionally local render state. They never change
+// an account until the user invokes an explicit single or bulk state action.
+const accountDirectorySearch = ref("");
+const accountDirectoryProvider = ref("all");
+const accountDirectoryStatus = ref("all");
+const accountDirectorySort = ref("priority");
+const selectedAccountIDs = ref([]);
+const accountBulkBusy = ref(false);
+const accountBulkAction = ref("");
+const accountBulkMessage = ref(null);
 let accountTestGeneration = 0;
 let accountTestRequestSerial = 0;
 const oauthSession = ref(null);
@@ -85,6 +107,10 @@ const oauthCallback = ref("");
 const oauthProfiles = ref([]);
 const oauthProfilesLoading = ref(false);
 const oauthProfilesLoaded = ref(false);
+// An OAuth entry action can happen while the initial profile request is still
+// in flight. Preserve that intent so the newly loaded list always selects the
+// safe default instead of leaving the user on a blank editor.
+const oauthProfilesAutoSelectRequested = ref(false);
 const oauthProfilesError = ref("");
 const selectedOAuthProfileID = ref("");
 const oauthAdvancedOpen = ref(false);
@@ -123,10 +149,20 @@ const accountTypeOptions = [
   { label: "Bearer / Access Token", value: "bearer_token" },
   { label: "x-api-key", value: "x_api_key" },
   { label: "Setup Token", value: "setup_token" },
-	{ label: "auth.json / OAuth JSON", value: "auth_json" },
+	{ label: "账户凭据 JSON", value: "auth_json" },
 	{ label: "Refresh Token / Mobile RT", value: "refresh_token" },
 	{ label: "Codex PAT", value: "codex_pat" },
   { label: "自定义认证头", value: "custom_header" },
+];
+// Keep the first decision deliberately small. OAuth, request credentials and
+// JSON import follow materially different security flows, so the account
+// editor exposes them as peer entry modes instead of hiding them behind a
+// provider-specific form. The detailed selector remains available for Token
+// users who need a particular header or token format.
+const credentialEntryOptions = [
+  { label: "OAuth 授权", value: "oauth" },
+  { label: "API Key / Token", value: "token" },
+  { label: "账户 JSON", value: "json" },
 ];
 const JSON_IMPORT_TYPE_KEYS = new Set([
 	"auth_json",
@@ -202,7 +238,9 @@ function normalizeOAuthProfiles(result) {
       : Array.isArray(result?.items)
         ? result.items
         : [];
-  return entries.map(normalizeOAuthProfile).filter(Boolean);
+  return entries
+    .map(normalizeOAuthProfile)
+    .filter((profile) => profile && isOAuthLoginProfileSupported(profile));
 }
 
 // Smart endpoint mode owns the protocol suffix. Old saved configurations may
@@ -270,7 +308,11 @@ function emptyForm() {
     messagePathMode: "auto",
     authMode: "bearer",
     authHeader: "",
-    headersText: "{}",
+    // Stored headers are deliberately never rendered back into this form.
+    // An empty editor is distinct from an explicit user change (see
+    // headersTouched below), so editing a redacted account cannot erase them.
+    headersText: "",
+    hasPrivateHeaders: false,
     quotaUrl: "",
     apiKey: "",
 		refreshToken: "",
@@ -288,10 +330,16 @@ function emptyForm() {
 }
 
 const form = ref(emptyForm());
+const headersTouched = ref(false);
 const isExisting = computed(() => Boolean(form.value.id));
 const isJSONImportTypeSelected = computed(() => isJSONImportType(form.value.type));
 const isRefreshTokenTypeSelected = computed(() => isRefreshTokenType(form.value.type));
 const isOAuthAuthorizationLogin = computed(() => form.value.type === "oauth");
+const credentialEntryMode = computed(() => {
+  if (isJSONImportType(form.value.type)) return "json";
+  if (form.value.type === "oauth") return "oauth";
+  return "token";
+});
 const selectedOAuthProfile = computed(() => oauthProfiles.value.find((profile) => profile.id === selectedOAuthProfileID.value) || null);
 const usesSimpleOAuthLogin = computed(() => usesSimplifiedOAuthLogin(form.value.type, oauthAdvancedOpen.value));
 const showOAuthCredentialTypeChooser = computed(() => !usesSimpleOAuthLogin.value || oauthCredentialSwitchOpen.value);
@@ -303,21 +351,30 @@ const showCustomHeaderName = computed(() => form.value.type === "custom_header")
 const showAdditionalHeaders = computed(() => form.value.type === "custom_header" || oauthAdvancedOpen.value);
 const showSchedulingControls = computed(() => showOAuthAccountFields.value && !isJSONImportTypeSelected.value);
 const canStartSelectedOAuth = computed(() => {
-  const profileNeedsCustomClient = selectedOAuthProfile.value?.requiresClientId === true && !oauthAdvancedOpen.value;
-  return !profileNeedsCustomClient && canStartOAuthLogin(selectedOAuthProfile.value, oauthAdvancedOpen.value);
+  return canStartOAuthLogin(selectedOAuthProfile.value, oauthAdvancedOpen.value, form.value.oauth?.clientId);
 });
+const profileRequiresClientID = computed(() => (
+  isOAuthAuthorizationLogin.value
+  && !oauthAdvancedOpen.value
+  && oauthLoginProfileMode(selectedOAuthProfile.value) === "bring-your-own-client"
+));
 const oauthLoginTitle = computed(() => oauthAdvancedOpen.value
   ? "高级自定义 OAuth"
   : (selectedOAuthProfile.value?.label || "OpenAI / Codex"));
 const oauthLoginDescription = computed(() => {
   if (selectedOAuthProfile.value?.description) return selectedOAuthProfile.value.description;
-  if (oauthProfilesLoading.value) return "正在读取可用的一键登录方式…";
+  if (oauthProfilesLoading.value) return "正在读取可用 OAuth 登录方式…";
   if (oauthAdvancedOpen.value) return "使用你自己注册的公开 OAuth 客户端；不会保存客户端密钥。";
   return "未读取到默认登录预设。可刷新预设，或主动切换到高级自定义 OAuth。";
 });
 const oauthLoginButtonLabel = computed(() => {
   if (oauthAdvancedOpen.value) return "打开授权页";
-  if (selectedOAuthProfile.value?.requiresClientId) return "需要高级配置";
+	if (profileRequiresClientID.value) {
+		return readText(form.value.oauth?.clientId) ? `${selectedOAuthProfile.value.label} 授权` : "填写我的 Client ID";
+	}
+	if (selectedOAuthProfile.value && oauthLoginProfileMode(selectedOAuthProfile.value) === "manual-callback") {
+		return `${selectedOAuthProfile.value.label} 授权`;
+	}
   return selectedOAuthProfile.value ? `${selectedOAuthProfile.value.label} 一键登录` : "等待可用预设";
 });
 const oauthManualCompletionRequired = computed(() => {
@@ -327,11 +384,45 @@ const oauthManualCompletionRequired = computed(() => {
 const showOAuthManualFallback = computed(() => canManuallyCompleteOAuthSession(oauthSession.value));
 const selectedCount = computed(() => selectedModelIds.value.length);
 const allSelected = computed(() => discoveredModels.value.length > 0 && selectedModelIds.value.length === discoveredModels.value.length);
+const accountDirectoryProviderOptions = computed(() => accountProviderFilterOptions(state.accounts));
+const visibleAccounts = computed(() => selectDirectoryAccounts(state.accounts, {
+  search: accountDirectorySearch.value,
+  provider: accountDirectoryProvider.value,
+  status: accountDirectoryStatus.value,
+  sort: accountDirectorySort.value,
+}));
+const selectedAccountIDSet = computed(() => new Set(selectedAccountIDs.value));
+const selectedAccounts = computed(() => {
+  const selected = selectedAccountIDSet.value;
+  return (Array.isArray(state.accounts) ? state.accounts : [])
+    .filter((account) => selected.has(readText(account?.id)));
+});
+const selectedAccountCount = computed(() => selectedAccounts.value.length);
+const selectedPausedAccountCount = computed(() => selectedAccounts.value.filter((account) => !accountIsEnabled(account)).length);
+const selectedEnabledAccountCount = computed(() => selectedAccounts.value.filter((account) => accountIsEnabled(account)).length);
+const selectedVisibleAccountCount = computed(() => (
+  visibleAccounts.value.filter((account) => selectedAccountIDSet.value.has(readText(account?.id))).length
+));
+const allVisibleAccountsSelected = computed(() => (
+  visibleAccounts.value.length > 0
+  && visibleAccounts.value.every((account) => selectedAccountIDSet.value.has(readText(account?.id)))
+));
+const accountDirectoryFiltersActive = computed(() => (
+  Boolean(accountDirectorySearch.value)
+  || accountDirectoryProvider.value !== "all"
+  || accountDirectoryStatus.value !== "all"
+  || accountDirectorySort.value !== "priority"
+));
+const accountDirectorySummary = computed(() => {
+  const total = Array.isArray(state.accounts) ? state.accounts.length : 0;
+  const visible = visibleAccounts.value.length;
+  return visible === total ? `共 ${total} 个账户` : `显示 ${visible} / ${total} 个账户`;
+});
 const apiURLLabel = computed(() => form.value.endpointMode === "manual" ? "完整 API 地址" : "基础域名 / 基础路径");
 const apiURLHint = computed(() => {
   if (form.value.endpointMode === "manual") return "严格原样使用，不会自动补全或替换路径。";
   if (form.value.provider === "anthropic") return "只填域名即可；Claude 自动使用 Messages 路径。";
-  return "只填域名或基础路径即可；WF 自动补全对应的 /v1 接口。";
+  return "只填域名或基础路径即可；XIASS Tools 会自动补全对应的 /v1 接口。";
 });
 const apiURLPlaceholder = computed(() => form.value.endpointMode === "manual"
   ? (form.value.provider === "anthropic" ? "https://api.xiass.com/v1/messages" : "https://api.xiass.com/v1/chat/completions")
@@ -373,15 +464,25 @@ const fixedAuthModeLabel = computed(() => {
 });
 
 function providerLabel(provider) {
-  return provider === "anthropic" ? "Claude" : provider === "grok" ? "Grok" : provider === "custom" ? "兼容" : "OpenAI";
+  return accountProviderLabel(provider);
 }
 
 function providerTone(provider) {
-  return provider === "anthropic" ? "warn" : provider === "openai" ? "info" : "neutral";
+  const key = readText(provider).toLowerCase();
+  return key === "anthropic" ? "warn" : key === "openai" ? "info" : "neutral";
+}
+
+function oauthProfileModeLabel(profile) {
+	return {
+		"automatic-callback": "一键授权",
+		"manual-callback": "手动回调",
+		"bring-your-own-client": "使用我的 Client ID",
+		unavailable: "不可用",
+	}[oauthLoginProfileMode(profile)] || "不可用";
 }
 
 function health(account) {
-  if (!account.enabled) return { label: "已暂停", tone: "neutral" };
+  if (!accountIsEnabled(account)) return { label: "已暂停", tone: "neutral" };
   const until = Date.parse(account.cooldownUntil || "");
   if (Number.isFinite(until) && until > Date.now()) {
     const seconds = Math.max(1, Math.ceil((until - Date.now()) / 1000));
@@ -407,7 +508,8 @@ function accountToForm(account) {
     apiUrl: endpointMode === "auto" ? smartBaseAPIURL(account.apiUrl || defaults.apiUrl) : account.apiUrl,
     endpointMode,
     messagePathMode: account.messagePathMode === "manual" ? "auto" : (account.messagePathMode || "auto"),
-    headersText: JSON.stringify(account.headers || {}, null, 2),
+    headersText: "",
+    hasPrivateHeaders: account.hasPrivateHeaders === true,
     oauth: { ...defaults.oauth, ...(account.oauth || {}) },
     apiKey: "",
 		refreshToken: "",
@@ -556,10 +658,12 @@ async function openNew() {
 	form.value = {
 		...emptyForm(),
 		...defaults,
-		headersText: JSON.stringify(defaults?.headers || {}, null, 2),
+		headersText: "",
+		hasPrivateHeaders: false,
 		oauth: { ...emptyForm().oauth, ...(defaults?.oauth || {}) },
-		apiKey: "",
+	apiKey: "",
 	};
+	headersTouched.value = false;
 	if (form.value.endpointMode === "auto") form.value.apiUrl = smartBaseAPIURL(form.value.apiUrl);
   editorError.value = "";
   editorNotice.value = "地址默认只需填写域名。保存后可获取模型并默认全选导入；完整接口地址可随时切换为手动模式。";
@@ -571,9 +675,19 @@ async function openNew() {
   editorOpen.value = true;
 }
 
+// This is the direct equivalent of the account-center "OAuth 授权" entry:
+// users do not need to first create an empty API-key account and then discover
+// the credential-type selector. The existing profile chooser determines which
+// provider-specific fields, if any, are actually required.
+async function openOAuthNew() {
+	await openNew();
+	onTypeChange("oauth");
+}
+
 function openEdit(account) {
   clearOAuthSession();
   form.value = accountToForm(account);
+	headersTouched.value = false;
   editorError.value = "";
   editorNotice.value = "为保护已保存的凭据，令牌栏不会回显；留空保存将保留原有凭据。";
 	resetDiscoveredModelSelection();
@@ -609,7 +723,7 @@ function onTypeChange(type) {
 		form.value.apiKey = "";
 		form.value.refreshToken = "";
 		editorError.value = "";
-		editorNotice.value = "auth.json / OAuth JSON 需要通过 JSON 导入解析，不能作为 API Key 保存。";
+		editorNotice.value = "账户凭据 JSON 需要通过 JSON 导入解析，不能作为 API Key 保存。";
 		closeEditor();
 		openJSONImport("请粘贴完整的账户 JSON；它将按凭据字段安全导入，而不会被当作普通 API Key。");
 		return;
@@ -623,7 +737,7 @@ function onTypeChange(type) {
 		oauthAdvancedOpen.value = false;
 		oauthCredentialSwitchOpen.value = false;
 		editorError.value = "";
-		editorNotice.value = "正在准备 OpenAI / Codex 一键登录…";
+		editorNotice.value = "正在准备 OpenAI / Codex OAuth 登录…";
 		void loadOAuthLoginProfiles({ autoSelectDefault: true });
 		return;
 	}
@@ -638,12 +752,28 @@ function onTypeChange(type) {
 	else form.value.authMode = "bearer";
 }
 
+function selectCredentialEntryMode(mode) {
+  switch (mode) {
+    case "oauth":
+      onTypeChange("oauth");
+      return;
+    case "json":
+      onTypeChange("auth_json");
+      return;
+    default:
+      // API Key is the safe, least-surprising default in the Token entry
+      // route. The detailed credential selector remains available afterwards
+      // for Bearer, x-api-key, Setup Token, Codex PAT and custom headers.
+      onTypeChange("api_key");
+  }
+}
+
 function onEndpointModeChange(mode) {
   form.value.endpointMode = mode;
   if (mode === "auto") form.value.apiUrl = smartBaseAPIURL(form.value.apiUrl);
   editorNotice.value = mode === "manual"
-    ? "手动完整路径已启用：WF 会严格使用上方地址。"
-    : "智能补全已启用：WF 会根据协议补全请求路径。";
+    ? "手动完整路径已启用：XIASS Tools 会严格使用上方地址。"
+    : "智能补全已启用：XIASS Tools 会根据协议补全请求路径。";
 }
 
 function onAPIURLChange(value) {
@@ -652,9 +782,13 @@ function onAPIURLChange(value) {
 }
 
 async function loadOAuthLoginProfiles({ force = false, autoSelectDefault = false } = {}) {
+  if (autoSelectDefault) oauthProfilesAutoSelectRequested.value = true;
   if (oauthProfilesLoading.value) return;
   if (oauthProfilesLoaded.value && !force) {
-    if (autoSelectDefault) ensureDefaultOAuthProfile({ silent: true });
+    if (oauthProfilesAutoSelectRequested.value) {
+      oauthProfilesAutoSelectRequested.value = false;
+      ensureDefaultOAuthProfile({ silent: true });
+    }
     return;
   }
   oauthProfilesLoading.value = true;
@@ -663,7 +797,7 @@ async function loadOAuthLoginProfiles({ force = false, autoSelectDefault = false
     const result = await getOAuthLoginProfiles();
     oauthProfiles.value = normalizeOAuthProfiles(result);
     oauthProfilesLoaded.value = true;
-    if (autoSelectDefault) ensureDefaultOAuthProfile({ silent: true });
+    if (oauthProfilesAutoSelectRequested.value) ensureDefaultOAuthProfile({ silent: true });
     if (!oauthProfiles.value.length) {
       oauthProfilesError.value = "当前没有可用的安全 OAuth 登录预设；仍可使用高级自定义 OAuth。";
     }
@@ -675,6 +809,7 @@ async function loadOAuthLoginProfiles({ force = false, autoSelectDefault = false
     oauthProfilesError.value = "安全 OAuth 登录预设暂不可用；仍可使用高级自定义 OAuth。";
   } finally {
     oauthProfilesLoading.value = false;
+    oauthProfilesAutoSelectRequested.value = false;
   }
 }
 
@@ -702,10 +837,40 @@ function ensureDefaultOAuthProfile({ silent = false } = {}) {
   return true;
 }
 
+function resetReviewedOAuthPresetDraft(profile) {
+  const previousProfileID = selectedOAuthProfileID.value;
+  const currentGoogleClientID = previousProfileID === "gemini-google"
+    ? readText(form.value.oauth?.clientId)
+    : "";
+  const savedGoogleClientID = readText(state.settings?.oauth?.googleDesktopClientId);
+  const googleClientID = currentGoogleClientID || savedGoogleClientID;
+
+  // The simplified preset UI hides transport details. Clear every hidden value
+  // before starting a reviewed profile so a previous Custom OAuth/edited account
+  // cannot silently retain its token endpoint, inference route or request header.
+  form.value.apiUrl = emptyForm().apiUrl;
+  form.value.endpointMode = "auto";
+  form.value.messagePathMode = profile?.provider === "anthropic" ? "standard" : "auto";
+  form.value.authHeader = "";
+  form.value.headersText = "";
+  form.value.hasPrivateHeaders = false;
+  form.value.quotaUrl = "";
+  headersTouched.value = true;
+  form.value.oauth = {
+    authorizationUrl: "",
+    tokenUrl: "",
+    clientId: profile?.id === "gemini-google" ? googleClientID : "",
+    redirectUri: "",
+    scopes: "",
+    refreshScopes: "",
+    upstream: "",
+  };
+}
+
 function selectOAuthProfile(profile, { silent = false } = {}) {
   if (!profile?.id) return;
   clearOAuthSession();
-  if (profile.available === "custom_only") {
+  if (oauthLoginProfileMode(profile) === "unavailable") {
     selectedOAuthProfileID.value = "";
     form.value.type = "oauth";
     oauthAdvancedOpen.value = true;
@@ -713,6 +878,7 @@ function selectOAuthProfile(profile, { silent = false } = {}) {
     editorNotice.value = profile.message || "该登录方式需要使用高级自定义 OAuth。";
     return;
   }
+  resetReviewedOAuthPresetDraft(profile);
   if (profile.provider) {
     form.value.provider = profile.provider;
     form.value.authMode = "bearer";
@@ -723,12 +889,17 @@ function selectOAuthProfile(profile, { silent = false } = {}) {
 	selectedOAuthProfileID.value = profile.id;
 	oauthAdvancedOpen.value = false;
 	oauthCredentialSwitchOpen.value = false;
-  editorError.value = "";
-  if (!silent) {
-    editorNotice.value = profile.requiresClientId
-      ? `已选择 ${profile.label}。如需自有客户端，请主动点击“高级自定义 OAuth”填写公开 Client ID。`
-      : (profile.message || `已选择 ${profile.label} 安全登录。将由本机后端提供已审核的 OAuth 配置。`);
-  }
+	editorError.value = "";
+	if (!silent) {
+		const mode = oauthLoginProfileMode(profile);
+		editorNotice.value = mode === "bring-your-own-client"
+			? (readText(form.value.oauth?.clientId)
+				? `已选择 ${profile.label}，并已使用本机保存的公开 Client ID；现在可直接开始授权。`
+				: `已选择 ${profile.label}。首次填写你自己的公开 Client ID 后会保存在本机，之后可直接授权；不需要 Client Secret。`)
+			: mode === "manual-callback"
+				? `已选择 ${profile.label}。浏览器授权后，请粘贴完整回调地址或授权码完成保存。`
+				: (profile.message || `已选择 ${profile.label} 安全登录。将由本机后端提供已审核的 OAuth 配置。`);
+	}
 }
 
 function useCustomOAuth() {
@@ -747,10 +918,10 @@ function returnToSimpleOAuthLogin() {
 	oauthCredentialSwitchOpen.value = false;
 	editorError.value = "";
 	if (ensureDefaultOAuthProfile({ silent: true })) {
-		editorNotice.value = "已返回一键 OAuth 登录，可切换其他预设或直接在浏览器授权。";
+		editorNotice.value = "已返回 OAuth 登录预设，可切换其他预设或直接在浏览器授权。";
 		return;
 	}
-	editorNotice.value = "正在读取可用的一键登录方式…";
+	editorNotice.value = "正在读取可用 OAuth 登录方式…";
 	void loadOAuthLoginProfiles({ force: true, autoSelectDefault: true });
 }
 
@@ -779,7 +950,7 @@ function parseHeaders() {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error("附加请求头必须是 JSON 对象，例如 {\"X-Client\": \"WF\"}");
+    throw new Error("附加请求头必须是 JSON 对象，例如 {\"X-Client\": \"XIASS Tools\"}");
   }
   if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("附加请求头必须是 JSON 对象");
   const headers = {};
@@ -813,11 +984,14 @@ function accountPayload() {
 			redirectUri: form.value.oauth?.redirectUri?.trim(),
 			scopes: form.value.oauth?.scopes?.trim(),
 		},
-    headers: parseHeaders(),
     priority: Number(form.value.priority),
     maxConcurrency: Number(form.value.maxConcurrency),
   };
+  if (!form.value.id || headersTouched.value) {
+    payload.headers = parseHeaders();
+  }
   delete payload.headersText;
+	delete payload.hasPrivateHeaders;
 	delete payload.refreshToken;
   return payload;
 }
@@ -828,7 +1002,7 @@ async function saveAccount() {
   try {
 		account = accountPayload();
 		if (!account.apiUrl) throw new Error("请填写 API 地址");
-		if (isJSONImportType(account.type)) throw new Error("auth.json / OAuth JSON 请通过“导入 JSON”导入，不能作为 API Key 直接保存。");
+		if (isJSONImportType(account.type)) throw new Error("账户凭据 JSON 请通过“导入 JSON”导入，不能作为 API Key 直接保存。");
 		if (isRefreshTokenType(account.type)) throw new Error("Refresh Token / Mobile RT 必须先兑换为 OAuth 访问令牌，不能作为 API Key 直接保存。");
 		if (!account.apiKey && !account.id && account.type !== "oauth") {
 			throw new Error("请填写 API Key、访问令牌，或使用 OAuth 授权/JSON 导入账户");
@@ -914,10 +1088,15 @@ async function startOAuth() {
     account = accountPayload();
     if (!account.apiUrl) throw new Error("请填写 API 地址");
     if (!profile && !oauthAdvancedOpen.value) {
-      throw new Error("暂未读取到可用的一键登录预设。请刷新预设，或主动点击“高级自定义 OAuth”。");
+      throw new Error("暂未读取到可用 OAuth 登录预设。请刷新预设，或主动点击“高级自定义 OAuth”。");
+    }
+    if (profile && !canStartOAuthLogin(profile, false, account.oauth?.clientId)) {
+      throw new Error(oauthLoginProfileMode(profile) === "bring-your-own-client"
+        ? "请先填写你自己的公开 Client ID；不需要 Client Secret。"
+        : "该 OAuth 登录预设当前不可用，请改用高级自定义 OAuth。");
     }
     if (profile?.requiresClientId && !readText(account.oauth?.clientId)) {
-      throw new Error("该预设需要自有公开 Client ID。请主动点击“高级自定义 OAuth”后填写；无需 Client Secret。");
+      throw new Error("请先填写上方的公开 Client ID；不需要 Client Secret。");
     }
     if (!profile && oauthAdvancedOpen.value) requireCustomOAuthConfiguration();
   } catch (error) {
@@ -1095,6 +1274,38 @@ async function refreshQuota(account) {
 	}
 }
 
+function openAccountUsageDetails(account) {
+	if (!account?.id) return;
+	accountUsageDetailsAccount.value = account;
+}
+
+function localUsageMetric(account, keys, format = formatTokens) {
+	const usage = account?.localUsage || account?.local_usage || {};
+	for (const key of keys) {
+		if (usage[key] !== undefined && usage[key] !== null) return format(usage[key]);
+	}
+	return format(0);
+}
+
+function formatRequestCount(value) {
+	const number = Number(value || 0);
+	if (!Number.isFinite(number) || number <= 0) return "0";
+	return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(Math.round(number));
+}
+
+const accountUsageDetailRows = computed(() => {
+	const account = accountUsageDetailsAccount.value;
+	if (!account) return [];
+	return [
+		{ label: "已完成请求", value: localUsageMetric(account, ["requestCount", "requests", "request_count"], formatRequestCount) },
+		{ label: "总 Token", value: localUsageMetric(account, ["totalTokens", "tokens", "total_tokens"]) },
+		{ label: "输入 Token", value: localUsageMetric(account, ["promptTokens", "inputTokens", "input_tokens"]) },
+		{ label: "输出 Token", value: localUsageMetric(account, ["completionTokens", "outputTokens", "output_tokens"]) },
+		{ label: "缓存读取", value: localUsageMetric(account, ["cacheReadTokens", "cache_read_tokens"]) },
+		{ label: "缓存写入", value: localUsageMetric(account, ["cacheWriteTokens", "cache_write_tokens"]) },
+	];
+});
+
 function formatTokens(value) {
 	const number = Number(value || 0);
 	if (!Number.isFinite(number) || number <= 0) return "0";
@@ -1172,10 +1383,10 @@ function modelsBoundToAccount(accountID) {
 }
 
 function accountTestSteps(steps) {
-  if (!Array.isArray(steps)) return [];
-  return steps
-    .map((step) => ({ text: readText(step?.text), tone: readText(step?.tone) || "muted" }))
-    .filter((step) => step.text);
+	if (!Array.isArray(steps)) return [];
+	return steps
+		.map((step) => ({ type: readText(step?.type), text: readText(step?.text), tone: readText(step?.tone) || "muted" }))
+		.filter((step) => step.text);
 }
 
 function nextAccountTestRequestID() {
@@ -1435,9 +1646,100 @@ async function addSelectedModels() {
   }
 }
 
+function accountID(account) {
+  return readText(account?.id);
+}
+
+function accountSelectionName(account) {
+  return readText(account?.name) || `${providerLabel(account?.provider)} 账户`;
+}
+
+function isAccountSelected(account) {
+  const id = accountID(account);
+  return Boolean(id && selectedAccountIDSet.value.has(id));
+}
+
+function setAccountSelected(account, selected) {
+  const id = accountID(account);
+  if (!id || accountBulkBusy.value) return;
+  const ids = new Set(selectedAccountIDs.value);
+  if (selected) ids.add(id);
+  else ids.delete(id);
+  selectedAccountIDs.value = [...ids];
+}
+
+function setVisibleAccountsSelected(selected) {
+  if (accountBulkBusy.value) return;
+  const ids = new Set(selectedAccountIDs.value);
+  for (const account of visibleAccounts.value) {
+    const id = accountID(account);
+    if (!id) continue;
+    if (selected) ids.add(id);
+    else ids.delete(id);
+  }
+  selectedAccountIDs.value = [...ids];
+}
+
+function clearAccountSelection() {
+  if (accountBulkBusy.value) return;
+  selectedAccountIDs.value = [];
+}
+
+function clearAccountSearch() {
+  accountDirectorySearch.value = "";
+}
+
+function clearAccountDirectoryFilters() {
+  accountDirectorySearch.value = "";
+  accountDirectoryProvider.value = "all";
+  accountDirectoryStatus.value = "all";
+  accountDirectorySort.value = "priority";
+}
+
+async function updateSelectedAccountsEnabled(enabled) {
+  if (accountBulkBusy.value) return;
+  const targets = selectedAccounts.value.filter((account) => accountIsEnabled(account) !== enabled);
+  if (!targets.length) return;
+
+  const action = enabled ? "启用" : "暂停";
+  const failures = [];
+  let succeeded = 0;
+  accountBulkBusy.value = true;
+  accountBulkAction.value = enabled ? "enable" : "pause";
+  accountBulkMessage.value = { tone: "progress", message: `正在${action} ${targets.length} 个已选账户…` };
+  try {
+    // Use the established single-account bridge serially. It preserves native
+    // read-after-write refreshes instead of introducing a second, unverified
+    // batch persistence API solely for this local directory.
+    for (let index = 0; index < targets.length; index += 1) {
+      const account = targets[index];
+      accountBulkMessage.value = { tone: "progress", message: `正在${action} ${index + 1} / ${targets.length}：${accountSelectionName(account)}` };
+      try {
+        const result = await setUpstreamAccountEnabled(account.id, enabled);
+        if (result?.ok) succeeded += 1;
+        else failures.push(accountID(account));
+      } catch {
+        failures.push(accountID(account));
+      }
+    }
+    await loadAccounts();
+    selectedAccountIDs.value = failures.filter(Boolean);
+    accountBulkMessage.value = failures.length
+      ? { tone: "warning", message: `已${action} ${succeeded} 个账户；${failures.length} 个未更新，仍保留为已选状态，可检查后重试。` }
+      : { tone: "success", message: `已${action} ${succeeded} 个账户。` };
+  } finally {
+    accountBulkBusy.value = false;
+    accountBulkAction.value = "";
+  }
+}
+
 async function toggleAccount(account) {
-  const result = await setUpstreamAccountEnabled(account.id, !account.enabled);
-  if (!result?.ok) editorError.value = result?.message || "账户状态更新失败";
+  try {
+    const result = await setUpstreamAccountEnabled(account.id, !accountIsEnabled(account));
+    if (!result?.ok) accountBulkMessage.value = { tone: "error", message: result?.message || "账户状态更新失败" };
+  } catch {
+    accountBulkMessage.value = { tone: "error", message: "账户状态更新失败，请检查本地代理后重试。" };
+  }
 }
 
 async function removeAccount() {
@@ -1496,10 +1798,11 @@ onBeforeUnmount(() => {
   <div class="page fade-up">
     <div class="row between page-head" style="gap: 12px">
       <div class="col" style="gap: 2px">
-        <div class="t-title">上游账户池</div>
-        <div class="t-caption">每张账户卡点“同步全部模型”即可加入 Antigravity；同一上游的同名模型会自动组成账户池。</div>
+        <div class="t-title">XIASS 上游账户中心</div>
+		<div class="t-caption">统一管理 OAuth、令牌和 API Key。账户可驱动 Antigravity 的本地代理与模型账户池；Claude Code 仅可复用已启用且 Messages 兼容的账户。这不是外部客户端的原生账号登录或会话导入。</div>
       </div>
       <div class="row" style="gap: 7px">
+        <Button variant="tinted" @click="openOAuthNew">OAuth 登录</Button>
         <Button variant="plain" @click="openJSONImport()">导入 JSON</Button>
         <Button variant="filled" @click="openNew">添加账户</Button>
       </div>
@@ -1507,20 +1810,111 @@ onBeforeUnmount(() => {
 
     <div v-if="!state.accounts.length && !state.accountsLoading" class="empty">
       <div class="empty-icon">◌</div>
-      <div class="t-headline">还没有上游账户</div>
-      <div class="t-caption" style="margin-top: 5px">添加一次凭据后，可把多个模型绑定到同一账户或账户池。</div>
+      <div class="t-headline">还没有 XIASS 上游账户</div>
+      <div class="t-caption" style="margin-top: 5px">可先通过 OAuth 授权，也可添加 API Key / 令牌或导入账户凭据；之后把模型绑定到该账户或账户池。不会扫描、接管或导入其他客户端的登录会话。</div>
       <div class="row" style="gap: 8px; margin-top: 14px">
+        <Button variant="tinted" @click="openOAuthNew">OAuth 登录</Button>
         <Button variant="tinted" @click="openJSONImport()">导入账户 JSON</Button>
         <Button variant="filled" @click="openNew">添加账户</Button>
       </div>
     </div>
 
-    <div v-else class="grid">
-      <article v-for="account in state.accounts" :key="account.id" class="account-card" :class="{ paused: !account.enabled }">
+    <template v-else>
+      <section class="account-directory" aria-label="账户筛选与批量操作">
+        <div class="account-directory-toolbar">
+          <div class="account-directory-filters" role="search" aria-label="筛选账户">
+            <label class="directory-field directory-search-field">
+              <span class="t-footnote">搜索账户</span>
+              <input
+                v-model="accountDirectorySearch"
+                type="search"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="名称、身份、地址或备注"
+                aria-describedby="account-directory-summary"
+                @keydown.esc.prevent="clearAccountSearch"
+              />
+            </label>
+            <label class="directory-field">
+              <span class="t-footnote">提供商</span>
+              <select v-model="accountDirectoryProvider">
+                <option v-for="option in accountDirectoryProviderOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+            </label>
+            <label class="directory-field">
+              <span class="t-footnote">状态</span>
+              <select v-model="accountDirectoryStatus">
+                <option v-for="option in ACCOUNT_STATUS_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+            </label>
+            <label class="directory-field">
+              <span class="t-footnote">排序</span>
+              <select v-model="accountDirectorySort">
+                <option v-for="option in ACCOUNT_SORT_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+            </label>
+          </div>
+          <div class="account-directory-meta">
+            <span id="account-directory-summary" class="directory-summary" role="status" aria-live="polite">{{ accountDirectorySummary }}</span>
+            <Button v-if="accountDirectoryFiltersActive" variant="plain" size="sm" @click="clearAccountDirectoryFilters">清除筛选</Button>
+          </div>
+        </div>
+
+        <div class="account-bulk-toolbar" role="group" aria-label="批量更新账户状态">
+          <label class="directory-select-all">
+            <input
+              type="checkbox"
+              :checked="allVisibleAccountsSelected"
+              :indeterminate="selectedVisibleAccountCount > 0 && !allVisibleAccountsSelected"
+              :disabled="!visibleAccounts.length || accountBulkBusy"
+              @change="setVisibleAccountsSelected($event.target.checked)"
+            />
+            <span>选择当前结果</span>
+          </label>
+          <span class="directory-selection-copy">{{ selectedAccountCount ? `已选 ${selectedAccountCount} 个账户` : "选择账户后可批量更新状态" }}</span>
+          <div class="account-bulk-actions">
+            <Button variant="tinted" size="sm" :loading="accountBulkAction === 'enable'" :disabled="!selectedPausedAccountCount || accountBulkBusy" @click="updateSelectedAccountsEnabled(true)">批量启用<span v-if="selectedPausedAccountCount"> {{ selectedPausedAccountCount }}</span></Button>
+            <Button variant="plain" size="sm" :loading="accountBulkAction === 'pause'" :disabled="!selectedEnabledAccountCount || accountBulkBusy" @click="updateSelectedAccountsEnabled(false)">批量暂停<span v-if="selectedEnabledAccountCount"> {{ selectedEnabledAccountCount }}</span></Button>
+            <Button v-if="selectedAccountCount" variant="plain" size="sm" :disabled="accountBulkBusy" @click="clearAccountSelection">清除选择</Button>
+          </div>
+        </div>
+        <div
+          v-if="accountBulkMessage"
+          class="account-bulk-feedback"
+          :class="accountBulkMessage.tone"
+          role="status"
+          aria-live="polite"
+        >{{ accountBulkMessage.message }}</div>
+      </section>
+
+      <div v-if="state.accountsLoading && !state.accounts.length" class="account-directory-loading" role="status" aria-live="polite">正在读取账户…</div>
+      <div v-else-if="!visibleAccounts.length" class="empty filter-empty" role="status">
+        <div class="t-headline">没有找到匹配账户</div>
+        <div class="t-caption" style="margin-top: 5px">可调整搜索、提供商或状态筛选；这些条件只在当前窗口本地生效。</div>
+        <div class="row" style="gap: 8px; margin-top: 14px">
+          <Button variant="tinted" @click="clearAccountDirectoryFilters">清除筛选</Button>
+          <Button variant="filled" @click="openNew">添加账户</Button>
+        </div>
+      </div>
+
+      <div v-else class="grid">
+      <article v-for="account in visibleAccounts" :key="account.id" class="account-card" :class="{ paused: !accountIsEnabled(account), selected: isAccountSelected(account) }">
         <div class="row between" style="align-items: flex-start; gap: 10px">
-          <div class="grow col" style="gap: 3px; min-width: 0">
-            <div class="t-headline truncate">{{ account.name || providerLabel(account.provider) + ' 账户' }}</div>
-            <div class="mono truncate">{{ accountDisplayAPIURL(account) }}</div>
+          <div class="row grow" style="align-items: flex-start; gap: 9px; min-width: 0">
+            <label class="account-select-control">
+              <input
+                type="checkbox"
+                :checked="isAccountSelected(account)"
+                :disabled="accountBulkBusy"
+                :aria-label="`选择账户：${accountSelectionName(account)}`"
+                @change="setAccountSelected(account, $event.target.checked)"
+              />
+              <span class="sr-only">选择账户：{{ accountSelectionName(account) }}</span>
+            </label>
+            <div class="grow col" style="gap: 3px; min-width: 0">
+              <div class="t-headline truncate">{{ account.name || providerLabel(account.provider) + ' 账户' }}</div>
+              <div class="mono truncate">{{ accountDisplayAPIURL(account) }}</div>
+            </div>
           </div>
           <Badge :tone="providerTone(account.provider)" :label="providerLabel(account.provider)" />
         </div>
@@ -1551,6 +1945,7 @@ onBeforeUnmount(() => {
           :loading="quotaRefreshBusy === account.id"
           :show-identity="false"
           @refresh="refreshQuota(account)"
+		  @view-requests="openAccountUsageDetails(account)"
         />
         <div v-else class="quota-band" :class="{ available: account.quota?.available }">
           <div class="quota-copy">
@@ -1570,16 +1965,25 @@ onBeforeUnmount(() => {
           <Button variant="filled" size="sm" :loading="syncingAccountID === account.id" :disabled="Boolean(syncingAccountID) && syncingAccountID !== account.id" :title="syncingAccountID && syncingAccountID !== account.id ? '请等待当前账户同步完成' : ''" @click="syncAllAccountModels(account)">同步全部模型</Button>
           <Button variant="tinted" size="sm" @click="openAccountTest(account)">测试连接</Button>
           <Button v-if="account.type === 'oauth'" variant="plain" size="sm" :loading="tokenRefreshBusy === account.id" @click="refreshOAuthToken(account)">刷新令牌</Button>
-          <Button variant="plain" size="sm" @click="toggleAccount(account)">{{ account.enabled ? '暂停' : '恢复' }}</Button>
+          <Button variant="plain" size="sm" @click="toggleAccount(account)">{{ accountIsEnabled(account) ? '暂停' : '恢复' }}</Button>
           <Button variant="plain" size="sm" @click="openEdit(account)">编辑</Button>
           <Button variant="danger" size="sm" @click="confirmDelete = account">删除</Button>
         </div>
       </article>
-    </div>
+      </div>
+    </template>
 
     <Modal :open="editorOpen" :title="isExisting ? '编辑上游账户' : '添加上游账户'" wide persistent @close="closeEditor">
       <div class="col editor" style="gap: 15px">
 		<section class="section">
+          <div class="credential-entry-selector">
+            <span class="t-footnote">添加方式</span>
+            <SegmentedControl
+              :options="credentialEntryOptions"
+              :model-value="credentialEntryMode"
+              @update:model-value="selectCredentialEntryMode"
+            />
+          </div>
           <span class="t-footnote">账户类型与协议</span>
           <template v-if="showOAuthCredentialTypeChooser">
             <SegmentedControl :options="providerOptions" :model-value="form.provider" @update:model-value="onProviderChange" />
@@ -1590,15 +1994,15 @@ onBeforeUnmount(() => {
               </select>
             </label>
             <div v-if="isOAuthAuthorizationLogin" class="row" style="justify-content: flex-end">
-              <Button variant="plain" size="sm" @click="oauthCredentialSwitchOpen = false">返回一键登录</Button>
+              <Button variant="plain" size="sm" @click="oauthCredentialSwitchOpen = false">返回 OAuth 预设</Button>
             </div>
           </template>
           <div v-else class="oauth-entry-summary">
             <div>
-              <div class="t-headline">一键 OAuth 登录</div>
-              <div class="t-caption">无需填写 API 地址、名称或 API Key；授权成功后会自动保存为可调度账户。</div>
+              <div class="t-headline">OAuth 账户连接</div>
+              <div class="t-caption">从安全预设开始；每项会明确标注一键回调、手动回调或需使用自己的公开 Client ID。授权成功后会自动保存为可调度账户。</div>
             </div>
-            <Button variant="plain" size="sm" @click="oauthCredentialSwitchOpen = true">切换其他登录/凭据方式</Button>
+            <Button variant="plain" size="sm" @click="oauthCredentialSwitchOpen = true">高级凭据方式</Button>
           </div>
 
           <template v-if="showOAuthAccountFields">
@@ -1620,7 +2024,7 @@ onBeforeUnmount(() => {
 
 		<section v-if="isJSONImportTypeSelected" class="section json-import-box">
 		  <div class="t-headline">请通过 JSON 导入凭据</div>
-		  <div class="t-caption">auth.json、OAuth JSON 与账户凭据 JSON 会由导入器识别并安全保存，不能作为普通 API Key 直接提交。</div>
+		  <div class="t-caption">仅导入账户级 API Key、Access / Refresh Token、ID Token 与公开 OAuth Client ID。客户端密钥、Cookie、浏览器或桌面会话以及未知私有字段会被忽略。</div>
 		  <div class="row" style="justify-content: flex-end; gap: 7px">
 			<Button variant="tinted" @click="openJSONImport('请粘贴完整的账户 JSON；它将按凭据字段安全导入，而不会被当作普通 API Key。')">打开 JSON 导入</Button>
 		  </div>
@@ -1640,7 +2044,8 @@ onBeforeUnmount(() => {
           <Field v-if="showCustomHeaderName" label="认证请求头名称" hint="例如 X-API-Token" v-model="form.authHeader" placeholder="X-API-Token" mono />
           <label v-if="showAdditionalHeaders" class="text-field">
             <span class="t-footnote">附加请求头（可选 JSON）</span>
-            <textarea v-model="form.headersText" spellcheck="false" placeholder='{"X-Client":"XIASS-Tools"}'></textarea>
+            <span v-if="isExisting && form.hasPrivateHeaders && !headersTouched" class="t-caption">已保存的附加请求头不会显示；不编辑此框时保存会保留原值。编辑后将以新内容替换，清空并保存可删除。</span>
+            <textarea v-model="form.headersText" spellcheck="false" placeholder='{"X-Client":"XIASS-Tools"}' @input="headersTouched = true"></textarea>
           </label>
         </section>
         <section v-if="showSchedulingControls" class="section">
@@ -1667,6 +2072,21 @@ onBeforeUnmount(() => {
 			>{{ oauthLoginButtonLabel }}</Button>
 		  </div>
 
+		  <div v-if="isOAuthAuthorizationLogin && !oauthAdvancedOpen" class="oauth-account-draft">
+			<Field
+			  label="账户显示名称（可选）"
+			  hint="授权成功后会显示上游返回的身份；这里的名称仅用于本地账户池区分。"
+			  v-model="form.name"
+			  placeholder="例如 开发账号"
+			/>
+			<Field
+			  label="备注（可选）"
+			  hint="仅保存在本机账户池，不会发送到 OAuth 或模型上游。"
+			  v-model="form.notes"
+			  placeholder="例如 个人订阅"
+			/>
+		  </div>
+
 			<div v-if="isOAuthAuthorizationLogin" class="oauth-profiles">
 			  <div class="row between" style="gap: 8px">
 				<div>
@@ -1686,7 +2106,10 @@ onBeforeUnmount(() => {
 				  :aria-pressed="selectedOAuthProfileID === profile.id"
 				  @click="selectOAuthProfile(profile)"
 				>
-				  <span class="oauth-profile-title">{{ profile.label }}</span>
+				  <span class="oauth-profile-head">
+					<span class="oauth-profile-title">{{ profile.label }}</span>
+					<span class="oauth-profile-mode" :class="oauthLoginProfileMode(profile)">{{ oauthProfileModeLabel(profile) }}</span>
+				  </span>
 				  <span v-if="profile.description" class="oauth-profile-description">{{ profile.description }}</span>
 				  <span v-else class="oauth-profile-description">使用该提供方的安全 OAuth 登录流程</span>
 				</button>
@@ -1694,13 +2117,28 @@ onBeforeUnmount(() => {
 			  <div v-else class="oauth-profile-empty">{{ oauthProfilesError }}</div>
 			  <div class="row" style="flex-wrap: wrap; gap: 7px">
 				<Button variant="plain" size="sm" @click="useCustomOAuth">高级自定义 OAuth</Button>
-				<Button variant="plain" size="sm" @click="openJSONImport('请粘贴完整的 auth.json / OAuth JSON；导入器会安全提取令牌与账户信息。')">导入 OAuth JSON</Button>
+				<Button variant="plain" size="sm" @click="openJSONImport('请粘贴你有权使用的账户凭据 JSON；导入器只保留账户级令牌与公开 OAuth 配置。')">导入账户凭据 JSON</Button>
 				<Button variant="plain" size="sm" @click="onTypeChange('refresh_token')">使用 Refresh Token</Button>
 			  </div>
 			  <div v-if="selectedOAuthProfile" class="oauth-profile-selected">
-				<template v-if="selectedOAuthProfile.requiresClientId">已选择 <b>{{ selectedOAuthProfile.label }}</b>。该预设需要你的公开 Client ID；请主动打开“高级自定义 OAuth”后填写。</template>
+				<template v-if="oauthLoginProfileMode(selectedOAuthProfile) === 'bring-your-own-client'">
+				  <span>已选择 <b>{{ selectedOAuthProfile.label }}</b>。只需填写你自己的公开 Client ID；不会要求或保存 Client Secret。</span>
+				</template>
+				<template v-else-if="oauthLoginProfileMode(selectedOAuthProfile) === 'manual-callback'">已选择 <b>{{ selectedOAuthProfile.label }}</b>。浏览器授权后，请粘贴完整回调地址或授权码完成保存。</template>
 				<template v-else>已选择 <b>{{ selectedOAuthProfile.label }}</b>。授权成功后会自动保存为可调度账户。</template>
 			  </div>
+			  <div class="oauth-boundary-note">
+				<strong>授权范围</strong>
+				<span>这里管理的是 XIASS Tools 的上游账户，不会读取、替换或导出 Codex、Claude Code、Cursor、Windsurf 或 Antigravity 的原生登录会话。</span>
+			  </div>
+			  <Field
+				v-if="profileRequiresClientID"
+				label="我的公开 Client ID"
+				hint="首次填写你自己注册的 Desktop Client ID 后会保存在本机，后续可直接授权；不需要 Client Secret。"
+				v-model="form.oauth.clientId"
+				placeholder="Desktop OAuth Client ID"
+				mono
+			  />
 			</div>
 
 			<div v-if="showOAuthCustomFields" class="oauth-custom-fields">
@@ -1709,7 +2147,7 @@ onBeforeUnmount(() => {
 				  <div class="t-headline">高级自定义 OAuth</div>
 				  <div class="t-caption">仅填写你自己注册的公开客户端；不需要也不应填写客户端密钥。</div>
 				</div>
-				<Button v-if="isOAuthAuthorizationLogin && oauthAdvancedOpen" variant="plain" size="sm" @click="returnToSimpleOAuthLogin">返回一键登录</Button>
+				<Button v-if="isOAuthAuthorizationLogin && oauthAdvancedOpen" variant="plain" size="sm" @click="returnToSimpleOAuthLogin">返回 OAuth 预设</Button>
 			  </div>
 			  <div class="two-col">
 				<Field label="授权地址" v-model="form.oauth.authorizationUrl" placeholder="https://provider.example.com/oauth/authorize" mono />
@@ -1737,6 +2175,7 @@ onBeforeUnmount(() => {
 				  <div class="t-footnote">正在等待浏览器授权完成</div>
 				  <div class="t-caption">自动回调优先。请保持此窗口打开；若浏览器没有自动返回，可在下方粘贴完整回调地址或 code 继续完成。</div>
 				</div>
+				<OAuthTOTPQuickPicker :open="Boolean(oauthSession)" />
 				<label v-if="showOAuthManualFallback" class="text-field">
 				  <span class="t-footnote">{{ oauthManualCompletionRequired ? '回调 URL 或授权码' : '手动兜底：回调 URL 或授权码' }}</span>
 				  <textarea v-model="oauthCallback" spellcheck="false" placeholder="粘贴浏览器跳转后的完整地址，或仅粘贴 code"></textarea>
@@ -1804,16 +2243,31 @@ onBeforeUnmount(() => {
       :error-message="accountTestError"
       :generated-images="accountTestImages"
       :default-model-id="accountTestDefaultModelID"
+	  :show-prompt="false"
       @test="runAccountTest"
 		@cancel="cancelAccountTest"
       @close="closeAccountTest"
       @preview-image="previewAccountTestImage"
     />
 
+	<Modal :open="Boolean(accountUsageDetailsAccount)" title="本机转发统计" @close="accountUsageDetailsAccount = null">
+	  <div v-if="accountUsageDetailsAccount" class="usage-details-modal">
+		<div class="usage-details-heading">
+		  <div class="t-headline truncate">{{ accountUsageDetailsAccount.name || accountIdentity(accountUsageDetailsAccount) }}</div>
+		  <div class="t-caption">仅显示 XIASS Tools 在此账户上的聚合转发统计；不会保存或展示请求文本、文件、图片、凭据或聊天内容。</div>
+		</div>
+		<dl class="usage-detail-grid">
+		  <div v-for="row in accountUsageDetailRows" :key="row.label"><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div>
+		  <div><dt>上次成功</dt><dd>{{ formatTime(accountUsageDetailsAccount.lastSuccessAt) }}</dd></div>
+		</dl>
+	  </div>
+	  <template #footer><Button variant="filled" @click="accountUsageDetailsAccount = null">关闭</Button></template>
+	</Modal>
+
     <Modal :open="importOpen" title="导入账户 JSON" wide persistent @close="importOpen = false">
       <div class="col" style="gap: 10px">
         <div class="t-body">支持单账户对象、数组、<code>{"accounts": [...]}</code>、<code>{"data": [...]}</code>，以及 XIASS 风格的 <code>credentials</code>、<code>access_token</code>、<code>api_key</code> 字段。</div>
-        <div class="t-caption">导入的 OAuth/Token 凭据仅写入本机私有存储；不会回显到界面或日志。</div>
+        <div class="t-caption">仅粘贴你有权使用的账户级 API / OAuth 凭据。客户端密钥、Cookie、浏览器或桌面会话以及未知私有字段不会导入；令牌不会回显到界面或日志。</div>
         <textarea v-model="importText" class="import-text" spellcheck="false" placeholder='{"provider":"openai","api_key":"sk-...","base_url":"https://api.xiass.com"}'></textarea>
         <div v-if="importNotice" class="notice-box">{{ importNotice }}</div>
         <div v-if="importError" class="err-box">{{ importError }}</div>
@@ -1838,8 +2292,36 @@ onBeforeUnmount(() => {
 .page { display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 28px; height: 100%; overflow-y: auto; }
 .page > * { flex-shrink: 0; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(286px, 1fr)); gap: 12px; }
+.account-directory { display: flex; flex-direction: column; gap: 9px; padding: 11px; border: 1px solid var(--separator); border-radius: var(--r-lg); background: color-mix(in srgb, var(--bg-card) 86%, var(--bg-inset)); box-shadow: var(--shadow-card); }
+.account-directory-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }
+.account-directory-filters { flex: 1 1 auto; display: grid; grid-template-columns: minmax(190px, 1.5fr) repeat(3, minmax(114px, .72fr)); gap: 8px; min-width: 0; }
+.directory-field { display: grid; min-width: 0; gap: 5px; }
+.directory-field input, .directory-field select { width: 100%; height: 34px; min-width: 0; padding: 0 10px; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); color: var(--text-primary); background: var(--bg-inset); font: 12px var(--font-ui); outline: none; }
+.directory-field input { padding-right: 8px; }
+.directory-field input::placeholder { color: var(--text-tertiary); }
+.directory-field input:focus-visible, .directory-field select:focus-visible, .account-select-control input:focus-visible, .directory-select-all input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.account-directory :deep(.btn:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.account-directory-meta { flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 7px; min-height: 34px; }
+.directory-summary, .directory-selection-copy { color: var(--text-tertiary); font-size: 11.5px; white-space: nowrap; }
+.account-bulk-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 37px; padding: 7px 9px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-inset); }
+.directory-select-all { display: inline-flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 12px; cursor: pointer; user-select: none; }
+.directory-select-all input, .account-select-control input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.directory-select-all input:disabled, .account-select-control input:disabled { cursor: not-allowed; }
+.account-bulk-actions { display: flex; flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.account-bulk-feedback { padding: 8px 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-secondary); background: var(--bg-inset); font-size: 11.5px; line-height: 1.45; }
+.account-bulk-feedback.progress { border-color: var(--accent-border); color: var(--accent-strong); background: var(--accent-soft); }
+.account-bulk-feedback.success { border-color: color-mix(in srgb, var(--green) 45%, var(--separator)); color: var(--green); background: color-mix(in srgb, var(--green) 10%, var(--bg-inset)); }
+.account-bulk-feedback.warning { border-color: color-mix(in srgb, var(--orange) 45%, var(--separator)); color: var(--orange); background: color-mix(in srgb, var(--orange) 10%, var(--bg-inset)); }
+.account-bulk-feedback.error { border-color: color-mix(in srgb, var(--red) 45%, var(--separator)); color: var(--red); background: color-mix(in srgb, var(--red) 10%, var(--bg-inset)); }
+.account-directory-loading { display: grid; min-height: 172px; place-items: center; border: 1px dashed var(--separator-strong); border-radius: var(--r-lg); color: var(--text-secondary); background: var(--bg-card); font-size: 13px; }
+.filter-empty { min-height: 200px; }
+.credential-entry-selector { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 11px; }
+.credential-entry-selector :deep(.seg) { max-width: 100%; overflow-x: auto; }
 .account-card { background: var(--bg-card); border: 1px solid var(--separator); border-radius: var(--r-lg); padding: 14px; box-shadow: var(--shadow-card); backdrop-filter: blur(16px); }
 .account-card.paused { opacity: .68; }
+.account-card.selected { border-color: var(--accent-border); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-card); }
+.account-select-control { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 18px; padding-top: 2px; cursor: pointer; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .account-actions { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 12px; }
 .account-actions :deep(.btn) { max-width: 100%; min-width: 0; }
 .mono { color: var(--text-tertiary); font-size: 11px; }
@@ -1862,6 +2344,12 @@ onBeforeUnmount(() => {
 .quota-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .quota-text { color: var(--text-secondary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quota-meta { color: var(--text-tertiary); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-details-modal { display: grid; gap: 13px; }
+.usage-details-heading { display: grid; gap: 4px; }
+.usage-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.usage-detail-grid > div { min-width: 0; display: grid; gap: 4px; padding: 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-inset); }
+.usage-detail-grid dt { color: var(--text-tertiary); font-size: 10.5px; }
+.usage-detail-grid dd { overflow: hidden; margin: 0; color: var(--text-primary); font: 650 14px var(--font-num); text-overflow: ellipsis; white-space: nowrap; }
 .empty { flex: 1; min-height: 270px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; text-align: center; border: 1px dashed var(--separator-strong); border-radius: var(--r-lg); }
 .empty-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; font-size: 28px; color: var(--accent-strong); background: var(--accent-soft); margin-bottom: 13px; }
 .editor { padding-bottom: 2px; }
@@ -1870,22 +2358,31 @@ onBeforeUnmount(() => {
 .hint-box { background: color-mix(in srgb, var(--blue-soft) 28%, var(--bg-card)); }
 .oauth-box { background: color-mix(in srgb, var(--blue-soft) 24%, var(--bg-card)); }
 .oauth-entry-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border: 1px solid var(--accent-border); border-radius: var(--r-sm); background: color-mix(in srgb, var(--accent-soft) 36%, var(--bg-card)); }
-.oauth-profiles, .oauth-custom-fields { display: flex; flex-direction: column; gap: 9px; padding: 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
+.oauth-profiles, .oauth-custom-fields, .oauth-account-draft { display: flex; flex-direction: column; gap: 9px; padding: 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); background: var(--bg-card); }
+.oauth-account-draft { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+@media (max-width: 620px) { .oauth-account-draft { grid-template-columns: 1fr; } }
 .oauth-profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 7px; }
-.oauth-profile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 68px; padding: 9px 10px; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); color: var(--text-primary); background: var(--bg-inset); text-align: left; transition: border-color .16s var(--ease), background .16s var(--ease), transform .14s var(--spring); }
+.oauth-profile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 74px; padding: 9px 10px; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); color: var(--text-primary); background: var(--bg-inset); text-align: left; transition: border-color .16s var(--ease), background .16s var(--ease), transform .14s var(--spring); }
 .oauth-profile:hover { border-color: var(--accent-border); background: var(--accent-soft); }
 .oauth-profile:active { transform: scale(.985); }
 .oauth-profile.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent); }
+.oauth-profile-head { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 7px; }
 .oauth-profile-title { font-size: 12.5px; font-weight: 650; }
-.oauth-profile-description { color: var(--text-tertiary); font-size: 10.5px; line-height: 1.35; }
-.oauth-profile-empty, .oauth-profile-selected, .oauth-auto-callback { padding: 8px 9px; border: 1px dashed var(--separator-strong); border-radius: var(--r-sm); color: var(--text-secondary); font-size: 11.5px; line-height: 1.45; background: var(--bg-inset); }
-.oauth-profile-selected { border-style: solid; border-color: var(--accent-border); color: var(--accent-strong); background: var(--accent-soft); }
+.oauth-profile-mode { flex: 0 0 auto; border: 1px solid var(--separator); border-radius: 999px; color: var(--text-tertiary); padding: 3px 6px; font-size: 10.5px; font-weight: 680; line-height: 1.15; }
+.oauth-profile-mode.automatic-callback { border-color: color-mix(in srgb, var(--green) 42%, var(--separator)); color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); }
+.oauth-profile-mode.manual-callback { border-color: color-mix(in srgb, var(--orange) 42%, var(--separator)); color: var(--orange); background: color-mix(in srgb, var(--orange) 9%, transparent); }
+.oauth-profile-mode.bring-your-own-client { border-color: color-mix(in srgb, var(--blue) 42%, var(--separator)); color: var(--blue); background: color-mix(in srgb, var(--blue) 9%, transparent); }
+.oauth-profile-description { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.oauth-profile-empty, .oauth-profile-selected, .oauth-auto-callback { padding: 9px 10px; border: 1px dashed var(--separator-strong); border-radius: var(--r-sm); color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; background: var(--bg-inset); }
+.oauth-profile-selected { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-style: solid; border-color: var(--accent-border); color: var(--accent-strong); background: var(--accent-soft); }
+.oauth-boundary-note { display: grid; gap: 3px; border-left: 2px solid var(--separator-strong); color: var(--text-secondary); padding: 6px 0 6px 9px; font-size: 12px; line-height: 1.5; }
+.oauth-boundary-note strong { color: var(--text-primary); font-size: 12px; }
 .oauth-auto-callback { display: flex; flex-direction: column; gap: 4px; border-style: solid; border-color: var(--accent-border); background: color-mix(in srgb, var(--accent-soft) 56%, var(--bg-card)); }
 .oauth-result { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--accent-border); border-radius: var(--r-sm); background: var(--bg-card); }
-.oauth-link { display: block; max-height: 74px; overflow: auto; padding: 8px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-secondary); font-size: 11px; line-height: 1.45; word-break: break-all; background: var(--bg-inset); }
+.oauth-link { display: block; max-height: 86px; overflow: auto; padding: 9px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-secondary); font-size: 12px; line-height: 1.5; word-break: break-all; background: var(--bg-inset); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.compact-label { color: var(--text-tertiary); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
-.fixed-auth-row { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 0 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-tertiary); background: var(--bg-inset); font-size: 11px; }.fixed-auth-row code { color: var(--text-secondary); font-size: 11px; }
+.compact-label { color: var(--text-secondary); font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; }
+.fixed-auth-row { display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 0 10px; border: 1px solid var(--separator); border-radius: var(--r-sm); color: var(--text-secondary); background: var(--bg-inset); font-size: 12px; }.fixed-auth-row code { color: var(--text-primary); font-size: 12px; }
 .claude-path-control { display: flex; flex-direction: column; gap: 7px; padding: 9px; border: 1px dashed var(--separator-strong); border-radius: var(--r-sm); background: var(--bg-card); }
 .select-field, .text-field { display: flex; flex-direction: column; gap: 6px; }
 select, textarea { width: 100%; border: 1px solid var(--separator-strong); border-radius: var(--r-sm); background: var(--bg-inset); color: var(--text-primary); outline: none; }
@@ -1905,5 +2402,7 @@ select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3p
 .notice-box { color: var(--accent-strong); background: var(--accent-soft); border: 1px solid var(--accent-border); }
 .err-box { color: var(--red); background: rgba(255,69,58,.1); border: 1px solid rgba(255,69,58,.25); }
 .import-text { min-height: 220px; }
-@media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr) minmax(112px, auto); } .select-row code { display: none; } .page-head { align-items: flex-start; flex-direction: column; } .account-actions { justify-content: flex-start; } }
+@media (max-width: 900px) { .account-directory-toolbar { align-items: stretch; flex-direction: column; } .account-directory-meta { justify-content: space-between; } }
+@media (max-width: 700px) { .account-directory-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .directory-search-field { grid-column: span 2; } }
+@media (max-width: 620px) { .two-col, .usage-detail-grid { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr) minmax(112px, auto); } .select-row code { display: none; } .page-head { align-items: flex-start; flex-direction: column; } .account-actions { justify-content: flex-start; } .account-directory { padding: 10px; } .account-directory-filters { grid-template-columns: 1fr; } .directory-search-field { grid-column: auto; } .account-directory-meta, .account-bulk-actions { justify-content: flex-start; } .directory-selection-copy { flex-basis: 100%; white-space: normal; } }
 </style>

@@ -1,21 +1,21 @@
 :root,
 :root[data-theme="dark"] {
   --bg-base: #111a29;
-  --bg-sidebar: rgba(17, 28, 46, 0.94);
-  --bg-elevated: #172235;
-  --bg-card: rgba(29, 42, 61, 0.84);
+  --bg-sidebar: rgba(15, 27, 45, 0.97);
+  --bg-elevated: #17263a;
+  --bg-card: rgba(29, 44, 65, 0.94);
   --bg-card-hover: #26364d;
-  --bg-inset: rgba(10, 18, 31, 0.58);
+  --bg-inset: rgba(10, 20, 35, 0.72);
   --bg-fill: rgba(148, 163, 184, 0.12);
   --bg-fill-hover: rgba(148, 163, 184, 0.2);
-  --topbar-bg: rgba(17, 26, 41, 0.74);
+  --topbar-bg: rgba(15, 27, 45, 0.9);
   --modal-bg: rgba(23, 34, 53, 0.96);
-  --separator: rgba(255, 255, 255, 0.08);
-  --separator-strong: rgba(255, 255, 255, 0.15);
+  --separator: rgba(197, 216, 240, 0.1);
+  --separator-strong: rgba(197, 216, 240, 0.18);
   --text-primary: #f8fafc;
-  --text-secondary: rgba(226, 232, 240, 0.68);
-  --text-tertiary: rgba(203, 213, 225, 0.46);
-  --text-quaternary: rgba(203, 213, 225, 0.28);
+  --text-secondary: rgba(226, 232, 240, 0.82);
+  --text-tertiary: rgba(203, 213, 225, 0.68);
+  --text-quaternary: rgba(203, 213, 225, 0.5);
   --accent: #f59b48;
   --accent-hover: #ffad62;
   --accent-strong: #ffb86f;
@@ -52,9 +52,9 @@
   --separator: rgba(48, 65, 91, 0.1);
   --separator-strong: rgba(48, 65, 91, 0.18);
   --text-primary: #192337;
-  --text-secondary: rgba(39, 55, 81, 0.7);
-  --text-tertiary: rgba(55, 72, 98, 0.5);
-  --text-quaternary: rgba(55, 72, 98, 0.32);
+  --text-secondary: rgba(32, 46, 69, 0.82);
+  --text-tertiary: rgba(43, 58, 83, 0.68);
+  --text-quaternary: rgba(55, 72, 98, 0.5);
   --accent: #e98436;
   --accent-hover: #d97429;
   --accent-strong: #d87328;

@@ -1,4 +1,4 @@
-module antigravity-byok
+module antigravity-wf-assistant
 
 go 1.25.0
 

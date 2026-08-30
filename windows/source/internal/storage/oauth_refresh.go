@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/oauthflow"
+	"antigravity-wf-assistant/internal/oauthflow"
 )
 
 const oauthRefreshLeadTime = 5 * time.Minute

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/patcher"
+	"antigravity-wf-assistant/internal/patcher"
 )
 
 const antigravityInstallStateFile = "antigravity-install-state.json"

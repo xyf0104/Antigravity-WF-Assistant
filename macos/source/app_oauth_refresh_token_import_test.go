@@ -102,7 +102,7 @@ func TestCompleteOAuthAuthorizationAssignsNewAccountIDAndConsumesSession(t *test
 
 	app := &App{oauthSessions: make(map[string]*pendingOAuthSession)}
 	started := app.StartOAuthAuthorization(storage.UpstreamAccount{
-		Name: "OAuth browser login", Provider: "openai", Type: "oauth", APIURL: tokenServer.URL,
+		Name: "OAuth browser login", Notes: "local account-pool note", Provider: "openai", Type: "oauth", APIURL: tokenServer.URL,
 		AuthMode: "bearer", Enabled: true, MaxConcurrency: 1,
 		OAuth: storage.OAuthConfiguration{
 			AuthorizationURL: tokenServer.URL + "/authorize",
@@ -136,6 +136,12 @@ func TestCompleteOAuthAuthorizationAssignsNewAccountIDAndConsumesSession(t *test
 	}
 	if account.APIKey != "authorization-access-token" || credentialText(account.Credentials, "refresh_token") != "authorization-refresh-token" {
 		t.Fatalf("OAuth credentials were not stored: %+v", account)
+	}
+	if got, want := account.Name, "OAuth browser login"; got != want {
+		t.Fatalf("OAuth account display name = %q, want %q", got, want)
+	}
+	if got, want := account.Notes, "local account-pool note"; got != want {
+		t.Fatalf("OAuth account note = %q, want %q", got, want)
 	}
 	app.oauthMu.Lock()
 	_, retained := app.oauthSessions[started.SessionID]

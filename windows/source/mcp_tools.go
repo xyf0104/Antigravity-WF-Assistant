@@ -4,9 +4,9 @@ import (
 	"errors"
 	"strings"
 
-	"antigravity-byok/internal/agent"
-	"antigravity-byok/internal/agentdiscovery"
-	"antigravity-byok/internal/mcpconfig"
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/agentdiscovery"
+	"antigravity-wf-assistant/internal/mcpconfig"
 )
 
 // MCPConfigurationInput is intentionally limited to a remote endpoint. XIASS

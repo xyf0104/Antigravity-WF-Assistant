@@ -3,7 +3,7 @@ package proxy
 import (
 	"testing"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func toolAssociationGeminiRequest() map[string]any {

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"antigravity-byok/internal/codexconfig"
-	"antigravity-byok/internal/codexdesktop"
+	"antigravity-wf-assistant/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexdesktop"
 )
 
 // These regression tests exercise failure paths only. They never read a real

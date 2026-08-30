@@ -7,13 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"antigravity-byok/internal/agent"
+	"antigravity-wf-assistant/internal/agent"
 )
 
 type desktopSpec struct {
 	id             agent.ID
 	displayName    string
 	executableName string
+	productNames   []string
 	installNames   []string
 	dataNames      []string
 }
@@ -23,6 +24,7 @@ var (
 		id:             agent.CursorID,
 		displayName:    "Cursor",
 		executableName: "Cursor.exe",
+		productNames:   []string{"cursor"},
 		installNames:   []string{"Cursor"},
 		dataNames:      []string{"Cursor"},
 	}
@@ -30,6 +32,7 @@ var (
 		id:             agent.WindsurfID,
 		displayName:    "Windsurf",
 		executableName: "Windsurf.exe",
+		productNames:   []string{"windsurf"},
 		installNames:   []string{"Windsurf"},
 		dataNames:      []string{"Windsurf"},
 	}
@@ -37,6 +40,26 @@ var (
 
 func joinClaudeConfigPath(home string) string {
 	return filepath.Join(home, ".claude")
+}
+
+// knownClaudeCodeCLICandidates deliberately stays short and exact. Native
+// Windows Claude Code is commonly installed through npm, whose per-user shim
+// lives in APPDATA\\npm. The fallback is inspection-only: discovery never
+// invokes a .cmd or executable found here.
+func knownClaudeCodeCLICandidates(filesystem FileSystem) []string {
+	appData := strings.TrimSpace(filesystem.Getenv("APPDATA"))
+	home, homeErr := filesystem.UserHomeDir()
+	if appData == "" && homeErr == nil && strings.TrimSpace(home) != "" {
+		appData = filepath.Join(home, "AppData", "Roaming")
+	}
+	candidates := make([]string, 0, 2)
+	if appData != "" {
+		candidates = append(candidates,
+			filepath.Join(appData, "npm", "claude.cmd"),
+			filepath.Join(appData, "npm", "claude.exe"),
+		)
+	}
+	return uniqueNonEmpty(candidates)
 }
 
 func pathDirectory(path string) string {
@@ -201,6 +224,93 @@ func findFirstDirectory(filesystem FileSystem, candidates []string) (string, err
 		}
 	}
 	return "", firstErr
+}
+
+// validatePlatformDesktopSelection accepts only a native-dialog result whose
+// executable filename and public Electron product metadata both identify the
+// requested editor. It does not read client settings, auth/session files, or
+// workspace data, and it never runs the selected file to validate it.
+func validatePlatformDesktopSelection(filesystem FileSystem, spec desktopSpec, selectedPath string) (DesktopSelection, error) {
+	selectedPath = strings.Trim(strings.TrimSpace(selectedPath), `"`)
+	if selectedPath == "" || strings.ContainsRune(selectedPath, '\x00') || !filepath.IsAbs(selectedPath) {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	selectedPath = filepath.Clean(selectedPath)
+	executable := selectedPath
+	if !strings.EqualFold(filepath.Ext(selectedPath), ".exe") {
+		executable = filepath.Join(selectedPath, spec.executableName)
+	}
+	if !strings.EqualFold(filepath.Base(executable), spec.executableName) {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	root := filepath.Dir(executable)
+	present, err := existingDirectory(filesystem, root)
+	if err != nil || !present {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	present, err = existingRegularFile(filesystem, executable)
+	if err != nil || !present {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	version, matched := windowsDesktopProductMetadata(filesystem, root, spec)
+	if !matched {
+		return DesktopSelection{}, ErrDesktopSelectionRejected
+	}
+	return DesktopSelection{
+		agentID:      spec.id,
+		root:         root,
+		executable:   executable,
+		launchTarget: executable,
+		version:      version,
+	}, nil
+}
+
+type windowsDesktopProductManifest struct {
+	ApplicationName string `json:"applicationName"`
+	Name            string `json:"name"`
+	NameLong        string `json:"nameLong"`
+	NameShort       string `json:"nameShort"`
+	ProductName     string `json:"productName"`
+	Version         string `json:"version"`
+}
+
+func windowsDesktopProductMetadata(filesystem FileSystem, root string, spec desktopSpec) (string, bool) {
+	for _, candidate := range []string{
+		filepath.Join(root, "resources", "app", "product.json"),
+		filepath.Join(root, "resources", "app", "package.json"),
+	} {
+		data, err := filesystem.ReadFile(candidate)
+		if err != nil || len(data) == 0 || len(data) > 1<<20 {
+			continue
+		}
+		var metadata windowsDesktopProductManifest
+		if err := json.Unmarshal(data, &metadata); err != nil {
+			continue
+		}
+		if !matchesWindowsDesktopProduct(spec, metadata) {
+			continue
+		}
+		return parseVersion(metadata.Version), true
+	}
+	return "", false
+}
+
+func matchesWindowsDesktopProduct(spec desktopSpec, metadata windowsDesktopProductManifest) bool {
+	values := []string{
+		metadata.ApplicationName,
+		metadata.Name,
+		metadata.NameLong,
+		metadata.NameShort,
+		metadata.ProductName,
+	}
+	for _, value := range values {
+		for _, expected := range spec.productNames {
+			if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(expected)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func uniqueNonEmpty(values []string) []string {

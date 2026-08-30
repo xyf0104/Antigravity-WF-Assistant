@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func setupAntigravityIntegrationModel(t *testing.T, model storage.CustomModel) {

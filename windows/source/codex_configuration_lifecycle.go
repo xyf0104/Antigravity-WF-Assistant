@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"antigravity-byok/internal/codexconfig"
-	"antigravity-byok/internal/codexdesktop"
+	"antigravity-wf-assistant/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexdesktop"
 )
 
 // CodexConfigurationLifecycleInput is the explicit, opt-in transaction form

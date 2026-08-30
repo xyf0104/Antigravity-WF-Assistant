@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 	"github.com/andybalholm/brotli"
 )
 

@@ -3,8 +3,8 @@ package proxy
 import (
 	"strings"
 
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 )
 
 // isOpenAICodexOAuthModel identifies both an already-selected runtime account

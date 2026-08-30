@@ -27,6 +27,8 @@ test("Codex Desktop bridge feature-detects current and compatibility method name
   assert.match(bridge, /GetCodexDesktopStatus/);
   assert.match(bridge, /SelectCodexDesktopInstallation/);
   assert.match(bridge, /SelectCodexDesktopApp/);
+  assert.match(bridge, /SelectCodexDesktopInstallationPath/);
+  assert.match(bridge, /manualPath/);
   assert.match(bridge, /LaunchCodexDesktop/);
   assert.match(bridge, /StopCodexDesktop/);
   assert.match(bridge, /RestartCodexDesktop/);
@@ -40,6 +42,9 @@ test("Codex Desktop modal requires direct user actions and lifecycle confirmatio
   const template = desktopTemplate();
   assert.match(template, /Codex Desktop 协作/);
   assert.match(template, /选择并验证 App/);
+  assert.match(template, /自动检测不到？粘贴本机 App 路径/);
+  assert.match(template, /manualCodexDesktopPath/);
+  assert.match(template, /useManualCodexDesktopPath/);
   assert.match(template, /打开 Codex/);
   assert.match(template, /退出 Codex/);
   assert.match(template, /重新启动/);
@@ -70,7 +75,16 @@ test("Codex Desktop renderer keeps the native response redacted", () => {
   }
   assert.doesNotMatch(template, /desktopStatus\.(?:path|pid|processId|credentials|apiKey|token)/);
   assert.match(modalSource, /safeDesktopVersion/);
-  assert.match(modalSource, /不会展示安装路径、进程 ID、启动参数或账号信息/);
+  assert.match(modalSource, /不会写入状态、日志或诊断/);
+});
+
+test("pasted Codex Desktop paths are one-shot and never enter shared renderer state", () => {
+  const action = sourceSlice(modalSource, "async function useManualCodexDesktopPath", "async function runDesktopAction");
+  assert.match(action, /selectCodexDesktopPath\(selectedPath\)/);
+  assert.match(action, /manualCodexDesktopPath\.value = ""/);
+  assert.match(action, /selectedPath = ""/);
+  assert.doesNotMatch(action, /localStorage|sessionStorage|state\.|console\.(?:log|error|warn)/);
+  assert.match(modalSource, /onBeforeUnmount\(\(\) => \{\s*manualCodexDesktopPath\.value = ""/s);
 });
 
 test("provider changes guide a fresh safe history check instead of replaying history automatically", () => {

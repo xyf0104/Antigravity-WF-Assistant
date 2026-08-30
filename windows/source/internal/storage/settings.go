@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -23,6 +24,14 @@ type UpdateSettings struct {
 	SkippedVersion string `json:"skippedVersion"`
 }
 
+// OAuthSettings stores only non-secret convenience preferences. A public
+// desktop Client ID identifies an OAuth application; it is not an access
+// token, refresh token, or client secret. Tokens continue to live solely in
+// the account store / platform credential flow.
+type OAuthSettings struct {
+	GoogleDesktopClientID string `json:"googleDesktopClientId,omitempty"`
+}
+
 // AppSettings is persisted in the same private application directory as the
 // model list. SchemaVersion lets newly added options retain safe defaults for
 // installations created by earlier releases.
@@ -30,6 +39,7 @@ type AppSettings struct {
 	SchemaVersion  int                    `json:"schemaVersion"`
 	StreamRecovery StreamRecoverySettings `json:"streamRecovery"`
 	Updates        UpdateSettings         `json:"updates"`
+	OAuth          OAuthSettings          `json:"oauth"`
 }
 
 const appSettingsSchemaVersion = 1
@@ -67,7 +77,16 @@ func NormalizeAppSettings(settings AppSettings) AppSettings {
 	if settings.StreamRecovery.MaxDelaySeconds > 120 {
 		settings.StreamRecovery.MaxDelaySeconds = 120
 	}
+	settings.OAuth.GoogleDesktopClientID = normalizePublicOAuthClientID(settings.OAuth.GoogleDesktopClientID)
 	return settings
+}
+
+func normalizePublicOAuthClientID(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 512 || strings.ContainsAny(value, "\r\n\x00") {
+		return ""
+	}
+	return value
 }
 
 func appSettingsPath() string {

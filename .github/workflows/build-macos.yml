@@ -64,9 +64,21 @@ jobs:
         working-directory: macos/source/frontend
         run: node --test test/reasoningCapabilities.test.mjs
 
-      - name: Run complete frontend regression suite
+      # Wails bindings are generated during the native build below. Keep the
+      # binding contract test after generation so a clean checkout never
+      # mistakes an absent ignored artifact for a renderer regression.
+      - name: Run pre-native-build frontend regression suite
         working-directory: macos/source/frontend
-        run: node --test test/*.test.mjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=()
+          for test_file in test/*.test.mjs; do
+            [[ "$test_file" = "test/wailsBindings.verify.mjs" ]] && continue
+            tests+=("$test_file")
+          done
+          test "${#tests[@]}" -gt 0
+          node --test "${tests[@]}"
 
       - name: Run Go race tests
         run: go test -race ./...
@@ -74,8 +86,14 @@ jobs:
       - name: Run Go vet
         run: go vet ./...
 
+      - name: Remove verified stale app bundle
+        run: bash ./build/darwin/prepare-app-output.sh
+
       - name: Build Universal App
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -platform darwin/universal -trimpath -o "XIASS Tools"
+        # Wails otherwise preserves prior build/bin contents. A clean target is
+        # required so the signed app and installer cannot accidentally package
+        # an executable from an earlier local or CI build.
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -clean -platform darwin/universal -trimpath -o "XIASS Tools"
 
       - name: Verify generated Wails bindings
         working-directory: macos/source/frontend

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/proxyendpoint"
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/proxyendpoint"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 const (
@@ -290,12 +290,27 @@ func IsManagedListener() bool {
 
 func isManagedListenerAt(port int) bool {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/_antigravity-byok/health", port))
-	if err != nil {
-		return false
+	for _, probe := range []struct {
+		path   string
+		header string
+	}{
+		{path: "/_antigravity-wf/health", header: "X-Antigravity-WF"},
+		// Preserve managed-listener recognition during an upgrade from a
+		// previous helper. The legacy path is an input only; this build never
+		// writes it into a new patch or reports it as its identity.
+		{path: legacyProxyHealthPath(), header: "X-Antigravity-BYOK"},
+	} {
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, probe.path))
+		if err != nil {
+			continue
+		}
+		managed := resp.StatusCode == http.StatusOK && resp.Header.Get(probe.header) == "go-proxy"
+		resp.Body.Close()
+		if managed {
+			return true
+		}
 	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK && resp.Header.Get("X-Antigravity-BYOK") == "go-proxy"
+	return false
 }
 
 func OwnsListener() bool {
@@ -313,10 +328,18 @@ func readBody(r *http.Request) ([]byte, error) {
 // handleRequest is the top-level HTTP handler.
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
-	if path == "/_antigravity-byok/health" {
+	if path == "/_antigravity-wf/health" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("X-Antigravity-WF", "go-proxy")
+		_, _ = io.WriteString(w, `{"ok":true,"proxy":"antigravity-wf"}`)
+		return
+	}
+	if path == legacyProxyHealthPath() {
+		// An already-patched older Antigravity can continue through the new
+		// proxy until the user explicitly reapplies the current patch.
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("X-Antigravity-BYOK", "go-proxy")
-		_, _ = io.WriteString(w, `{"ok":true,"proxy":"antigravity-byok"}`)
+		_, _ = io.WriteString(w, `{"ok":true,"proxy":"legacy"}`)
 		return
 	}
 
@@ -351,11 +374,15 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 // cleanPatchedPath strips the path prefix inserted by the text and fixed-size
 // binary patch variants before a request is routed or passed through.
 func cleanPatchedPath(path string) string {
-	for _, prefix := range []string{
-		"/v1internal/antigravity-byok/",
-		"/v1internal/byokxxx/",
-		"/v1internal/byokxxx-sandbox/",
-	} {
+	prefixes := []string{
+		"/v1internal/antigravity-wf/",
+		"/v1internal/wfproxy/",
+		"/v1internal/wfproxy-sandbox/",
+	}
+	// Upgrade compatibility: accept requests from applications patched by a
+	// pre-WF release until the user reapplies the current patch.
+	prefixes = append(prefixes, legacyPatchedPrefixes()...)
+	for _, prefix := range prefixes {
 		if strings.HasPrefix(path, prefix) {
 			cleanPath := strings.TrimPrefix(path, prefix)
 			if strings.HasPrefix(cleanPath, "v1internal:") || strings.HasPrefix(cleanPath, "v1internal/") {

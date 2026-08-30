@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/oauthflow"
-	"antigravity-byok/internal/stats"
-	"antigravity-byok/internal/storage"
-	"antigravity-byok/internal/upstream"
+	"antigravity-wf-assistant/internal/oauthflow"
+	"antigravity-wf-assistant/internal/stats"
+	"antigravity-wf-assistant/internal/storage"
+	"antigravity-wf-assistant/internal/upstream"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -50,7 +50,8 @@ type OAuthCompletionResult struct {
 // estimate and is deliberately kept out of upstream_accounts.json.
 type UpstreamAccountView struct {
 	storage.UpstreamAccount
-	LocalUsage stats.AccountUsage `json:"localUsage"`
+	LocalUsage        stats.AccountUsage `json:"localUsage"`
+	HasPrivateHeaders bool               `json:"hasPrivateHeaders"`
 }
 
 // StartOAuthAuthorization creates a short-lived, provider-neutral PKCE
@@ -308,6 +309,10 @@ func (a *App) RefreshUpstreamAccountQuota(accountID string) upstream.QuotaResult
 	}
 	ctx, cancel := a.upstreamContext(30 * time.Second)
 	defer cancel()
+	account, err = refreshExplicitUpstreamAccount(ctx, account)
+	if err != nil {
+		return upstream.QuotaResult{Message: err.Error()}
+	}
 	result := upstream.FetchQuota(ctx, upstream.ConfigFromAccount(account), account.QuotaURL)
 	if result.OK {
 		if err := storage.SaveQuotaSnapshot(account.ID, result.Snapshot); err != nil {

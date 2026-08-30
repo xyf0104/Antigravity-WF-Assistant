@@ -3,7 +3,7 @@ package storage
 import (
 	"testing"
 
-	"antigravity-byok/internal/proxyendpoint"
+	"antigravity-wf-assistant/internal/proxyendpoint"
 )
 
 func TestProxyRuntimeStagesFallbackUntilExplicitCommit(t *testing.T) {

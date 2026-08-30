@@ -18,7 +18,7 @@ const props = defineProps({
   showIdentity: { type: Boolean, default: true },
 });
 
-const emit = defineEmits(["refresh", "view-details", "view-requests"]);
+const emit = defineEmits(["refresh", "view-requests"]);
 
 const accountQuota = computed(() => props.quota || props.account?.quota || {});
 const identity = computed(() => props.account?.identity || {});
@@ -41,10 +41,10 @@ const assignedModels = computed(() => {
 const usageValues = computed(() => {
   const usage = props.usage || props.account?.localUsage || props.account?.local_usage || {};
   const values = [
-    [usage.requests ?? usage.requestCount ?? usage.request_count, "req"],
-    [usage.totalTokens ?? usage.total_tokens ?? usage.tokens, "tokens"],
-    [usage.inputTokens ?? usage.input_tokens, "in"],
-    [usage.outputTokens ?? usage.output_tokens, "out"],
+    [usage.requests ?? usage.requestCount ?? usage.request_count, "请求"],
+    [usage.totalTokens ?? usage.total_tokens ?? usage.tokens, "Token"],
+    [usage.inputTokens ?? usage.input_tokens, "输入"],
+    [usage.outputTokens ?? usage.output_tokens, "输出"],
   ];
   return values.filter(([value]) => value !== undefined && value !== null && value !== "").map(([value, label]) => `${value} ${label}`);
 });
@@ -182,9 +182,8 @@ const updatedAt = computed(() => {
     <p v-else class="quota-empty">暂无上游返回的额度窗口；可点击“查询”获取实际限额。</p>
     <p v-if="quotaMessage" class="quota-message">{{ quotaMessage }}</p>
 
-    <div class="quota-actions">
-      <button type="button" @click="emit('view-details')">↻ 查询</button>
-      <button type="button" @click="emit('view-requests')">◌ 次数</button>
+    <div v-if="usageValues.length" class="quota-actions">
+      <button type="button" @click="emit('view-requests')">◌ 本机统计</button>
     </div>
   </section>
 </template>

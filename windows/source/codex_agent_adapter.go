@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/agent"
-	"antigravity-byok/internal/codexconfig"
-	"antigravity-byok/internal/codexdesktop"
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexdesktop"
 )
 
 // codexAgentAdapter exposes the verified, local Codex configuration lifecycle

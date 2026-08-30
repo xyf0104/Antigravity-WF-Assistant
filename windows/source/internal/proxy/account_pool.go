@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // acquireAttemptModel selects an account for one upstream attempt. After the

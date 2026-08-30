@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // Antigravity executes a native image tool in two requests. The agent turn

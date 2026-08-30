@@ -206,12 +206,7 @@ func discoveryCapabilities(metadata agent.Metadata) []agent.CapabilityStatus {
 func (adapter *Adapter) detectClaudeCode(ctx context.Context) agent.Status {
 	filesystem := adapter.fileSystem()
 	runner := adapter.commandRunner()
-	cliPath, cliErr := runner.LookPath("claude")
-	cliPath = strings.TrimSpace(cliPath)
-	if errors.Is(cliErr, exec.ErrNotFound) {
-		cliErr = nil
-		cliPath = ""
-	}
+	cliPath, cliFromPATH, cliErr := resolveClaudeCodeCLI(filesystem, runner)
 
 	home, homeErr := filesystem.UserHomeDir()
 	configPath := ""
@@ -237,7 +232,11 @@ func (adapter *Adapter) detectClaudeCode(ctx context.Context) agent.Status {
 	}
 
 	version := ""
-	if cliPath != "" && cliErr == nil {
+	if cliPath != "" && cliFromPATH && cliErr == nil {
+		// A PATH-resolved `claude` is the only candidate we invoke during
+		// discovery. Known install-location fallbacks are deliberately
+		// inspection-only: a malicious or stale binary in one of those paths
+		// must never be executed merely because XIASS Tools opened.
 		commandContext, cancel := context.WithTimeout(ctx, adapter.timeout())
 		output, err := runner.Output(commandContext, cliPath, "--version")
 		cancel()
@@ -280,6 +279,40 @@ func (adapter *Adapter) detectClaudeCode(ctx context.Context) agent.Status {
 		status.Details = map[string]string{"configurationDirectory": configPath}
 	}
 	return status
+}
+
+// resolveClaudeCodeCLI checks PATH first, then a small platform-owned list of
+// conventional Claude Code locations. The fallback list is a bounded set of
+// exact filenames; it does not search directories, enumerate a shell PATH, or
+// run anything it finds. That makes a normal discovery pass useful after a
+// shell profile changed while still keeping startup read-only.
+func resolveClaudeCodeCLI(filesystem FileSystem, runner CommandRunner) (path string, fromPATH bool, err error) {
+	path, err = runner.LookPath("claude")
+	path = strings.TrimSpace(path)
+	if err == nil && path != "" {
+		return path, true, nil
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		err = nil
+	}
+	lookupErr := err
+	var candidateErr error
+	for _, candidate := range knownClaudeCodeCLICandidates(filesystem) {
+		present, inspectErr := existingRegularFile(filesystem, candidate)
+		if inspectErr != nil {
+			if candidateErr == nil {
+				candidateErr = inspectErr
+			}
+			continue
+		}
+		if present {
+			return candidate, false, nil
+		}
+	}
+	if lookupErr != nil {
+		return "", false, lookupErr
+	}
+	return "", false, candidateErr
 }
 
 func parseVersion(value string) string {

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/codexdesktop"
+	"antigravity-wf-assistant/internal/codexdesktop"
 )
 
 // ErrCodexHistoryWriteUnsafe means local Codex history must remain untouched.

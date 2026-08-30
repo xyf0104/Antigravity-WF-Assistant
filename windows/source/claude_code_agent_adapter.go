@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-byok/internal/agent"
-	"antigravity-byok/internal/claudeconfig"
+	"antigravity-wf-assistant/internal/agent"
+	"antigravity-wf-assistant/internal/claudeconfig"
 )
 
 // claudeCodeAgentAdapter is the concrete Claude Code integration. It owns no

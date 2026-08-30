@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func inlinePart(mimeType, data string) map[string]any {

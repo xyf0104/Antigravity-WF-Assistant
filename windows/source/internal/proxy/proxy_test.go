@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 	"github.com/andybalholm/brotli"
 )
 
@@ -1618,6 +1618,12 @@ func TestBoundAccountPermanentFailureDoesNotSwitchAccountsOrReturnHTTP503(t *tes
 
 func TestCleanPatchedPath(t *testing.T) {
 	cases := map[string]string{
+		"/v1internal/antigravity-wf/v1internal:streamGenerateContent":   "/v1internal:streamGenerateContent",
+		"/v1internal/antigravity-wf/v1internal/cascadeNuxes":            "/v1internal/cascadeNuxes",
+		"/v1internal/wfproxy/v1internal:generateContent":                "/v1internal:generateContent",
+		"/v1internal/wfproxy/v1internal/cascadeNuxes":                   "/v1internal/cascadeNuxes",
+		"/v1internal/wfproxy-sandbox/v1internal:fetchAvailableModels":   "/v1internal:fetchAvailableModels",
+		"/v1internal/wfproxy-sandbox/v1internal/cascadeNuxes":           "/v1internal/cascadeNuxes",
 		"/v1internal/antigravity-byok/v1internal:streamGenerateContent": "/v1internal:streamGenerateContent",
 		"/v1internal/antigravity-byok/v1internal/cascadeNuxes":          "/v1internal/cascadeNuxes",
 		"/v1internal/byokxxx/v1internal:generateContent":                "/v1internal:generateContent",
@@ -1631,5 +1637,22 @@ func TestCleanPatchedPath(t *testing.T) {
 		if got := cleanPatchedPath(input); got != want {
 			t.Errorf("cleanPatchedPath(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestHealthEndpointsExposeCanonicalIdentityAndLegacyUpgradeCompatibility(t *testing.T) {
+	canonical := httptest.NewRecorder()
+	handleRequest(canonical, httptest.NewRequest(http.MethodGet, "/_antigravity-wf/health", nil))
+	if canonical.Code != http.StatusOK || canonical.Header().Get("X-Antigravity-WF") != "go-proxy" {
+		t.Fatalf("canonical health response = status:%d headers:%v", canonical.Code, canonical.Header())
+	}
+	if !strings.Contains(canonical.Body.String(), `"proxy":"antigravity-wf"`) {
+		t.Fatalf("canonical health body = %s", canonical.Body.String())
+	}
+
+	legacy := httptest.NewRecorder()
+	handleRequest(legacy, httptest.NewRequest(http.MethodGet, legacyProxyHealthPath(), nil))
+	if legacy.Code != http.StatusOK || legacy.Header().Get("X-Antigravity-BYOK") != "go-proxy" {
+		t.Fatalf("legacy upgrade health response = status:%d headers:%v", legacy.Code, legacy.Header())
 	}
 }

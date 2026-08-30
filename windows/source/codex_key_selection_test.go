@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/codexconfig"
-	"antigravity-byok/internal/codexselection"
+	"antigravity-wf-assistant/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexselection"
 )
 
 func TestCodexXIASSSelectionLifecycleUsesNativeCredentialAndConsumesOnlyOnSuccess(t *testing.T) {

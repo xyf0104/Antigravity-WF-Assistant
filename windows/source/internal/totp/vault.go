@@ -22,6 +22,7 @@ import (
 type Vault struct {
 	mu      sync.Mutex
 	index   string
+	cleanup string
 	secrets SecretStore
 	now     func() time.Time
 }
@@ -45,7 +46,13 @@ func NewWithStore(dataDir string, secrets SecretStore, now func() time.Time) (*V
 	if now == nil {
 		now = time.Now
 	}
-	return &Vault{index: filepath.Join(filepath.Clean(dataDir), indexFileName), secrets: secrets, now: now}, nil
+	base := filepath.Clean(dataDir)
+	return &Vault{
+		index:   filepath.Join(base, indexFileName),
+		cleanup: filepath.Join(base, cleanupFileName),
+		secrets: secrets,
+		now:     now,
+	}, nil
 }
 
 func (vault *Vault) List() ([]Entry, error) {
@@ -56,6 +63,9 @@ func (vault *Vault) List() ([]Entry, error) {
 	defer vault.mu.Unlock()
 	document, err := vault.loadLocked()
 	if err != nil {
+		return nil, err
+	}
+	if err := vault.recoverPendingCleanupLocked(document); err != nil {
 		return nil, err
 	}
 	entries := append([]Entry(nil), document.Entries...)
@@ -84,18 +94,36 @@ func (vault *Vault) Add(input ImportInput) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
+	if err := vault.recoverPendingCleanupLocked(document); err != nil {
+		return Entry{}, err
+	}
+	if len(document.Entries) >= maxTOTPEntries {
+		return Entry{}, fmt.Errorf("TOTP vault supports at most %d entries", maxTOTPEntries)
+	}
 	entry.ID, err = newID()
 	if err != nil {
 		return Entry{}, err
 	}
+	if err := vault.recordPendingCleanupLocked([]string{entry.ID}); err != nil {
+		return Entry{}, err
+	}
 	if err := vault.secrets.Set(ServiceName, entry.ID, secret); err != nil {
+		if cleanupErr := vault.abortPendingCleanupLocked([]string{entry.ID}); cleanupErr != nil {
+			return Entry{}, errors.New("could not store the TOTP secret; credential cleanup will resume automatically")
+		}
 		return Entry{}, fmt.Errorf("store the TOTP secret in the system credential vault: %w", err)
 	}
 	document.Entries = append(document.Entries, entry)
 	if err := vault.saveLocked(document); err != nil {
-		_ = vault.secrets.Delete(ServiceName, entry.ID)
+		if cleanupErr := vault.abortPendingCleanupLocked([]string{entry.ID}); cleanupErr != nil {
+			return Entry{}, errors.New("could not save TOTP metadata; credential cleanup will resume automatically")
+		}
 		return Entry{}, fmt.Errorf("save TOTP metadata: %w", err)
 	}
+	// The metadata is now the source of truth. A failed journal removal is safe:
+	// the next vault operation sees the live ID and removes the journal without
+	// touching its secret.
+	_ = vault.clearPendingCleanupLocked()
 	return entry, nil
 }
 
@@ -127,6 +155,9 @@ func (vault *Vault) Delete(id string) error {
 	if err != nil {
 		return err
 	}
+	if err := vault.recoverPendingCleanupLocked(document); err != nil {
+		return err
+	}
 	index := findEntry(document.Entries, id)
 	if index < 0 {
 		return errors.New("TOTP entry does not exist")
@@ -154,6 +185,9 @@ func (vault *Vault) entryAndSecret(id string) (Entry, string, error) {
 	defer vault.mu.Unlock()
 	document, err := vault.loadLocked()
 	if err != nil {
+		return Entry{}, "", err
+	}
+	if err := vault.recoverPendingCleanupLocked(document); err != nil {
 		return Entry{}, "", err
 	}
 	index := findEntry(document.Entries, id)

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/proxyendpoint"
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/proxyendpoint"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func TestProxyPortCandidatesPreferHistoricalDefaultAndStayFixedWidth(t *testing.T) {

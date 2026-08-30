@@ -10,6 +10,7 @@ import {
   exportTOTPEncrypted,
   generateTOTPCode,
   getTOTPEntries,
+  importTOTPEncrypted,
 } from "@/state/appState";
 
 const entries = ref([]);
@@ -18,12 +19,14 @@ const adding = ref(false);
 const actionID = ref("");
 const editorOpen = ref(false);
 const exportOpen = ref(false);
+const importBackupOpen = ref(false);
 const confirmDelete = ref(null);
 const importMode = ref("uri");
 const error = ref("");
 const notice = ref("");
 const editorError = ref("");
 const exportError = ref("");
+const importBackupError = ref("");
 const codes = ref({});
 const now = ref(Date.now());
 let clock = null;
@@ -33,6 +36,7 @@ let clock = null;
 // diagnostic exports. The operating system credential vault owns the secret.
 const draft = ref(newDraft());
 const exportDraft = ref({ password: "", confirmation: "" });
+const importBackupDraft = ref({ password: "" });
 
 const statusLabel = computed(() => {
   if (loading.value) return "正在读取";
@@ -229,6 +233,20 @@ function closeExport(force = false) {
   exportDraft.value = { password: "", confirmation: "" };
 }
 
+function openImportBackup() {
+  resetFeedback();
+  importBackupError.value = "";
+  importBackupDraft.value = { password: "" };
+  importBackupOpen.value = true;
+}
+
+function closeImportBackup(force = false) {
+  if (!force && actionID.value === "import-backup") return;
+  importBackupOpen.value = false;
+  importBackupError.value = "";
+  importBackupDraft.value = { password: "" };
+}
+
 async function exportEntries() {
   exportError.value = "";
   if (exportDraft.value.password.length < 10) {
@@ -255,6 +273,33 @@ async function exportEntries() {
   }
 }
 
+async function importEncryptedBackup() {
+  importBackupError.value = "";
+  if (importBackupDraft.value.password.length < 10) {
+    importBackupError.value = "导入密码至少需要 10 个字符。";
+    return;
+  }
+  actionID.value = "import-backup";
+  try {
+    const result = await importTOTPEncrypted(importBackupDraft.value.password);
+    if (!result?.ok) {
+      importBackupError.value = result?.message || "无法导入加密验证器备份。";
+      return;
+    }
+    if (Array.isArray(result.entries)) {
+      entries.value = result.entries;
+    } else {
+      await load();
+    }
+    notice.value = result.message || "已导入加密验证器备份。";
+    closeImportBackup(true);
+  } catch (cause) {
+    importBackupError.value = cause?.message || "无法导入加密验证器备份。";
+  } finally {
+    actionID.value = "";
+  }
+}
+
 function formatEntry(entry) {
   return [entry.issuer, entry.account].filter(Boolean).join(" · ") || entry.label || "未命名验证器";
 }
@@ -262,6 +307,7 @@ function formatEntry(entry) {
 function clearSensitiveViewState() {
   clearEditorDraft();
   exportDraft.value = { password: "", confirmation: "" };
+  importBackupDraft.value = { password: "" };
   codes.value = {};
 }
 
@@ -319,7 +365,9 @@ onUnmounted(() => {
       </div>
 
       <div class="totp-actions">
-        <Button variant="plain" :disabled="loading || actionID === 'export'" @click="openEditor">添加验证器</Button>
+		<Button variant="plain" :disabled="loading || Boolean(actionID)" @click="load">刷新列表</Button>
+        <Button variant="plain" :disabled="loading || Boolean(actionID)" @click="openEditor">添加验证器</Button>
+        <Button variant="plain" :disabled="loading || Boolean(actionID)" @click="openImportBackup">导入加密备份</Button>
         <Button variant="tinted" :disabled="!entries.length || Boolean(actionID)" @click="exportOpen = true">导出加密备份</Button>
       </div>
     </div>
@@ -369,6 +417,18 @@ onUnmounted(() => {
     <template #footer>
       <Button variant="plain" :disabled="actionID === 'export'" @click="closeExport">取消</Button>
       <Button variant="filled" :loading="actionID === 'export'" :disabled="actionID === 'export'" @click="exportEntries">选择保存位置</Button>
+    </template>
+  </Modal>
+
+  <Modal :open="importBackupOpen" title="导入加密验证器备份" persistent :closable="actionID !== 'import-backup'" @close="closeImportBackup">
+    <div class="editor">
+      <p>输入导出时设置的密码后，再选择由 XIASS Tools 导出的加密备份文件。文件路径、密码和密钥不会进入日志、诊断或共享前端状态。</p>
+      <label class="field"><span>导入密码</span><input v-model="importBackupDraft.password" type="password" autocomplete="new-password" /></label>
+      <p v-if="importBackupError" class="feedback error" role="alert">{{ importBackupError }}</p>
+    </div>
+    <template #footer>
+      <Button variant="plain" :disabled="actionID === 'import-backup'" @click="closeImportBackup">取消</Button>
+      <Button variant="filled" :loading="actionID === 'import-backup'" :disabled="actionID === 'import-backup'" @click="importEncryptedBackup">选择备份文件并导入</Button>
     </template>
   </Modal>
 

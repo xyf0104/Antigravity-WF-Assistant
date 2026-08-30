@@ -64,6 +64,8 @@ func (m *manager) createBackup(original []byte, existed bool, mode fs.FileMode, 
 		Version:         backupManifestVersion,
 		ID:              id,
 		Target:          m.target,
+		Scope:           m.scope,
+		ProjectID:       m.projectID,
 		CreatedAt:       nowUTC(),
 		Reason:          reason,
 		OriginalExisted: existed,
@@ -83,7 +85,7 @@ func (m *manager) createBackup(original []byte, existed bool, mode fs.FileMode, 
 }
 
 func (m *manager) writeBackupManifest(manifest backupManifest) error {
-	if manifest.ID == "" || manifest.Target != m.target {
+	if manifest.ID == "" || !m.matchesBackupManifest(manifest) {
 		return ErrOperation
 	}
 	directory := filepath.Join(m.backupRoot, manifest.ID)
@@ -145,7 +147,7 @@ func (m *manager) readVerifiedBackup(backupID string) (verifiedBackup, error) {
 	if err != nil {
 		return verifiedBackup{}, err
 	}
-	if manifest.Target != m.target || manifest.ID != backupID {
+	if !m.matchesBackupManifest(manifest) || manifest.ID != backupID {
 		return verifiedBackup{}, ErrUnsafeConfiguration
 	}
 	if err := verifyBackupDirectory(directory, manifest); err != nil {
@@ -186,7 +188,7 @@ func (m *manager) readBackupManifest(backupID string) (backupManifest, error) {
 	if err != nil {
 		return backupManifest{}, err
 	}
-	if manifest.ID != backupID || manifest.Target != m.target {
+	if manifest.ID != backupID || !m.matchesBackupManifest(manifest) {
 		return backupManifest{}, ErrUnsafeConfiguration
 	}
 	return manifest, nil
@@ -200,7 +202,8 @@ func parseBackupManifest(data []byte) (backupManifest, error) {
 	allowed := map[string]bool{
 		"version": true, "id": true, "target": true, "createdAt": true,
 		"reason": true, "originalExisted": true, "originalMode": true,
-		"originalSHA256": true, "appliedSHA256": true,
+		"originalSHA256": true, "appliedSHA256": true, "scope": true,
+		"projectId": true,
 	}
 	for key := range root {
 		if !allowed[key] {
@@ -226,6 +229,22 @@ func validateBackupManifest(manifest backupManifest) error {
 	if manifest.Version != backupManifestVersion || !manifest.Target.valid() || !validBackupID(manifest.ID) || manifest.CreatedAt.IsZero() || !validBackupReason(manifest.Reason) {
 		return ErrUnsafeConfiguration
 	}
+	// Legacy global recovery points predate the scope field, so an omitted scope
+	// remains a valid global manifest. Project recovery points must always carry
+	// their opaque project identity and can never be restored through a global
+	// manager.
+	switch manifest.Scope {
+	case "", configurationScopeGlobal:
+		if manifest.ProjectID != "" {
+			return ErrUnsafeConfiguration
+		}
+	case configurationScopeProject:
+		if manifest.Target != TargetCursor || !validProjectID(manifest.ProjectID) {
+			return ErrUnsafeConfiguration
+		}
+	default:
+		return ErrUnsafeConfiguration
+	}
 	if manifest.OriginalMode > 0o777 || (manifest.OriginalExisted && !validSHA256(manifest.OriginalSHA256)) || (!manifest.OriginalExisted && (manifest.OriginalMode != 0 || manifest.OriginalSHA256 != "")) {
 		return ErrUnsafeConfiguration
 	}
@@ -233,6 +252,23 @@ func validateBackupManifest(manifest backupManifest) error {
 		return ErrUnsafeConfiguration
 	}
 	return nil
+}
+
+func (m *manager) matchesBackupManifest(manifest backupManifest) bool {
+	if manifest.Target != m.target {
+		return false
+	}
+	scope := manifest.Scope
+	if scope == "" {
+		scope = configurationScopeGlobal
+	}
+	if scope != m.scope {
+		return false
+	}
+	if scope == configurationScopeProject {
+		return manifest.ProjectID != "" && manifest.ProjectID == m.projectID
+	}
+	return manifest.ProjectID == ""
 }
 
 func validBackupReason(reason string) bool {
@@ -253,6 +289,18 @@ func validBackupID(value string) bool {
 
 func validSHA256(value string) bool {
 	if len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validProjectID(value string) bool {
+	if len(value) != 32 {
 		return false
 	}
 	for _, character := range value {

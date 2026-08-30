@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 func TestRunAccountTestDirectCodexOAuthNeverFallsBackToChat(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -33,6 +34,25 @@ func NewDefaultManager(target Target) (*manager, error) {
 	return manager, nil
 }
 
+// NewCursorProjectManager manages only Cursor's documented project MCP file:
+// <project>/.cursor/mcp.json. Callers must obtain projectRoot from an
+// explicit native directory chooser; the manager independently rejects files,
+// missing roots, and symlinked paths before every operation.
+//
+// It intentionally does not create a generic arbitrary-file configuration
+// API and does not extend the Windsurf global-only contract.
+func NewCursorProjectManager(projectRoot string) (*manager, error) {
+	appConfig, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(appConfig) == "" {
+		return nil, ErrUnavailable
+	}
+	manager := newCursorProjectManager(projectRoot, appConfig)
+	if err := manager.validatePaths(); err != nil {
+		return nil, err
+	}
+	return manager, nil
+}
+
 // newManager is intentionally package-private so production callers cannot
 // redirect this package at arbitrary client files. Tests use temporary user
 // homes to exercise the same fixed relative paths.
@@ -46,11 +66,35 @@ func newManager(target Target, home, appConfig string) *manager {
 	}
 	return &manager{
 		target:     target,
+		scope:      configurationScopeGlobal,
 		userHome:   home,
 		appConfig:  appConfig,
 		configPath: configuration,
 		backupRoot: backupRoot,
 		lockPath:   filepath.Join(backupRoot, lockFilename),
+	}
+}
+
+// newCursorProjectManager is kept package-private for deterministic tests and
+// because production callers must use NewCursorProjectManager after an
+// explicit native selection. The project identity is a hash, never its path.
+func newCursorProjectManager(projectRoot, appConfig string) *manager {
+	projectRoot = normalizeProjectRoot(projectRoot)
+	appConfig = cleanAbsolutePath(appConfig)
+	projectID := projectIdentity(projectRoot)
+	backupRoot := ""
+	if appConfig != "" && projectID != "" {
+		backupRoot = filepath.Join(appConfig, "XIASS Tools", backupDirectoryName, "cursor-project", projectID)
+	}
+	return &manager{
+		target:      TargetCursor,
+		scope:       configurationScopeProject,
+		appConfig:   appConfig,
+		projectRoot: projectRoot,
+		projectID:   projectID,
+		configPath:  cursorProjectConfigurationPath(projectRoot),
+		backupRoot:  backupRoot,
+		lockPath:    filepath.Join(backupRoot, lockFilename),
 	}
 }
 
@@ -72,20 +116,98 @@ func configurationPath(target Target, home string) string {
 	}
 }
 
+func cursorProjectConfigurationPath(projectRoot string) string {
+	if strings.TrimSpace(projectRoot) == "" {
+		return ""
+	}
+	return filepath.Join(projectRoot, ".cursor", "mcp.json")
+}
+
+func projectIdentity(projectRoot string) string {
+	if strings.TrimSpace(projectRoot) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(projectRoot)))
+	return fmt.Sprintf("%x", sum[:16])
+}
+
 func (m *manager) validatePaths() error {
 	if m == nil || !m.target.valid() {
 		return ErrUnsupportedTarget
 	}
-	if m.userHome == "" || m.appConfig == "" || m.configPath == "" || m.backupRoot == "" || m.lockPath == "" {
-		return ErrUnavailable
-	}
-	if m.configPath != configurationPath(m.target, m.userHome) || m.backupRoot != filepath.Join(m.appConfig, "XIASS Tools", backupDirectoryName, string(m.target)) || m.lockPath != filepath.Join(m.backupRoot, lockFilename) {
-		return ErrUnsafeConfiguration
-	}
-	if !pathWithin(m.userHome, m.configPath) || !pathWithin(m.appConfig, m.backupRoot) || !pathWithin(m.backupRoot, m.lockPath) {
+	switch m.scope {
+	case configurationScopeGlobal:
+		if m.userHome == "" || m.appConfig == "" || m.configPath == "" || m.backupRoot == "" || m.lockPath == "" {
+			return ErrUnavailable
+		}
+		if m.configPath != configurationPath(m.target, m.userHome) || m.backupRoot != filepath.Join(m.appConfig, "XIASS Tools", backupDirectoryName, string(m.target)) || m.lockPath != filepath.Join(m.backupRoot, lockFilename) {
+			return ErrUnsafeConfiguration
+		}
+		if !pathWithin(m.userHome, m.configPath) || !pathWithin(m.appConfig, m.backupRoot) || !pathWithin(m.backupRoot, m.lockPath) {
+			return ErrUnsafeConfiguration
+		}
+	case configurationScopeProject:
+		if m.target != TargetCursor || m.projectRoot == "" || m.projectID == "" || m.configPath == "" {
+			return ErrUnsafeConfiguration
+		}
+		if m.appConfig == "" || m.backupRoot == "" || m.lockPath == "" {
+			return ErrUnavailable
+		}
+		if err := validateProjectRoot(m.projectRoot); err != nil {
+			return err
+		}
+		if m.projectID != projectIdentity(m.projectRoot) || m.configPath != cursorProjectConfigurationPath(m.projectRoot) || m.backupRoot != filepath.Join(m.appConfig, "XIASS Tools", backupDirectoryName, "cursor-project", m.projectID) || m.lockPath != filepath.Join(m.backupRoot, lockFilename) {
+			return ErrUnsafeConfiguration
+		}
+		if !pathWithin(m.projectRoot, m.configPath) || !pathWithin(m.appConfig, m.backupRoot) || !pathWithin(m.backupRoot, m.lockPath) {
+			return ErrUnsafeConfiguration
+		}
+	default:
 		return ErrUnsafeConfiguration
 	}
 	return nil
+}
+
+func validateProjectRoot(projectRoot string) error {
+	if strings.TrimSpace(projectRoot) == "" || containsControl(projectRoot) {
+		return ErrUnsafeConfiguration
+	}
+	abs, err := filepath.Abs(projectRoot)
+	if err != nil || !filepath.IsAbs(abs) {
+		return ErrUnsafeConfiguration
+	}
+	abs = filepath.Clean(abs)
+	if err := ensureExistingPathNoSymlink(abs); err != nil {
+		return err
+	}
+	info, err := os.Lstat(abs)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return ErrUnsafeConfiguration
+	}
+	return nil
+}
+
+func normalizeProjectRoot(projectRoot string) string {
+	if strings.TrimSpace(projectRoot) == "" || containsControl(projectRoot) {
+		return ""
+	}
+	abs, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return ""
+	}
+	abs = filepath.Clean(abs)
+	info, err := os.Lstat(abs)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return ""
+	}
+	// Resolve system-owned compatibility aliases (for example /var on macOS)
+	// after rejecting a symlink chosen as the project itself. Subsequent path
+	// validation then walks only the canonical directory hierarchy.
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(resolved)
 }
 
 func cleanAbsolutePath(path string) string {

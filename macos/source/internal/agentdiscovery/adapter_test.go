@@ -2,10 +2,12 @@ package agentdiscovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +73,31 @@ func TestClaudeCodePartialAndVersionFailureBoundaries(t *testing.T) {
 			t.Fatalf("state = %q, want %q", status.State, agent.StateDegraded)
 		}
 	})
+}
+
+func TestClaudeCodeDetectsKnownCandidateWithoutExecutingIt(t *testing.T) {
+	home := filepath.Join("/Users", "fixture")
+	cli := filepath.Join(home, ".local", "bin", "claude")
+	fixture := newFilesystemFixture(home)
+	fixture.addDirectory(joinClaudeConfigPath(home))
+	fixture.addFile(cli)
+
+	// If discovery accidentally invokes the known-location fallback, this
+	// injected failure would degrade the result. A ready state proves the
+	// candidate was inspected but not executed.
+	status, err := NewClaudeCodeAdapter(Options{
+		FileSystem: fixture,
+		Commands: commandFixture{
+			outputErr: map[string]error{cli: errors.New("known fallback must not run")},
+		},
+		Now: fixedNow,
+	}).Detect(context.Background())
+	if err != nil || status.State != agent.StateReady {
+		t.Fatalf("status = %+v, err = %v; want ready known-candidate discovery", status, err)
+	}
+	if status.Installation.ExecutablePath != cli || status.Installation.Version != "" {
+		t.Fatalf("installation = %+v, want inspected candidate without version execution", status.Installation)
+	}
 }
 
 func TestMacDesktopDiscoveryStateBoundaries(t *testing.T) {
@@ -146,6 +173,42 @@ func TestMacUnreadableLocalDataIsDegraded(t *testing.T) {
 	}
 	if status.State != agent.StateDegraded {
 		t.Fatalf("state = %q, want degraded for unreadable local data", status.State)
+	}
+}
+
+func TestMacDesktopNativeSelectionRequiresVerifiedPublicIdentity(t *testing.T) {
+	home := filepath.Join("/Users", "fixture")
+	bundle := filepath.Join("/Volumes", "Developer", "Cursor.app")
+	executable := filepath.Join(bundle, "Contents", "MacOS", "Cursor")
+	info := filepath.Join(bundle, "Contents", "Info.plist")
+	fixture := newFilesystemFixture(home)
+	fixture.addDirectory(bundle)
+	fixture.addFile(executable)
+	fixture.files[info] = macSelectionInfoPlist("com.todesktop.230313mzl4w4u92", "Cursor", "1.4.0")
+
+	selection, err := validateDesktopSelectionWithFileSystem(fixture, agent.CursorID, executable)
+	if err != nil {
+		t.Fatalf("select verified Cursor bundle: %v", err)
+	}
+	if selection.AgentID() != agent.CursorID || selection.Version() != "1.4.0" || selection.LaunchTarget() != bundle {
+		t.Fatalf("selection = %#v, want verified Cursor bundle", selection)
+	}
+	encoded, err := json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{bundle, executable, "/Volumes/Developer"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("selection JSON leaked path %q: %s", forbidden, encoded)
+		}
+	}
+
+	fixture.files[info] = macSelectionInfoPlist("com.example.lookalike", "Cursor", "1.4.0")
+	if _, err := validateDesktopSelectionWithFileSystem(fixture, agent.CursorID, bundle); !errors.Is(err, ErrDesktopSelectionRejected) {
+		t.Fatalf("lookalike selection error = %v, want generic rejection", err)
+	}
+	if _, err := validateDesktopSelectionWithFileSystem(fixture, agent.WindsurfID, bundle); !errors.Is(err, ErrDesktopSelectionRejected) {
+		t.Fatalf("wrong-agent selection error = %v, want generic rejection", err)
 	}
 }
 
@@ -333,6 +396,15 @@ func (fixture commandFixture) Output(ctx context.Context, name string, _ ...stri
 func macInfoPlist(executable, version string) []byte {
 	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>` + executable + `</string>
+<key>CFBundleShortVersionString</key><string>` + version + `</string>
+</dict></plist>`)
+}
+
+func macSelectionInfoPlist(identifier, executable, version string) []byte {
+	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>` + identifier + `</string>
 <key>CFBundleExecutable</key><string>` + executable + `</string>
 <key>CFBundleShortVersionString</key><string>` + version + `</string>
 </dict></plist>`)

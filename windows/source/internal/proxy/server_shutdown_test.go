@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-byok/internal/storage"
+	"antigravity-wf-assistant/internal/storage"
 )
 
 // TestStopBoundsAnActiveHandler exercises the shutdown condition that used to

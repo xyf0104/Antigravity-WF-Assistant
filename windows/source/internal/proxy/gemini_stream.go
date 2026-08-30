@@ -4,7 +4,7 @@ import "encoding/json"
 
 func antigravityResponseEnvelope(response map[string]any, traceID string) map[string]any {
 	if traceID == "" {
-		traceID = "antigravity-byok"
+		traceID = "xiass-tools"
 	}
 	return map[string]any{
 		"response": response,
