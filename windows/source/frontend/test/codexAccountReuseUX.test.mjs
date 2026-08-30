@@ -31,7 +31,7 @@ test("Codex saved-account UI keeps only allowlisted public account metadata", ()
 });
 
 test("Codex account selection stays mutually exclusive with one-time and manual credentials", () => {
-  assert.match(modalSource, /cancelXIASSKeySelection\(\);\n\s*draft\.value\.api_key = "";\n\s*selectedSavedCodexAccountID\.value = candidate\.id/);
+  assert.match(modalSource, /cancelXIASSKeySelection\(\);\r?\n\s*draft\.value\.api_key = "";\r?\n\s*selectedSavedCodexAccountID\.value = candidate\.id/);
   assert.match(modalSource, /:disabled="usingSavedCodexAccount \|\| xiassSelectionReady"/);
   assert.match(modalSource, /v-if="!usingSavedCodexAccount && !xiassSelectionReady"/);
   assert.match(modalSource, /每次保存前都会在原生层重新验证/);
