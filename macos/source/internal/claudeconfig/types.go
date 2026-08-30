@@ -14,15 +14,34 @@ const (
 	maxBaseURLBytes       = 2048
 	maxAuthTokenBytes     = 8192
 	maxModelBytes         = 256
+	maxAPIKeyHelperBytes  = 2048
+)
+
+// CredentialMode identifies the one authentication mechanism XIASS Tools
+// explicitly configures for Claude Code. Claude Code has a documented
+// precedence order between these mechanisms, so Apply always writes exactly
+// one mode and clears XIASS-managed conflicting values.
+type CredentialMode string
+
+const (
+	CredentialModeAuthToken    CredentialMode = "auth_token"
+	CredentialModeAPIKey       CredentialMode = "api_key"
+	CredentialModeAPIKeyHelper CredentialMode = "api_key_helper"
 )
 
 // ApplyConfig is the narrow portion of Claude Code user settings managed by
-// this package. AuthToken deliberately has no JSON representation so it cannot
-// be accidentally returned through a UI binding or event payload.
+// this package. Credential and AuthToken deliberately have no JSON
+// representation so they cannot be accidentally returned through a UI binding
+// or event payload. AuthToken is retained as a compatibility input for older
+// callers and is treated as a bearer credential when CredentialMode is empty.
 type ApplyConfig struct {
-	BaseURL   string `json:"base_url"`
-	AuthToken string `json:"-"`
-	Model     string `json:"model"`
+	BaseURL                     string         `json:"base_url"`
+	CredentialMode              CredentialMode `json:"credential_mode"`
+	Credential                  string         `json:"-"`
+	AuthToken                   string         `json:"-"`
+	APIKeyHelper                string         `json:"-"`
+	EnableGatewayModelDiscovery bool           `json:"enable_gateway_model_discovery"`
+	Model                       string         `json:"model"`
 }
 
 // ConfigLocation identifies the only Claude Code file this manager touches.
@@ -35,14 +54,23 @@ type ConfigLocation struct {
 // Snapshot is a redacted, read-only view of settings.json. It never contains
 // ANTHROPIC_AUTH_TOKEN or any other environment value.
 type Snapshot struct {
-	Location            ConfigLocation `json:"location"`
-	SHA256              string         `json:"sha256,omitempty"`
-	Mode                fs.FileMode    `json:"mode,omitempty"`
-	Valid               bool           `json:"valid"`
-	Model               string         `json:"model,omitempty"`
-	BaseURL             string         `json:"base_url,omitempty"`
-	AuthTokenConfigured bool           `json:"auth_token_configured"`
-	Managed             bool           `json:"managed"`
+	Location                     ConfigLocation `json:"location"`
+	SHA256                       string         `json:"sha256,omitempty"`
+	Mode                         fs.FileMode    `json:"mode,omitempty"`
+	Valid                        bool           `json:"valid"`
+	Model                        string         `json:"model,omitempty"`
+	BaseURL                      string         `json:"base_url,omitempty"`
+	CredentialMode               CredentialMode `json:"credential_mode,omitempty"`
+	CredentialConfigured         bool           `json:"credential_configured"`
+	AuthTokenConfigured          bool           `json:"auth_token_configured"`
+	APIKeyHelperConfigured       bool           `json:"api_key_helper_configured"`
+	GatewayModelDiscoveryEnabled bool           `json:"gateway_model_discovery_enabled"`
+	// GatewayModelDiscoveryBlocked is a redacted compatibility fact: a
+	// user-managed provider routing flag or a nonessential-traffic restriction
+	// prevents Claude Code from performing standard ANTHROPIC_BASE_URL model
+	// discovery even when the discovery preference itself is saved as enabled.
+	GatewayModelDiscoveryBlocked bool `json:"gateway_model_discovery_blocked"`
+	Managed                      bool `json:"managed"`
 }
 
 // BackupManifest authenticates one private backup without containing the

@@ -37,6 +37,15 @@ type MCPConfigurationStatus struct {
 	Snapshot       mcpconfig.Snapshot `json:"snapshot"`
 }
 
+// MCPRemoveStatus confirms an explicit request to remove only the exact
+// xiass-tools MCP entry. It contains no endpoint, path, raw configuration, or
+// information about any other MCP entry.
+type MCPRemoveStatus struct {
+	OK      bool                   `json:"ok"`
+	Message string                 `json:"message"`
+	Result  mcpconfig.RemoveResult `json:"result"`
+}
+
 // MCPBackupListStatus is a renderer-safe recovery-point listing. BackupInfo
 // intentionally contains only an opaque ID, creation time, reason, and
 // whether the original file existed; it never contains configuration data.
@@ -80,6 +89,13 @@ func (a *App) ApplyCursorMCPConfiguration(input MCPRemoteInput) MCPConfiguration
 	return a.applyMCPConfigurationTarget(mcpconfig.TargetCursor, remoteURL)
 }
 
+// RemoveCursorMCPConfiguration removes only the reserved xiass-tools entry
+// from Cursor's documented global MCP configuration. It never accepts a
+// renderer-supplied server ID or file path.
+func (a *App) RemoveCursorMCPConfiguration() MCPRemoveStatus {
+	return a.removeMCPConfigurationTarget(mcpconfig.TargetCursor)
+}
+
 // ListCursorMCPBackups lists only checksum-verified XIASS Tools recovery
 // points for Cursor. This read-only action does not require Cursor to be
 // installed and never creates a backup directory.
@@ -115,6 +131,13 @@ func (a *App) ApplyWindsurfMCPConfiguration(input MCPRemoteInput) MCPConfigurati
 		remoteURL = ""
 	}()
 	return a.applyMCPConfigurationTarget(mcpconfig.TargetWindsurf, remoteURL)
+}
+
+// RemoveWindsurfMCPConfiguration removes only the reserved xiass-tools entry
+// from Windsurf's documented global MCP configuration. It never accepts a
+// renderer-supplied server ID or file path.
+func (a *App) RemoveWindsurfMCPConfiguration() MCPRemoveStatus {
+	return a.removeMCPConfigurationTarget(mcpconfig.TargetWindsurf)
 }
 
 // ListWindsurfMCPBackups lists only checksum-verified XIASS Tools recovery
@@ -188,6 +211,49 @@ func (a *App) applyMCPConfigurationTarget(target mcpconfig.Target, remoteURL str
 		ClientDetected: true,
 		CanApply:       result.Snapshot.Valid && !result.Snapshot.HasSensitiveConfiguration,
 		Snapshot:       result.Snapshot,
+	}
+}
+
+func (a *App) removeMCPConfigurationTarget(target mcpconfig.Target) MCPRemoveStatus {
+	status := a.mcpConfigurationStatus(target)
+	empty := MCPRemoveStatus{Result: mcpconfig.RemoveResult{Snapshot: status.Snapshot}}
+	if !status.ClientDetected {
+		empty.Message = "尚未在本机确认该客户端。为避免修改无效设置，XIASS Tools 不会移除全局 MCP 条目。"
+		return empty
+	}
+	if !status.OK || !status.Snapshot.Valid || status.Snapshot.HasSensitiveConfiguration {
+		empty.Message = "现有全局 MCP 设置无法安全修改。XIASS Tools 不会读取、展示或改写其中的敏感内容。"
+		return empty
+	}
+	// A direct native call can arrive after the renderer's last refresh. Keep
+	// this no-op local rather than allocating a manager lock or a recovery
+	// point when the exact managed ID is already absent.
+	if !status.Snapshot.ManagedServerConfigured {
+		empty.OK = true
+		empty.Message = "未发现 XIASS Tools 的 MCP 远程连接；现有全局 MCP 设置未被修改。"
+		return empty
+	}
+	manager, err := mcpconfig.NewDefaultManager(target)
+	if err != nil {
+		empty.Message = "无法安全定位该客户端的全局 MCP 设置。"
+		return empty
+	}
+	result, err := manager.RemoveManagedRemote()
+	if err != nil {
+		empty.Message = mcpRemoveErrorMessage(err)
+		return empty
+	}
+	if !result.Removed {
+		return MCPRemoveStatus{
+			OK:      true,
+			Message: "未发现 XIASS Tools 的 MCP 远程连接；现有全局 MCP 设置未被修改。",
+			Result:  result,
+		}
+	}
+	return MCPRemoveStatus{
+		OK:      true,
+		Message: "已移除 XIASS Tools 的 MCP 远程连接，并创建了经过校验的恢复点。其他 MCP 条目保持不变。",
+		Result:  result,
 	}
 }
 
@@ -325,6 +391,19 @@ func mcpConfigurationErrorMessage(err error) string {
 		return "另一项 MCP 设置操作正在进行，请完成后重试。"
 	default:
 		return "未能安全保存 MCP 远程连接；现有设置已保持不变。"
+	}
+}
+
+func mcpRemoveErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, mcpconfig.ErrUnsafeConfiguration):
+		return "现有全局 MCP 设置含有敏感或不安全内容，XIASS Tools 未做任何修改。"
+	case errors.Is(err, mcpconfig.ErrInvalidConfiguration):
+		return "现有全局 MCP 设置格式无效，XIASS Tools 未做任何修改。"
+	case errors.Is(err, mcpconfig.ErrOperationBusy):
+		return "另一项 MCP 设置操作正在进行，请完成后重试。"
+	default:
+		return "未能安全移除 XIASS Tools MCP 远程连接；现有设置已保持不变。"
 	}
 }
 

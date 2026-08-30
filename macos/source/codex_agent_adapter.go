@@ -101,9 +101,15 @@ func codexAgentSnapshotStatus(metadata agent.Metadata, snapshot codexconfig.Conf
 		message = "The local Codex config.toml could not be validated."
 	case !snapshot.Location.Exists:
 		message = "The Codex configuration directory is ready; config.toml has not been created yet."
-	case snapshot.ModelProvider == codexconfig.DefaultProviderID:
+	case snapshot.ModelProvider == codexconfig.DefaultProviderID && snapshot.ManagedProviderVerified:
 		state = agent.StateReady
 		message = "Codex is configured with the XIASS Tools provider."
+	case snapshot.ModelProvider == codexconfig.DefaultProviderID:
+		// Do not report a generic, merely parseable xiass_tools entry as ready.
+		// Inspect has already reduced the reason to a fixed non-sensitive enum;
+		// no config value or credential is copied into this agent status.
+		state = agent.StateDegraded
+		message = "The active XIASS Tools provider did not pass structural verification."
 	default:
 		message = "Codex config.toml is valid, but XIASS Tools is not the active provider."
 	}
@@ -113,14 +119,18 @@ func codexAgentSnapshotStatus(metadata agent.Metadata, snapshot codexconfig.Conf
 		State:       state,
 		Message:     message,
 		Details: map[string]string{
-			"configPresent": fmt.Sprintf("%t", snapshot.Location.Exists),
-			"configValid":   fmt.Sprintf("%t", snapshot.Valid && inspectErr == nil),
-			"provider":      snapshot.ModelProvider,
+			"configPresent":           fmt.Sprintf("%t", snapshot.Location.Exists),
+			"configValid":             fmt.Sprintf("%t", snapshot.Valid && inspectErr == nil),
+			"provider":                snapshot.ModelProvider,
+			"managedProviderVerified": fmt.Sprintf("%t", snapshot.ManagedProviderVerified),
 		},
 		UpdatedAt: time.Now().UTC(),
 	}
 	if inspectErr != nil {
 		status.Details["inspectionError"] = redactCodexInspectionError(inspectErr)
+	}
+	if snapshot.ManagedProviderIssue != codexconfig.ManagedProviderIssueNone {
+		status.Details["managedProviderIssue"] = string(snapshot.ManagedProviderIssue)
 	}
 	status.Capabilities = codexCapabilityStatuses(metadata, homeExists, snapshot.Location.Exists, snapshot.Valid && inspectErr == nil)
 	return status

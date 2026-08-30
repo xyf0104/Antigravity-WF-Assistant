@@ -1,0 +1,150 @@
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+# This test intentionally runs only against an installer created seconds ago on
+# an ephemeral GitHub-hosted Windows worker. It never removes pre-existing
+# files, shortcuts, or registry entries: an unexpected existing state is a
+# release-blocking test failure rather than something CI is allowed to clean up.
+if ($env:GITHUB_ACTIONS -ne 'true') {
+  throw 'Windows Installer Lifecycle Smoke Test may run only on a GitHub Actions hosted runner.'
+}
+
+$sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+$versionPath = Join-Path $sourceRoot 'VERSION'
+if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
+  throw 'VERSION file is missing.'
+}
+$version = (Get-Content -LiteralPath $versionPath -Raw).Trim()
+if ($version -notmatch '^\d+\.\d+\.\d+$') {
+  throw "VERSION must use MAJOR.MINOR.PATCH form, got: $version"
+}
+
+$appName = 'XIASS Tools'
+$legacyUninstallSubKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityWFAssistant'
+$setupPath = Join-Path $sourceRoot (Join-Path 'build\bin' "XIASS-Tools-Windows-x64-v$version-Setup.exe")
+$installDirectory = Join-Path $env:LOCALAPPDATA (Join-Path 'Programs' $appName)
+$mainExecutable = Join-Path $installDirectory "$appName.exe"
+$uninstaller = Join-Path $installDirectory "卸载 $appName.exe"
+$programsDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
+$startMenuDirectory = Join-Path $programsDirectory $appName
+$startMenuMainShortcut = Join-Path $startMenuDirectory "$appName.lnk"
+$startMenuUninstallShortcut = Join-Path $startMenuDirectory "卸载 $appName.lnk"
+$desktopDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+$desktopShortcut = Join-Path $desktopDirectory "$appName.lnk"
+
+if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
+  throw "The expected Setup EXE was not produced: $setupPath"
+}
+if ((Get-Item -LiteralPath $setupPath).Length -le 0) {
+  throw 'The Setup EXE is empty.'
+}
+
+function Get-UninstallEntries {
+  $entries = @()
+  foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
+    try {
+      $key = $base.OpenSubKey($legacyUninstallSubKey, $false)
+      if ($null -ne $key) {
+        try {
+          $entries += [pscustomobject]@{
+            View = $view.ToString()
+            DisplayName = [string]$key.GetValue('DisplayName', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            DisplayVersion = [string]$key.GetValue('DisplayVersion', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            Publisher = [string]$key.GetValue('Publisher', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            InstallLocation = [string]$key.GetValue('InstallLocation', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            DisplayIcon = [string]$key.GetValue('DisplayIcon', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            UninstallString = [string]$key.GetValue('UninstallString', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          }
+        } finally {
+          $key.Dispose()
+        }
+      }
+    } finally {
+      $base.Dispose()
+    }
+  }
+  return @($entries)
+}
+
+function Assert-PathMissing([string]$path, [string]$description) {
+  if (Test-Path -LiteralPath $path) {
+    throw "Pre-existing $description was found. The smoke test will not overwrite or remove it: $path"
+  }
+}
+
+function Assert-ShortcutTarget([string]$shortcutPath, [string]$expectedTarget) {
+  if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+    throw "Expected Start Menu shortcut is missing: $shortcutPath"
+  }
+  $shell = New-Object -ComObject WScript.Shell
+  try {
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    if ($shortcut.TargetPath -ne $expectedTarget) {
+      throw "Shortcut target mismatch for $shortcutPath"
+    }
+  } finally {
+    if ($null -ne $shortcut) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut) }
+    [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+  }
+}
+
+function Test-InstallerStateAbsent {
+  return -not (Test-Path -LiteralPath $installDirectory) `
+    -and -not (Test-Path -LiteralPath $startMenuDirectory) `
+    -and -not (Test-Path -LiteralPath $desktopShortcut) `
+    -and ((Get-UninstallEntries).Count -eq 0)
+}
+
+if ((Get-UninstallEntries).Count -ne 0) {
+  throw 'A current-user XIASS Tools / legacy upgrade uninstall entry already exists. Refusing to mutate a persistent state.'
+}
+Assert-PathMissing $installDirectory 'installation directory'
+Assert-PathMissing $startMenuDirectory 'Start Menu directory'
+Assert-PathMissing $desktopShortcut 'desktop shortcut'
+
+Write-Host 'Installing the freshly built Setup EXE in silent mode…'
+$installProcess = Start-Process -FilePath $setupPath -ArgumentList @('/S') -Wait -PassThru
+if ($installProcess.ExitCode -ne 0) {
+  throw "Silent installer exited with code $($installProcess.ExitCode)."
+}
+
+foreach ($path in @($mainExecutable, $uninstaller)) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {
+    throw "Installed executable is missing or empty: $path"
+  }
+}
+if (Test-Path -LiteralPath $desktopShortcut) {
+  throw 'A desktop shortcut was created by the silent default installation, but the optional desktop component must remain opt-in.'
+}
+
+$entries = @(Get-UninstallEntries)
+if ($entries.Count -ne 1) {
+  throw "Expected exactly one current-user uninstall entry after installation, found $($entries.Count)."
+}
+$entry = $entries[0]
+$expectedUninstallString = '"' + $uninstaller + '"'
+if ($entry.DisplayName -ne $appName -or $entry.DisplayVersion -ne $version -or $entry.Publisher -ne $appName -or $entry.InstallLocation -ne $installDirectory -or $entry.DisplayIcon -ne $mainExecutable -or $entry.UninstallString -ne $expectedUninstallString) {
+  throw "Uninstall metadata does not match the freshly installed XIASS Tools package (registry $($entry.View) view)."
+}
+Assert-ShortcutTarget $startMenuMainShortcut $mainExecutable
+Assert-ShortcutTarget $startMenuUninstallShortcut $uninstaller
+
+Write-Host 'Silently uninstalling the freshly installed package…'
+$uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList @('/S') -Wait -PassThru
+if ($uninstallProcess.ExitCode -ne 0) {
+  throw "Silent uninstaller exited with code $($uninstallProcess.ExitCode)."
+}
+
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+while (-not (Test-InstallerStateAbsent)) {
+  if ([DateTime]::UtcNow -ge $deadline) {
+    throw 'Installer lifecycle smoke test timed out: uninstall left files, shortcuts, a desktop link, or a registry entry behind.'
+  }
+  Start-Sleep -Milliseconds 250
+}
+
+Write-Host 'Windows Installer Lifecycle Smoke Test passed.'

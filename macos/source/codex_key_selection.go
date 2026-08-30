@@ -113,7 +113,7 @@ func (a *App) DiscoverCodexXIASSSelectionModels(sessionID string) CodexModelDisc
 	if err != nil {
 		return CodexModelDiscoveryResult{OK: false, Message: "获取 XIASS API 上游模型失败。请检查 Key 选择状态、网络和模型服务后重试。"}
 	}
-	return CodexModelDiscoveryResult{OK: true, Message: "已获取 " + formatCodexModelCount(len(models)) + " 个可用模型。", Models: models}
+	return CodexModelDiscoveryResult{OK: true, Message: codexModelCatalogMessage(len(models)), Models: models}
 }
 
 // ApplyCodexXIASSSelection writes the selected native-only Key to the

@@ -921,7 +921,7 @@ func forwardOpenAIChat(w http.ResponseWriter, incoming *http.Request, m *storage
 			if writer.committed {
 				writeUncertainUpstreamFailure(writer, "openai", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
 			} else {
-				writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "上游网络连接在请求送出后中断，本轮结果无法确认；这不是生图频率或张数限制，可以立即手动重新发送。WF助手未自动重放可能已送达的请求，以避免重复扣费或重复执行工具。", reconnects)
+				writeRecoverableTurnStop(writer, "openai", requestID, lastModelVersion, "上游网络连接在请求送出后中断，本轮结果无法确认；这不是生图频率或张数限制，可以立即手动重新发送。XIASS Tools 未自动重放可能已送达的请求，以避免重复扣费或重复执行工具。", reconnects)
 			}
 			return
 		}
@@ -1143,7 +1143,7 @@ func forwardOpenAIResponses(w http.ResponseWriter, incoming *http.Request, m *st
 			if writer.committed {
 				writeUncertainUpstreamFailure(writer, "responses", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
 			} else {
-				writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "上游网络连接在请求送出后中断，本轮结果无法确认；这不是生图频率或张数限制，可以立即手动重新发送。WF助手未自动重放可能已送达的请求，以避免重复扣费或重复执行工具。", reconnects)
+				writeRecoverableTurnStop(writer, "responses", requestID, lastModelVersion, "上游网络连接在请求送出后中断，本轮结果无法确认；这不是生图频率或张数限制，可以立即手动重新发送。XIASS Tools 未自动重放可能已送达的请求，以避免重复扣费或重复执行工具。", reconnects)
 			}
 			return false
 		}
@@ -1489,7 +1489,7 @@ attemptLoop:
 				if writer.committed {
 					writeUncertainUpstreamFailure(writer, "anthropic", requestID, lastModelVersion, lastResponseID, reconnects, false, "无法确认上游是否已接收请求："+err.Error())
 				} else {
-					writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "上游网络连接在请求送出后中断，本轮结果无法确认；这不是生图频率或张数限制，可以立即手动重新发送。WF助手未自动重放可能已送达的请求，以避免重复扣费或重复执行工具。", reconnects)
+					writeRecoverableTurnStop(writer, "anthropic", requestID, lastModelVersion, "上游网络连接在请求送出后中断，本轮结果无法确认；这不是生图频率或张数限制，可以立即手动重新发送。XIASS Tools 未自动重放可能已送达的请求，以避免重复扣费或重复执行工具。", reconnects)
 				}
 				return
 			}

@@ -44,6 +44,19 @@ func (m *Manager) Inspect() (ConfigSnapshot, error) {
 		Context:       context,
 		Providers:     providersFromRoot(root),
 	}
+	// A syntactically valid TOML file is not enough to advertise XIASS Tools
+	// as configured. In particular, an arbitrary or half-written
+	// [model_providers.xiass_tools] entry must not turn the UI/agent status
+	// green merely because model_provider names it. This check never returns
+	// any value from the provider; the issue is a fixed redacted enum.
+	snapshot.ManagedProviderVerified, snapshot.ManagedProviderIssue = verifyActiveManagedProvider(root)
+	// Migration eligibility is intentionally a separate, redacted proof. The
+	// renderer must not infer eligibility by inspecting arbitrary Provider
+	// records, and an unsupported/ambiguous TOML form must not become a button
+	// merely because it happens to contain a legacy-looking ID.
+	if _, plan, migrationErr := planLegacyProviderMigration(data, true); migrationErr == nil {
+		snapshot.LegacyProviderMigration = plan.status
+	}
 	snapshot.ConfiguredModels = configuredModels(snapshot.Model, snapshot.ReviewModel)
 	return snapshot, nil
 }
@@ -144,4 +157,108 @@ func configuredModels(model, review string) []string {
 func boolValue(value any) bool {
 	parsed, _ := value.(bool)
 	return parsed
+}
+
+// verifyActiveManagedProvider validates the exact non-secret semantics of the
+// active provider XIASS Tools writes. It is intentionally stricter than TOML
+// parsing: only an active xiass_tools provider with the responses transport,
+// a non-empty bearer token, canonical base URL, required actor header, safe
+// boolean flags, and all managed top-level settings earns the verified state.
+//
+// The function must not return wrapped errors. Config values may include a
+// credential or proprietary endpoint, while ManagedProviderIssue is exposed
+// to the renderer and diagnostics.
+func verifyActiveManagedProvider(root map[string]any) (bool, ManagedProviderIssue) {
+	if stringValue(root["model_provider"]) != DefaultProviderID {
+		return false, ManagedProviderIssueInactive
+	}
+	if !validManagedText(root["model"]) {
+		return false, ManagedProviderIssueModel
+	}
+	if !validManagedText(root["review_model"]) {
+		return false, ManagedProviderIssueReviewModel
+	}
+	if !validManagedWebSearch(root["web_search"]) {
+		return false, ManagedProviderIssueWebSearch
+	}
+	if !validManagedContext(root) {
+		return false, ManagedProviderIssueContext
+	}
+
+	providers, ok := mapValue(root["model_providers"])
+	if !ok {
+		return false, ManagedProviderIssueProviderMissing
+	}
+	rawProvider, present := providers[DefaultProviderID]
+	if !present {
+		return false, ManagedProviderIssueProviderMissing
+	}
+	provider, ok := mapValue(rawProvider)
+	if !ok {
+		return false, ManagedProviderIssueProviderMalformed
+	}
+	if !validManagedText(provider["name"]) {
+		return false, ManagedProviderIssueProviderMalformed
+	}
+	baseURL, ok := provider["base_url"].(string)
+	if !ok || strings.TrimSpace(baseURL) == "" {
+		return false, ManagedProviderIssueBaseURL
+	}
+	canonicalBaseURL, err := NormalizeBaseURL(baseURL)
+	if err != nil || canonicalBaseURL != baseURL {
+		return false, ManagedProviderIssueBaseURL
+	}
+	if provider["wire_api"] != DefaultWireAPI {
+		return false, ManagedProviderIssueWireAPI
+	}
+	bearer, ok := provider["experimental_bearer_token"].(string)
+	if !ok || strings.TrimSpace(bearer) == "" || validateShortText(bearer, 8192, "bearer token") != nil {
+		return false, ManagedProviderIssueBearer
+	}
+	if requiresAuth, ok := provider["requires_openai_auth"].(bool); !ok || requiresAuth {
+		return false, ManagedProviderIssueFlags
+	}
+	if supportsWebSockets, ok := provider["supports_websockets"].(bool); !ok || supportsWebSockets {
+		return false, ManagedProviderIssueFlags
+	}
+	headers, ok := mapValue(provider["http_headers"])
+	if !ok || len(headers) != 1 {
+		return false, ManagedProviderIssueHeaders
+	}
+	headerActorAuthorization, ok := headers["x-openai-actor-authorization"].(string)
+	if !ok || headerActorAuthorization != actorAuthorization(canonicalBaseURL) {
+		return false, ManagedProviderIssueHeaders
+	}
+	return true, ManagedProviderIssueNone
+}
+
+func validManagedText(value any) bool {
+	text, ok := value.(string)
+	return ok && strings.TrimSpace(text) != "" && validateShortText(text, 200, "managed value") == nil
+}
+
+func validManagedWebSearch(value any) bool {
+	mode, ok := value.(string)
+	if !ok {
+		return false
+	}
+	switch mode {
+	case "live", "cached", "disabled", "off":
+		return true
+	default:
+		return false
+	}
+}
+
+func validManagedContext(root map[string]any) bool {
+	window, windowOK := integerValue(root["model_context_window"])
+	compactLimit, compactOK := integerValue(root["model_auto_compact_token_limit"])
+	if !windowOK || !compactOK {
+		return false
+	}
+	normalized, err := NormalizeContextSettings(ContextSettings{
+		ModelContextWindow:         window,
+		ModelAutoCompactTokenLimit: compactLimit,
+	})
+	return err == nil && normalized.ModelContextWindow == window && normalized.ModelAutoCompactTokenLimit == compactLimit
 }

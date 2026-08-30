@@ -67,7 +67,7 @@ func Start(storageDir string) error {
 
 	InitTrace(storageDir)
 	if settings, err := storage.LoadAppSettings(); err != nil {
-		log.Printf("[wf] 读取代理恢复设置失败，使用安全默认值: %v", err)
+		log.Printf("[xiass-tools] 读取代理恢复设置失败，使用安全默认值: %v", err)
 	} else {
 		ConfigureStreamRecovery(settings.StreamRecovery)
 	}
@@ -87,7 +87,7 @@ func Start(storageDir string) error {
 		if listenErr != nil {
 			if isManagedListenerAt(stagedPort) {
 				activePort = stagedPort
-				log.Printf("[wf] 已复用未完成端口切换所需的本地代理")
+				log.Printf("[xiass-tools] 已复用未完成端口切换所需的本地代理")
 				return nil
 			}
 			return fmt.Errorf("检测到未完成的本地代理端口切换；为避免已补丁的 Antigravity 断连，未改用旧连接。请保持助手运行并重新应用补丁")
@@ -104,7 +104,7 @@ func Start(storageDir string) error {
 			// selecting it would silently route this user's models elsewhere.
 			if index == 0 && isManagedListenerAt(port) {
 				activePort = port
-				log.Printf("[wf] 已复用另一个当前 WF助手实例的本地代理")
+				log.Printf("[xiass-tools] 已复用另一个当前 XIASS Tools 实例的本地代理")
 				return nil
 			}
 			continue
@@ -131,9 +131,9 @@ func startServerLocked(mux *http.ServeMux, ln net.Listener, port int) {
 	srvListener = ln
 	activePort = port
 	go func() {
-		log.Printf("[wf] 本地代理已启动")
+		log.Printf("[xiass-tools] 本地代理已启动")
 		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-			log.Printf("[wf] 本地代理服务器错误: %v", err)
+			log.Printf("[xiass-tools] 本地代理服务器错误: %v", err)
 		}
 		serverMu.Lock()
 		if srv == server {
@@ -179,7 +179,7 @@ func Stop() error {
 		port := currentPortLocked()
 		serverMu.Unlock()
 		if isListeningAt(port) && !isManagedListenerAt(port) {
-			return fmt.Errorf("本地代理监听器不属于当前 WF助手实例，无法从这里停止")
+			return fmt.Errorf("本地代理监听器不属于当前 XIASS Tools 实例，无法从这里停止")
 		}
 		return nil
 	}
@@ -204,7 +204,7 @@ func Stop() error {
 	// net.ErrClosed for a listener it was already tracking.
 	if listener != nil {
 		if closeErr := listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-			log.Printf("[wf] 关闭本地代理监听器时出现异常: %v", closeErr)
+			log.Printf("[xiass-tools] 关闭本地代理监听器时出现异常: %v", closeErr)
 		}
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -221,7 +221,7 @@ func Stop() error {
 		// From the desktop user's perspective the endpoint is now released;
 		// retain the timeout only in the local diagnostic log instead of
 		// reporting a false failed-exit result.
-		log.Printf("[wf] 本地代理有活动请求，已在等待后强制关闭: %v", err)
+		log.Printf("[xiass-tools] 本地代理有活动请求，已在等待后强制关闭: %v", err)
 		return nil
 	}
 

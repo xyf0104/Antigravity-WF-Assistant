@@ -11,12 +11,16 @@ import (
 	"io/fs"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 )
 
 const (
 	expectedBundleIdentifier = "com.openai.codex"
 	maxInfoPlistSize         = 1 << 20
+	maxSpotlightCandidates   = 32
+	defaultSpotlightTimeout  = 2 * time.Second
 )
 
 var publicVersionPattern = regexp.MustCompile(`\d+(?:\.\d+){0,3}`)
@@ -35,17 +39,25 @@ type macInstallation struct {
 
 type macInspection struct {
 	installation           *macInstallation
+	verifiedExecutables    []string
 	environmentUnavailable bool
 	inspectionUnavailable  bool
 	invalidInstallation    bool
 }
 
-// Discover checks only the four supported public application bundle paths.
-// A bundle is accepted only when its public Info.plist declares
-// com.openai.codex and its declared executable is a regular executable file.
+// Discover checks the conventional public application bundle paths and also
+// performs a bounded Spotlight lookup for the exact built-in bundle identifier.
+// A fixed path remains the deterministic lifecycle target, but every verified
+// Spotlight result participates in the running-state check so a nonstandard
+// active bundle cannot be missed. A bundle is never trusted merely because
+// Spotlight found it: its public Info.plist and declared executable must pass
+// the same structural checks as a fixed path.
 func (detector *Detector) Discover(ctx context.Context) Status {
 	status := Status{CheckedAt: detector.now()}
-	inspection := inspectMacInstallation(detector.fileSystem())
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	inspection := detector.inspectMacInstallation(ctx)
 	if inspection.installation == nil {
 		if inspection.environmentUnavailable {
 			addWarning(&status, WarningEnvironmentUnavailable)
@@ -71,9 +83,6 @@ func (detector *Detector) Discover(ctx context.Context) Status {
 		ExecutableVerified: true,
 	}
 
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	processContext, cancel := context.WithTimeout(ctx, detector.processTimeout())
 	defer cancel()
 	processes, err := detector.processLister().List(processContext)
@@ -84,7 +93,7 @@ func (detector *Detector) Discover(ctx context.Context) Status {
 	}
 
 	for _, process := range processes {
-		if sameMacPath(process.Executable, inspection.installation.executable) {
+		if inspection.matchesExecutable(process.Executable) {
 			status.Running = true
 			status.State = StateRunning
 			return status
@@ -94,7 +103,22 @@ func (detector *Detector) Discover(ctx context.Context) Status {
 	return status
 }
 
-func inspectMacInstallation(filesystem FileSystem) macInspection {
+func (detector *Detector) inspectMacInstallation(ctx context.Context) macInspection {
+	return inspectMacInstallation(ctx, detector.fileSystem(), detector.bundleFinder(), detector.spotlightTimeout())
+}
+
+func (detector *Detector) bundleFinder() BundleFinder {
+	if detector != nil && detector.options.BundleFinder != nil {
+		return detector.options.BundleFinder
+	}
+	return systemBundleFinder{}
+}
+
+func (detector *Detector) spotlightTimeout() time.Duration {
+	return defaultSpotlightTimeout
+}
+
+func inspectMacInstallation(ctx context.Context, filesystem FileSystem, finder BundleFinder, spotlightTimeout time.Duration) macInspection {
 	inspection := macInspection{}
 	candidates := []macCandidate{
 		{bundle: "/Applications/Codex.app", source: SourceSystemApplications},
@@ -114,13 +138,122 @@ func inspectMacInstallation(filesystem FileSystem) macInspection {
 	for _, candidate := range candidates {
 		installation, unavailable, invalid := inspectMacCandidate(filesystem, candidate)
 		if installation != nil {
-			inspection.installation = installation
-			return inspection
+			inspection.addInstallation(installation)
+			continue
 		}
 		inspection.inspectionUnavailable = inspection.inspectionUnavailable || unavailable
 		inspection.invalidInstallation = inspection.invalidInstallation || invalid
 	}
+	spotlightCandidates, unavailable := findMacSpotlightCandidates(ctx, finder, spotlightTimeout, candidates)
+	inspection.inspectionUnavailable = inspection.inspectionUnavailable || unavailable
+	for _, candidate := range spotlightCandidates {
+		installation, candidateUnavailable, invalid := inspectMacCandidate(filesystem, candidate)
+		if installation != nil {
+			// Candidates are sorted before this loop, so addInstallation keeps
+			// the first one as the deterministic lifecycle target while retaining
+			// every verified executable for the read-only running-state check.
+			inspection.addInstallation(installation)
+		}
+		inspection.inspectionUnavailable = inspection.inspectionUnavailable || candidateUnavailable
+		inspection.invalidInstallation = inspection.invalidInstallation || invalid
+	}
 	return inspection
+}
+
+func (inspection *macInspection) addInstallation(installation *macInstallation) {
+	if inspection == nil || installation == nil || strings.TrimSpace(installation.executable) == "" {
+		return
+	}
+	if inspection.installation == nil {
+		copy := *installation
+		inspection.installation = &copy
+	}
+	for _, executable := range inspection.verifiedExecutables {
+		if sameMacPath(executable, installation.executable) {
+			return
+		}
+	}
+	inspection.verifiedExecutables = append(inspection.verifiedExecutables, installation.executable)
+}
+
+func (inspection macInspection) matchesExecutable(executable string) bool {
+	for _, verified := range inspection.verifiedExecutables {
+		if sameMacPath(executable, verified) {
+			return true
+		}
+	}
+	return inspection.installation != nil && sameMacPath(executable, inspection.installation.executable)
+}
+
+func findMacSpotlightCandidates(ctx context.Context, finder BundleFinder, timeout time.Duration, existing []macCandidate) ([]macCandidate, bool) {
+	if finder == nil {
+		return nil, true
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = defaultSpotlightTimeout
+	}
+	lookupContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	paths, err := finder.FindBundles(lookupContext, expectedBundleIdentifier, maxSpotlightCandidates)
+	if err != nil || lookupContext.Err() != nil {
+		return nil, true
+	}
+
+	seen := make(map[string]struct{}, len(existing)+len(paths))
+	for _, candidate := range existing {
+		key := macCandidatePathKey(candidate.bundle)
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	validPaths := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = safeMacSpotlightBundlePath(path)
+		if path == "" {
+			continue
+		}
+		key := macCandidatePathKey(path)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		validPaths = append(validPaths, path)
+	}
+	sort.Strings(validPaths)
+	if len(validPaths) > maxSpotlightCandidates {
+		validPaths = validPaths[:maxSpotlightCandidates]
+	}
+	candidates := make([]macCandidate, 0, len(validPaths))
+	for _, path := range validPaths {
+		candidates = append(candidates, macCandidate{bundle: path, source: SourcePublicDiscovery})
+	}
+	return candidates, false
+}
+
+func safeMacSpotlightBundlePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || strings.ContainsRune(path, '\x00') || !filepath.IsAbs(path) {
+		return ""
+	}
+	path = filepath.Clean(path)
+	if !strings.EqualFold(filepath.Ext(path), ".app") || filepath.Base(path) == "." {
+		return ""
+	}
+	return path
+}
+
+func macCandidatePathKey(path string) string {
+	path = safeMacSpotlightBundlePath(path)
+	if path == "" {
+		return ""
+	}
+	// Do not fold case here: APFS volumes may be case-sensitive, and two
+	// distinct application bundles must not cause one another to be skipped.
+	return path
 }
 
 func inspectMacCandidate(filesystem FileSystem, candidate macCandidate) (*macInstallation, bool, bool) {

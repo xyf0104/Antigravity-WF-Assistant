@@ -41,7 +41,7 @@ func BuiltinMetadata() []Metadata {
 				bound(CapabilityDiagnostics, "Export target-specific diagnostics after binding."),
 				bound(CapabilityBackup, "Create a transaction-safe local backup after binding."),
 				notApplicable(CapabilityPatchInjection, "No patch-injection behavior is declared by this profile."),
-				notApplicable(CapabilitySessionRecovery, "No session-recovery behavior is declared by this profile."),
+				bound(CapabilitySessionRecovery, "Repair supported local provider-history compatibility only after explicit user confirmation."),
 				notApplicable(CapabilityImageIO, "No image-routing behavior is declared by this profile."),
 				notImplemented(CapabilityOAuth, "OAuth is not provided by the unbound agent registry."),
 				notImplemented(CapabilityUsage, "Account usage refresh is not provided by the unbound agent registry."),

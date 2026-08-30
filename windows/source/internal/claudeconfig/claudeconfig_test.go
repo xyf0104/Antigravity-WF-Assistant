@@ -85,7 +85,7 @@ func TestApplyInspectRestorePreservesUnknownFieldsAndRedactsToken(t *testing.T) 
 	if err := json.Unmarshal(root["env"], &environment); err != nil {
 		t.Fatal(err)
 	}
-	if environment["KEEP_ME"] != "preserved" || environment["ANTHROPIC_API_KEY"] != "unmanaged-test-key" || environment["ANTHROPIC_BASE_URL"] != "https://gateway.example.test/v1" || environment["ANTHROPIC_AUTH_TOKEN"] != newTestToken || environment["model"] != "" {
+	if environment["KEEP_ME"] != "preserved" || environment["ANTHROPIC_API_KEY"] != "" || environment["ANTHROPIC_BASE_URL"] != "https://gateway.example.test/v1" || environment["ANTHROPIC_AUTH_TOKEN"] != newTestToken || environment["model"] != "" {
 		t.Fatalf("unexpected managed environment: %#v", environment)
 	}
 	var model string

@@ -469,6 +469,22 @@ export async function applyCodexConfiguration(config) {
   return call("ApplyCodexConfiguration", config);
 }
 
+// Disconnect is intentionally a parameterless, explicit native action. The
+// renderer cannot choose another Provider ID, a path, or a Desktop lifecycle
+// action; the backend only removes the fixed xiass_tools Provider and returns
+// a redacted post-operation snapshot.
+export async function removeCodexXIASSProvider() {
+  return call("RemoveCodexXIASSProvider");
+}
+
+// Legacy migration is deliberately distinct from a normal save: it takes no
+// key, endpoint, or other renderer-controlled target. The
+// native side recognizes only one verified first-party predecessor and never
+// exposes its opaque credentials back to JavaScript.
+export async function migrateCodexLegacyProvider() {
+  return call("MigrateCodexLegacyProvider");
+}
+
 export async function discoverCodexModels(baseURL, apiKey) {
   return call("DiscoverCodexModels", baseURL, apiKey);
 }
@@ -624,6 +640,7 @@ export async function restartCodexDesktop(confirmed = false) {
 const codexLifecycleMethodAliases = Object.freeze({
   manual: ["ApplyCodexConfigurationWithLifecycle"],
   xiassSelection: ["ApplyCodexXIASSSelectionWithLifecycle"],
+  legacyMigration: ["MigrateCodexLegacyProviderWithLifecycle"],
 });
 
 function codexLifecycleUnavailableResult() {
@@ -676,6 +693,23 @@ export async function applyCodexXIASSSelectionWithLifecycle(sessionID, input, co
   );
 }
 
+// A running Codex Desktop can only be migrated through its native, explicit
+// exit/relaunch transaction. This wrapper never sends a Provider ID or any
+// credential and never retries a lifecycle operation behind the user's back.
+export async function migrateCodexLegacyProviderWithLifecycle(confirmed = false) {
+  if (!confirmed) {
+    return {
+      ok: false,
+      confirmationRequired: true,
+      message: "请先确认 Codex Desktop 生命周期操作。",
+    };
+  }
+  return callCodexLifecycle(
+    codexLifecycleMethodAliases.legacyMigration,
+    codexDesktopConfirmationPhrase,
+  );
+}
+
 // ─── Claude Code user settings ─────────────────────────────────────────────
 // These bindings expose only redacted settings status. The authorization token
 // is intentionally supplied from the Claude modal's local component state and
@@ -686,6 +720,17 @@ export async function getClaudeCodeConfiguration() {
 
 export async function applyClaudeCodeConfiguration(input) {
   return call("ApplyClaudeCodeConfiguration", input);
+}
+
+// Gateway discovery and connection testing deliberately accept request-local
+// credentials from the Claude modal. They never read saved credentials or
+// place them in global reactive state, localStorage, logs, or events.
+export async function discoverClaudeCodeGatewayModels(input) {
+  return call("DiscoverClaudeCodeGatewayModels", input);
+}
+
+export async function testClaudeCodeGateway(input) {
+  return call("TestClaudeCodeGateway", input);
 }
 
 export async function restoreClaudeCodeConfiguration(backupID) {
@@ -720,6 +765,7 @@ const mcpTargetMethods = Object.freeze({
   cursor: {
     get: ["GetCursorMCPConfiguration"],
     apply: ["ApplyCursorMCPConfiguration"],
+    remove: ["RemoveCursorMCPConfiguration"],
     list: ["ListCursorMCPBackups"],
     restore: ["RestoreCursorMCPBackup"],
     delete: ["DeleteCursorMCPBackup"],
@@ -727,6 +773,7 @@ const mcpTargetMethods = Object.freeze({
   windsurf: {
     get: ["GetWindsurfMCPConfiguration"],
     apply: ["ApplyWindsurfMCPConfiguration"],
+    remove: ["RemoveWindsurfMCPConfiguration"],
     list: ["ListWindsurfMCPBackups"],
     restore: ["RestoreWindsurfMCPBackup"],
     delete: ["DeleteWindsurfMCPBackup"],
@@ -796,6 +843,17 @@ export async function applyTargetMCPConfiguration(target, remoteURL) {
   } finally {
     scopedInput.remoteUrl = "";
   }
+}
+
+// Removing a managed MCP connection is intentionally target-scoped only. In
+// contrast to the read/apply compatibility path, it must never fall back to a
+// generic method in an older binary: that guarantees this action has no
+// renderer-controlled target or server identifier.
+export async function removeTargetMCPConfiguration(target) {
+  const normalized = normalizedMCPConfigurationTarget(target);
+  if (!normalized) return mcpTargetScopedUnavailable("remove");
+  const result = await callTargetScopedMCP(normalized, "remove");
+  return result ?? mcpTargetScopedUnavailable("remove");
 }
 
 export async function listTargetMCPBackups(target) {

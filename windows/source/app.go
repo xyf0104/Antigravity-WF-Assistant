@@ -78,7 +78,7 @@ func newApp() *App {
 	_ = os.Chmod(dir, 0o700)
 	storage.Init(dir)
 	if err := diagnostics.Init(dir); err != nil {
-		log.Printf("[wf] 无法初始化本地诊断日志: %v", err)
+		log.Printf("[xiass-tools] 无法初始化本地诊断日志: %v", err)
 	}
 	application := &App{
 		storageDir:          dir,
@@ -143,7 +143,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.startTray()
 	if err := proxy.Start(a.storageDir); err != nil {
-		log.Printf("[wf] 代理启动失败: %v", err)
+		log.Printf("[xiass-tools] 代理启动失败: %v", err)
 	}
 	go a.syncHistory()
 }
@@ -191,7 +191,7 @@ func (a *App) requestQuit() {
 		defer timer.Stop()
 		<-timer.C
 		if a.exitRequested.Load() {
-			log.Printf("[wf] 正常退出超时，已在释放代理端口后结束进程")
+			log.Printf("[xiass-tools] 正常退出超时，已在释放代理端口后结束进程")
 			os.Exit(0)
 		}
 	}()
@@ -250,7 +250,7 @@ func (a *App) ExportDiagnosticLogs() Result {
 	}); err != nil {
 		return Result{OK: false, Message: "导出诊断日志失败: " + err.Error()}
 	}
-	log.Printf("[wf] 用户已导出脱敏诊断日志")
+	log.Printf("[xiass-tools] 用户已导出脱敏诊断日志")
 	return Result{OK: true, Message: "诊断日志已导出：" + destination}
 }
 
@@ -584,7 +584,7 @@ func (a *App) syncHistory() Result {
 	a.setHistoryStatus("running", "正在恢复全部历史会话")
 	if err := patcher.MergeHistory(); err != nil {
 		message := fmt.Sprintf("历史会话自动恢复失败：%s", err.Error())
-		log.Printf("[wf] %s", message)
+		log.Printf("[xiass-tools] %s", message)
 		a.setHistoryStatus("error", message)
 		return Result{OK: false, Message: message}
 	}
@@ -1424,7 +1424,7 @@ func (a *App) runPatchAction(actionName string, operation string, action func() 
 		return result
 	}
 	if err := a.recordConnectedAntigravityTargets(actionName); err != nil {
-		log.Printf("[wf] 无法保存已连接的 Antigravity 安装路径: %v", err)
+		log.Printf("[xiass-tools] 无法保存已连接的 Antigravity 安装路径: %v", err)
 	}
 	a.emitPatchProgress(PatchProgress{Phase: "verifying", Operation: operation, Percent: 90, Message: "正在核验补丁状态与安装完整性"})
 	a.emitPatchProgress(PatchProgress{Phase: "complete", Operation: operation, Percent: 100, Message: "连接成功，可以打开 Antigravity"})
@@ -1443,7 +1443,7 @@ func (a *App) RestorePatch() Result {
 		return Result{OK: false, Message: fmt.Sprintf("%s\n%s", err.Error(), out)}
 	}
 	if err := a.clearConnectedAntigravityTargets(); err != nil {
-		log.Printf("[wf] 无法清除 Antigravity 连接基线: %v", err)
+		log.Printf("[xiass-tools] 无法清除 Antigravity 连接基线: %v", err)
 	}
 	return Result{OK: true, Message: out}
 }

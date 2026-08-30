@@ -16,7 +16,7 @@ func platformDiscoverDesktopTarget(detector *Detector) *desktopTarget {
 	if detector == nil {
 		return nil
 	}
-	inspection := inspectMacInstallation(detector.fileSystem())
+	inspection := detector.inspectMacInstallation(context.Background())
 	if inspection.installation == nil {
 		return nil
 	}

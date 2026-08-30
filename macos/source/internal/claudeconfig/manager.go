@@ -170,16 +170,21 @@ func (m *Manager) Inspect() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{Location: location, SHA256: sha256Hex(data), Mode: mode, Valid: false}, errInvalidSettings
 	}
-	model, baseURL, authConfigured, managed := snapshotFromDocument(document)
+	model, baseURL, credentialMode, credentialConfigured, authConfigured, helperConfigured, discoveryEnabled, discoveryBlocked, managed := snapshotFromDocument(document)
 	return Snapshot{
-		Location:            location,
-		SHA256:              sha256Hex(data),
-		Mode:                mode,
-		Valid:               true,
-		Model:               model,
-		BaseURL:             baseURL,
-		AuthTokenConfigured: authConfigured,
-		Managed:             managed,
+		Location:                     location,
+		SHA256:                       sha256Hex(data),
+		Mode:                         mode,
+		Valid:                        true,
+		Model:                        model,
+		BaseURL:                      baseURL,
+		CredentialMode:               credentialMode,
+		CredentialConfigured:         credentialConfigured,
+		AuthTokenConfigured:          authConfigured,
+		APIKeyHelperConfigured:       helperConfigured,
+		GatewayModelDiscoveryEnabled: discoveryEnabled,
+		GatewayModelDiscoveryBlocked: discoveryBlocked,
+		Managed:                      managed,
 	}, nil
 }
 

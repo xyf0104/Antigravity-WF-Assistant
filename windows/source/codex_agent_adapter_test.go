@@ -21,7 +21,8 @@ func TestCodexAgentSnapshotStatusIsConservative(t *testing.T) {
 	}{
 		{name: "no local home", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex"}, Valid: true}, wantState: agent.StateNotInstalled, wantConfiguration: true},
 		{name: "valid unmanaged config", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex", ConfigPath: "/home/test/.codex/config.toml", Exists: true}, Valid: true, ModelProvider: "official"}, homeExists: true, wantState: agent.StateDetected, wantConfiguration: true},
-		{name: "valid xiass config", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex", ConfigPath: "/home/test/.codex/config.toml", Exists: true}, Valid: true, ModelProvider: codexconfig.DefaultProviderID}, homeExists: true, wantState: agent.StateReady, wantConfiguration: true},
+		{name: "valid xiass config", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex", ConfigPath: "/home/test/.codex/config.toml", Exists: true}, Valid: true, ModelProvider: codexconfig.DefaultProviderID, ManagedProviderVerified: true}, homeExists: true, wantState: agent.StateReady, wantConfiguration: true},
+		{name: "parseable but incomplete xiass provider is degraded", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex", ConfigPath: "/home/test/.codex/config.toml", Exists: true}, Valid: true, ModelProvider: codexconfig.DefaultProviderID, ManagedProviderIssue: codexconfig.ManagedProviderIssueBearer}, homeExists: true, wantState: agent.StateDegraded, wantConfiguration: true},
 		{name: "invalid config", snapshot: codexconfig.ConfigSnapshot{Location: codexconfig.ConfigLocation{CodexHome: "/home/test/.codex", Exists: true}, Valid: false}, homeExists: true, inspectErr: errors.New("invalid TOML"), wantState: agent.StateDegraded, wantConfiguration: false},
 	}
 	for _, testCase := range cases {
@@ -35,6 +36,9 @@ func TestCodexAgentSnapshotStatusIsConservative(t *testing.T) {
 			}
 			if !agentCapabilityAvailable(status, agent.CapabilityDiscovery) {
 				t.Fatal("Codex discovery should report a completed local check")
+			}
+			if testCase.snapshot.ManagedProviderIssue != codexconfig.ManagedProviderIssueNone && status.Details["managedProviderIssue"] != string(testCase.snapshot.ManagedProviderIssue) {
+				t.Fatalf("managed provider issue = %q, want %q", status.Details["managedProviderIssue"], testCase.snapshot.ManagedProviderIssue)
 			}
 		})
 	}

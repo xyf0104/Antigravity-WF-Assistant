@@ -23,6 +23,18 @@ test("Claude configuration reduces successful native responses to fixed safe cop
   assert.doesNotMatch(claudeModalSource, /new Date\(backup\.createdAt\)/);
 });
 
+test("Claude gateway checks keep credentials local and identify real protocol tests", () => {
+  assert.match(claudeModalSource, /discoverClaudeCodeGatewayModels\(request\)/);
+  assert.match(claudeModalSource, /testClaudeCodeGateway\(request\)/);
+  assert.match(claudeModalSource, /clearGatewayRequest\(request\)/);
+	assert.match(claudeModalSource, /resetVisibleCredentials\(\)/);
+	assert.match(claudeModalSource, /gatewayModelDiscoveryBlocked/);
+	assert.match(claudeModalSource, /不会自动删除这些用户管理的设置/);
+  assert.match(claudeModalSource, /Claude Messages 实际请求成功/);
+  assert.match(claudeModalSource, /apiKeyHelper 会由 Claude Code 自身执行|XIASS Tools 不执行任意本机命令/);
+  assert.doesNotMatch(claudeModalSource, /localStorage/);
+});
+
 test("shared modal and segmented controls keep close actions accessible", () => {
   assert.match(modalSource, /type="button" class="x" aria-label="关闭"/);
   assert.doesNotMatch(modalSource, /transition:\s*all/);

@@ -211,9 +211,16 @@ jobs:
         working-directory: windows/source/frontend
         run: node --test test/reasoningCapabilities.test.mjs
 
-      - name: Run complete frontend regression suite
+      # Generated Wails bindings are intentionally not a pre-native-build
+      # source of truth. wailsBindings.verify.mjs deliberately runs only after Wails production build below.
+      - name: Run pre-native-build frontend regression suite
         working-directory: windows/source/frontend
-        run: node --test test/*.test.mjs
+        shell: pwsh
+        run: |
+          $tests = @(Get-ChildItem -Path test -Filter '*.test.mjs' -File | Sort-Object Name | ForEach-Object { $_.FullName })
+          if ($tests.Count -eq 0) { throw "No pre-native frontend regression tests were found." }
+          & node --test $tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Go race tests
         run: go test -race ./...
@@ -240,6 +247,16 @@ jobs:
         run: |
           $version = (Get-Content ../../VERSION -Raw).Trim()
           & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 "/DAPP_VERSION=$version" installer.nsi
+
+      - name: Smoke-test Windows installer lifecycle
+        if: ${{ runner.environment == 'github-hosted' }}
+        shell: pwsh
+        run: ./build/windows/smoke-installer.ps1
+
+      - name: Refuse installer smoke test on persistent runner
+        if: ${{ runner.environment != 'github-hosted' }}
+        shell: pwsh
+        run: throw "Installer smoke tests may run only on an ephemeral GitHub-hosted Windows runner."
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4

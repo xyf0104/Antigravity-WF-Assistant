@@ -103,6 +103,47 @@ func (document configurationDocument) withManagedRemote(target Target, endpoint 
 	return updated, nil
 }
 
+// withoutManagedRemote removes only the exact reserved XIASS Tools key. It
+// deliberately leaves the mcpServers container in place, including when it
+// becomes empty, and preserves every foreign server plus every unknown
+// top-level value. The caller must reject sensitive configurations before
+// calling this method; this helper never attempts to classify another entry as
+// owned by XIASS Tools.
+func (document configurationDocument) withoutManagedRemote() ([]byte, bool, error) {
+	if document.root == nil || document.servers == nil {
+		return nil, false, ErrOperation
+	}
+	if !document.managedServerConfigured {
+		return nil, false, nil
+	}
+
+	servers := make(map[string]json.RawMessage, len(document.servers)-1)
+	for id, raw := range document.servers {
+		if id == ManagedServerID {
+			continue
+		}
+		servers[id] = append(json.RawMessage(nil), raw...)
+	}
+	encodedServers, err := json.Marshal(servers)
+	if err != nil {
+		return nil, false, ErrOperation
+	}
+	root := make(map[string]json.RawMessage, len(document.root))
+	for key, raw := range document.root {
+		root[key] = append(json.RawMessage(nil), raw...)
+	}
+	root["mcpServers"] = encodedServers
+	updated, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil, false, ErrOperation
+	}
+	updated = append(updated, '\n')
+	if _, err := parseConfiguration(updated); err != nil {
+		return nil, false, ErrOperation
+	}
+	return updated, true, nil
+}
+
 func (document configurationDocument) matchesManagedRemote(target Target, endpoint string) bool {
 	raw, exists := document.servers[ManagedServerID]
 	if !exists {

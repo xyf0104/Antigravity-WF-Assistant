@@ -25,9 +25,12 @@ var (
 var modelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+\-\[\]]{0,255}$`)
 
 type normalizedApplyConfig struct {
-	baseURL   string
-	authToken string
-	model     string
+	baseURL                     string
+	credentialMode              CredentialMode
+	credential                  string
+	apiKeyHelper                string
+	enableGatewayModelDiscovery bool
+	model                       string
 }
 
 type settingsDocument struct {
@@ -79,13 +82,50 @@ func normalizeApplyConfig(input ApplyConfig) (normalizedApplyConfig, error) {
 	if err != nil {
 		return normalizedApplyConfig{}, err
 	}
-	if input.AuthToken == "" || len(input.AuthToken) > maxAuthTokenBytes || strings.TrimSpace(input.AuthToken) != input.AuthToken || containsControl(input.AuthToken) || containsWhitespace(input.AuthToken) || strings.HasPrefix(strings.ToLower(input.AuthToken), "bearer ") {
-		return normalizedApplyConfig{}, errInvalidAuth
-	}
 	if input.Model == "" || len(input.Model) > maxModelBytes || !modelPattern.MatchString(input.Model) {
 		return normalizedApplyConfig{}, errInvalidModel
 	}
-	return normalizedApplyConfig{baseURL: baseURL, authToken: input.AuthToken, model: input.Model}, nil
+	credentialMode, credential, apiKeyHelper, err := normalizeCredential(input)
+	if err != nil {
+		return normalizedApplyConfig{}, err
+	}
+	return normalizedApplyConfig{
+		baseURL:                     baseURL,
+		credentialMode:              credentialMode,
+		credential:                  credential,
+		apiKeyHelper:                apiKeyHelper,
+		enableGatewayModelDiscovery: input.EnableGatewayModelDiscovery,
+		model:                       input.Model,
+	}, nil
+}
+
+// normalizeCredential enforces one documented Claude Code credential mode.
+// Keeping the modes mutually exclusive prevents a stale higher-precedence
+// value from silently overriding the value a user just saved.
+func normalizeCredential(input ApplyConfig) (CredentialMode, string, string, error) {
+	mode := input.CredentialMode
+	credential := input.Credential
+	if mode == "" {
+		mode = CredentialModeAuthToken
+		if credential == "" {
+			credential = input.AuthToken
+		}
+	}
+	switch mode {
+	case CredentialModeAuthToken, CredentialModeAPIKey:
+		if credential == "" || len(credential) > maxAuthTokenBytes || strings.TrimSpace(credential) != credential || containsControl(credential) || containsWhitespace(credential) || strings.HasPrefix(strings.ToLower(credential), "bearer ") {
+			return "", "", "", errInvalidAuth
+		}
+		return mode, credential, "", nil
+	case CredentialModeAPIKeyHelper:
+		helper := input.APIKeyHelper
+		if helper == "" || len(helper) > maxAPIKeyHelperBytes || strings.TrimSpace(helper) != helper || containsControl(helper) {
+			return "", "", "", errInvalidAuth
+		}
+		return mode, "", helper, nil
+	default:
+		return "", "", "", errInvalidAuth
+	}
 }
 
 func containsControl(value string) bool {
@@ -178,16 +218,43 @@ func (document settingsDocument) updated(config normalizedApplyConfig) ([]byte, 
 	if err != nil {
 		return nil, errors.New("encode Claude API root")
 	}
-	authToken, err := json.Marshal(config.authToken)
-	if err != nil {
-		return nil, errors.New("encode Claude authorization token")
-	}
 	model, err := json.Marshal(config.model)
 	if err != nil {
 		return nil, errors.New("encode Claude model")
 	}
 	document.env["ANTHROPIC_BASE_URL"] = baseURL
-	document.env["ANTHROPIC_AUTH_TOKEN"] = authToken
+	// These values have an explicit precedence order in Claude Code. A stale
+	// higher-priority value would otherwise override a newly selected mode.
+	delete(document.env, "ANTHROPIC_AUTH_TOKEN")
+	delete(document.env, "ANTHROPIC_API_KEY")
+	delete(document.root, "apiKeyHelper")
+	switch config.credentialMode {
+	case CredentialModeAuthToken:
+		credential, marshalErr := json.Marshal(config.credential)
+		if marshalErr != nil {
+			return nil, errors.New("encode Claude authorization token")
+		}
+		document.env["ANTHROPIC_AUTH_TOKEN"] = credential
+	case CredentialModeAPIKey:
+		credential, marshalErr := json.Marshal(config.credential)
+		if marshalErr != nil {
+			return nil, errors.New("encode Claude API key")
+		}
+		document.env["ANTHROPIC_API_KEY"] = credential
+	case CredentialModeAPIKeyHelper:
+		helper, marshalErr := json.Marshal(config.apiKeyHelper)
+		if marshalErr != nil {
+			return nil, errors.New("encode Claude API key helper")
+		}
+		document.root["apiKeyHelper"] = helper
+	default:
+		return nil, errors.New("encode Claude credential mode")
+	}
+	if config.enableGatewayModelDiscovery {
+		document.env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = json.RawMessage(`"1"`)
+	} else {
+		delete(document.env, "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
+	}
 	env, err := json.Marshal(document.env)
 	if err != nil {
 		return nil, errors.New("encode Claude environment settings")
@@ -207,12 +274,57 @@ func verifyManagedSettings(data []byte, config normalizedApplyConfig) error {
 		return err
 	}
 	baseURL, baseURLOK := stringValue(document.env["ANTHROPIC_BASE_URL"])
-	authToken, authTokenOK := stringValue(document.env["ANTHROPIC_AUTH_TOKEN"])
 	model, modelOK := stringValue(document.root["model"])
-	if !baseURLOK || !authTokenOK || !modelOK || baseURL != config.baseURL || authToken != config.authToken || model != config.model {
+	if !baseURLOK || !modelOK || baseURL != config.baseURL || model != config.model {
+		return errors.New("managed settings verification failed")
+	}
+	if config.enableGatewayModelDiscovery != gatewayModelDiscoveryEnabled(document.env) {
+		return errors.New("managed settings verification failed")
+	}
+	switch config.credentialMode {
+	case CredentialModeAuthToken:
+		credential, ok := stringValue(document.env["ANTHROPIC_AUTH_TOKEN"])
+		if !ok || credential != config.credential || hasStringValue(document.env, "ANTHROPIC_API_KEY") || hasStringValue(document.root, "apiKeyHelper") {
+			return errors.New("managed settings verification failed")
+		}
+	case CredentialModeAPIKey:
+		credential, ok := stringValue(document.env["ANTHROPIC_API_KEY"])
+		if !ok || credential != config.credential || hasStringValue(document.env, "ANTHROPIC_AUTH_TOKEN") || hasStringValue(document.root, "apiKeyHelper") {
+			return errors.New("managed settings verification failed")
+		}
+	case CredentialModeAPIKeyHelper:
+		helper, ok := stringValue(document.root["apiKeyHelper"])
+		if !ok || helper != config.apiKeyHelper || hasStringValue(document.env, "ANTHROPIC_AUTH_TOKEN") || hasStringValue(document.env, "ANTHROPIC_API_KEY") {
+			return errors.New("managed settings verification failed")
+		}
+	default:
 		return errors.New("managed settings verification failed")
 	}
 	return nil
+}
+
+func hasStringValue(values map[string]json.RawMessage, key string) bool {
+	value, ok := stringValue(values[key])
+	return ok && value != ""
+}
+
+func gatewayModelDiscoveryEnabled(env map[string]json.RawMessage) bool {
+	value, ok := stringValue(env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"])
+	return ok && value == "1"
+}
+
+// gatewayModelDiscoveryBlocked follows Claude Code's standard gateway
+// discovery constraints without exposing any user-managed provider setting or
+// its value to the caller. We deliberately preserve those settings: XIASS
+// Tools manages the standard Anthropic gateway fields, not a user's Bedrock,
+// Vertex, Foundry, or organization traffic policy.
+func gatewayModelDiscoveryBlocked(env map[string]json.RawMessage) bool {
+	for key := range env {
+		if strings.HasPrefix(strings.ToUpper(key), "CLAUDE_CODE_USE_") && hasStringValue(env, key) {
+			return true
+		}
+	}
+	return hasStringValue(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 }
 
 func stringValue(raw json.RawMessage) (string, bool) {
@@ -226,7 +338,7 @@ func stringValue(raw json.RawMessage) (string, bool) {
 	return value, true
 }
 
-func snapshotFromDocument(document settingsDocument) (model, baseURL string, authConfigured, managed bool) {
+func snapshotFromDocument(document settingsDocument) (model, baseURL string, credentialMode CredentialMode, credentialConfigured, authConfigured, helperConfigured, discoveryEnabled, discoveryBlocked, managed bool) {
 	if rawModel, ok := stringValue(document.root["model"]); ok && modelPattern.MatchString(rawModel) {
 		model = rawModel
 	} else if rawModel != "" {
@@ -239,14 +351,35 @@ func snapshotFromDocument(document settingsDocument) (model, baseURL string, aut
 			baseURL = "configured"
 		}
 	}
-	if rawToken, ok := stringValue(document.env["ANTHROPIC_AUTH_TOKEN"]); ok && rawToken != "" {
-		authConfigured = true
+	authToken, authTokenPresent := stringValue(document.env["ANTHROPIC_AUTH_TOKEN"])
+	apiKey, apiKeyPresent := stringValue(document.env["ANTHROPIC_API_KEY"])
+	helper, helperPresent := stringValue(document.root["apiKeyHelper"])
+	authConfigured = authTokenPresent && authToken != ""
+	apiKeyConfigured := apiKeyPresent && apiKey != ""
+	helperConfigured = helperPresent && helper != ""
+	configuredCount := 0
+	if authConfigured {
+		configuredCount++
+		credentialMode = CredentialModeAuthToken
+	}
+	if apiKeyConfigured {
+		configuredCount++
+		credentialMode = CredentialModeAPIKey
+	}
+	if helperConfigured {
+		configuredCount++
+		credentialMode = CredentialModeAPIKeyHelper
+	}
+	if configuredCount != 1 {
+		credentialMode = ""
 	}
 	_, hasBaseURL := document.env["ANTHROPIC_BASE_URL"]
-	_, hasToken := document.env["ANTHROPIC_AUTH_TOKEN"]
 	_, hasModel := document.root["model"]
-	managed = hasBaseURL && hasToken && hasModel
-	return model, baseURL, authConfigured, managed
+	discoveryEnabled = gatewayModelDiscoveryEnabled(document.env)
+	discoveryBlocked = discoveryEnabled && gatewayModelDiscoveryBlocked(document.env)
+	credentialConfigured = configuredCount == 1
+	managed = hasBaseURL && credentialConfigured && hasModel
+	return model, baseURL, credentialMode, credentialConfigured, authConfigured, helperConfigured, discoveryEnabled, discoveryBlocked, managed
 }
 
 func sha256Hex(data []byte) string {

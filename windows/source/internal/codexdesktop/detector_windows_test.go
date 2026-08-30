@@ -129,6 +129,139 @@ func TestDiscoverWindowsDegradesWhenProcessListFailsWithVerifiedInstall(t *testi
 	}
 }
 
+func TestDiscoverWindowsUsesValidatedPublicAppPathsRegistration(t *testing.T) {
+	filesystem := newWindowsFakeFileSystem(map[string]string{
+		"LOCALAPPDATA": `C:\Users\alice\AppData\Local`,
+	})
+	executable := filepath.Join(`D:\Portable Apps\OpenAI Codex`, "Codex.exe")
+	addWindowsExecutable(filesystem, executable, `{"version":"26.8.1"}`)
+	registry := &recordingAppPathRegistry{values: []string{`"` + executable + `"`}}
+
+	status := New(Options{
+		FileSystem: filesystem,
+		Registry:   registry,
+		Processes:  fakeWindowsProcessLister{processes: []Process{{Executable: executable}}},
+	}).Discover(context.Background())
+
+	if status.State != StateRunning || !status.Running {
+		t.Fatalf("state = %#v, want running registered desktop install", status)
+	}
+	if status.Installation.Source != SourcePublicDiscovery || !status.Installation.ExecutableVerified {
+		t.Fatalf("installation = %#v, want verified public discovery result", status.Installation)
+	}
+	if status.Installation.Version != "26.8.1" {
+		t.Fatalf("version = %q, want public metadata version", status.Installation.Version)
+	}
+	if registry.appPathLimit != maxAppPathValues || registry.appPathCalls != 1 {
+		t.Fatalf("App Paths lookup = calls=%d limit=%d, want one bounded lookup of %d", registry.appPathCalls, registry.appPathLimit, maxAppPathValues)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal status: %v", err)
+	}
+	for _, forbidden := range []string{executable, `D:\Portable Apps`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("status leaked App Paths value: %s", encoded)
+		}
+	}
+}
+
+func TestDiscoverWindowsReportsRunningForSecondVerifiedAppPathTarget(t *testing.T) {
+	filesystem := newWindowsFakeFileSystem(map[string]string{
+		"LOCALAPPDATA": `C:\Users\alice\AppData\Local`,
+	})
+	selectedExecutable := filepath.Join(`C:\Users\alice\AppData\Local`, "Programs", "Codex", "Codex.exe")
+	addWindowsExecutable(filesystem, selectedExecutable, `{"version":"26.8.1"}`)
+	runningExecutable := filepath.Join(`D:\Managed Apps\OpenAI ChatGPT`, "ChatGPT.exe")
+	addWindowsExecutable(filesystem, runningExecutable, `{"version":"26.8.2"}`)
+	registry := &recordingAppPathRegistry{values: []string{`"` + runningExecutable + `"`}}
+
+	status := New(Options{
+		FileSystem: filesystem,
+		Registry:   registry,
+		Processes:  fakeWindowsProcessLister{processes: []Process{{Executable: runningExecutable}}},
+	}).Discover(context.Background())
+
+	if status.State != StateRunning || !status.Running {
+		t.Fatalf("state = %#v, want running second verified App Paths target", status)
+	}
+	// The fixed conventional installation remains the deterministic lifecycle
+	// target, but an independently verified App Paths process still blocks any
+	// history/configuration operation that requires Codex Desktop to be stopped.
+	if status.Installation.Source != SourceLocalAppData || status.Installation.Version != "26.8.1" {
+		t.Fatalf("installation = %#v, want first verified conventional target", status.Installation)
+	}
+	if selectedExecutable == runningExecutable {
+		t.Fatal("test fixture did not create distinct verified executables")
+	}
+}
+
+func TestDiscoverWindowsSafelyRecognizesVerifiedNonstandardRunningDesktop(t *testing.T) {
+	filesystem := newWindowsFakeFileSystem(map[string]string{
+		"LOCALAPPDATA": `C:\Users\alice\AppData\Local`,
+	})
+	runningExecutable := filepath.Join(`D:\Managed Apps\OpenAI Codex`, "Codex.exe")
+	addWindowsExecutable(filesystem, runningExecutable, `{"version":"26.8.3"}`)
+
+	status := New(Options{
+		FileSystem: filesystem,
+		Registry:   fakeRegistry{err: fs.ErrNotExist},
+		Processes:  fakeWindowsProcessLister{processes: []Process{{Executable: runningExecutable}}},
+	}).Discover(context.Background())
+
+	if status.State != StateRunning || !status.Running || !status.Installation.Present {
+		t.Fatalf("state = %#v, want safely verified nonstandard running desktop", status)
+	}
+	if status.Installation.Source != SourcePublicDiscovery || !status.Installation.ExecutableVerified || status.Installation.Version != "26.8.3" {
+		t.Fatalf("installation = %#v, want validated redacted running fallback", status.Installation)
+	}
+}
+
+func TestDiscoverWindowsRejectsUnsafeOrInvalidAppPathValues(t *testing.T) {
+	filesystem := newWindowsFakeFileSystem(map[string]string{
+		"LOCALAPPDATA": `C:\Users\alice\AppData\Local`,
+	})
+	bare := `C:\Tools\Codex.exe`
+	filesystem.entries[filepath.Clean(bare)] = windowsFakeFileInfo{name: "Codex.exe", mode: 0755}
+	registry := &recordingAppPathRegistry{values: []string{
+		`"C:\Tools\Codex.exe" --untrusted-argument`,
+		`C:\Users\alice\AppData\Roaming\npm\codex.exe`,
+		bare,
+	}}
+
+	status := New(Options{
+		FileSystem: filesystem,
+		Registry:   registry,
+		Processes:  fakeWindowsProcessLister{},
+	}).Discover(context.Background())
+
+	if status.Installation.Present || status.Running || status.State != StateDegraded {
+		t.Fatalf("unsafe App Paths values produced a trusted desktop detection: %#v", status)
+	}
+	if !containsWindowsWarning(status.Warnings, WarningInvalidInstallation) {
+		t.Fatalf("warnings = %v, want invalid public installation", status.Warnings)
+	}
+}
+
+func TestNormalizeWindowsAppPathValueRequiresOneAbsoluteDesktopExecutable(t *testing.T) {
+	valid := `"C:\Tools\Codex\Codex.exe"`
+	if got := normalizeWindowsAppPathValue(valid); got != `C:\Tools\Codex\Codex.exe` {
+		t.Fatalf("normalized quoted App Paths value = %q", got)
+	}
+	for _, value := range []string{
+		`C:\Tools\Codex\Codex.exe --with-arguments`,
+		`"C:\Tools\Codex\Codex.exe" --with-arguments`,
+		`%LOCALAPPDATA%\Programs\Codex\Codex.exe`,
+		`C:\Tools\Other.exe`,
+		`C:\Users\alice\AppData\Roaming\npm\codex.exe`,
+		"C:\\Tools\\Codex\\Codex.exe\r\nother",
+	} {
+		if got := normalizeWindowsAppPathValue(value); got != "" {
+			t.Fatalf("unsafe App Paths value was accepted: %q -> %q", value, got)
+		}
+	}
+}
+
 func containsWindowsWarning(warnings []Warning, wanted Warning) bool {
 	for _, warning := range warnings {
 		if warning == wanted {
@@ -221,6 +354,23 @@ func (registry *recordingRegistry) Subkeys(path string, limit int) ([]string, er
 	registry.path = path
 	registry.limit = limit
 	return registry.names, nil
+}
+
+type recordingAppPathRegistry struct {
+	values       []string
+	err          error
+	appPathCalls int
+	appPathLimit int
+}
+
+func (registry *recordingAppPathRegistry) Subkeys(string, int) ([]string, error) {
+	return nil, fs.ErrNotExist
+}
+
+func (registry *recordingAppPathRegistry) AppPathValues(limit int) ([]string, error) {
+	registry.appPathCalls++
+	registry.appPathLimit = limit
+	return append([]string(nil), registry.values...), registry.err
 }
 
 type fakeWindowsProcessLister struct {

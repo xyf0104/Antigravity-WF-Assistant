@@ -95,7 +95,7 @@ func (adapter *claudeCodeAgentAdapter) Diagnose(ctx context.Context) ([]agent.Di
 			AgentID: agent.ClaudeCodeID, Code: "claude-code.settings-not-managed", Severity: agent.SeverityInfo,
 			Summary:     "Claude Code user settings are available",
 			Detail:      "The selected settings.json is valid but is not fully managed by XIASS Tools.",
-			Remediation: "Use the Claude Code configuration flow to save only the API root, authorization token, and model fields.", CreatedAt: now,
+			Remediation: "Use the Claude Code configuration flow to save an API root, one credential mode, optional gateway discovery, and a model field.", CreatedAt: now,
 		})
 	}
 	return diagnostics, nil
@@ -183,9 +183,9 @@ func claudeCodeCapabilityStatuses(metadata agent.Metadata, validConfig, managed,
 			status.Availability = agent.CapabilityAvailable
 			status.Available = validConfig
 			if validConfig {
-				status.Reason = "The explicit Claude Code model user setting can be selected and saved."
+				status.Reason = "The explicit Claude Code model setting can be saved, and a user-supplied gateway credential can be used for one-shot model discovery."
 			} else {
-				status.Reason = "A valid settings.json is required before model selection is available."
+				status.Reason = "A valid settings.json is required before model selection and gateway discovery are available."
 			}
 		case agent.CapabilityLocalProxy:
 			status.Availability = agent.CapabilityAvailable

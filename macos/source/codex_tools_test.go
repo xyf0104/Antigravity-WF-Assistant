@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -13,7 +14,66 @@ import (
 	"testing"
 
 	"antigravity-wf-assistant/internal/codexconfig"
+	"antigravity-wf-assistant/internal/codexdesktop"
 )
+
+func TestRestoreCodexConfigurationRefusesWhileDesktopIsRunningOrUnverified(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		desktop *codexLifecycleFakeDesktop
+	}{
+		{name: "running", desktop: newCodexLifecycleFakeDesktop(true)},
+		{name: "process inspection unavailable", desktop: func() *codexLifecycleFakeDesktop {
+			desktop := newCodexLifecycleFakeDesktop(false)
+			desktop.status.Warnings = []codexdesktop.Warning{codexdesktop.WarningProcessListUnavailable}
+			return desktop
+		}()},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("CODEX_HOME", home)
+			manager := codexconfig.NewManager(home)
+			original := []byte("model_provider = \"official\"\nmodel = \"original-model\"\n")
+			if err := os.WriteFile(manager.ConfigPath, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			applied, err := manager.Apply(codexconfig.ApplyConfig{BaseURL: "https://api.xiass.com", APIKey: "restore-guard-secret", Model: "gpt-5.6-sol"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := readBridgeTestFile(t, manager.ConfigPath)
+			backupsBefore, err := manager.ListBackups()
+			if err != nil || len(backupsBefore) != 1 {
+				t.Fatalf("precondition backups = %#v / %v", backupsBefore, err)
+			}
+
+			app := &App{ctx: context.Background(), codexDesktopControl: testCase.desktop}
+			status := app.RestoreCodexConfiguration(applied.BackupID)
+			if status.OK {
+				t.Fatalf("restore unexpectedly ran while desktop state was unsafe: %#v", status)
+			}
+			if got := readBridgeTestFile(t, manager.ConfigPath); !bytes.Equal(got, before) {
+				t.Fatalf("unsafe restore changed config.toml:\n%s", got)
+			}
+			backupsAfter, err := manager.ListBackups()
+			if err != nil || len(backupsAfter) != len(backupsBefore) {
+				t.Fatalf("unsafe restore created a recovery artifact: before=%#v after=%#v err=%v", backupsBefore, backupsAfter, err)
+			}
+			if testCase.desktop.stopCalls != 0 || testCase.desktop.launchCalls != 0 {
+				t.Fatalf("direct restore controlled Desktop: stop=%d launch=%d", testCase.desktop.stopCalls, testCase.desktop.launchCalls)
+			}
+			encoded, err := json.Marshal(status)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"restore-guard-secret", home, manager.ConfigPath} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("unsafe restore response leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
 
 func TestGetCodexConfigurationRedactsSecretMaterial(t *testing.T) {
 	codexHome := t.TempDir()
@@ -43,6 +103,143 @@ func TestGetCodexConfigurationRedactsSecretMaterial(t *testing.T) {
 	}
 	if !status.Snapshot.Location.Exists || status.Snapshot.Location.CodexHome != "" || status.Snapshot.Location.ConfigPath != "" {
 		t.Fatalf("renderer snapshot location = %#v, want only exists=true", status.Snapshot.Location)
+	}
+}
+
+func TestCodexModelCatalogMessageDoesNotClaimResponsesInference(t *testing.T) {
+	message := codexModelCatalogMessage(2)
+	if !strings.Contains(message, "已发现 2 个模型 ID") || !strings.Contains(message, "尚未验证 Responses 推理") {
+		t.Fatalf("catalog message = %q", message)
+	}
+	if strings.Contains(message, "可用模型") || strings.Contains(message, "测试通过") {
+		t.Fatalf("catalog message must not claim model inference availability: %q", message)
+	}
+}
+
+func TestRemoveCodexXIASSProviderIsRedactedAndDoesNotTouchAuthOrHistory(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	manager := codexconfig.NewManager(codexHome)
+	providerSecret := "provider-secret-must-not-reach-the-renderer"
+	authSecret := "auth-json-must-not-be-read-or-modified"
+	historySentinel := "history-must-not-be-read-or-modified"
+	config := []byte(`model_provider = "xiass_tools"
+model = "gpt-5.6-sol"
+review_model = "gpt-5.6-luna"
+
+[mcp_servers.keep]
+command = "keep"
+
+[model_providers.xiass_tools]
+name = "XIASS Tools"
+base_url = "https://api.xiass.com/v1"
+experimental_bearer_token = "` + providerSecret + `"
+
+[model_providers.other]
+name = "Other"
+base_url = "https://other.example/v1"
+`)
+	if err := os.WriteFile(manager.ConfigPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	authPath := filepath.Join(codexHome, "auth.json")
+	historyPath := filepath.Join(codexHome, "sessions", "preserve.jsonl")
+	if err := os.WriteFile(authPath, []byte(`{"access_token":"`+authSecret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(historyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(historyPath, []byte(historySentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status := (&App{}).RemoveCodexXIASSProvider()
+	if !status.OK || status.Snapshot.ModelProvider != "" {
+		t.Fatalf("remove status = %#v", status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{providerSecret, authSecret, historySentinel, codexHome, manager.ConfigPath} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("remove status leaked protected local data: %s", encoded)
+		}
+	}
+	if got := readBridgeTestFile(t, authPath); !bytes.Contains(got, []byte(authSecret)) {
+		t.Fatalf("auth.json changed during provider removal: %s", got)
+	}
+	if got := readBridgeTestFile(t, historyPath); string(got) != historySentinel {
+		t.Fatalf("history changed during provider removal: %q", got)
+	}
+	if written := readBridgeTestFile(t, manager.ConfigPath); bytes.Contains(written, []byte(providerSecret)) || bytes.Contains(written, []byte("[model_providers.xiass_tools]")) {
+		t.Fatalf("XIASS provider was not removed: %s", written)
+	}
+}
+
+func TestRemoveCodexXIASSProviderReturnsGenericFailureForUnsupportedTOML(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	manager := codexconfig.NewManager(codexHome)
+	secret := "unsupported-provider-secret-must-not-leak"
+	original := []byte(`model_provider = "xiass_tools"
+note = """
+unrelated multiline setting
+"""
+[model_providers.xiass_tools]
+experimental_bearer_token = "` + secret + `"
+`)
+	if err := os.WriteFile(manager.ConfigPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status := (&App{}).RemoveCodexXIASSProvider()
+	if status.OK {
+		t.Fatalf("unsupported configuration unexpectedly removed: %#v", status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), secret) || strings.Contains(string(encoded), codexHome) || strings.Contains(string(encoded), "multiline") {
+		t.Fatalf("unsupported removal error leaked config details: %s", encoded)
+	}
+	if got := readBridgeTestFile(t, manager.ConfigPath); !bytes.Equal(got, original) {
+		t.Fatalf("unsupported removal changed config: %s", got)
+	}
+}
+
+func TestRemoveCodexXIASSProviderDoesNotEnumerateHistoryBackups(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	manager := codexconfig.NewManager(codexHome)
+	if err := os.WriteFile(manager.ConfigPath, []byte(`model_provider = "xiass_tools"
+[model_providers.xiass_tools]
+name = "XIASS Tools"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file where history-backups would normally be makes the generic
+	// GetCodexConfiguration history-listing path fail. The provider removal
+	// status must remain config-only and therefore succeed without touching it.
+	historyRoot := filepath.Join(filepath.Dir(manager.BackupRoot), "history-backups")
+	if err := os.MkdirAll(filepath.Dir(historyRoot), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(historyRoot, []byte("do-not-enumerate-history-backups"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status := (&App{}).RemoveCodexXIASSProvider()
+	if !status.OK || status.Snapshot.ModelProvider != "" {
+		t.Fatalf("config-only removal status = %#v", status)
+	}
+	if len(status.HistoryBackups) != 0 || len(status.LegacyBackups) != 0 {
+		t.Fatalf("removal unexpectedly returned history state: %#v", status)
+	}
+	if got := readBridgeTestFile(t, historyRoot); string(got) != "do-not-enumerate-history-backups" {
+		t.Fatalf("removal touched history backup root: %q", got)
 	}
 }
 

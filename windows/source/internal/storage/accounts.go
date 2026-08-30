@@ -1182,10 +1182,10 @@ func AcquireAccountForModel(model CustomModel, excluded map[string]struct{}) (Cu
 			return model, nil, fmt.Errorf("绑定账户与当前模型的请求协议不兼容，请重新同步该账户的模型")
 		}
 		if earliestCooldown > 0 {
-			return model, nil, &AccountPoolUnavailableError{RetryAfter: earliestCooldown, Reason: "绑定账户正在短暂冷却，WF助手会在可用后安全重试", Retryable: true}
+			return model, nil, &AccountPoolUnavailableError{RetryAfter: earliestCooldown, Reason: "绑定账户正在短暂冷却，XIASS Tools 会在可用后安全重试", Retryable: true}
 		}
 		if poolBusy {
-			return model, nil, &AccountPoolUnavailableError{RetryAfter: 350 * time.Millisecond, Reason: "绑定账户当前并发已满，WF助手会在空闲后安全重试", Retryable: true}
+			return model, nil, &AccountPoolUnavailableError{RetryAfter: 350 * time.Millisecond, Reason: "绑定账户当前并发已满，XIASS Tools 会在空闲后安全重试", Retryable: true}
 		}
 		return model, nil, fmt.Errorf("绑定账户当前均不可调度：请检查凭据、到期时间或账户状态")
 	}

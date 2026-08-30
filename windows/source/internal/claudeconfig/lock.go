@@ -11,6 +11,13 @@ func (m *Manager) withLock(operation func() error) error {
 	if err := ensureDirectoryNoSymlink(m.BackupRoot); err != nil {
 		return err
 	}
+	// Backup files can contain the original settings.json, including a Claude
+	// credential. Windows must establish a protected current-user DACL before
+	// the operation lock or a backup file is created. POSIX keeps its existing
+	// 0700 directory behavior through a no-op platform hook.
+	if err := protectPrivateDirectory(m.BackupRoot); err != nil {
+		return errors.New("could not secure Claude user settings backup storage")
+	}
 	release, err := acquireOperationLock(m.LockPath)
 	if err != nil {
 		return err

@@ -185,7 +185,66 @@ func TestApplyInspectAndRestorePreservesUserConfiguration(t *testing.T) {
 	}
 }
 
-func TestApplyMigratesLegacyProviderWithoutTouchingOtherProviders(t *testing.T) {
+func TestInspectManagedProviderVerificationRequiresCompleteActiveSemantics(t *testing.T) {
+	home := t.TempDir()
+	manager := NewManager(home)
+	secret := "managed-provider-secret-must-not-appear-in-status"
+	if _, err := manager.Apply(ApplyConfig{
+		BaseURL:                    "https://api.xiass.com",
+		APIKey:                     secret,
+		Model:                      "gpt-5.6-sol",
+		ReviewModel:                "gpt-5.6-luna",
+		WebSearch:                  "live",
+		ModelContextWindow:         372000,
+		ModelAutoCompactTokenLimit: 334800,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	valid, err := os.ReadFile(manager.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		content   string
+		wantIssue ManagedProviderIssue
+	}{
+		{name: "fully managed provider", content: string(valid), wantIssue: ManagedProviderIssueNone},
+		{name: "inactive provider is not verified", content: strings.Replace(string(valid), `model_provider = "xiass_tools"`, `model_provider = "official"`, 1), wantIssue: ManagedProviderIssueInactive},
+		{name: "missing bearer", content: strings.Replace(string(valid), `experimental_bearer_token = "`+secret+`"`, `experimental_bearer_token = ""`, 1), wantIssue: ManagedProviderIssueBearer},
+		{name: "wrong wire api", content: strings.Replace(string(valid), `wire_api = "responses"`, `wire_api = "chat"`, 1), wantIssue: ManagedProviderIssueWireAPI},
+		{name: "wrong actor header", content: strings.Replace(string(valid), `"x-openai-actor-authorization" = "api.xiass.com"`, `"x-openai-actor-authorization" = "wrong.example"`, 1), wantIssue: ManagedProviderIssueHeaders},
+		{name: "extra header is not managed", content: strings.Replace(string(valid), `http_headers = { "x-openai-actor-authorization" = "api.xiass.com" }`, `http_headers = { "x-openai-actor-authorization" = "api.xiass.com", "x-extra" = "opaque" }`, 1), wantIssue: ManagedProviderIssueHeaders},
+		{name: "missing explicit context", content: strings.Replace(string(valid), "model_context_window = 372000\n", "", 1), wantIssue: ManagedProviderIssueContext},
+		{name: "invalid web search", content: strings.Replace(string(valid), `web_search = "live"`, `web_search = "unsupported"`, 1), wantIssue: ManagedProviderIssueWebSearch},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if err := os.WriteFile(manager.ConfigPath, []byte(testCase.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := manager.Inspect()
+			if err != nil || !snapshot.Valid {
+				t.Fatalf("Inspect() = %#v / %v", snapshot, err)
+			}
+			wantVerified := testCase.wantIssue == ManagedProviderIssueNone
+			if snapshot.ManagedProviderVerified != wantVerified || snapshot.ManagedProviderIssue != testCase.wantIssue {
+				t.Fatalf("managed provider state = verified:%v issue:%q, want verified:%v issue:%q", snapshot.ManagedProviderVerified, snapshot.ManagedProviderIssue, wantVerified, testCase.wantIssue)
+			}
+			encoded, err := json.Marshal(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), secret) {
+				t.Fatalf("managed provider status leaked bearer token: %s", encoded)
+			}
+		})
+	}
+}
+
+func TestApplyPreservesLegacyProviderUntilExplicitMigration(t *testing.T) {
 	home := t.TempDir()
 	manager := NewManager(home)
 	legacy := `model_provider = "xiass"
@@ -209,8 +268,8 @@ base_url = "https://third.example.com/v1"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(written), "old-secret") || strings.Contains(string(written), "[model_providers.xiass]") {
-		t.Fatal("legacy provider section remained after migration")
+	if !strings.Contains(string(written), "old-secret") || !strings.Contains(string(written), "[model_providers.xiass]") {
+		t.Fatal("ordinary save unexpectedly changed a legacy provider")
 	}
 	if !strings.Contains(string(written), "[model_providers.third_party]") {
 		t.Fatal("unrelated provider was changed")

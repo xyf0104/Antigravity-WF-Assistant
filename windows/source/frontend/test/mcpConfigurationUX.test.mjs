@@ -22,11 +22,13 @@ test("MCP bridge retains generic compatibility while preferring fixed target-sco
   for (const method of [
     "GetCursorMCPConfiguration",
     "ApplyCursorMCPConfiguration",
+    "RemoveCursorMCPConfiguration",
     "ListCursorMCPBackups",
     "RestoreCursorMCPBackup",
     "DeleteCursorMCPBackup",
     "GetWindsurfMCPConfiguration",
     "ApplyWindsurfMCPConfiguration",
+    "RemoveWindsurfMCPConfiguration",
     "ListWindsurfMCPBackups",
     "RestoreWindsurfMCPBackup",
     "DeleteWindsurfMCPBackup",
@@ -37,6 +39,10 @@ test("MCP bridge retains generic compatibility while preferring fixed target-sco
   assert.match(scoped, /export async function applyTargetMCPConfiguration\(target, remoteURL\)/);
   assert.match(scoped, /return getMCPConfiguration\(normalized\);/);
   assert.match(scoped, /return applyMCPConfiguration\(\{ target: normalized, remoteUrl: scopedInput\.remoteUrl \}\);/);
+  const remove = sourceSlice(scoped, "export async function removeTargetMCPConfiguration", "export async function listTargetMCPBackups");
+  assert.match(remove, /const result = await callTargetScopedMCP\(normalized, "remove"\);/);
+  assert.match(remove, /return result \?\? mcpTargetScopedUnavailable\("remove"\);/);
+  assert.doesNotMatch(remove, /call\("(?:GetMCPConfiguration|ApplyMCPConfiguration|RemoveMCPConfiguration)"/);
   assert.match(scoped, /export async function listTargetMCPBackups\(target\)/);
   assert.match(scoped, /export async function restoreTargetMCPBackup\(target, backupID\)/);
   assert.match(scoped, /export async function deleteTargetMCPBackup\(target, backupID\)/);
@@ -50,6 +56,23 @@ test("MCP modal keeps the endpoint local, clears it before native result renderi
   assert.match(modalSource, /request\.remoteUrl = ""/);
   assert.match(modalSource, /persistent :closable="!busy"/);
   assert.doesNotMatch(modalSource, /\blocalStorage\s*\.|state\.[A-Za-z]+\s*=\s*remoteURL|snapshot\.remoteUrl|snapshot\.endpoint|data\?\.message|result\?\.message/);
+});
+
+test("MCP removal is target-scoped, explicitly confirmed, and only presents the safe managed result", () => {
+  assert.match(modalSource, /removeTargetMCPConfiguration/);
+  assert.match(modalSource, /const removing = ref\(false\)/);
+  assert.match(modalSource, /const canRemove = computed\(\(\) => Boolean\(data\.value\?\.canApply && snapshot\.value\.managedServerConfigured\)\)/);
+  assert.match(modalSource, /<Button v-if="snapshot\.managedServerConfigured" variant="danger"/);
+  assert.match(modalSource, /移除 XIASS 连接/);
+  assert.match(modalSource, /function confirmManagedRemoval\(\)/);
+  assert.match(modalSource, /window\.confirm\(`将只移除 \$\{displayName\.value\} 全局 MCP 设置中名为 xiass-tools 的 XIASS Tools 保留条目；不会删除其他 MCP 条目。操作前会创建一个经过校验的恢复点，是否继续？`\)/);
+  const removal = sourceSlice(modalSource, "async function removeManagedConnection", "async function runRecoveryAction");
+  assert.match(removal, /clearEndpoint\(\);\s*removing\.value = true;/);
+  assert.match(removal, /await removeTargetMCPConfiguration\(props\.target\)/);
+  assert.match(removal, /await refreshAfterMutation\(\)/);
+  assert.match(removal, /result\?\.result\?\.removed === true/);
+  assert.match(removal, /其他 MCP 条目保持不变/);
+  assert.doesNotMatch(removal, /result\?\.message|result\.message|data\?\.message|remoteURL\.value\s*=/);
 });
 
 test("MCP UI describes only the documented global configuration boundary", () => {
@@ -88,6 +111,7 @@ test("MCP modal presents only checked recovery-point metadata", () => {
   assert.match(sanitizer, /backup\.createdAt/);
   assert.match(sanitizer, /backup\.reason/);
   assert.match(sanitizer, /backup\.originalExisted/);
+  assert.match(sanitizer, /backup\.reason === "apply" \|\| backup\.reason === "remove" \|\| backup\.reason === "restore"/);
   assert.doesNotMatch(sanitizer, /backup\.(?:path|url|remoteUrl|raw|json|headers|env|token|key)/i);
 });
 
@@ -121,4 +145,11 @@ test("MCP recovery UI has theme-safe keyboard focus and fixed generic error copy
   assert.match(recovery, /当前设置已保持不变/);
   assert.match(recovery, /现有设置未被修改/);
   assert.doesNotMatch(recovery, /result\?\.message|result\.message|cause\.message|console\.(?:log|error|warn)/);
+});
+
+test("MCP removal recovery points are labelled without exposing configuration data", () => {
+  const labeler = sourceSlice(modalSource, "function recoveryReasonLabel", "function formatRecoveryTime");
+  assert.match(labeler, /reason === "remove"/);
+  assert.match(labeler, /移除 XIASS 连接前的恢复点/);
+  assert.doesNotMatch(labeler, /backup\.|url|remote|path|header|token|secret/i);
 });

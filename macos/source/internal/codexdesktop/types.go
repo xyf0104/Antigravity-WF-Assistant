@@ -34,6 +34,12 @@ const (
 	SourceLocalAppData       Source = "local_app_data"
 	SourceProgramFiles       Source = "program_files"
 	SourceWindowsStore       Source = "windows_store"
+	// SourcePublicDiscovery means the application was found through a bounded
+	// public OS index or registration rather than a fixed conventional path.
+	// It deliberately does not reveal which concrete path or registry value
+	// produced the result. macOS uses it for Spotlight and Windows uses it for
+	// App Paths registration.
+	SourcePublicDiscovery Source = "public_discovery"
 	// SourceManualSelection records that the user explicitly selected a
 	// structure-validated application through the native picker. The selected
 	// path itself is deliberately never included in any public DTO.
@@ -91,6 +97,18 @@ type ProcessLister interface {
 	List(ctx context.Context) ([]Process, error)
 }
 
+// BundleFinder is a narrowly scoped public-metadata lookup used only by the
+// macOS detector. Production uses a bounded Spotlight query for an exact,
+// built-in bundle identifier; the result is never returned without the normal
+// Info.plist and executable validation. It never receives a user-controlled
+// query or reads application data.
+//
+// It remains in the shared Options type so callers can inject deterministic
+// test doubles while each platform keeps its own discovery implementation.
+type BundleFinder interface {
+	FindBundles(ctx context.Context, bundleIdentifier string, limit int) ([]string, error)
+}
+
 // Registry is a deliberately narrow read-only registry surface. It is used by
 // the Windows implementation for public Store package registration and is
 // ignored on macOS.
@@ -104,6 +122,7 @@ type Options struct {
 	FileSystem     FileSystem
 	Processes      ProcessLister
 	Registry       Registry
+	BundleFinder   BundleFinder
 	Now            func() time.Time
 	ProcessTimeout time.Duration
 }

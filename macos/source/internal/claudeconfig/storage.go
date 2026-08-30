@@ -81,6 +81,9 @@ func createPrivateDirectory(path string) error {
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return errUnsafePath
 	}
+	if err := protectPrivateDirectory(path); err != nil {
+		return errors.New("could not secure Claude user settings backup directory")
+	}
 	return nil
 }
 

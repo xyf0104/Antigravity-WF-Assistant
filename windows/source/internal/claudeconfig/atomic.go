@@ -22,7 +22,10 @@ func writeFileAtomic(path string, data []byte, mode fs.FileMode) (err error) {
 		_ = temporary.Close()
 		_ = os.Remove(temporaryPath)
 	}()
-	if err := temporary.Chmod(secureMode(mode)); err != nil {
+	// A temporary file can contain a credential before it is atomically moved
+	// into place. Set its private access control before writing any bytes. On
+	// Windows this is a verified protected DACL, not a best-effort POSIX mode.
+	if err := preparePrivateFile(temporaryPath, secureMode(mode)); err != nil {
 		return err
 	}
 	if written, err := temporary.Write(data); err != nil || written != len(data) {
@@ -39,6 +42,13 @@ func writeFileAtomic(path string, data []byte, mode fs.FileMode) (err error) {
 	}
 	if err := replaceFileAtomic(temporaryPath, path); err != nil {
 		return fmt.Errorf("replace Claude user settings atomically: %w", err)
+	}
+	// MoveFileExW normally preserves the temporary file security descriptor,
+	// but verify the destination and repair it on Windows before reporting a
+	// successful write. A filesystem without enforceable ACLs therefore fails
+	// closed instead of retaining a credential-bearing file with inherited ACLs.
+	if err := finalizePrivateFile(path, secureMode(mode)); err != nil {
+		return err
 	}
 	return nil
 }

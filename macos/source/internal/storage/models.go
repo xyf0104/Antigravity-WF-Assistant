@@ -376,7 +376,7 @@ func attachAccountPoolLabels(models []CustomModel) []CustomModel {
 	return models
 }
 
-// VisibleModelDisplayName is the only display-name source shared by WF助手
+// VisibleModelDisplayName is the only display-name source shared by XIASS Tools
 // and Antigravity injection. Routing continues to use ExternalModelName.
 func VisibleModelDisplayName(model CustomModel) string {
 	base := strings.TrimSpace(model.DisplayName)

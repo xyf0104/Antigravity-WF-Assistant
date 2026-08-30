@@ -69,6 +69,34 @@ func TestVersionedArtifactsDeriveFromBuildVersion(t *testing.T) {
 	}
 }
 
+func TestInstallerLifecycleSmokeScriptUsesRealSetupWithoutCleanupShortcuts(t *testing.T) {
+	script, err := os.ReadFile("smoke-installer.ps1")
+	if err != nil {
+		t.Fatalf("read installer lifecycle smoke script: %v", err)
+	}
+	contents := string(script)
+	for _, required := range []string{
+		"GITHUB_ACTIONS",
+		"Get-UninstallEntries",
+		"Registry64",
+		"Registry32",
+		"Assert-ShortcutTarget",
+		"Start-Process -FilePath $setupPath",
+		"Start-Process -FilePath $uninstaller",
+		"Test-InstallerStateAbsent",
+		"Windows Installer Lifecycle Smoke Test passed.",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("installer lifecycle smoke script is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"Remove-Item", "taskkill", "Stop-Process", "Start-Process -FilePath $mainExecutable"} {
+		if strings.Contains(contents, forbidden) {
+			t.Fatalf("installer lifecycle smoke script must not use %q", forbidden)
+		}
+	}
+}
+
 func nsisSection(t *testing.T, script, header string) string {
 	t.Helper()
 	start := strings.Index(script, header)

@@ -26,8 +26,6 @@ const (
 	MinimumAutoCompactTokenLimit int64 = 16000
 )
 
-var defaultLegacyProviderIDs = []string{"codex_local_access", "xiass"}
-
 // ApplyConfig describes the Codex provider entry to write. BaseURL accepts a
 // bare hostname, an API root, or a normal OpenAI-compatible /v1 endpoint.
 // APIKey is never written to a manifest or returned by inspection APIs.
@@ -70,6 +68,29 @@ type Provider struct {
 	HeaderNames           []string `json:"header_names,omitempty"`
 }
 
+// ManagedProviderIssue is a stable, deliberately non-sensitive explanation
+// for why the active XIASS Tools provider could not be structurally verified.
+// It is an enum rather than a wrapped parser/validation error so it can never
+// become a channel for a local URL, header value, API key, filesystem path, or
+// arbitrary config.toml content.
+type ManagedProviderIssue string
+
+const (
+	ManagedProviderIssueNone              ManagedProviderIssue = ""
+	ManagedProviderIssueInactive          ManagedProviderIssue = "inactive"
+	ManagedProviderIssueProviderMissing   ManagedProviderIssue = "provider_missing"
+	ManagedProviderIssueProviderMalformed ManagedProviderIssue = "provider_malformed"
+	ManagedProviderIssueBaseURL           ManagedProviderIssue = "base_url_invalid"
+	ManagedProviderIssueWireAPI           ManagedProviderIssue = "wire_api_invalid"
+	ManagedProviderIssueBearer            ManagedProviderIssue = "bearer_token_missing"
+	ManagedProviderIssueFlags             ManagedProviderIssue = "provider_flags_invalid"
+	ManagedProviderIssueHeaders           ManagedProviderIssue = "headers_invalid"
+	ManagedProviderIssueModel             ManagedProviderIssue = "model_invalid"
+	ManagedProviderIssueReviewModel       ManagedProviderIssue = "review_model_invalid"
+	ManagedProviderIssueContext           ManagedProviderIssue = "context_invalid"
+	ManagedProviderIssueWebSearch         ManagedProviderIssue = "web_search_invalid"
+)
+
 // ConfigSnapshot is a verified, redacted view of config.toml.
 type ConfigSnapshot struct {
 	Location         ConfigLocation  `json:"location"`
@@ -83,6 +104,40 @@ type ConfigSnapshot struct {
 	Context          ContextSettings `json:"context"`
 	Providers        []Provider      `json:"providers,omitempty"`
 	ConfiguredModels []string        `json:"configured_models,omitempty"`
+	// ManagedProviderVerified only becomes true when the active
+	// xiass_tools entry matches every non-secret Codex semantics XIASS Tools
+	// relies on. Valid TOML alone is not evidence that the managed provider is
+	// usable. ManagedProviderIssue contains only a fixed redacted enum.
+	ManagedProviderVerified bool                          `json:"managed_provider_verified"`
+	ManagedProviderIssue    ManagedProviderIssue          `json:"managed_provider_issue,omitempty"`
+	LegacyProviderMigration LegacyProviderMigrationStatus `json:"legacy_provider_migration"`
+}
+
+// LegacyProviderMigrationStatus is the deliberately small, redacted result of
+// checking whether an exact first-party predecessor Provider can be migrated.
+// It contains neither a Provider's contents nor any credential, endpoint,
+// header, local path, account, session, or history detail. Available becomes
+// true only after the native layer has proven that one (and only one) of the
+// fixed predecessor IDs can be rewritten without touching other Providers.
+//
+// The migration source is intentionally fixed to xiass and
+// codex_local_access. An application that happens to use another
+// legacy-looking ID is not XIASS Tools' migration target.
+type LegacyProviderMigrationStatus struct {
+	Available  bool   `json:"available"`
+	ProviderID string `json:"provider_id,omitempty"`
+	WasActive  bool   `json:"was_active"`
+}
+
+// LegacyProviderMigrationResult reports one explicit Provider-ID migration.
+// Like other config results it never returns a key, endpoint, header, path,
+// raw configuration, or legacy Provider data.
+type LegacyProviderMigrationResult struct {
+	BackupID   string `json:"backup_id,omitempty"`
+	ConfigSHA  string `json:"config_sha256,omitempty"`
+	Migrated   bool   `json:"migrated"`
+	ProviderID string `json:"provider_id,omitempty"`
+	WasActive  bool   `json:"was_active"`
 }
 
 // BackupManifest describes one exact, checksum-protected config backup.
@@ -118,6 +173,19 @@ type ApplyResult struct {
 	BackupID   string `json:"backup_id"`
 	ConfigSHA  string `json:"config_sha256"`
 	ProviderID string `json:"provider_id"`
+}
+
+// RemoveResult reports the result of explicitly removing the one provider
+// entry owned by XIASS Tools. It never includes configuration contents,
+// credentials, filesystem paths, or any state belonging to another provider.
+//
+// Removed is false for a verified no-op. A no-op intentionally does not create
+// a backup or rewrite config.toml.
+type RemoveResult struct {
+	BackupID  string `json:"backup_id,omitempty"`
+	ConfigSHA string `json:"config_sha256,omitempty"`
+	Removed   bool   `json:"removed"`
+	WasActive bool   `json:"was_active"`
 }
 
 type RestoreResult struct {
@@ -174,27 +242,32 @@ func (e *MutationError) Error() string {
 
 func (e *MutationError) Unwrap() error { return e.Cause }
 
-// ManagerOptions allow a platform UI to use its own application data root or
-// explicitly migrate provider IDs created by an earlier first-party helper.
+// ManagerOptions allow a platform UI to use its own application data root and
+// deterministic write-safety guard. Historical Provider migration is not an
+// option: it is fixed to the two reviewed first-party IDs in
+// legacy_provider_migration.go.
 type ManagerOptions struct {
 	DataDirectoryName string
 	ProviderID        string
-	LegacyProviderIDs []string
 	// HistoryWriteGuard is intentionally only a narrow, read-only safety
 	// predicate. Production uses the platform detector; tests may inject a
 	// deterministic guard without starting, stopping, or inspecting secrets.
 	HistoryWriteGuard historyWriteGuard
+	// legacyProviderMigrationWrite is an internal test seam. Production always
+	// uses the same atomic writer as every other config mutation; callers
+	// outside this package cannot supply it.
+	legacyProviderMigrationWrite func(string, []byte, fs.FileMode) error
 }
 
 // Manager owns a single Codex config.toml lifecycle. Its paths are exported so
 // the UI can show only the config location, while callers should avoid exposing
 // backup internals or secret file contents.
 type Manager struct {
-	CodexHome         string
-	ConfigPath        string
-	BackupRoot        string
-	LockPath          string
-	ProviderID        string
-	LegacyProviderIDs []string
-	historyWriteGuard historyWriteGuard
+	CodexHome                    string
+	ConfigPath                   string
+	BackupRoot                   string
+	LockPath                     string
+	ProviderID                   string
+	historyWriteGuard            historyWriteGuard
+	legacyProviderMigrationWrite func(string, []byte, fs.FileMode) error
 }

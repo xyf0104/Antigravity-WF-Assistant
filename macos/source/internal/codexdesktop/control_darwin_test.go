@@ -17,7 +17,7 @@ func TestControllerManualSelectionIsRedactedAndRequiresVerifiedBundle(t *testing
 	bundle := "/Volumes/Tools/ChatGPT.app"
 	executable := addMacBundle(filesystem, bundle, expectedBundleIdentifier, "ChatGPT", "26.825.32147")
 	lister := &mutableMacProcessLister{}
-	controller := newControllerForTest(New(Options{FileSystem: filesystem, Processes: lister}), controlOperations{
+	controller := newControllerForTest(New(Options{FileSystem: filesystem, Processes: lister, BundleFinder: fakeBundleFinder{}}), controlOperations{
 		launch: func(context.Context, desktopTarget) error { return nil },
 		stop:   func(context.Context, desktopTarget) error { return nil },
 	})
@@ -55,7 +55,7 @@ func TestControllerLifecycleRequiresConfirmationAndRevalidatesBeforeAction(t *te
 	lister := &mutableMacProcessLister{processes: []Process{{Executable: executable}}}
 	var stopCalls int
 	var launchCalls int
-	controller := newControllerForTest(New(Options{FileSystem: filesystem, Processes: lister}), controlOperations{
+	controller := newControllerForTest(New(Options{FileSystem: filesystem, Processes: lister, BundleFinder: fakeBundleFinder{}}), controlOperations{
 		stop: func(context.Context, desktopTarget) error {
 			stopCalls++
 			lister.Set(nil)
@@ -102,7 +102,7 @@ func TestControllerCancelledContextDoesNotLaunch(t *testing.T) {
 	bundle := "/Volumes/Tools/ChatGPT.app"
 	addMacBundle(filesystem, bundle, expectedBundleIdentifier, "ChatGPT", "1.0.0")
 	var launches int
-	controller := newControllerForTest(New(Options{FileSystem: filesystem, Processes: &mutableMacProcessLister{}}), controlOperations{
+	controller := newControllerForTest(New(Options{FileSystem: filesystem, Processes: &mutableMacProcessLister{}, BundleFinder: fakeBundleFinder{}}), controlOperations{
 		launch: func(context.Context, desktopTarget) error { launches++; return nil },
 		stop:   func(context.Context, desktopTarget) error { return nil },
 	})
@@ -116,6 +116,41 @@ func TestControllerCancelledContextDoesNotLaunch(t *testing.T) {
 	}
 	if launches != 0 {
 		t.Fatalf("launch callback invoked with cancelled context: %d", launches)
+	}
+}
+
+func TestControllerDoesNotRetargetLifecycleToSeparatelyRunningSpotlightBundle(t *testing.T) {
+	filesystem := newFakeFileSystem("/Users/alice")
+	selectedBundle := "/Applications/Codex.app"
+	addMacBundle(filesystem, selectedBundle, expectedBundleIdentifier, "Codex", "26.8.1")
+	runningBundle := "/Volumes/Managed/ChatGPT.app"
+	runningExecutable := addMacBundle(filesystem, runningBundle, expectedBundleIdentifier, "ChatGPT", "26.8.2")
+	lister := &mutableMacProcessLister{processes: []Process{{Executable: runningExecutable}}}
+	var launches, stops int
+	controller := newControllerForTest(New(Options{
+		FileSystem:   filesystem,
+		Processes:    lister,
+		BundleFinder: fakeBundleFinder{paths: []string{runningBundle}},
+	}), controlOperations{
+		launch: func(context.Context, desktopTarget) error { launches++; return nil },
+		stop:   func(context.Context, desktopTarget) error { stops++; return nil },
+	})
+
+	status := controller.Status(context.Background())
+	if !status.Running || status.CanLaunch || status.CanStop || status.CanRestart {
+		t.Fatalf("controller status = %#v, want global running with no retargetable lifecycle action", status)
+	}
+	if status.Installation.Source != SourceSystemApplications || status.Installation.Version != "26.8.1" {
+		t.Fatalf("controller installation = %#v, want deterministic fixed target", status.Installation)
+	}
+	if _, err := controller.Launch(context.Background()); !errors.Is(err, ErrDesktopAlreadyRunning) {
+		t.Fatalf("launch error = %v, want running protection", err)
+	}
+	if _, err := controller.Stop(context.Background(), LifecycleConfirmation); !errors.Is(err, ErrDesktopNotRunning) {
+		t.Fatalf("stop error = %v, want lifecycle target mismatch protection", err)
+	}
+	if launches != 0 || stops != 0 {
+		t.Fatalf("lifecycle operation retargeted a separately running bundle: launches=%d stops=%d", launches, stops)
 	}
 }
 

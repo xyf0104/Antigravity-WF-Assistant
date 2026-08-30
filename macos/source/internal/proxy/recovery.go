@@ -239,7 +239,7 @@ func writeRejectedTurnStop(writer *downstreamSSEWriter, provider, requestID, mod
 	case statusCode == http.StatusNotFound && isModelRouteRejection(body):
 		message = "第三方上游没有为当前账户配置所选模型（HTTP 404）。请重新获取模型列表，或切换支持该模型的上游。"
 	case statusCode == http.StatusTooManyRequests:
-		message = "第三方上游当前请求过多或额度窗口已满（HTTP 429）。WF助手已按设置重试当前账户，请稍后重新发送。"
+		message = "第三方上游当前请求过多或额度窗口已满（HTTP 429）。XIASS Tools 已按设置重试当前账户，请稍后重新发送。"
 	}
 	writeRecoverableTurnStop(writer, provider, requestID, modelVersion, message, 0)
 }

@@ -936,7 +936,18 @@ func createLegacyImportStage(parent string) (string, error) {
 	if err != nil || dataRootErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || dataRootInfo.Mode()&os.ModeSymlink != 0 || !dataRootInfo.IsDir() {
 		return "", errors.New("unsafe import destination")
 	}
-	return os.MkdirTemp(parent, ".legacy-import-")
+	if err := protectPrivateDirectory(parent); err != nil {
+		return "", errors.New("could not secure Codex configuration backup storage")
+	}
+	stage, err := os.MkdirTemp(parent, ".legacy-import-")
+	if err != nil {
+		return "", err
+	}
+	if err := protectPrivateDirectory(stage); err != nil {
+		_ = os.Remove(stage)
+		return "", errors.New("could not secure Codex configuration import stage")
+	}
+	return stage, nil
 }
 
 func nextLegacyImportID(parent string) (string, error) {
@@ -980,6 +991,9 @@ func publishLegacyImportStage(parent, stage, destinationID string) error {
 			_ = os.RemoveAll(destination)
 		}
 	}()
+	if err := protectPrivateDirectory(destination); err != nil {
+		return errors.New("could not secure Codex configuration backup directory")
+	}
 	entries, err := os.ReadDir(stage)
 	if err != nil {
 		return err
@@ -1001,11 +1015,23 @@ func publishLegacyImportStage(parent, stage, destinationID string) error {
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || (!info.Mode().IsRegular() && !info.IsDir()) {
 			return errors.New("unsafe import stage entry")
 		}
-		if err := os.Rename(source, filepath.Join(destination, entry.Name())); err != nil {
+		destinationPath := filepath.Join(destination, entry.Name())
+		if err := os.Rename(source, destinationPath); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if err := protectPrivateDirectory(destinationPath); err != nil {
+				return errors.New("could not secure Codex configuration backup directory")
+			}
+		} else if err := finalizePrivateFile(destinationPath, secureMode(info.Mode())); err != nil {
 			return err
 		}
 	}
-	if err := os.Rename(manifestPath, filepath.Join(destination, "manifest.json")); err != nil {
+	publishedManifest := filepath.Join(destination, "manifest.json")
+	if err := os.Rename(manifestPath, publishedManifest); err != nil {
+		return err
+	}
+	if err := finalizePrivateFile(publishedManifest, 0o600); err != nil {
 		return err
 	}
 	published = true
@@ -1036,6 +1062,9 @@ func copyLegacyImportFile(source, destination, expectedHash string, maximum int6
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return legacyHistoryImportError()
 	}
+	if err := protectPrivateDirectory(filepath.Dir(destination)); err != nil {
+		return legacyHistoryImportError()
+	}
 	temporary, err := os.CreateTemp(filepath.Dir(destination), ".legacy-copy-")
 	if err != nil {
 		return legacyHistoryImportError()
@@ -1045,7 +1074,7 @@ func copyLegacyImportFile(source, destination, expectedHash string, maximum int6
 		_ = temporary.Close()
 		_ = os.Remove(temporaryPath)
 	}()
-	if err := temporary.Chmod(secureMode(mode)); err != nil {
+	if err := preparePrivateFile(temporaryPath, secureMode(mode)); err != nil {
 		return legacyHistoryImportError()
 	}
 	hash := sha256.New()
@@ -1060,6 +1089,9 @@ func copyLegacyImportFile(source, destination, expectedHash string, maximum int6
 		return legacyHistoryImportError()
 	}
 	if err := replaceFileAtomic(temporaryPath, destination); err != nil {
+		return legacyHistoryImportError()
+	}
+	if err := finalizePrivateFile(destination, secureMode(mode)); err != nil {
 		return legacyHistoryImportError()
 	}
 	actual, _, err := legacyFileSHA256(destination, maximum)

@@ -15,6 +15,7 @@ import (
 const (
 	storePackagesRegistryPath = `Software\Classes\ActivatableClasses\Package`
 	maxStorePackageKeys       = 2048
+	maxAppPathValues          = 6
 	maxPublicMetadataSize     = 1 << 20
 )
 
@@ -35,16 +36,29 @@ type windowsInstallation struct {
 
 type windowsInspection struct {
 	installation           *windowsInstallation
+	verifiedInstallations  []windowsInstallation
 	programFilesRoots      []string
 	environmentUnavailable bool
 	inspectionUnavailable  bool
 	invalidInstallation    bool
 }
 
-// Discover observes only fixed public installation locations, public Store
-// package registration, and a bounded Toolhelp process snapshot. It never
-// searches PATH, reads profile data, or treats an arbitrary codex.exe name as
-// proof of a desktop installation.
+// appPathRegistry is intentionally optional because Store package discovery
+// needs only Registry.Subkeys. Windows production supplies this narrow,
+// read-only public App Paths reader; tests or other callers that implement
+// only Registry retain the existing fixed-location and Store behavior.
+//
+// Values are used only in memory and are structure-validated before they can
+// influence a detected installation. They are never copied into Status,
+// diagnostics, logs, or an error returned to the renderer.
+type appPathRegistry interface {
+	AppPathValues(limit int) ([]string, error)
+}
+
+// Discover observes only fixed public installation locations, six fixed public
+// App Paths registrations, public Store package registration, and a bounded
+// Toolhelp process snapshot. It never searches PATH, reads profile data, or
+// treats an arbitrary codex.exe name as proof of a desktop installation.
 func (detector *Detector) Discover(ctx context.Context) Status {
 	status := Status{CheckedAt: detector.now()}
 	inspection := inspectWindowsInstallation(detector.fileSystem(), detector.registry())
@@ -61,11 +75,15 @@ func (detector *Detector) Discover(ctx context.Context) Status {
 
 	var runningInstallation *windowsInstallation
 	if processErr == nil {
-		runningInstallation = findRunningWindowsInstallation(processes, inspection.installation, inspection.programFilesRoots)
+		runningInstallation = findRunningWindowsInstallation(detector.fileSystem(), processes, inspection.verifiedInstallations, inspection.programFilesRoots)
 	}
 
 	installation := inspection.installation
-	if runningInstallation != nil {
+	if installation == nil && runningInstallation != nil {
+		// Retain a deterministic discovery target whenever one exists. A
+		// separately running verified app must still make the status Running,
+		// but it must not silently replace the lifecycle target selected from
+		// bounded public installation sources.
 		installation = runningInstallation
 	}
 	if installation == nil {
@@ -125,20 +143,110 @@ func inspectWindowsInstallation(filesystem FileSystem, registry Registry) window
 	for _, candidate := range candidates {
 		installation, unavailable, invalid := inspectWindowsCandidate(filesystem, candidate)
 		if installation != nil {
-			inspection.installation = installation
-			return inspection
+			inspection.addInstallation(installation)
+			continue
 		}
 		inspection.inspectionUnavailable = inspection.inspectionUnavailable || unavailable
 		inspection.invalidInstallation = inspection.invalidInstallation || invalid
 	}
 
+	appPathInstallations, unavailable, invalid := inspectWindowsAppPaths(filesystem, registry)
+	for index := range appPathInstallations {
+		inspection.addInstallation(&appPathInstallations[index])
+	}
+	inspection.inspectionUnavailable = inspection.inspectionUnavailable || unavailable
+	inspection.invalidInstallation = inspection.invalidInstallation || invalid
+
 	storeInstallation, unavailable := inspectWindowsStore(registry)
 	if storeInstallation != nil {
-		inspection.installation = storeInstallation
-		return inspection
+		inspection.addInstallation(storeInstallation)
 	}
 	inspection.inspectionUnavailable = inspection.inspectionUnavailable || unavailable
 	return inspection
+}
+
+func (inspection *windowsInspection) addInstallation(installation *windowsInstallation) {
+	if inspection == nil || installation == nil {
+		return
+	}
+	if inspection.installation == nil {
+		copy := *installation
+		inspection.installation = &copy
+	}
+	for _, current := range inspection.verifiedInstallations {
+		if sameWindowsInstallation(current, *installation) {
+			return
+		}
+	}
+	inspection.verifiedInstallations = append(inspection.verifiedInstallations, *installation)
+}
+
+func sameWindowsInstallation(left, right windowsInstallation) bool {
+	if left.executable != "" || right.executable != "" {
+		return sameWindowsPath(left.executable, right.executable)
+	}
+	return left.storePackage != "" && strings.EqualFold(strings.TrimSpace(left.storePackage), strings.TrimSpace(right.storePackage))
+}
+
+func inspectWindowsAppPaths(filesystem FileSystem, registry Registry) ([]windowsInstallation, bool, bool) {
+	reader, ok := registry.(appPathRegistry)
+	if !ok || reader == nil {
+		return nil, false, false
+	}
+	values, err := reader.AppPathValues(maxAppPathValues)
+	unavailable := err != nil
+	invalid := false
+	installations := make([]windowsInstallation, 0, len(values))
+	for _, value := range values {
+		executable := normalizeWindowsAppPathValue(value)
+		if executable == "" {
+			invalid = true
+			continue
+		}
+		installation, candidateUnavailable, candidateInvalid := inspectWindowsCandidate(filesystem, windowsCandidate{
+			executable: executable,
+			source:     SourcePublicDiscovery,
+		})
+		if installation != nil {
+			installations = append(installations, *installation)
+			continue
+		}
+		unavailable = unavailable || candidateUnavailable
+		invalid = invalid || candidateInvalid
+	}
+	return installations, unavailable, invalid
+}
+
+// normalizeWindowsAppPathValue accepts only a single absolute executable path
+// from a public App Paths default value. It deliberately rejects arguments,
+// newlines, environment-variable expansion, and arbitrary executable names;
+// the value cannot become a command line or a generic Codex CLI fallback.
+func normalizeWindowsAppPathValue(value string) string {
+	value = strings.TrimSpace(strings.TrimPrefix(value, "\ufeff"))
+	if value == "" || strings.ContainsAny(value, "\x00\r\n") {
+		return ""
+	}
+	if strings.HasPrefix(value, `"`) {
+		closingQuote := strings.Index(value[1:], `"`)
+		if closingQuote < 0 {
+			return ""
+		}
+		closingQuote++
+		if strings.TrimSpace(value[closingQuote+1:]) != "" {
+			return ""
+		}
+		value = value[1:closingQuote]
+	} else if strings.ContainsRune(value, '"') {
+		return ""
+	}
+	if !filepath.IsAbs(value) {
+		return ""
+	}
+	value = filepath.Clean(value)
+	if !isDesktopExecutableName(filepath.Base(value)) || isKnownCLIPath(value) {
+		return ""
+	}
+	return value
 }
 
 func windowsCandidates(filesystem FileSystem) ([]windowsCandidate, []string, bool) {
@@ -214,14 +322,20 @@ func inspectWindowsStore(registry Registry) (*windowsInstallation, bool) {
 	return nil, false
 }
 
-func findRunningWindowsInstallation(processes []Process, known *windowsInstallation, programFilesRoots []string) *windowsInstallation {
-	for _, process := range processes {
+func findRunningWindowsInstallation(filesystem FileSystem, processes []Process, known []windowsInstallation, programFilesRoots []string) *windowsInstallation {
+	for index, process := range processes {
+		if index >= maxProcessEntries {
+			break
+		}
 		executable := strings.TrimSpace(process.Executable)
-		if executable == "" || isKnownCLIPath(executable) {
+		if executable == "" || !isDesktopExecutableName(filepath.Base(executable)) || isKnownCLIPath(executable) {
 			continue
 		}
-		if known != nil && known.executable != "" && sameWindowsPath(executable, known.executable) {
-			return known
+		for knownIndex := range known {
+			installation := &known[knownIndex]
+			if installation.executable != "" && sameWindowsPath(executable, installation.executable) {
+				return installation
+			}
 		}
 		if packageName, ok := trustedStoreExecutable(executable, programFilesRoots); ok {
 			return &windowsInstallation{
@@ -232,8 +346,33 @@ func findRunningWindowsInstallation(processes []Process, known *windowsInstallat
 				executableVerified: true,
 			}
 		}
+		if installation := inspectRunningWindowsExecutable(filesystem, executable); installation != nil {
+			return installation
+		}
 	}
 	return nil
+}
+
+// inspectRunningWindowsExecutable is a narrow fallback for a live Codex or
+// ChatGPT Desktop process that is not present in one of the bounded public
+// installation registries. It never accepts a path by name alone: it requires
+// the same regular-file, known-CLI exclusion, and public Electron layout
+// checks used for static discovery. The process path is kept only in memory.
+func inspectRunningWindowsExecutable(filesystem FileSystem, executable string) *windowsInstallation {
+	executable = strings.TrimSpace(executable)
+	if filesystem == nil || executable == "" || !isDesktopExecutableName(filepath.Base(executable)) || isKnownCLIPath(executable) {
+		return nil
+	}
+	info, err := filesystem.Stat(executable)
+	if err != nil || !info.Mode().IsRegular() || !isVerifiedWindowsDesktopExecutable(filesystem, executable) {
+		return nil
+	}
+	return &windowsInstallation{
+		executable:         executable,
+		source:             SourcePublicDiscovery,
+		version:            readWindowsPublicVersion(filesystem, executable),
+		executableVerified: true,
+	}
 }
 
 func readWindowsPublicVersion(filesystem FileSystem, executable string) string {

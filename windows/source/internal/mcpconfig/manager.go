@@ -255,6 +255,111 @@ func (m *manager) ApplyRemote(input ApplyInput) (ApplyResult, error) {
 	return result, nil
 }
 
+// RemoveManagedRemote atomically removes only the exact XIASS Tools reserved
+// MCP entry. It is deliberately fail-closed for malformed or sensitive
+// configurations: XIASS Tools will not inspect, rewrite, or remove entries
+// from a file that contains account-adjacent data. If the configuration file
+// is absent, or no exact xiass-tools entry exists, this is a strict no-op and
+// does not create a configuration file, lock, backup directory, or backup.
+func (m *manager) RemoveManagedRemote() (RemoveResult, error) {
+	empty := RemoveResult{Snapshot: Snapshot{Target: m.target}}
+	if err := m.validatePaths(); err != nil {
+		return empty, err
+	}
+
+	// Do the no-op/safety preflight before allocating the manager lock. The
+	// lock itself resides in the backup root, so taking it for an absent managed
+	// entry would violate the guarantee that an explicit no-op leaves no files
+	// or recovery points behind.
+	preflight, original, existed, _, err := m.readDocument()
+	defer zeroBytes(original)
+	if err != nil {
+		return empty, safeOperationError(err)
+	}
+	if preflight.hasSensitiveConfiguration {
+		return empty, ErrUnsafeConfiguration
+	}
+	if !existed || !preflight.managedServerConfigured {
+		return RemoveResult{
+			Snapshot: preflight.snapshot(m.target, existed),
+		}, nil
+	}
+
+	var result RemoveResult
+	err = m.withLock(func() error {
+		document, original, existed, mode, err := m.readDocument()
+		defer zeroBytes(original)
+		if err != nil {
+			return err
+		}
+		if document.hasSensitiveConfiguration {
+			return ErrUnsafeConfiguration
+		}
+		// Another process may have removed the entry between the preflight and
+		// lock acquisition. Do not manufacture a recovery point in that case.
+		if !existed || !document.managedServerConfigured {
+			result = RemoveResult{Snapshot: document.snapshot(m.target, existed)}
+			return nil
+		}
+
+		updated, removed, err := document.withoutManagedRemote()
+		if err != nil {
+			return ErrOperation
+		}
+		defer zeroBytes(updated)
+		if !removed {
+			result = RemoveResult{Snapshot: document.snapshot(m.target, existed)}
+			return nil
+		}
+
+		manifest, err := m.createBackup(original, existed, mode, "remove")
+		if err != nil {
+			return err
+		}
+		if m.beforeRemoveWriteForTest != nil {
+			if err := m.beforeRemoveWriteForTest(); err != nil {
+				return err
+			}
+		}
+		if err := m.ensureConfigurationUnchanged(original, existed); err != nil {
+			return err
+		}
+		if err := writeFileAtomic(m.configPath, updated, defaultMode(mode)); err != nil {
+			return m.rollbackRemovalIfCurrentWriteMatches(original, existed, mode, updated)
+		}
+		if m.afterAtomicWriteForTest != nil && m.afterAtomicWriteForTest() != nil {
+			return m.rollbackRemovalIfCurrentWriteMatches(original, existed, mode, updated)
+		}
+
+		verified, written, writtenExists, _, err := m.readDocument()
+		defer zeroBytes(written)
+		if err != nil || !writtenExists || verified.hasSensitiveConfiguration || verified.managedServerConfigured || !bytes.Equal(written, updated) {
+			// A different writer may have replaced the file after our atomic
+			// write. Never restore an older configuration over that unverified
+			// state; rollback is permitted only while the file is still exactly
+			// the bytes this operation wrote.
+			if err == nil && writtenExists && bytes.Equal(written, updated) {
+				return m.rollbackRemovalIfCurrentWriteMatches(original, existed, mode, updated)
+			}
+			return ErrOperation
+		}
+		manifest.AppliedSHA256 = sha256Hex(written)
+		if err := m.writeBackupManifest(manifest); err != nil {
+			return m.rollbackRemovalIfCurrentWriteMatches(original, existed, mode, updated)
+		}
+		result = RemoveResult{
+			Snapshot:      verified.snapshot(m.target, true),
+			BackupCreated: true,
+			Removed:       true,
+		}
+		return nil
+	})
+	if err != nil {
+		return empty, safeOperationError(err)
+	}
+	return result, nil
+}
+
 // Restore replaces the target global MCP file with one checksum-verified
 // XIASS Tools backup. Before changing anything it creates a new verified
 // safety backup of the current, non-sensitive configuration. It never restores
@@ -359,6 +464,18 @@ func (m *manager) rollback(original []byte, existed bool, mode fs.FileMode) erro
 		return ErrOperation
 	}
 	return ErrOperation
+}
+
+// rollbackRemovalIfCurrentWriteMatches prevents an error path from overwriting
+// an external client edit that races with a removal. Only the exact bytes
+// written by this operation may be replaced with the original configuration.
+func (m *manager) rollbackRemovalIfCurrentWriteMatches(original []byte, existed bool, mode fs.FileMode, expected []byte) error {
+	current, currentExists, _, err := readRegularFile(m.configPath, maxConfigurationBytes)
+	defer zeroBytes(current)
+	if err != nil || !currentExists || !bytes.Equal(current, expected) {
+		return ErrOperation
+	}
+	return m.rollback(original, existed, mode)
 }
 
 func sha256Hex(data []byte) string {

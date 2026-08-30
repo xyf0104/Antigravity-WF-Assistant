@@ -203,7 +203,7 @@ func (controller *Controller) Restart(ctx context.Context, confirmation string) 
 	if target == nil {
 		return status, ErrNoVerifiedInstallation
 	}
-	if !status.Running {
+	if !status.CanRestart {
 		return status, ErrDesktopNotRunning
 	}
 	verifiedTarget, err := controller.revalidateTargetLocked(*target)
@@ -233,7 +233,7 @@ func (controller *Controller) stopLocked(ctx context.Context) (ControlStatus, er
 	if target == nil {
 		return status, ErrNoVerifiedInstallation
 	}
-	if !status.Running {
+	if !status.CanStop {
 		return status, ErrDesktopNotRunning
 	}
 	verifiedTarget, err := controller.revalidateTargetLocked(*target)
@@ -307,18 +307,30 @@ func (controller *Controller) statusLocked(ctx context.Context) (ControlStatus, 
 		}
 	}
 	if target == nil {
+		// Discover may have found a separately running, verified installation
+		// without a deterministic lifecycle target. Preserve that safety state:
+		// status callers must not mistake it for a safe opportunity to launch or
+		// write while another Codex Desktop instance is active.
+		status.Running = discovery.Running
 		return status, nil
 	}
 
-	running, err := controller.targetRunningLocked(ctx, *target)
+	targetRunning, err := controller.targetRunningLocked(ctx, *target)
 	if err != nil {
 		addControlWarning(&status, WarningProcessListUnavailable)
 		return status, target
 	}
-	status.Running = running
-	status.CanLaunch = !running
-	status.CanStop = running
-	status.CanRestart = running
+	// The selected/deterministic target is never silently replaced with a
+	// different process merely because that process is running. Discovery still
+	// contributes its all-verified-instance running state so callers cannot
+	// write history/configuration while another valid Codex Desktop is active.
+	// Lifecycle actions remain available only when the target itself is the
+	// running instance; otherwise stopping or restarting would act on the wrong
+	// application target.
+	status.Running = discovery.Running || targetRunning
+	status.CanLaunch = !status.Running
+	status.CanStop = targetRunning
+	status.CanRestart = targetRunning
 	return status, target
 }
 

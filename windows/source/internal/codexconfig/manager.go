@@ -44,23 +44,23 @@ func NewManagerWithOptions(codexHome string, options ManagerOptions) *Manager {
 	if providerID == "" || !providerIDPattern.MatchString(providerID) {
 		providerID = DefaultProviderID
 	}
-	legacyIDs := normalizedProviderIDs(options.LegacyProviderIDs)
-	if len(legacyIDs) == 0 {
-		legacyIDs = append([]string(nil), defaultLegacyProviderIDs...)
-	}
 	root := filepath.Join(codexHome, dataDirectoryName)
 	writeGuard := options.HistoryWriteGuard
 	if writeGuard == nil {
 		writeGuard = defaultHistoryWriteGuard
 	}
+	migrationWrite := options.legacyProviderMigrationWrite
+	if migrationWrite == nil {
+		migrationWrite = writeFileAtomic
+	}
 	return &Manager{
-		CodexHome:         codexHome,
-		ConfigPath:        filepath.Join(codexHome, "config.toml"),
-		BackupRoot:        filepath.Join(root, "config-backups"),
-		LockPath:          filepath.Join(root, "codex-config.operation.lock"),
-		ProviderID:        providerID,
-		LegacyProviderIDs: legacyIDs,
-		historyWriteGuard: writeGuard,
+		CodexHome:                    codexHome,
+		ConfigPath:                   filepath.Join(codexHome, "config.toml"),
+		BackupRoot:                   filepath.Join(root, "config-backups"),
+		LockPath:                     filepath.Join(root, "codex-config.operation.lock"),
+		ProviderID:                   providerID,
+		historyWriteGuard:            writeGuard,
+		legacyProviderMigrationWrite: migrationWrite,
 	}
 }
 
@@ -336,6 +336,15 @@ func (m *Manager) createBackup(data []byte, existed bool, mode fs.FileMode, reas
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return BackupManifest{}, err
 	}
+	// Backups may preserve an API key or provider header byte-for-byte. Restrict
+	// both the app-owned root and this backup ID before any recovery file is
+	// created. On Windows the platform hook sets and verifies a protected DACL.
+	if err := protectPrivateDirectory(m.BackupRoot); err != nil {
+		return BackupManifest{}, errors.New("could not secure Codex configuration backup storage")
+	}
+	if err := protectPrivateDirectory(directory); err != nil {
+		return BackupManifest{}, errors.New("could not secure Codex configuration backup directory")
+	}
 	if existed {
 		if err := writeFileAtomic(m.originalPath(id), data, 0o600); err != nil {
 			return BackupManifest{}, err
@@ -395,8 +404,11 @@ func (m *Manager) originalPath(id string) string {
 }
 
 func (m *Manager) managedProviderIDs(target string) []string {
-	values := append([]string{target, DefaultProviderID}, m.LegacyProviderIDs...)
-	return normalizedProviderIDs(values)
+	// A normal save owns only its target and the fixed current XIASS Tools
+	// entry. Predecessor IDs may contain a working, user-owned credential; they
+	// are deliberately preserved until the user explicitly invokes the narrow
+	// first-party migration transaction.
+	return normalizedProviderIDs([]string{target, DefaultProviderID})
 }
 
 func (m *Manager) validatePaths() error {

@@ -158,6 +158,112 @@ func TestMCPBridgeBackupListingAndDeletionDoNotRequireClientDiscovery(t *testing
 	assertMCPBridgeResponseRedacted(t, afterDelete, home, "uninstalled-client-secret.invalid")
 }
 
+func TestTargetScopedMCPBridgeRemovalOnlyRemovesReservedEntry(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("desktop MCP discovery fixture is only defined for macOS and Windows")
+	}
+
+	for _, target := range []mcpconfig.Target{mcpconfig.TargetCursor, mcpconfig.TargetWindsurf} {
+		t.Run(string(target), func(t *testing.T) {
+			home := setupMCPBridgeHome(t)
+			installMCPBridgeClient(t, home, target)
+			if _, err := mcpconfig.NewDefaultManager(target); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(mcpBridgeConfigPath(home, target)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			original := []byte(`{"futureMetadata":{"keep":true},"mcpServers":{"foreign":{"url":"https://foreign-bridge-secret.invalid/mcp"},"xiass-tools-copy":{"url":"https://similarly-named-bridge-secret.invalid/mcp"},"xiass-tools":{"url":"https://xiass-bridge-secret.invalid/mcp"}}}`)
+			if err := os.WriteFile(mcpBridgeConfigPath(home, target), original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			removed := callMCPBridgeRemove(t, &App{}, target)
+			if !removed.OK || !removed.Result.Removed || !removed.Result.BackupCreated || removed.Result.Snapshot.ManagedServerConfigured || removed.Result.Snapshot.ServerCount != 2 {
+				t.Fatalf("target-scoped remove status = %#v", removed)
+			}
+			updated, err := os.ReadFile(mcpBridgeConfigPath(home, target))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var root map[string]json.RawMessage
+			if err := json.Unmarshal(updated, &root); err != nil {
+				t.Fatal(err)
+			}
+			var servers map[string]json.RawMessage
+			if err := json.Unmarshal(root["mcpServers"], &servers); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := servers[mcpconfig.ManagedServerID]; exists {
+				t.Fatal("bridge removal retained the managed server")
+			}
+			if _, exists := servers["foreign"]; !exists {
+				t.Fatal("bridge removal deleted a foreign server")
+			}
+			if _, exists := servers["xiass-tools-copy"]; !exists {
+				t.Fatal("bridge removal deleted a similarly named foreign server")
+			}
+			if _, exists := root["futureMetadata"]; !exists {
+				t.Fatal("bridge removal deleted unknown top-level metadata")
+			}
+			backups := callMCPBridgeList(t, &App{}, target)
+			if !backups.OK || len(backups.Backups) != 1 || backups.Backups[0].Reason != "remove" {
+				t.Fatalf("bridge removal recovery points = %#v", backups)
+			}
+			assertMCPBridgeResponseRedacted(t, removed, home, "foreign-bridge-secret.invalid", "similarly-named-bridge-secret.invalid", "xiass-bridge-secret.invalid")
+		})
+	}
+}
+
+func TestTargetScopedMCPBridgeRemovalFailsClosedForSensitiveAndNoopState(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("desktop MCP discovery fixture is only defined for macOS and Windows")
+	}
+
+	for _, target := range []mcpconfig.Target{mcpconfig.TargetCursor, mcpconfig.TargetWindsurf} {
+		t.Run(string(target), func(t *testing.T) {
+			home := setupMCPBridgeHome(t)
+			installMCPBridgeClient(t, home, target)
+			path := mcpBridgeConfigPath(home, target)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			foreignOnly := []byte(`{"mcpServers":{"foreign":{"url":"https://foreign-bridge-secret.invalid/mcp"}}}`)
+			if err := os.WriteFile(path, foreignOnly, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			noop := callMCPBridgeRemove(t, &App{}, target)
+			if !noop.OK || noop.Result.Removed || noop.Result.BackupCreated {
+				t.Fatalf("bridge no-op remove = %#v", noop)
+			}
+			if after, err := os.ReadFile(path); err != nil || !reflect.DeepEqual(after, foreignOnly) {
+				t.Fatalf("bridge no-op changed foreign-only configuration: %q / %v", after, err)
+			}
+			if listed := callMCPBridgeList(t, &App{}, target); !listed.OK || len(listed.Backups) != 0 {
+				t.Fatalf("bridge no-op created recovery points: %#v", listed)
+			}
+
+			secret := "bridge-direct-secret"
+			sensitive := []byte(`{"mcpServers":{"foreign":{"headers":{"Authorization":"Bearer ` + secret + `"}},"xiass-tools":{"url":"https://xiass-bridge-secret.invalid/mcp"}}}`)
+			if err := os.WriteFile(path, sensitive, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			blocked := callMCPBridgeRemove(t, &App{}, target)
+			if blocked.OK || blocked.Result.Removed || blocked.Result.BackupCreated {
+				t.Fatalf("sensitive bridge removal reported success: %#v", blocked)
+			}
+			if after, err := os.ReadFile(path); err != nil || !reflect.DeepEqual(after, sensitive) {
+				t.Fatalf("sensitive bridge removal changed configuration: %q / %v", after, err)
+			}
+			if listed := callMCPBridgeList(t, &App{}, target); !listed.OK || len(listed.Backups) != 0 {
+				t.Fatalf("sensitive bridge removal created recovery points: %#v", listed)
+			}
+			assertMCPBridgeResponseRedacted(t, blocked, home, secret, "Authorization", "headers", "xiass-bridge-secret.invalid")
+		})
+	}
+}
+
 func setupMCPBridgeHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -227,6 +333,19 @@ func callMCPBridgeApply(t *testing.T, app *App, target mcpconfig.Target, input M
 	}
 }
 
+func callMCPBridgeRemove(t *testing.T, app *App, target mcpconfig.Target) MCPRemoveStatus {
+	t.Helper()
+	switch target {
+	case mcpconfig.TargetCursor:
+		return app.RemoveCursorMCPConfiguration()
+	case mcpconfig.TargetWindsurf:
+		return app.RemoveWindsurfMCPConfiguration()
+	default:
+		t.Fatalf("unsupported target %q", target)
+		return MCPRemoveStatus{}
+	}
+}
+
 func callMCPBridgeList(t *testing.T, app *App, target mcpconfig.Target) MCPBackupListStatus {
 	t.Helper()
 	switch target {
@@ -273,6 +392,17 @@ func mcpBridgeContainsBackup(backups []mcpconfig.BackupInfo, wanted string) bool
 		}
 	}
 	return false
+}
+
+func mcpBridgeConfigPath(home string, target mcpconfig.Target) string {
+	switch target {
+	case mcpconfig.TargetCursor:
+		return filepath.Join(home, ".cursor", "mcp.json")
+	case mcpconfig.TargetWindsurf:
+		return filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")
+	default:
+		return ""
+	}
 }
 
 func assertMCPBridgeResponseRedacted(t *testing.T, response any, forbidden ...string) {

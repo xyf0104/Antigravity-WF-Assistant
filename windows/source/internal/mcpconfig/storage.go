@@ -236,7 +236,7 @@ func validateBackupManifest(manifest backupManifest) error {
 }
 
 func validBackupReason(reason string) bool {
-	return reason == "apply" || reason == "restore"
+	return reason == "apply" || reason == "remove" || reason == "restore"
 }
 
 func validBackupID(value string) bool {

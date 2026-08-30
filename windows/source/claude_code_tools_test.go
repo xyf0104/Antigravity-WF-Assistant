@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,5 +112,82 @@ func TestClaudeCodeBridgeUsesEmptySerializedBackupArrays(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"backups":[]`) || !strings.Contains(string(encoded), `"legacyBackups":[]`) {
 		t.Fatalf("empty backup arrays were not serialized: %s", encoded)
+	}
+}
+
+func TestClaudeGatewayBridgeUsesOnlyRequestLocalCredential(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, "claude"))
+
+	storedSecret := "stored-claude-secret-must-not-be-used"
+	requestSecret := "request-claude-secret-must-not-escape"
+	app := &App{}
+	if status := app.ApplyClaudeCodeConfiguration(ClaudeCodeApplyInput{
+		BaseURL:        "https://stored.example.test",
+		CredentialMode: "auth_token",
+		Credential:     storedSecret,
+		Model:          "claude-stored",
+	}); !status.OK {
+		t.Fatalf("could not create test config: %#v", status)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer "+requestSecret {
+			t.Errorf("gateway used an unexpected authorization header: %q", request.Header.Get("Authorization"))
+		}
+		if request.URL.Path != "/v1/models" {
+			t.Errorf("gateway path = %q", request.URL.Path)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":[{"id":"claude-bridge-test","display_name":"Bridge Test"}]}`))
+	}))
+	defer server.Close()
+
+	status := app.DiscoverClaudeCodeGatewayModels(ClaudeCodeGatewayRequestInput{
+		BaseURL:        server.URL,
+		CredentialMode: "auth_token",
+		Credential:     requestSecret,
+	})
+	if !status.OK || status.HTTPStatus != http.StatusOK || len(status.Models) != 1 || status.Models[0].ID != "claude-bridge-test" || status.Models[0].DisplayName != "Bridge Test" {
+		t.Fatalf("unexpected discovery status: %#v", status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sensitive := range []string{storedSecret, requestSecret, server.URL} {
+		if strings.Contains(string(encoded), sensitive) {
+			t.Fatalf("gateway bridge result leaked request-local data %q: %s", sensitive, encoded)
+		}
+	}
+
+	helperStatus := app.DiscoverClaudeCodeGatewayModels(ClaudeCodeGatewayRequestInput{
+		BaseURL:        server.URL,
+		CredentialMode: "api_key_helper",
+		Credential:     requestSecret,
+	})
+	if helperStatus.OK || strings.Contains(helperStatus.Message, requestSecret) || strings.Contains(helperStatus.Message, server.URL) {
+		t.Fatalf("helper discovery did not stay safely unavailable: %#v", helperStatus)
+	}
+}
+
+func TestClaudeCodeRendererSnapshotProjectsDiscoveryCompatibilityWithoutSettingsData(t *testing.T) {
+	result := claudeCodeRendererSnapshot(claudeconfig.Snapshot{
+		GatewayModelDiscoveryEnabled: true,
+		GatewayModelDiscoveryBlocked: true,
+	})
+	if !result.GatewayModelDiscoveryEnabled || !result.GatewayModelDiscoveryBlocked {
+		t.Fatalf("renderer snapshot = %#v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"gatewayModelDiscoveryBlocked":true`) || strings.Contains(string(encoded), "CLAUDE_CODE_USE_") || strings.Contains(string(encoded), "NONESSENTIAL") {
+		t.Fatalf("renderer snapshot exposed provider configuration: %s", encoded)
 	}
 }

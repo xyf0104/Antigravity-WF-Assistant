@@ -62,6 +62,16 @@ type ApplyResult struct {
 	BackupCreated bool     `json:"backupCreated"`
 }
 
+// RemoveResult reports the outcome of an explicit removal of the one MCP key
+// reserved for XIASS Tools. It never identifies, inspects, or claims ownership
+// of any other entry. When Removed is false, no configuration file or recovery
+// point was created by this operation.
+type RemoveResult struct {
+	Snapshot      Snapshot `json:"snapshot"`
+	BackupCreated bool     `json:"backupCreated"`
+	Removed       bool     `json:"removed"`
+}
+
 // BackupInfo is the only backup metadata exposed to callers. It contains no
 // file paths, URLs, headers, environment data, configuration contents, or
 // checksums, so it is safe for a future renderer to list recovery points.
@@ -110,6 +120,11 @@ type manager struct {
 	// Tests may force a post-write failure to assert that rollback restores the
 	// original configuration. Production managers never set this hook.
 	afterAtomicWriteForTest func() error
+	// Tests may simulate an external configuration change after a recovery
+	// point is created but before the guarded write begins. Production managers
+	// never set this hook; it proves that removal fails closed rather than
+	// overwriting a concurrent client-side edit.
+	beforeRemoveWriteForTest func() error
 }
 
 func defaultMode(mode fs.FileMode) fs.FileMode {

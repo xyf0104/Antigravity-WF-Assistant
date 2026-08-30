@@ -113,6 +113,230 @@ func TestApplyPreservesForeignAndUnknownEntriesAndCreatesRedactedBackup(t *testi
 	}
 }
 
+func TestRemovePreservesForeignEntriesAndTopLevelMetadata(t *testing.T) {
+	for _, target := range []Target{TargetCursor, TargetWindsurf} {
+		t.Run(string(target), func(t *testing.T) {
+			manager := newTestManager(t, target)
+			foreignRaw := []byte(`{"url":"https://foreign.example/mcp","enabled":true}`)
+			similarlyNamedRaw := []byte(`{"url":"https://not-owned.example/mcp"}`)
+			metadataRaw := []byte(`{"enabled":true,"revision":7}`)
+			original := []byte(`{"futureMetadata":{"enabled":true,"revision":7},"mcpServers":{"foreign":{"url":"https://foreign.example/mcp","enabled":true},"xiass-tools-copy":{"url":"https://not-owned.example/mcp"},"xiass-tools":{"url":"https://xiass.example/mcp"}}}`)
+			writeTestConfiguration(t, manager, original)
+
+			result, err := manager.RemoveManagedRemote()
+			if err != nil {
+				t.Fatalf("remove failed: %v", err)
+			}
+			if !result.Removed || !result.BackupCreated || !result.Snapshot.Exists || !result.Snapshot.Valid || result.Snapshot.ManagedServerConfigured || result.Snapshot.ServerCount != 2 {
+				t.Fatalf("unexpected remove result: %+v", result)
+			}
+			encodedResult, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertDoesNotContain(t, encodedResult, "xiass.example", "foreign.example", "not-owned.example", "mcp.json", "serverUrl", "url")
+
+			root := readConfigurationObject(t, manager.configPath)
+			if !jsonSemanticallyEqual(root["futureMetadata"], metadataRaw) {
+				t.Fatal("unknown top-level value changed during remove")
+			}
+			servers := readRawObject(t, root["mcpServers"])
+			if _, exists := servers[ManagedServerID]; exists {
+				t.Fatal("managed MCP entry remained after remove")
+			}
+			if !jsonSemanticallyEqual(servers["foreign"], foreignRaw) {
+				t.Fatal("foreign MCP entry changed during remove")
+			}
+			if !jsonSemanticallyEqual(servers["xiass-tools-copy"], similarlyNamedRaw) {
+				t.Fatal("similarly named foreign MCP entry was removed")
+			}
+
+			backup := onlyBackupInfo(t, manager)
+			if backup.Reason != "remove" || !backup.OriginalExisted {
+				t.Fatalf("remove did not create the expected recovery point: %#v", backup)
+			}
+			directory, err := manager.backupDirectory(backup.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved := readTestFile(t, filepath.Join(directory, "configuration.json")); !bytes.Equal(saved, original) {
+				t.Fatal("remove recovery point did not preserve the exact pre-remove configuration")
+			}
+		})
+	}
+}
+
+func TestRemoveStrictNoopDoesNotCreateConfigurationLockOrBackup(t *testing.T) {
+	for _, target := range []Target{TargetCursor, TargetWindsurf} {
+		t.Run(string(target), func(t *testing.T) {
+			manager := newTestManager(t, target)
+			result, err := manager.RemoveManagedRemote()
+			if err != nil {
+				t.Fatalf("absent configuration no-op failed: %v", err)
+			}
+			if result.Removed || result.BackupCreated || result.Snapshot.Exists || result.Snapshot.ManagedServerConfigured {
+				t.Fatalf("absent configuration no-op result = %#v", result)
+			}
+			assertPathAbsent(t, manager.configPath)
+			assertPathAbsent(t, manager.backupRoot)
+
+			original := []byte(`{"futureMetadata":{"keep":true},"mcpServers":{"foreign":{"url":"https://foreign.example/mcp"},"xiass-tools-copy":{"url":"https://not-owned.example/mcp"}}}`)
+			writeTestConfiguration(t, manager, original)
+			result, err = manager.RemoveManagedRemote()
+			if err != nil {
+				t.Fatalf("missing managed entry no-op failed: %v", err)
+			}
+			if result.Removed || result.BackupCreated || !result.Snapshot.Exists || result.Snapshot.ManagedServerConfigured {
+				t.Fatalf("missing managed entry no-op result = %#v", result)
+			}
+			if after := readTestFile(t, manager.configPath); !bytes.Equal(after, original) {
+				t.Fatal("missing managed entry no-op rewrote the configuration")
+			}
+			assertPathAbsent(t, manager.backupRoot)
+		})
+	}
+}
+
+func TestRemoveFailsClosedForSensitiveConfiguration(t *testing.T) {
+	manager := newTestManager(t, TargetCursor)
+	secret := "direct-secret-must-not-be-backed-up"
+	original := []byte(`{"mcpServers":{"foreign":{"headers":{"Authorization":"Bearer ` + secret + `"}},"xiass-tools":{"url":"https://xiass.example/mcp"}}}`)
+	writeTestConfiguration(t, manager, original)
+
+	result, err := manager.RemoveManagedRemote()
+	if !errors.Is(err, ErrUnsafeConfiguration) {
+		t.Fatalf("sensitive remove error = %v", err)
+	}
+	if result.Removed || result.BackupCreated {
+		t.Fatalf("sensitive remove reported mutation: %#v", result)
+	}
+	encoded, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	assertDoesNotContain(t, encoded, secret, "Authorization", "headers", "xiass.example")
+	if after := readTestFile(t, manager.configPath); !bytes.Equal(after, original) {
+		t.Fatal("sensitive configuration changed despite removal rejection")
+	}
+	assertPathAbsent(t, manager.backupRoot)
+}
+
+func TestRemoveRollsBackAfterPostWriteFailure(t *testing.T) {
+	manager := newTestManager(t, TargetCursor)
+	original := []byte(`{"futureMetadata":{"keep":true},"mcpServers":{"foreign":{"url":"https://foreign.example/mcp"},"xiass-tools":{"url":"https://xiass.example/mcp"}}}`)
+	writeTestConfiguration(t, manager, original)
+	manager.afterAtomicWriteForTest = func() error { return errors.New("forced failure") }
+
+	result, err := manager.RemoveManagedRemote()
+	if !errors.Is(err, ErrOperation) {
+		t.Fatalf("remove rollback error = %v", err)
+	}
+	if result.Removed || result.BackupCreated {
+		t.Fatalf("failed remove reported success: %#v", result)
+	}
+	encoded, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	assertDoesNotContain(t, encoded, "xiass.example", "foreign.example")
+	if restored := readTestFile(t, manager.configPath); !bytes.Equal(restored, original) {
+		t.Fatal("post-write remove failure did not restore the original configuration")
+	}
+	backups, listErr := manager.ListBackups()
+	if listErr != nil || len(backups) != 1 || backups[0].Reason != "remove" {
+		t.Fatalf("remove rollback did not retain its pre-write recovery point: %#v / %v", backups, listErr)
+	}
+}
+
+func TestRemoveKeepsEmptyMCPServersAndItsRecoveryPointRestoresExactStructure(t *testing.T) {
+	for _, target := range []Target{TargetCursor, TargetWindsurf} {
+		t.Run(string(target), func(t *testing.T) {
+			manager := newTestManager(t, target)
+			original := []byte(`{"futureMetadata":{"keep":true},"mcpServers":{"xiass-tools":{"url":"https://xiass.example/mcp"}}}`)
+			writeTestConfiguration(t, manager, original)
+
+			removed, err := manager.RemoveManagedRemote()
+			if err != nil || !removed.Removed || !removed.BackupCreated || removed.Snapshot.ManagedServerConfigured {
+				t.Fatalf("remove only-managed entry = %#v / %v", removed, err)
+			}
+			root := readConfigurationObject(t, manager.configPath)
+			rawServers, exists := root["mcpServers"]
+			if !exists {
+				t.Fatal("remove discarded the mcpServers container")
+			}
+			servers := readRawObject(t, rawServers)
+			if len(servers) != 0 {
+				t.Fatalf("only managed entry removal left unexpected servers: %#v", servers)
+			}
+			backup := onlyBackupInfo(t, manager)
+			if backup.Reason != "remove" {
+				t.Fatalf("remove recovery point reason = %#v", backup)
+			}
+
+			restored, err := manager.Restore(backup.ID)
+			if err != nil || !restored.BackupCreated || !restored.Snapshot.ManagedServerConfigured {
+				t.Fatalf("remove recovery point restore = %#v / %v", restored, err)
+			}
+			if after := readTestFile(t, manager.configPath); !bytes.Equal(after, original) {
+				t.Fatal("remove recovery point did not restore the exact original structure")
+			}
+		})
+	}
+}
+
+func TestRemoveFailsClosedWhenConfigurationChangesBeforeWrite(t *testing.T) {
+	manager := newTestManager(t, TargetCursor)
+	original := []byte(`{"mcpServers":{"foreign":{"url":"https://foreign.example/mcp"},"xiass-tools":{"url":"https://xiass.example/mcp"}}}`)
+	external := []byte(`{"mcpServers":{"foreign":{"url":"https://external-change.example/mcp"},"xiass-tools":{"url":"https://external-change.example/mcp"}}}`)
+	writeTestConfiguration(t, manager, original)
+	manager.beforeRemoveWriteForTest = func() error {
+		return os.WriteFile(manager.configPath, external, 0o600)
+	}
+
+	result, err := manager.RemoveManagedRemote()
+	if !errors.Is(err, ErrOperation) {
+		t.Fatalf("concurrent remove error = %v", err)
+	}
+	if result.Removed || result.BackupCreated {
+		t.Fatalf("concurrent remove reported success: %#v", result)
+	}
+	if after := readTestFile(t, manager.configPath); !bytes.Equal(after, external) {
+		t.Fatal("remove overwrote an external configuration change")
+	}
+	backups, listErr := manager.ListBackups()
+	if listErr != nil || len(backups) != 1 || backups[0].Reason != "remove" {
+		t.Fatalf("concurrent remove did not retain the original recovery point: %#v / %v", backups, listErr)
+	}
+}
+
+func TestRemoveDoesNotRollbackOverExternalChangeAfterWrite(t *testing.T) {
+	manager := newTestManager(t, TargetCursor)
+	original := []byte(`{"mcpServers":{"foreign":{"url":"https://foreign.example/mcp"},"xiass-tools":{"url":"https://xiass.example/mcp"}}}`)
+	external := []byte(`{"mcpServers":{"foreign":{"url":"https://post-write-change.example/mcp"},"xiass-tools":{"url":"https://post-write-change.example/mcp"}}}`)
+	writeTestConfiguration(t, manager, original)
+	manager.afterAtomicWriteForTest = func() error {
+		if err := os.WriteFile(manager.configPath, external, 0o600); err != nil {
+			return err
+		}
+		return errors.New("forced post-write external change")
+	}
+
+	result, err := manager.RemoveManagedRemote()
+	if !errors.Is(err, ErrOperation) {
+		t.Fatalf("post-write external change error = %v", err)
+	}
+	if result.Removed || result.BackupCreated {
+		t.Fatalf("post-write external change reported success: %#v", result)
+	}
+	if after := readTestFile(t, manager.configPath); !bytes.Equal(after, external) {
+		t.Fatal("remove rollback overwrote a post-write external configuration change")
+	}
+	backups, listErr := manager.ListBackups()
+	if listErr != nil || len(backups) != 1 || backups[0].Reason != "remove" {
+		t.Fatalf("post-write external change did not retain recovery point: %#v / %v", backups, listErr)
+	}
+}
+
 func TestSensitiveConfigurationsAreReadOnlyAndRedacted(t *testing.T) {
 	cases := map[string][]byte{
 		"env":     []byte(`{"mcpServers":{"foreign":{"env":{"API_KEY":"direct-secret"}}}}`),
@@ -470,6 +694,33 @@ func TestOperationLockRejectsConcurrentApply(t *testing.T) {
 	}
 }
 
+func TestOperationLockRejectsConcurrentRemove(t *testing.T) {
+	manager := newTestManager(t, TargetCursor)
+	original := []byte(`{"mcpServers":{"xiass-tools":{"url":"https://xiass.example/mcp"}}}`)
+	writeTestConfiguration(t, manager, original)
+	if err := ensureDirectoryNoSymlink(manager.backupRoot); err != nil {
+		t.Fatal(err)
+	}
+	release, err := acquireOperationLock(manager.lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	result, err := manager.RemoveManagedRemote()
+	if !errors.Is(err, ErrOperationBusy) {
+		t.Fatalf("concurrent remove error = %v", err)
+	}
+	if result.Removed || result.BackupCreated {
+		t.Fatalf("concurrent remove reported mutation: %#v", result)
+	}
+	if after := readTestFile(t, manager.configPath); !bytes.Equal(after, original) {
+		t.Fatal("locked remove changed the configuration")
+	}
+	if backups := backupDirectories(t, manager); backups != nil {
+		t.Fatalf("locked remove created recovery points: %#v", backups)
+	}
+}
+
 func newTestManager(t *testing.T, target Target) *manager {
 	t.Helper()
 	root := t.TempDir()
@@ -505,6 +756,13 @@ func readTestFile(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func assertPathAbsent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("unexpected path exists or could not be checked: %s / %v", path, err)
+	}
 }
 
 func readConfigurationObject(t *testing.T, path string) map[string]json.RawMessage {

@@ -131,6 +131,40 @@ func TestWindowsStoreRegistrationProvidesOnlyVerifiedLaunchCapability(t *testing
 	}
 }
 
+func TestWindowsControllerDoesNotRetargetLifecycleToSeparatelyRunningAppPathsTarget(t *testing.T) {
+	filesystem := newWindowsFakeFileSystem(map[string]string{
+		"LOCALAPPDATA": `C:\Users\alice\AppData\Local`,
+	})
+	selectedExecutable := filepath.Join(`C:\Users\alice\AppData\Local`, "Programs", "Codex", "Codex.exe")
+	addWindowsExecutable(filesystem, selectedExecutable, `{"version":"26.8.1"}`)
+	runningExecutable := filepath.Join(`D:\Managed\ChatGPT`, "ChatGPT.exe")
+	addWindowsExecutable(filesystem, runningExecutable, `{"version":"26.8.2"}`)
+	lister := &mutableWindowsProcessLister{processes: []Process{{Executable: runningExecutable}}}
+	registry := &recordingAppPathRegistry{values: []string{`"` + runningExecutable + `"`}}
+	var launches, stops int
+	controller := newControllerForTest(New(Options{FileSystem: filesystem, Registry: registry, Processes: lister}), controlOperations{
+		launch: func(context.Context, desktopTarget) error { launches++; return nil },
+		stop:   func(context.Context, desktopTarget) error { stops++; return nil },
+	})
+
+	status := controller.Status(context.Background())
+	if !status.Running || status.CanLaunch || status.CanStop || status.CanRestart {
+		t.Fatalf("controller status = %#v, want global running with no retargetable lifecycle action", status)
+	}
+	if status.Installation.Source != SourceLocalAppData || status.Installation.Version != "26.8.1" {
+		t.Fatalf("controller installation = %#v, want deterministic fixed target", status.Installation)
+	}
+	if _, err := controller.Launch(context.Background()); !errors.Is(err, ErrDesktopAlreadyRunning) {
+		t.Fatalf("launch error = %v, want running protection", err)
+	}
+	if _, err := controller.Stop(context.Background(), LifecycleConfirmation); !errors.Is(err, ErrDesktopNotRunning) {
+		t.Fatalf("stop error = %v, want lifecycle target mismatch protection", err)
+	}
+	if launches != 0 || stops != 0 {
+		t.Fatalf("lifecycle operation retargeted a separately running desktop: launches=%d stops=%d", launches, stops)
+	}
+}
+
 type mutableWindowsProcessLister struct {
 	mu        sync.Mutex
 	processes []Process

@@ -22,7 +22,7 @@
 
 ## 下载与安装
 
-请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与 Release 标签匹配的标准安装包。该公开地址暂时保留历史仓库路径，作为已验证的发布与更新通道，不是 XIASS Tools 的显示名称。当前发布准备版本为 v1.6.5；它高于历史 v1.6.4 基线，不会覆盖或冒充已有发布。Release 只提供两个系统的安装包和更新校验所需的 `SHA256SUMS.txt`，不提供 portable、独立 EXE 或 ZIP：
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与 Release 标签匹配的标准安装包。该公开地址暂时保留历史仓库路径，作为已验证的发布与更新通道，不是 XIASS Tools 的显示名称。当前发布准备版本为 v1.6.6；它高于历史 v1.6.5 基线，不会覆盖或冒充已有发布。Release 只提供两个系统的安装包和更新校验所需的 `SHA256SUMS.txt`，不提供 portable、独立 EXE 或 ZIP：
 
 | 系统 | 安装包 | 支持范围 |
 | --- | --- | --- |

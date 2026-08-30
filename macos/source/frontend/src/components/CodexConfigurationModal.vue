@@ -6,6 +6,9 @@ import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import {
   getCodexConfiguration,
   applyCodexConfiguration,
+  removeCodexXIASSProvider,
+	 migrateCodexLegacyProvider,
+	 migrateCodexLegacyProviderWithLifecycle,
   discoverCodexModels,
   restoreCodexConfiguration,
   deleteCodexConfigurationBackup,
@@ -37,6 +40,8 @@ const emit = defineEmits(["close", "changed"]);
 
 const loading = ref(false);
 const saving = ref(false);
+const removingXIASSProvider = ref(false);
+const migratingLegacyProvider = ref(false);
 const discovering = ref(false);
 const repairingHistory = ref(false);
 const actionID = ref("");
@@ -71,8 +76,6 @@ const contextPresetOptions = [
   { label: "1M", value: "1000000" },
   { label: "自定义", value: "custom" },
 ];
-const legacyProviderIDs = new Set(["xiass", "codex_local_access"]);
-
 // This draft stays entirely within this component. In particular APIKey is
 // reset on every close and is never copied into the global app state.
 const draft = ref(createDraft());
@@ -85,12 +88,28 @@ const legacyConfigurationBackups = computed(() => legacyBackupItems.value.filter
 const legacyHistoryBackups = computed(() => legacyBackupItems.value.filter((backup) => backup?.kind === "history" && backup?.importable));
 const legacyBackupWarning = computed(() => String(data.value?.legacyBackupWarning || "").trim());
 const configLocation = computed(() => snapshot.value?.location || {});
-const configured = computed(() => snapshot.value?.model_provider === "xiass_tools");
+const activeXIASSProvider = computed(() => snapshot.value?.model_provider === "xiass_tools");
+// Do not turn the configuration status green only because a parsed TOML file
+// names xiass_tools. The native snapshot proves its non-secret semantics
+// (responses transport, bearer presence, actor header and managed top-level
+// settings) before setting this flag.
+const configured = computed(() => activeXIASSProvider.value && snapshot.value?.managed_provider_verified === true);
+const managedProviderNeedsRepair = computed(() => activeXIASSProvider.value && !configured.value);
+const hasXIASSProvider = computed(() => (Array.isArray(snapshot.value?.providers) ? snapshot.value.providers : [])
+  .some((provider) => String(provider?.id || "").trim() === "xiass_tools"));
+const canRemoveXIASSProvider = computed(() => configured.value || hasXIASSProvider.value);
 const hasConfiguration = computed(() => Boolean(configLocation.value?.exists));
+const configStatusTitle = computed(() => {
+  if (configured.value) return "XIASS Tools 已配置";
+  if (managedProviderNeedsRepair.value) return "XIASS Tools 配置需要修复";
+  if (hasConfiguration.value) return "已发现现有 Codex 配置";
+  return "尚未创建 Codex 配置";
+});
 const configStatusDescription = computed(() => {
   if (!data.value) return "等待读取";
   if (!data.value.ok) return "无法验证本机 config.toml。";
   if (configured.value) return "已验证 XIASS Tools 配置。";
+	if (managedProviderNeedsRepair.value) return "当前 xiass_tools Provider 未通过完整性验证；请先退出 Codex，再重新保存配置或恢复已验证的备份。";
   if (hasConfiguration.value) return "已读取现有 config.toml。";
   return "尚未创建 config.toml。";
 });
@@ -98,17 +117,17 @@ const xiassSelectionReady = computed(() => xiassSelection.value?.status === "rea
 const xiassSelectionPending = computed(() => xiassSelection.value?.status === "pending");
 const xiassSelectionSessionID = computed(() => xiassSelection.value?.sessionId || "");
 const hasConfiguredCredential = computed(() => xiassSelectionReady.value || Boolean(draft.value.api_key?.trim()));
-const legacyProviders = computed(() => {
-  const seen = new Set();
-  return (Array.isArray(snapshot.value?.providers) ? snapshot.value.providers : [])
-    .map((provider) => String(provider?.id || "").trim())
-    .filter((providerID) => {
-      if (!legacyProviderIDs.has(providerID) || seen.has(providerID)) return false;
-      seen.add(providerID);
-      return true;
-    });
+const legacyProviderMigration = computed(() => {
+  const raw = snapshot.value?.legacy_provider_migration;
+  const providerID = String(raw?.provider_id || "").trim();
+  const supported = providerID === "xiass" || providerID === "codex_local_access";
+  return {
+    available: raw?.available === true && supported,
+    providerID: supported ? providerID : "",
+    wasActive: raw?.was_active === true,
+  };
 });
-const legacyProviderSummary = computed(() => legacyProviders.value.join("、"));
+const canMigrateLegacyProvider = computed(() => data.value?.ok === true && legacyProviderMigration.value.available);
 const contextWindow = computed(() => Number(draft.value.model_context_window) || 0);
 const autoCompactLimit = computed(() => Number(draft.value.model_auto_compact_token_limit) || 0);
 const expectedAutoCompactLimit = computed(() => Math.floor(contextWindow.value * 0.9));
@@ -126,7 +145,7 @@ const contextSummary = computed(() => {
 const desktopBridgeAvailable = computed(() => desktopStatus.value.bridgeAvailable);
 const desktopPresent = computed(() => desktopStatus.value.discovered || desktopStatus.value.selected);
 const desktopRunning = computed(() => desktopStatus.value.running);
-const desktopBusy = computed(() => Boolean(desktopAction.value) || lifecycleApplying.value);
+const desktopBusy = computed(() => Boolean(desktopAction.value) || lifecycleApplying.value || removingXIASSProvider.value || migratingLegacyProvider.value);
 const desktopStatusLabel = computed(() => {
   if (!desktopBridgeAvailable.value) return "控制组件待更新";
   if (desktopRunning.value) return "Codex 正在运行";
@@ -378,27 +397,14 @@ function formatTokenCount(value) {
   return `${tokens}`;
 }
 
-function applyRestartGuidance(message, { migrated = false, migratedProviders = legacyProviderSummary.value, providerChanged = false } = {}) {
-  const migrationNotice = migrated ? `已迁移旧 Provider（${migratedProviders}）。` : "";
+function applyRestartGuidance(message, { providerChanged = false } = {}) {
   restartRequired.value = true;
   notice.value = [
     message || "Codex 配置已安全写入。",
-    migrationNotice,
     providerChanged ? "Provider 已变更：请先退出 Codex，再按需检查兼容历史，最后重新打开应用。" : "请在完成当前工作后重新启动 Codex，使 config.toml 变更生效。",
   ]
     .filter(Boolean)
     .join(" ");
-}
-
-function startLegacyMigration() {
-  error.value = "";
-  notice.value = "";
-  if (hasConfiguredCredential.value) {
-    void save();
-    return;
-  }
-  error.value = "迁移旧 Provider 需要提供新的 API Key，或先通过 XIASS API 网站完成安全选择。";
-  void nextTick(() => apiKeyInput.value?.focus());
 }
 
 async function load() {
@@ -458,6 +464,7 @@ function desktopActionFailure(action, status) {
 }
 
 async function runDesktopAction(action) {
+  if (removingXIASSProvider.value) return;
   error.value = "";
   notice.value = "";
   desktopAction.value = action;
@@ -626,7 +633,7 @@ async function discoverModels() {
     if (models.value.length && !models.value.includes(draft.value.review_model)) {
       draft.value.review_model = draft.value.model;
     }
-    notice.value = `已获取 ${models.value.length} 个可用模型。`;
+    notice.value = `已发现 ${models.value.length} 个模型 ID（尚未验证 Responses 推理）。`;
   } catch (cause) {
     error.value = "获取上游模型失败。请检查 API 地址与本次 Key 后重试。";
   } finally {
@@ -635,6 +642,7 @@ async function discoverModels() {
 }
 
 async function save() {
+  if (removingXIASSProvider.value || migratingLegacyProvider.value) return;
   error.value = "";
   notice.value = "";
   if (!hasConfiguredCredential.value) {
@@ -642,7 +650,6 @@ async function save() {
     return;
   }
   saving.value = true;
-  const migratingProviders = legacyProviders.value.slice();
   const previousProvider = providerID(snapshot.value?.model_provider);
   try {
     const result = xiassSelectionReady.value
@@ -659,11 +666,7 @@ async function save() {
       xiassSelection.value = { ...xiassSelection.value, status: "applied", message: "已安全保存 Codex 配置。" };
     }
     markProviderChange(previousProvider, "xiass_tools");
-		applyRestartGuidance("Codex 配置已安全保存。", {
-      migrated: migratingProviders.length > 0,
-      migratedProviders: migratingProviders.join("、"),
-      providerChanged: providerChangePending.value,
-    });
+		applyRestartGuidance("Codex 配置已安全保存。", { providerChanged: providerChangePending.value });
     emit("changed");
   } catch (cause) {
     error.value = "保存 Codex 配置失败。请检查填写内容与 config.toml 状态后重试。";
@@ -672,7 +675,131 @@ async function save() {
   }
 }
 
+async function removeXIASSProvider() {
+	if (migratingLegacyProvider.value) return;
+  error.value = "";
+  notice.value = "";
+  const wasActive = activeXIASSProvider.value;
+  removingXIASSProvider.value = true;
+  try {
+    const result = await removeCodexXIASSProvider();
+    data.value = result;
+    if (!result?.ok) {
+      error.value = "移除 XIASS Tools Codex Provider 未完成。当前配置保持不变；请检查 config.toml 后重试。";
+      return;
+    }
+
+    // A disconnect must also discard request-local credentials from this
+    // component. It does not inspect or revoke any Codex account credential.
+    cancelXIASSKeySelection();
+    models.value = [];
+    const next = createDraft(result.snapshot || {});
+    draft.value = { ...next, api_key: "" };
+    contextMode.value = contextModeFor(next.model_context_window);
+    providerChangePending.value = false;
+    historyCompatibilityChecked.value = false;
+    resetLifecycleOptions();
+    restartRequired.value = wasActive;
+    notice.value = wasActive
+      ? "XIASS Tools Codex Provider 已移除。当前模型选择已清除；请在完成当前工作后自行重新启动 Codex。"
+      : "XIASS Tools Codex Provider 已移除；其他 Provider 和当前模型选择保持不变。";
+    emit("changed");
+  } catch {
+    error.value = "移除 XIASS Tools Codex Provider 未完成。当前配置保持不变；请检查 config.toml 后重试。";
+  } finally {
+    removingXIASSProvider.value = false;
+  }
+}
+
+function resetAfterLegacyProviderMigration(result, previousProvider, { relaunched = false, wasActive = false } = {}) {
+  const next = createDraft(result?.snapshot || {});
+  // The migration never consumes the form's credential. Clear any local
+  // draft anyway so an explicit config rewrite cannot leave a secret around
+  // in an otherwise unrelated browser form.
+  draft.value = { ...next, api_key: "" };
+  contextMode.value = contextModeFor(next.model_context_window);
+  models.value = [];
+  cancelXIASSKeySelection();
+  markProviderChange(previousProvider, result?.snapshot?.model_provider);
+  historyCompatibilityChecked.value = false;
+  resetLifecycleOptions();
+  restartRequired.value = wasActive && !relaunched;
+}
+
+async function migrateLegacyProvider() {
+  if (!canMigrateLegacyProvider.value || migratingLegacyProvider.value) return;
+  error.value = "";
+  notice.value = "";
+  migratingLegacyProvider.value = true;
+  const previousProvider = providerID(snapshot.value?.model_provider);
+  const migrationSource = legacyProviderMigration.value.providerID;
+	const migrationWasActive = legacyProviderMigration.value.wasActive;
+  try {
+    // Never infer safety from the modal-open snapshot. A fresh lifecycle
+    // observation decides whether this explicit action must use the confirmed
+    // native exit/relaunch transaction; the direct native method rechecks too.
+    const desktop = await refreshCodexDesktopStatus();
+    if (desktop.bridgeAvailable && desktop.running) {
+      const lifecycle = await migrateCodexLegacyProviderWithLifecycle(true);
+      const configuration = lifecycle?.configuration;
+      if (configuration && typeof configuration === "object") data.value = configuration;
+      if (lifecycle?.desktop && typeof lifecycle.desktop === "object") applyDesktopStatus(lifecycle.desktop);
+      if (!lifecycle?.ok || lifecycle?.migrated !== true) {
+        error.value = lifecycle?.rolledBack
+          ? "旧 Provider 迁移未完成，已回滚可验证的配置变更。Codex 已恢复到安全状态。"
+          : "旧 Provider 迁移未完成。为保护当前配置，Codex 没有被强制结束或自动继续。";
+        return;
+      }
+		resetAfterLegacyProviderMigration(data.value, previousProvider, { relaunched: lifecycle?.relaunched === true, wasActive: migrationWasActive });
+      notice.value = `已将一个已验证的旧版 Provider（${migrationSource}）迁移至 XIASS Tools；未读取或显示其凭据，也未扫描会话。`;
+      emit("changed");
+      return;
+    }
+
+    const result = await migrateCodexLegacyProvider();
+    data.value = result;
+    if (!result?.ok) {
+      error.value = "旧 Provider 迁移未完成。当前配置保持不变；请先退出 Codex 或使用确认后的生命周期操作后重试。";
+      return;
+    }
+    if (result?.legacyProviderMigrationCompleted !== true) {
+      error.value = "未发现可安全迁移的旧版 Provider；当前配置没有被更改。";
+      return;
+    }
+		resetAfterLegacyProviderMigration(result, previousProvider, { wasActive: migrationWasActive });
+    notice.value = `已将一个已验证的旧版 Provider（${migrationSource}）迁移至 XIASS Tools；未读取或显示其凭据，也未扫描会话。`;
+    emit("changed");
+  } catch {
+    error.value = "旧 Provider 迁移未完成。当前配置保持不变；请先退出 Codex 或使用确认后的生命周期操作后重试。";
+  } finally {
+    migratingLegacyProvider.value = false;
+  }
+}
+
+function confirmLegacyProviderMigration() {
+  if (!canMigrateLegacyProvider.value) return;
+  const source = legacyProviderMigration.value.providerID;
+  const desktopDetail = desktopRunning.value
+    ? "Codex Desktop 正在运行。此操作会先正常请求退出，迁移成功后再重新启动；不会强制结束进程。"
+    : "Codex Desktop 未在运行。操作会在原生层再次确认安全后才写入 config.toml。";
+  const activeDetail = legacyProviderMigration.value.wasActive
+    ? "当前模型选择会从该旧 Provider 切换为 xiass_tools，模型、审查模型、上下文和联网搜索设置将保持不变。"
+    : "该旧 Provider 当前未被使用；正在使用的其他 Provider、模型和设置将保持不变。";
+  if (!window.confirm(`${desktopDetail} 将仅迁移一个已验证的旧版 Provider（${source}），并先创建恢复备份。${activeDetail} 不会读取 auth.json、OAuth、Cookie、会话或其他 Provider。是否继续？`)) return;
+  void migrateLegacyProvider();
+}
+
+function confirmRemoveXIASSProvider() {
+  if (!canRemoveXIASSProvider.value) return;
+  const confirmation = activeXIASSProvider.value
+    ? "将移除 XIASS Tools 的 xiass_tools Codex Provider，并清除当前默认模型和审查模型选择。其他 Provider、MCP、Desktop、未知设置和历史会话不会被修改；当前配置会先创建恢复备份。该操作不会退出、重启或打开 Codex。是否继续？"
+    : "将移除 XIASS Tools 的 xiass_tools Codex Provider。其他 Provider、当前模型选择、MCP、Desktop、未知设置和历史会话不会被修改；当前配置会先创建恢复备份。该操作不会退出、重启或打开 Codex。是否继续？";
+  if (!window.confirm(confirmation)) return;
+  void removeXIASSProvider();
+}
+
 function confirmLifecycleApply() {
+  if (removingXIASSProvider.value) return;
   error.value = "";
   notice.value = "";
   lifecycleOutcome.value = null;
@@ -758,8 +885,19 @@ async function applyLifecycleConfiguration() {
 }
 
 async function runConfigurationBackupAction(action, backupID) {
+  if (removingXIASSProvider.value) return;
   error.value = "";
   notice.value = "";
+  // A restore writes config.toml, so perform a fresh observation rather than
+  // relying on the modal-open state. The native layer repeats this guard so a
+  // direct bridge call or a race cannot restore under a running Codex Desktop.
+  if (action === "restore") {
+    const desktop = await refreshCodexDesktopStatus();
+    if (desktop.bridgeAvailable && desktop.running) {
+      error.value = "Codex Desktop 正在运行。请先完成当前工作并退出 Codex，再恢复配置备份。";
+      return;
+    }
+  }
   actionID.value = `config:${action}:${backupID}`;
   const previousProvider = providerID(snapshot.value?.model_provider);
   try {
@@ -789,6 +927,7 @@ async function runConfigurationBackupAction(action, backupID) {
 }
 
 async function repairHistory() {
+  if (removingXIASSProvider.value) return;
   error.value = "";
   notice.value = "";
   // A fresh process observation is required immediately before a history
@@ -817,6 +956,7 @@ async function repairHistory() {
 }
 
 async function runHistoryBackupAction(action, backupID) {
+  if (removingXIASSProvider.value) return;
   error.value = "";
   notice.value = "";
   if (action === "restore") {
@@ -852,6 +992,7 @@ async function refreshAfterHistoryAction() {
 }
 
 async function runLegacyBackupImport(kind, sourceID) {
+  if (removingXIASSProvider.value) return;
   error.value = "";
   notice.value = "";
   actionID.value = `legacy:${kind}:${sourceID}`;
@@ -896,7 +1037,7 @@ function confirmLegacyHistoryImport(sourceID) {
 }
 
 function confirmConfigurationRestore(backupID) {
-	if (!window.confirm("将恢复这份 Codex 配置备份。当前配置会先自动备份；完成后请自行退出并重新启动 Codex，是否继续？")) return;
+	if (!window.confirm("将恢复这份 Codex 配置备份。请先确认 Codex 已退出；当前配置会先自动备份，完成后可重新启动 Codex，是否继续？")) return;
   void runConfigurationBackupAction("restore", backupID);
 }
 
@@ -951,16 +1092,16 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
 </script>
 
 <template>
-  <Modal :open="open" title="配置 Codex" wide persistent :closable="!saving && !discovering && !repairingHistory && !desktopBusy" @close="close">
+  <Modal :open="open" title="配置 Codex" wide persistent :closable="!saving && !removingXIASSProvider && !migratingLegacyProvider && !discovering && !repairingHistory && !desktopBusy" @close="close">
     <div class="codex-config">
       <p class="intro">XIASS Tools 仅管理 <code>config.toml</code> 中独立的 <code>xiass_tools</code> Provider。不会读取 <code>auth.json</code>、不会替换无关 Provider；Codex Desktop 的打开、退出与重启只会在你主动确认后执行。</p>
 
       <div v-if="loading" class="state-block">正在读取本机 Codex 配置…</div>
 
       <template v-else>
-        <div class="config-status" :class="{ configured, invalid: data && !data.ok }">
+        <div class="config-status" :class="{ configured, invalid: data && (!data.ok || managedProviderNeedsRepair) }">
           <div>
-            <strong>{{ configured ? "XIASS Tools 已配置" : hasConfiguration ? "已发现现有 Codex 配置" : "尚未创建 Codex 配置" }}</strong>
+            <strong>{{ configStatusTitle }}</strong>
             <span>{{ configStatusDescription }}</span>
           </div>
           <code>{{ hasConfiguration ? "已找到本机 config.toml" : "尚未找到本机 config.toml" }}</code>
@@ -999,6 +1140,18 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
         <div v-if="error" class="feedback error" role="alert">{{ error }}</div>
         <div v-if="notice" class="feedback success" role="status">{{ notice }}</div>
 
+        <section v-if="canRemoveXIASSProvider" class="remove-provider-section" aria-labelledby="remove-xiass-provider-title">
+          <div class="section-title">
+            <strong id="remove-xiass-provider-title">移除 XIASS Tools Provider</strong>
+            <span>仅移除 <code>xiass_tools</code>。会先创建恢复备份；不会读取账号凭据，不会改动其他 Provider、MCP、Desktop、未知设置或历史会话，也不会控制 Codex Desktop。</span>
+          </div>
+          <div class="remove-provider-actions">
+            <p v-if="activeXIASSProvider">当前正在使用 XIASS Tools。移除后会同时清除当前默认模型和审查模型选择。</p>
+            <p v-else>XIASS Tools 当前不是活动 Provider。移除不会改变正在使用的模型选择。</p>
+            <Button variant="danger" size="sm" :loading="removingXIASSProvider" :disabled="saving || discovering || repairingHistory || desktopBusy || lifecycleApplying" @click="confirmRemoveXIASSProvider">移除 XIASS Tools Provider</Button>
+          </div>
+        </section>
+
         <section class="form-section">
           <div class="section-title"><strong>上游连接</strong><span>可直接从 XIASS API 网站选择自己的 Key，或手动填写兼容 API。网站选择的 Key 不会回传或保存到页面中。</span></div>
           <div class="xiass-key-selection" :class="{ ready: xiassSelectionReady, pending: xiassSelectionPending }">
@@ -1027,14 +1180,14 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
           </div>
           <div class="model-tools">
             <Button variant="plain" :loading="discovering" :disabled="discovering || saving" @click="discoverModels">获取上游模型</Button>
-            <span>模型发现只请求一次 <code>/v1/models</code>，不会缓存 API Key；网站选择模式全程由原生层持有 Key。</span>
+            <span>模型发现只请求一次 <code>/v1/models</code>，不会缓存 API Key；它只发现模型 ID，不会自动调用或验证 Responses 推理。网站选择模式全程由原生层持有 Key。</span>
           </div>
-          <div v-if="legacyProviders.length" class="legacy-migration">
+          <div v-if="canMigrateLegacyProvider" class="legacy-migration" aria-live="polite">
             <div>
-              <strong>发现旧 Provider：{{ legacyProviderSummary }}</strong>
-              <span>迁移会通过既有的安全保存流程创建 <code>xiass_tools</code> Provider，并移除这两个旧 Provider；不会更改其他 Provider 或历史记录。</span>
+              <strong>可安全迁移一个旧版 Provider</strong>
+              <span>已原生验证 <code>{{ legacyProviderMigration.providerID }}</code> 是唯一可迁移的第一方旧 Provider。迁移会创建 <code>xiass_tools</code>，保留安全可证明的模型、审查模型、上下文和联网搜索设置；不会读取凭据、不会触及其他 Provider 或会话。</span>
             </div>
-            <Button variant="tinted" :disabled="saving || discovering" @click="startLegacyMigration">迁移旧 Provider</Button>
+            <Button variant="tinted" :loading="migratingLegacyProvider" :disabled="saving || discovering || removingXIASSProvider || lifecycleApplying" @click="confirmLegacyProviderMigration">迁移此旧 Provider</Button>
           </div>
         </section>
 
@@ -1115,7 +1268,7 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
               <li :class="{ done: historyCompatibilityChecked }"><span>3</span><div><strong>检查兼容历史</strong><small>仅在此处手动触发；完成后可重新打开 Codex。</small></div></li>
             </ol>
           </div>
-          <Button variant="plain" :loading="repairingHistory" :disabled="repairingHistory || saving || desktopLoading || desktopBusy || historyRepairBlockedByDesktop" @click="repairHistory">检查并修复兼容历史</Button>
+          <Button variant="plain" :loading="repairingHistory" :disabled="repairingHistory || saving || removingXIASSProvider || desktopLoading || desktopBusy || historyRepairBlockedByDesktop" @click="repairHistory">检查并修复兼容历史</Button>
           <p v-if="historyRepairBlockedByDesktop" class="history-blocked">Codex Desktop 正在运行。为避免写入活跃会话，请先在上方退出 Codex 后再继续。</p>
         </section>
 
@@ -1124,7 +1277,7 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
           <p v-if="!backupItems.length">尚无 XIASS Tools 创建的配置备份。</p>
           <div v-for="backup in backupItems" :key="backup.id" class="backup-row">
             <div><strong>{{ backup.reason }}</strong><span>{{ formatTime(backup.created_at) }}</span></div>
-            <div><button type="button" :disabled="actionID" @click="confirmConfigurationRestore(backup.id)">恢复</button><button type="button" :disabled="actionID" @click="confirmConfigurationDelete(backup.id)">删除</button></div>
+            <div><button type="button" :disabled="actionID || removingXIASSProvider" @click="confirmConfigurationRestore(backup.id)">恢复</button><button type="button" :disabled="actionID || removingXIASSProvider" @click="confirmConfigurationDelete(backup.id)">删除</button></div>
           </div>
         </details>
 
@@ -1133,7 +1286,7 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
           <p v-if="!historyBackupItems.length">尚无 XIASS Tools 创建的历史修复备份。</p>
           <div v-for="backup in historyBackupItems" :key="backup.id" class="backup-row">
             <div><strong>{{ backup.target_provider || "Provider 修复" }}</strong><span>{{ formatTime(backup.created_at) }} · 已处理 {{ backup.sanitized_records || 0 }} 条记录</span></div>
-            <div><button type="button" :disabled="actionID" @click="confirmHistoryRestore(backup.id)">恢复</button><button type="button" :disabled="actionID" @click="confirmHistoryDelete(backup.id)">删除</button></div>
+            <div><button type="button" :disabled="actionID || removingXIASSProvider" @click="confirmHistoryRestore(backup.id)">恢复</button><button type="button" :disabled="actionID || removingXIASSProvider" @click="confirmHistoryDelete(backup.id)">删除</button></div>
           </div>
         </details>
 
@@ -1146,7 +1299,7 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
             <strong>旧配置备份</strong>
             <div v-for="backup in legacyConfigurationBackups" :key="`legacy-config:${backup.source_id}`" class="backup-row">
               <div><strong>{{ backup.reason || "旧版配置备份" }}</strong><span>{{ formatTime(backup.created_at) }}</span></div>
-              <div><button type="button" :disabled="Boolean(actionID)" @click="confirmLegacyConfigurationImport(backup.source_id)">{{ actionID === `legacy:config:${backup.source_id}` ? "正在导入…" : "导入为新的恢复点" }}</button></div>
+              <div><button type="button" :disabled="Boolean(actionID) || removingXIASSProvider" @click="confirmLegacyConfigurationImport(backup.source_id)">{{ actionID === `legacy:config:${backup.source_id}` ? "正在导入…" : "导入为新的恢复点" }}</button></div>
             </div>
           </div>
 
@@ -1154,15 +1307,15 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
             <strong>旧历史备份</strong>
             <div v-for="backup in legacyHistoryBackups" :key="`legacy-history:${backup.source_id}`" class="backup-row">
               <div><strong>{{ backup.target_provider || "旧版历史备份" }}</strong><span>{{ formatTime(backup.created_at) }}</span></div>
-              <div><button type="button" :disabled="Boolean(actionID)" @click="confirmLegacyHistoryImport(backup.source_id)">{{ actionID === `legacy:history:${backup.source_id}` ? "正在导入…" : "导入为新的恢复点" }}</button></div>
+              <div><button type="button" :disabled="Boolean(actionID) || removingXIASSProvider" @click="confirmLegacyHistoryImport(backup.source_id)">{{ actionID === `legacy:history:${backup.source_id}` ? "正在导入…" : "导入为新的恢复点" }}</button></div>
             </div>
           </div>
         </details>
       </template>
     </div>
     <template #footer>
-      <Button variant="plain" :disabled="saving || discovering || repairingHistory || desktopBusy || lifecycleApplying" @click="close">关闭</Button>
-      <Button variant="filled" :loading="saving" :disabled="loading || saving || discovering || repairingHistory || desktopBusy || lifecycleApplying" @click="save">安全保存配置</Button>
+      <Button variant="plain" :disabled="saving || removingXIASSProvider || migratingLegacyProvider || discovering || repairingHistory || desktopBusy || lifecycleApplying" @click="close">关闭</Button>
+      <Button variant="filled" :loading="saving" :disabled="loading || saving || removingXIASSProvider || migratingLegacyProvider || discovering || repairingHistory || desktopBusy || lifecycleApplying" @click="save">安全保存配置</Button>
     </template>
   </Modal>
 </template>
@@ -1208,7 +1361,11 @@ onBeforeUnmount(() => cancelXIASSKeySelection());
 .feedback { border: 1px solid var(--separator); border-radius: 9px; padding: 9px 10px; font-size: 12px; line-height: 1.5; }
 .feedback.error { border-color: color-mix(in srgb, var(--red) 35%, transparent); background: color-mix(in srgb, var(--red) 8%, transparent); color: var(--red); }
 .feedback.success { border-color: color-mix(in srgb, var(--green) 35%, transparent); background: color-mix(in srgb, var(--green) 8%, transparent); color: var(--green); }
-.form-section, .history-section, .lifecycle-section { display: grid; gap: 10px; border-top: 1px solid var(--separator); padding-top: 14px; }
+.form-section, .history-section, .lifecycle-section, .remove-provider-section { display: grid; gap: 10px; border-top: 1px solid var(--separator); padding-top: 14px; }
+.remove-provider-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid color-mix(in srgb, var(--red) 28%, var(--separator)); border-radius: 10px; background: color-mix(in srgb, var(--red) 5%, var(--bg-inset)); padding: 10px 11px; }
+.remove-provider-actions p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.remove-provider-actions :deep(.btn:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+@media (max-width: 620px) { .remove-provider-actions { align-items: stretch; flex-direction: column; } .remove-provider-actions :deep(.btn) { width: 100%; } }
 .section-title { display: grid; gap: 3px; }
 .section-title strong { color: var(--text-primary); font-size: 13px; }
 .section-title span { color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
