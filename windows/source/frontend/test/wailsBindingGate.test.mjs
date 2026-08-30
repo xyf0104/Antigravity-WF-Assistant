@@ -42,8 +42,11 @@ test("Windows workflows keep the real Wails binding gate after native generation
 
   assertBindingGateOrder(buildWorkflow, "build-windows workflow");
   assertBindingGateOrder(windowsJob(releaseWorkflow), "release workflow Windows job");
+  const crlfReleaseWorkflow = releaseWorkflow
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\n", "\r\n");
   assertBindingGateOrder(
-    windowsJob(releaseWorkflow.replaceAll("\n", "\r\n")),
+    windowsJob(crlfReleaseWorkflow),
     "release workflow Windows job with CRLF",
   );
 });
