@@ -79,6 +79,15 @@ func (detector *Detector) Discover(ctx context.Context) Status {
 	}
 
 	installation := inspection.installation
+	// Store registration proves only the package identity; it does not expose a
+	// stable executable path. When the bounded process snapshot proves that
+	// the *same registered Store package* is running, promote that matching
+	// runtime record so Status accurately reports executable verification. Do
+	// not promote a different Store package or another fixed/App Paths target:
+	// those must remain deterministic lifecycle targets.
+	if installation != nil && runningInstallation != nil && sameWindowsStorePackage(*installation, *runningInstallation) {
+		installation = runningInstallation
+	}
 	if installation == nil && runningInstallation != nil {
 		// Retain a deterministic discovery target whenever one exists. A
 		// separately running verified app must still make the status Running,
@@ -186,6 +195,14 @@ func sameWindowsInstallation(left, right windowsInstallation) bool {
 		return sameWindowsPath(left.executable, right.executable)
 	}
 	return left.storePackage != "" && strings.EqualFold(strings.TrimSpace(left.storePackage), strings.TrimSpace(right.storePackage))
+}
+
+func sameWindowsStorePackage(left, right windowsInstallation) bool {
+	return left.source == SourceWindowsStore &&
+		right.source == SourceWindowsStore &&
+		strings.TrimSpace(left.storePackage) != "" &&
+		strings.TrimSpace(right.storePackage) != "" &&
+		strings.EqualFold(strings.TrimSpace(left.storePackage), strings.TrimSpace(right.storePackage))
 }
 
 func inspectWindowsAppPaths(filesystem FileSystem, registry Registry) ([]windowsInstallation, bool, bool) {

@@ -100,6 +100,29 @@ func TestDiscoverWindowsStoreRegistrationAndProtectedRunningPath(t *testing.T) {
 	}
 }
 
+func TestDiscoverWindowsStoreRegistrationDoesNotAdoptDifferentStoreProcess(t *testing.T) {
+	filesystem := newWindowsFakeFileSystem(map[string]string{
+		"LOCALAPPDATA": `C:\Users\alice\AppData\Local`,
+		"ProgramFiles": `C:\Program Files`,
+	})
+	registeredPackage := "OpenAI.Codex_1.5.0.0_x64__sample"
+	runningPackage := "OpenAI.ChatGPT_1.6.0.0_x64__sample"
+	runningExecutable := filepath.Join(`C:\Program Files`, "WindowsApps", runningPackage, "ChatGPT.exe")
+
+	status := New(Options{
+		FileSystem: filesystem,
+		Registry:   &recordingRegistry{names: []string{registeredPackage}},
+		Processes:  fakeWindowsProcessLister{processes: []Process{{Executable: runningExecutable}}},
+	}).Discover(context.Background())
+
+	if status.State != StateRunning || !status.Running {
+		t.Fatalf("state = %#v, want running because another verified Store desktop is active", status)
+	}
+	if status.Installation.Source != SourceWindowsStore || status.Installation.Version != "1.5.0.0" || status.Installation.ExecutableVerified {
+		t.Fatalf("installation = %#v, want the original unverified registered Store target", status.Installation)
+	}
+}
+
 func TestDiscoverWindowsDegradesWhenProcessListFailsWithVerifiedInstall(t *testing.T) {
 	filesystem := newWindowsFakeFileSystem(map[string]string{
 		"LOCALAPPDATA": `C:\Users\alice\AppData\Local`,
