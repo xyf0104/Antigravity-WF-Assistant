@@ -110,6 +110,9 @@ jobs:
       - name: Package macOS installer
         run: ./build/darwin/package-installer.sh
 
+      - name: Verify macOS installer payload
+        run: ./build/darwin/verify-installer.sh
+
       - name: Smoke-test macOS installer lifecycle
         if: ${{ runner.environment == 'github-hosted' }}
         run: ./build/darwin/smoke-installer.sh

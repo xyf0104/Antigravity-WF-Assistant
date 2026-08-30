@@ -118,6 +118,21 @@ function Assert-ShortcutTarget([string]$shortcutPath, [string]$expectedTarget) {
   }
 }
 
+function Assert-VersionMetadata([string]$path, [string]$description) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    throw "$description is missing: $path"
+  }
+  $versionInfo = (Get-Item -LiteralPath $path).VersionInfo
+  $versionValues = @(
+    [string]$versionInfo.FileVersion,
+    [string]$versionInfo.ProductVersion
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  $expectedPattern = '(^|[^0-9])' + [regex]::Escape($version) + '(?:\.0)?($|[^0-9])'
+  if (-not ($versionValues | Where-Object { $_ -match $expectedPattern })) {
+    throw "$description version metadata does not include $version."
+  }
+}
+
 function Test-InstallerStateAbsent {
   return -not (Test-Path -LiteralPath $installDirectory) `
     -and -not (Test-Path -LiteralPath $startMenuDirectory) `
@@ -131,6 +146,7 @@ if ((Get-UninstallEntries).Count -ne 0) {
 Assert-PathMissing $installDirectory 'installation directory'
 Assert-PathMissing $startMenuDirectory 'Start Menu directory'
 Assert-PathMissing $desktopShortcut 'desktop shortcut'
+Assert-VersionMetadata $setupPath 'Setup EXE'
 
 Write-Host 'Installing the freshly built Setup EXE in silent mode…'
 $installProcess = Start-Process -FilePath $setupPath -ArgumentList @('/S') -Wait -PassThru
@@ -143,6 +159,7 @@ foreach ($path in @($mainExecutable, $uninstaller)) {
     throw "Installed executable is missing or empty: $path"
   }
 }
+Assert-VersionMetadata $mainExecutable 'Installed XIASS Tools executable'
 if (Test-Path -LiteralPath $desktopShortcut) {
   throw 'A desktop shortcut was created by the silent default installation, but the optional desktop component must remain opt-in.'
 }
