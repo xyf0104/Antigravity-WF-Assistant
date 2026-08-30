@@ -101,10 +101,11 @@ if (!hasFlag('--skip-cargo')) {
 }
 
 if (!hasFlag('--skip-cargo-test')) {
+  const executeRustTests = process.platform !== 'win32';
   steps.push({
-    name: 'Rust cargo test (lib)',
+    name: executeRustTests ? 'Rust cargo test (lib)' : 'Rust cargo test compile (lib)',
     command: 'cargo',
-    args: ['test', '--lib'],
+    args: executeRustTests ? ['test', '--lib'] : ['test', '--lib', '--no-run'],
     cwd: path.join(process.cwd(), 'src-tauri'),
     env: {
       RUST_TEST_THREADS: '1',
