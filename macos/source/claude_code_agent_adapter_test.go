@@ -25,9 +25,11 @@ func TestClaudeCodeAgentCapabilityStatusIsConservative(t *testing.T) {
 		{
 			name:             "absent settings remain explicitly configurable",
 			snapshot:         claudeconfig.Snapshot{Location: claudeconfig.ConfigLocation{ConfigDir: "/home/test/.claude", SettingsPath: "/home/test/.claude/settings.json"}, Valid: true},
+			backupAvailable:  true,
 			wantState:        agent.StateNotInstalled,
 			wantConfig:       true,
 			wantModelCatalog: true,
+			wantBackup:       true,
 		},
 		{
 			name:             "valid existing unmanaged settings",
@@ -40,14 +42,13 @@ func TestClaudeCodeAgentCapabilityStatusIsConservative(t *testing.T) {
 			wantBackup:       true,
 		},
 		{
-			name:             "managed loopback endpoint",
+			name:             "managed loopback address is not an endpoint health check",
 			snapshot:         claudeconfig.Snapshot{Location: claudeconfig.ConfigLocation{ConfigDir: "/home/test/.claude", SettingsPath: "/home/test/.claude/settings.json", Exists: true}, Valid: true, Managed: true, BaseURL: "http://127.0.0.1:50999/v1"},
 			cliFound:         true,
 			backupAvailable:  true,
 			wantState:        agent.StateReady,
 			wantConfig:       true,
 			wantModelCatalog: true,
-			wantLocalProxy:   true,
 			wantBackup:       true,
 		},
 		{
@@ -56,6 +57,22 @@ func TestClaudeCodeAgentCapabilityStatusIsConservative(t *testing.T) {
 			cliFound:         true,
 			backupAvailable:  true,
 			wantState:        agent.StateReady,
+			wantConfig:       true,
+			wantModelCatalog: true,
+			wantBackup:       true,
+		},
+		{
+			name:             "backup-unavailable settings stay read-only",
+			snapshot:         claudeconfig.Snapshot{Location: claudeconfig.ConfigLocation{ConfigDir: "/home/test/.claude", SettingsPath: "/home/test/.claude/settings.json", Exists: true}, Valid: true, Managed: true, BaseURL: "https://api.example.test/v1"},
+			cliFound:         true,
+			wantState:        agent.StateDegraded,
+			wantModelCatalog: true,
+		},
+		{
+			name:             "managed settings without CLI are not ready",
+			snapshot:         claudeconfig.Snapshot{Location: claudeconfig.ConfigLocation{ConfigDir: "/home/test/.claude", SettingsPath: "/home/test/.claude/settings.json", Exists: true}, Valid: true, Managed: true, BaseURL: "https://api.example.test/v1"},
+			backupAvailable:  true,
+			wantState:        agent.StateNotInstalled,
 			wantConfig:       true,
 			wantModelCatalog: true,
 			wantBackup:       true,
@@ -89,6 +106,27 @@ func TestClaudeCodeAgentCapabilityStatusIsConservative(t *testing.T) {
 				t.Fatalf("account-related capabilities were advertised: %#v", status.Capabilities)
 			}
 		})
+	}
+}
+
+func TestClaudeCodeLoopbackAddressIsNotAdvertisedAsHealthyProxy(t *testing.T) {
+	metadata := newClaudeCodeAgentAdapter().Metadata()
+	status := claudeCodeAgentSnapshotStatus(
+		metadata,
+		claudeconfig.Snapshot{Location: claudeconfig.ConfigLocation{Exists: true}, Valid: true, Managed: true, BaseURL: "http://127.0.0.1:50999/v1"},
+		nil,
+		"/usr/local/bin/claude",
+		true,
+		false,
+		true,
+	)
+	if claudeCodeCapabilityAvailable(status, agent.CapabilityLocalProxy) {
+		t.Fatal("an untested loopback URL was advertised as a healthy local proxy")
+	}
+	for _, capability := range status.Capabilities {
+		if capability.Capability == agent.CapabilityLocalProxy && capability.Reason != "The managed API root points to a local loopback address, but endpoint health has not been tested." {
+			t.Fatalf("local proxy reason = %q", capability.Reason)
+		}
 	}
 }
 

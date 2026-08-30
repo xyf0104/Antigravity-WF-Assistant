@@ -22,7 +22,7 @@
 
 ## 下载与安装
 
-请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与 Release 标签匹配的标准安装包。该公开地址暂时保留历史仓库路径，作为已验证的发布与更新通道，不是 XIASS Tools 的显示名称。当前发布准备版本为 v1.6.6；它高于历史 v1.6.5 基线，不会覆盖或冒充已有发布。Release 只提供两个系统的安装包和更新校验所需的 `SHA256SUMS.txt`，不提供 portable、独立 EXE 或 ZIP：
+请从 [最新发布页](https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest) 下载与 Release 标签匹配的标准安装包。该公开地址暂时保留历史仓库路径，作为已验证的发布与更新通道，不是 XIASS Tools 的显示名称。当前发布准备版本为 v1.6.7；它以已发布的 v1.6.6 为基线，只有在双端构建、安装器、校验和与发布验证全部通过后才会成为正式 Release。Release 只提供两个系统的安装包和更新校验所需的 `SHA256SUMS.txt`，不提供 portable、独立 EXE 或 ZIP：
 
 | 系统 | 安装包 | 支持范围 |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Windows 安装时可以勾选创建桌面快捷方式。macOS 安装完成后可
 
 从旧版“Antigravity WF助手”升级到 XIASS Tools 时，macOS 会保留旧 App 与原有数据，避免安装程序擅自删除用户文件。请先退出旧 App，确认 XIASS Tools 能正常启动；确认不再需要旧 App 后，再由你手动移至废纸篓。
 
-安装包包含运行时依赖，不需要额外安装 Python、Node.js 或补丁脚本。运行数据默认保存在 `~/.xiass-tools/`；升级时会从旧目录安全迁移已有数据，不会删除原目录。
+安装包包含运行时依赖，不需要额外安装 Python、Node.js 或补丁脚本。运行数据默认保存在 `~/.xiass-tools/`；升级时会以可验证迁移方式合并旧目录的数据。迁移完成后，旧数据目录会被移除以避免两份配置继续分叉；如果迁移无法安全完成，旧目录会保持不变，并继续作为原配置使用。
 
 ## 快速开始
 

@@ -207,7 +207,7 @@ func (a *App) applyMCPConfigurationTarget(target mcpconfig.Target, remoteURL str
 	}
 	return MCPConfigurationStatus{
 		OK:             true,
-		Message:        "已安全保存 XIASS Tools 的 MCP 远程连接，并完成写入校验与本地恢复点备份。",
+		Message:        "已安全写入 XIASS Tools 的 MCP 远程配置，并完成写入校验与本地恢复点备份；未测试远端 MCP 服务。",
 		ClientDetected: true,
 		CanApply:       result.Snapshot.Valid && !result.Snapshot.HasSensitiveConfiguration,
 		Snapshot:       result.Snapshot,
@@ -345,9 +345,9 @@ func (a *App) mcpConfigurationStatus(target mcpconfig.Target) MCPConfigurationSt
 	case !snapshot.Valid:
 		status.Message = "全局 MCP 设置格式无效，修复前不会进行写入。"
 	case snapshot.ManagedServerConfigured:
-		status.Message = "XIASS Tools MCP 远程连接已配置。"
+		status.Message = "XIASS Tools MCP 远程配置已写入；未测试远端 MCP 服务。"
 	default:
-		status.Message = "全局 MCP 设置已验证，可以添加 XIASS Tools MCP 远程连接。"
+		status.Message = "全局 MCP 设置已验证，可以添加 XIASS Tools MCP 远程配置。"
 	}
 	return status
 }

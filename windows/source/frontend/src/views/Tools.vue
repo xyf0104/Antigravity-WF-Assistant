@@ -126,9 +126,9 @@ function capabilityLabel(name) {
 	return {
 		"installation-discovery": "安装检测",
 		configuration: "配置",
-		"local-proxy": "本地代理",
+		"local-proxy": "本地代理健康检查",
 		"patch-injection": "连接补丁",
-		"model-catalog": "模型目录",
+		"model-catalog": "手动模型获取",
 		"session-recovery": "会话恢复",
 		"image-input-output": "图片输入输出",
 		diagnostics: "诊断",
@@ -199,7 +199,7 @@ function capabilityLabel(name) {
             </dd>
           </div>
           <div>
-            <dt>已验证能力</dt>
+            <dt>可用本机操作</dt>
 				<dd>{{ platform.available.length ? platform.available.map(capabilityLabel).join(" · ") : "等待该工具完成本机检查" }}</dd>
           </div>
         </dl>

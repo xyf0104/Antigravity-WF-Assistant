@@ -20,11 +20,13 @@ import (
 )
 
 const (
-	applicationLogName      = "wf-assistant.log"
-	maxApplicationLogBytes  = int64(4 << 20)
-	maxExportedFileBytes    = int64(2 << 20)
-	maxAntigravityLogBytes  = int64(12 << 20)
-	diagnosticArchiveFormat = 1
+	applicationLogName           = "xiass-tools.log"
+	legacyApplicationLogName     = "wf-assistant.log"
+	preUpgradeApplicationLogName = "xiass-tools-pre-upgrade.log"
+	maxApplicationLogBytes       = int64(4 << 20)
+	maxExportedFileBytes         = int64(2 << 20)
+	maxAntigravityLogBytes       = int64(12 << 20)
+	diagnosticArchiveFormat      = 1
 )
 
 var (
@@ -88,8 +90,8 @@ type archiveSummary struct {
 }
 
 // Init installs a bounded persistent application log. Existing log calls do
-// not need to change, and the file is retained solely in the private WF data
-// directory for an explicit user-initiated diagnostic export.
+// not need to change, and the file is retained solely in the private XIASS
+// Tools data directory for an explicit user-initiated diagnostic export.
 func Init(storageDir string) error {
 	logMu.Lock()
 	defer logMu.Unlock()
@@ -99,24 +101,91 @@ func Init(storageDir string) error {
 	if err := os.MkdirAll(storageDir, 0o700); err != nil {
 		return err
 	}
+	if err := migrateLegacyApplicationLogs(storageDir); err != nil {
+		return err
+	}
 	logStorageDir = storageDir
 	logHomeDir, _ = os.UserHomeDir()
 	path := filepath.Join(storageDir, applicationLogName)
-	if info, err := os.Stat(path); err == nil && info.Size() > maxApplicationLogBytes {
-		previous := path + ".1"
-		_ = os.Remove(previous)
-		if err := os.Rename(path, previous); err != nil {
+	if info, exists, err := regularFileInfo(path); err != nil {
+		return err
+	} else if exists && info.Size() > maxApplicationLogBytes {
+		if err := rotateApplicationLogPath(path); err != nil {
 			return err
 		}
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := openApplicationLogFile(path)
 	if err != nil {
 		return err
 	}
-	_ = os.Chmod(path, 0o600)
+	_ = file.Chmod(0o600)
 	logFile = file
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.LUTC)
 	log.SetOutput(io.MultiWriter(applicationLogWriter{}, os.Stderr))
+	return nil
+}
+
+// migrateLegacyApplicationLogs preserves the bounded log history created by
+// earlier app names without ever replacing a current XIASS Tools log. Current
+// rotation slots remain owned by the active logger; old rotated history moves
+// to a bounded pre-upgrade slot so a later normal rotation cannot erase it.
+func migrateLegacyApplicationLogs(storageDir string) error {
+	for _, name := range []string{
+		applicationLogName,
+		applicationLogName + ".1",
+		preUpgradeApplicationLogName,
+		preUpgradeApplicationLogName + ".1",
+	} {
+		if _, _, err := regularFileInfo(filepath.Join(storageDir, name)); err != nil {
+			return err
+		}
+	}
+	if err := moveLegacyApplicationLog(storageDir, legacyApplicationLogName, applicationLogName, preUpgradeApplicationLogName); err != nil {
+		return err
+	}
+	return moveLegacyApplicationLog(storageDir, legacyApplicationLogName+".1", preUpgradeApplicationLogName+".1", "")
+}
+
+// moveLegacyApplicationLog never overwrites a current or already-preserved
+// entry. If both names are occupied, the legacy source remains untouched.
+func moveLegacyApplicationLog(storageDir, legacyName, primaryName, fallbackName string) error {
+	legacyPath := filepath.Join(storageDir, legacyName)
+	legacyInfo, legacyExists, err := legacyLogFileInfo(legacyPath)
+	if err != nil || !legacyExists {
+		return err
+	}
+	targetPath := filepath.Join(storageDir, primaryName)
+	if _, targetExists, err := regularFileInfo(targetPath); err != nil {
+		return err
+	} else if targetExists {
+		if strings.TrimSpace(fallbackName) == "" {
+			return nil
+		}
+		targetPath = filepath.Join(storageDir, fallbackName)
+		if _, fallbackExists, err := regularFileInfo(targetPath); err != nil {
+			return err
+		} else if fallbackExists {
+			return nil
+		}
+	}
+	if current, exists, err := legacyLogFileInfo(legacyPath); err != nil {
+		return err
+	} else if !exists || !os.SameFile(legacyInfo, current) {
+		return fmt.Errorf("诊断日志文件在迁移时发生不安全变更")
+	}
+	if _, exists, err := regularFileInfo(targetPath); err != nil {
+		return err
+	} else if exists {
+		return nil
+	}
+	if err := os.Rename(legacyPath, targetPath); err != nil {
+		return err
+	}
+	if moved, exists, err := regularFileInfo(targetPath); err != nil {
+		return err
+	} else if !exists || !os.SameFile(legacyInfo, moved) {
+		return fmt.Errorf("诊断日志文件在迁移后无法验证")
+	}
 	return nil
 }
 
@@ -125,26 +194,127 @@ func rotateApplicationLogLocked() error {
 		return nil
 	}
 	path := filepath.Join(logStorageDir, applicationLogName)
-	previous := path + ".1"
 	if err := logFile.Close(); err != nil {
 		return err
 	}
 	logFile = nil
-	_ = os.Remove(previous)
-	if err := os.Rename(path, previous); err != nil && !os.IsNotExist(err) {
-		file, reopenErr := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err := rotateApplicationLogPath(path); err != nil {
+		file, reopenErr := openApplicationLogFile(path)
 		if reopenErr == nil {
 			logFile = file
 		}
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := openApplicationLogFile(path)
 	if err != nil {
 		return err
 	}
-	_ = os.Chmod(path, 0o600)
+	_ = file.Chmod(0o600)
 	logFile = file
 	return nil
+}
+
+func rotateApplicationLogPath(path string) error {
+	current, exists, err := regularFileInfo(path)
+	if err != nil || !exists {
+		return err
+	}
+	previousPath := path + ".1"
+	previous, previousExists, err := regularFileInfo(previousPath)
+	if err != nil {
+		return err
+	}
+	if latest, latestExists, err := regularFileInfo(path); err != nil {
+		return err
+	} else if !latestExists || !os.SameFile(current, latest) {
+		return fmt.Errorf("诊断日志文件在轮转时发生不安全变更")
+	}
+	if previousExists {
+		if latest, latestExists, err := regularFileInfo(previousPath); err != nil {
+			return err
+		} else if !latestExists || !os.SameFile(previous, latest) {
+			return fmt.Errorf("诊断轮转日志文件在轮转时发生不安全变更")
+		}
+		if err := os.Remove(previousPath); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(path, previousPath); err != nil {
+		return err
+	}
+	if moved, movedExists, err := regularFileInfo(previousPath); err != nil {
+		return err
+	} else if !movedExists || !os.SameFile(current, moved) {
+		return fmt.Errorf("诊断日志文件在轮转后无法验证")
+	}
+	return nil
+}
+
+// regularFileInfo rejects a symlink or special file. It is used for every
+// current XIASS Tools log path before it is opened, moved, or exported.
+func regularFileInfo(path string) (fs.FileInfo, bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("诊断日志文件不是常规文件")
+	}
+	return info, true, nil
+}
+
+// legacyLogFileInfo deliberately ignores old symlinks and special files so an
+// upgrade preserves the original item without ever following or replacing it.
+func legacyLogFileInfo(path string) (fs.FileInfo, bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, false, nil
+	}
+	return info, true, nil
+}
+
+func openApplicationLogFile(path string) (*os.File, error) {
+	initial, existed, err := regularFileInfo(path)
+	if err != nil {
+		return nil, err
+	}
+	flags := os.O_APPEND | os.O_WRONLY
+	if !existed {
+		// Do not follow a path that appears after Lstat. O_EXCL makes a
+		// concurrent creation (including a symlink) a safe initialization
+		// failure instead of an opportunity to create a file elsewhere.
+		flags |= os.O_CREATE | os.O_EXCL
+	}
+	// No write happens until the opened descriptor has been checked below. A
+	// replacement with a symlink will therefore fail closed before any data is
+	// emitted or permissions are changed.
+	file, err := os.OpenFile(path, flags, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil || !opened.Mode().IsRegular() || (existed && !os.SameFile(initial, opened)) {
+		_ = file.Close()
+		return nil, fmt.Errorf("诊断日志文件在打开时发生不安全变更")
+	}
+	final, finalExists, finalErr := regularFileInfo(path)
+	if finalErr != nil || !finalExists || !os.SameFile(opened, final) {
+		_ = file.Close()
+		if finalErr != nil {
+			return nil, finalErr
+		}
+		return nil, fmt.Errorf("诊断日志文件在打开后无法验证")
+	}
+	return file, nil
 }
 
 // Export creates one ZIP chosen by the user. It deliberately excludes model,
@@ -186,9 +356,16 @@ func Export(destination, storageDir string, options Options) error {
 		return err
 	}
 
-	for _, name := range []string{applicationLogName + ".1", applicationLogName, "proxy-trace.jsonl", "proxy_runtime.json"} {
+	for _, name := range []string{
+		preUpgradeApplicationLogName + ".1",
+		preUpgradeApplicationLogName,
+		applicationLogName + ".1",
+		applicationLogName,
+		"proxy-trace.jsonl",
+		"proxy_runtime.json",
+	} {
 		path := filepath.Join(storageDir, name)
-		if err := addSanitizedFile(writer, filepath.ToSlash(filepath.Join("wf", name)), path, maxExportedFileBytes, options.HomeDir); err != nil && !os.IsNotExist(err) {
+		if err := addSanitizedFile(writer, filepath.ToSlash(filepath.Join("xiass-tools", name)), path, maxExportedFileBytes, options.HomeDir); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("无法收集 %s: %w", name, err)
 		}
 	}
@@ -331,17 +508,24 @@ func addSanitizedFile(writer *zip.Writer, archiveName, path string, limit int64,
 }
 
 func readTail(path string, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	expected, exists, err := regularFileInfo(path)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fs.ErrNotExist
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if limit <= 0 {
-		return nil, nil
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(expected, info) {
+		return nil, fmt.Errorf("诊断日志文件在读取时发生不安全变更")
 	}
 	marker := []byte("[earlier content truncated]\n")
 	truncated := info.Size() > limit
@@ -361,6 +545,13 @@ func readTail(path string, limit int64) ([]byte, error) {
 	}
 	if truncated {
 		data = append(marker, data...)
+	}
+	final, finalExists, finalErr := regularFileInfo(path)
+	if finalErr != nil || !finalExists || !os.SameFile(expected, final) {
+		if finalErr != nil {
+			return nil, finalErr
+		}
+		return nil, fmt.Errorf("诊断日志文件在读取后无法验证")
 	}
 	return data, nil
 }

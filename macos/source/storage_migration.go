@@ -64,8 +64,9 @@ func migrateLegacyStorageDirectory(legacy, target string) error {
 	if err := mergeLegacyStorageTree(legacy, target); err != nil {
 		return err
 	}
-	// Every source entry has now either been copied or superseded by a newer WF
-	// file. Removing the historical directory prevents two diverging configs.
+	// Every source entry has now either been copied or superseded by a newer
+	// XIASS Tools file. Removing the historical directory prevents two diverging
+	// configuration roots after a verified migration.
 	if err := os.RemoveAll(legacy); err != nil {
 		return fmt.Errorf("移除已迁移的旧数据目录失败: %w", err)
 	}
@@ -128,7 +129,7 @@ func copyMigratedStorageFile(sourcePath, targetPath string, mode os.FileMode, mo
 		return err
 	}
 	defer source.Close()
-	temporary, err := os.CreateTemp(filepath.Dir(targetPath), ".antigravity-wf-migrate-*")
+	temporary, err := os.CreateTemp(filepath.Dir(targetPath), ".xiass-tools-migrate-*")
 	if err != nil {
 		return err
 	}

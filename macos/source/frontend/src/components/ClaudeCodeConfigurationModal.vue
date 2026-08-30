@@ -42,6 +42,11 @@ const credentialModes = Object.freeze([
 const snapshot = computed(() => data.value?.snapshot || {});
 const busy = computed(() => loading.value || saving.value || Boolean(actionID.value));
 const valid = computed(() => Boolean(snapshot.value.valid));
+// A readable settings.json alone is not enough to permit a mutation. The
+// native result also proves that a verified rollback point can be created.
+// Keep one-shot gateway discovery/test separate because they do not write
+// Claude Code settings and always use only the credential entered this time.
+const canManage = computed(() => valid.value && data.value?.ok === true);
 const helperMode = computed(() => draft.value.credentialMode === "api_key_helper");
 const gatewayDiscoveryLabel = computed(() => {
   if (!snapshot.value.gatewayModelDiscoveryEnabled) return "未启用";
@@ -60,6 +65,8 @@ const currentCredentialLabel = computed(() => {
 });
 const directCredentialReady = computed(() => Boolean(draft.value.credential.trim()) && !helperMode.value);
 const readyToSave = computed(() => Boolean(
+	canManage.value
+  &&
   draft.value.baseUrl.trim()
   && draft.value.model.trim()
   && (helperMode.value ? draft.value.apiKeyHelper.trim() : draft.value.credential.trim()),
@@ -133,6 +140,10 @@ async function refresh() {
 async function save() {
   error.value = "";
   notice.value = "";
+	if (!canManage.value) {
+		error.value = "当前 Claude Code 设置或恢复备份位置无法安全验证，因此禁止保存或改写。可在恢复安全状态后重新打开此页面。";
+		return;
+	}
   if (!readyToSave.value) {
     error.value = helperMode.value
       ? "请填写 API 根地址、密钥脚本与模型名称。XIASS Tools 不会执行或读取已有脚本。"
@@ -354,12 +365,12 @@ watch(() => draft.value.credentialMode, () => {
       <div v-if="loading" class="state-block">正在读取本机 Claude Code 用户设置…</div>
 
       <template v-else>
-        <section class="status-card" :class="{ invalid: !valid }">
+        <section class="status-card" :class="{ invalid: !canManage }">
           <div>
-            <strong>{{ valid ? (snapshot.managed ? "XIASS Tools 已配置" : "已发现用户设置") : "用户设置需要处理" }}</strong>
+            <strong>{{ canManage ? (snapshot.managed ? "XIASS Tools 已配置" : "已发现用户设置") : (valid ? "当前为只读检查模式" : "用户设置需要处理") }}</strong>
             <span>{{ snapshot.exists ? "settings.json 已存在" : "尚未创建 settings.json" }}</span>
           </div>
-          <span class="status-pill" :class="valid ? 'ok' : 'warn'">{{ valid ? "可安全管理" : "不可写入" }}</span>
+          <span class="status-pill" :class="canManage ? 'ok' : 'warn'">{{ canManage ? "可安全管理" : "不可写入" }}</span>
         </section>
 
         <div v-if="snapshot.baseUrl || snapshot.model || snapshot.credentialConfigured" class="current-state">
@@ -371,6 +382,9 @@ watch(() => draft.value.credentialMode, () => {
 
         <p v-if="notice" class="notice" role="status">{{ notice }}</p>
         <p v-if="error" class="error" role="alert">{{ error }}</p>
+        <p v-if="valid && !canManage" class="gateway-compatibility-warning" role="status">
+          当前用户设置可读取，但 XIASS Tools 无法安全验证可恢复备份位置。为保护现有配置，保存与修改已禁用；使用本次手动输入凭据的模型目录获取和 Claude Messages 单次检查仍不会写入设置。
+        </p>
 
         <section class="configuration-section" :aria-disabled="!valid">
           <div class="section-heading">
@@ -490,7 +504,7 @@ watch(() => draft.value.credentialMode, () => {
 
     <template #footer>
       <Button variant="plain" :disabled="busy" @click="close">关闭</Button>
-      <Button variant="filled" :disabled="!valid || !readyToSave || busy" :loading="saving" @click="save">保存用户设置</Button>
+      <Button variant="filled" :disabled="!canManage || !readyToSave || busy" :loading="saving" @click="save">保存用户设置</Button>
     </template>
   </Modal>
 </template>

@@ -61,7 +61,7 @@ test("MCP modal keeps the endpoint local, clears it before native result renderi
 test("MCP removal is target-scoped, explicitly confirmed, and only presents the safe managed result", () => {
   assert.match(modalSource, /removeTargetMCPConfiguration/);
   assert.match(modalSource, /const removing = ref\(false\)/);
-  assert.match(modalSource, /const canRemove = computed\(\(\) => Boolean\(data\.value\?\.canApply && snapshot\.value\.managedServerConfigured\)\)/);
+  assert.match(modalSource, /const canRemove = computed\(\(\) => Boolean\(configurationEligible\.value && snapshot\.value\.managedServerConfigured\)\)/);
   assert.match(modalSource, /<Button v-if="snapshot\.managedServerConfigured" variant="danger"/);
   assert.match(modalSource, /移除 XIASS 连接/);
   assert.match(modalSource, /function confirmManagedRemoval\(\)/);
@@ -80,6 +80,15 @@ test("MCP UI describes only the documented global configuration boundary", () =>
   assert.match(modalSource, /只支持 HTTPS，或无凭据的本机 localhost\/回环 HTTP 地址/);
   assert.match(modalSource, /含有环境变量、请求头、认证信息或其他敏感字段/);
   assert.doesNotMatch(modalSource, /OAuth 登录|账户额度|账号池/);
+});
+
+test("MCP writes require a verified recovery-point state and do not claim remote health", () => {
+  assert.match(modalSource, /const recoveryPointsVerified = computed\(\(\) => !backupsLoading\.value && !backupUnavailable\.value && !backupError\.value\)/);
+  assert.match(modalSource, /const configurationEligible = computed\(\(\) => Boolean\(data\.value\?\.canApply && recoveryPointsVerified\.value\)\)/);
+  assert.match(modalSource, /const canApply = computed\(\(\) => Boolean\(configurationEligible\.value && remoteURL\.value\.trim\(\)\)\)/);
+  assert.match(modalSource, /无法安全验证 MCP 恢复点；当前全局 MCP 设置保持只读/);
+  assert.match(modalSource, /尚未测试远端 MCP 服务/);
+  assert.doesNotMatch(modalSource, /MCP 远程连接已验证/);
 });
 
 test("Tools routes Cursor and Windsurf configuration into the dedicated MCP modal", () => {

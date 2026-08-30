@@ -23,6 +23,20 @@ test("Claude configuration reduces successful native responses to fixed safe cop
   assert.doesNotMatch(claudeModalSource, /new Date\(backup\.createdAt\)/);
 });
 
+test("Claude saves require a verified rollback location while one-shot checks remain non-mutating", () => {
+  assert.match(claudeModalSource, /const canManage = computed\(\(\) => valid\.value && data\.value\?\.ok === true\)/);
+  assert.match(claudeModalSource, /canManage\.value\s*&&\s*draft\.value\.baseUrl\.trim\(\)/);
+  assert.match(claudeModalSource, /当前 Claude Code 设置或恢复备份位置无法安全验证，因此禁止保存或改写/);
+  assert.match(claudeModalSource, /:disabled="!canManage \|\| !readyToSave \|\| busy"/);
+  assert.match(claudeModalSource, /模型目录获取和 Claude Messages 单次检查仍不会写入设置/);
+});
+
+test("tools distinguish available local actions from fetched models or proxy health", () => {
+  assert.match(toolsSource, /<dt>可用本机操作<\/dt>/);
+  assert.match(toolsSource, /"model-catalog": "手动模型获取"/);
+  assert.match(toolsSource, /"local-proxy": "本地代理健康检查"/);
+});
+
 test("Claude gateway checks keep credentials local and identify real protocol tests", () => {
   assert.match(claudeModalSource, /discoverClaudeCodeGatewayModels\(request\)/);
   assert.match(claudeModalSource, /testClaudeCodeGateway\(request\)/);

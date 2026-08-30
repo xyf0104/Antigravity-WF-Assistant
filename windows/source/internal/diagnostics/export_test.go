@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,7 @@ func TestExportCreatesRedactedLatestSessionArchive(t *testing.T) {
 		`{"Authorization":["Bearer array-bearer-secret"],"b64_json":"` + strings.Repeat("A", 512) + `"}`,
 	}, "\n"))
 	writeDiagnosticFixture(t, filepath.Join(storageDir, "proxy_runtime.json"), `{"schemaVersion":1,"port":50999}`)
+	writeDiagnosticFixture(t, filepath.Join(storageDir, preUpgradeApplicationLogName), "pre-upgrade diagnostic history")
 	writeDiagnosticFixture(t, filepath.Join(storageDir, "custom_models.json"), `{"apiKey":"must-never-be-exported"}`)
 	writeDiagnosticFixture(t, filepath.Join(storageDir, "upstream_accounts.json"), `{"refresh_token":"must-never-be-exported"}`)
 
@@ -76,9 +78,10 @@ func TestExportCreatesRedactedLatestSessionArchive(t *testing.T) {
 	entries := readDiagnosticArchive(t, destination)
 	for _, required := range []string{
 		"diagnostic-summary.json",
-		"wf/wf-assistant.log",
-		"wf/proxy-trace.jsonl",
-		"wf/proxy_runtime.json",
+		"xiass-tools/xiass-tools-pre-upgrade.log",
+		"xiass-tools/xiass-tools.log",
+		"xiass-tools/proxy-trace.jsonl",
+		"xiass-tools/proxy_runtime.json",
 	} {
 		if _, exists := entries[required]; !exists {
 			t.Fatalf("archive missing %s; entries=%v", required, archiveEntryNames(entries))
@@ -144,6 +147,120 @@ func TestExportCreatesRedactedLatestSessionArchive(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyApplicationLogsPreservesCurrentAndPreUpgradeHistory(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, legacyApplicationLogName)
+	legacyRotationPath := legacyPath + ".1"
+	currentPath := filepath.Join(dir, applicationLogName)
+	preUpgradePath := filepath.Join(dir, preUpgradeApplicationLogName)
+	preUpgradeRotationPath := preUpgradePath + ".1"
+	if err := os.WriteFile(legacyPath, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyRotationPath, []byte("legacy-rotation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateLegacyApplicationLogs(dir); err != nil {
+		t.Fatalf("migrate legacy diagnostic log: %v", err)
+	}
+	if got, err := os.ReadFile(currentPath); err != nil || string(got) != "legacy" {
+		t.Fatalf("migrated diagnostic log = %q, %v", got, err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy diagnostic log remains after migration: %v", err)
+	}
+	if got, err := os.ReadFile(preUpgradeRotationPath); err != nil || string(got) != "legacy-rotation" {
+		t.Fatalf("migrated rotated diagnostic log = %q, %v", got, err)
+	}
+	if _, err := os.Stat(legacyRotationPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy rotated diagnostic log remains after migration: %v", err)
+	}
+
+	if err := os.WriteFile(legacyPath, []byte("older"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyRotationPath, []byte("older-rotation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(currentPath, []byte("current"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateLegacyApplicationLogs(dir); err != nil {
+		t.Fatalf("preserve current diagnostic log: %v", err)
+	}
+	if got, err := os.ReadFile(currentPath); err != nil || string(got) != "current" {
+		t.Fatalf("current diagnostic log was replaced = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(preUpgradePath); err != nil || string(got) != "older" {
+		t.Fatalf("pre-upgrade diagnostic log was not retained = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(legacyRotationPath); err != nil || string(got) != "older-rotation" {
+		t.Fatalf("legacy rotated diagnostic log was unexpectedly replaced = %q, %v", got, err)
+	}
+	if err := rotateApplicationLogPath(currentPath); err != nil {
+		t.Fatalf("rotate active diagnostic log: %v", err)
+	}
+	if got, err := os.ReadFile(preUpgradeRotationPath); err != nil || string(got) != "legacy-rotation" {
+		t.Fatalf("pre-upgrade rotated diagnostic log was overwritten by normal rotation = %q, %v", got, err)
+	}
+}
+
+func TestDiagnosticLogPathsRejectUnsafeEntries(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "outside.log")
+	if err := os.WriteFile(target, []byte("must-not-be-followed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkedPath := filepath.Join(dir, applicationLogName)
+	requireDiagnosticSymlink(t, target, linkedPath)
+	if _, err := openApplicationLogFile(linkedPath); err == nil {
+		t.Fatal("opening a linked current diagnostic log unexpectedly succeeded")
+	}
+	if err := migrateLegacyApplicationLogs(dir); err == nil {
+		t.Fatal("migration accepted a linked current diagnostic log")
+	}
+	destination := filepath.Join(t.TempDir(), "diagnostics.zip")
+	if err := Export(destination, dir, Options{}); err == nil {
+		t.Fatal("export followed a linked managed diagnostic log")
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("failed export left an archive behind: %v", err)
+	}
+}
+
+func TestOpenApplicationLogCreatesOnlyARegularNewFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, applicationLogName)
+	file, err := openApplicationLogFile(path)
+	if err != nil {
+		t.Fatalf("create new diagnostic log: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close new diagnostic log: %v", err)
+	}
+	info, exists, err := regularFileInfo(path)
+	if err != nil || !exists || !info.Mode().IsRegular() {
+		t.Fatalf("new diagnostic log was not a verified regular file: info=%v exists=%t err=%v", info, exists, err)
+	}
+}
+
+func TestRotateApplicationLogRejectsUnsafeRotationSlot(t *testing.T) {
+	dir := t.TempDir()
+	currentPath := filepath.Join(dir, applicationLogName)
+	if err := os.WriteFile(currentPath, []byte("current"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(currentPath+".1", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := rotateApplicationLogPath(currentPath); err == nil {
+		t.Fatal("rotation accepted a non-regular rotation slot")
+	}
+	if got, err := os.ReadFile(currentPath); err != nil || string(got) != "current" {
+		t.Fatalf("current log changed after rejected rotation = %q, %v", got, err)
+	}
+}
+
 func TestApplicationLogWriterRotatesAtBound(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, applicationLogName)
@@ -198,6 +315,16 @@ func writeDiagnosticBytesFixture(t *testing.T, path string, value []byte) {
 	}
 	if err := os.WriteFile(path, value, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func requireDiagnosticSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("Windows environment cannot create a test symbolic link: %v", err)
+		}
+		t.Fatalf("create diagnostic symlink: %v", err)
 	}
 }
 

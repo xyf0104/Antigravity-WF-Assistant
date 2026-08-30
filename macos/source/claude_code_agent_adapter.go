@@ -103,18 +103,26 @@ func (adapter *claudeCodeAgentAdapter) Diagnose(ctx context.Context) ([]agent.Di
 
 func claudeCodeAgentSnapshotStatus(metadata agent.Metadata, snapshot claudeconfig.Snapshot, inspectErr error, cliPath string, cliFound, cliDiscoveryIssue, backupAvailable bool) agent.Status {
 	validConfig := inspectErr == nil && snapshot.Valid
+	canWriteConfig := validConfig && backupAvailable
 	state := agent.StateDetected
 	message := "Claude Code user settings are ready to be configured."
 	switch {
 	case !validConfig:
 		state = agent.StateDegraded
 		message = "The selected Claude Code settings.json could not be safely validated."
+	case !cliFound:
+		state = agent.StateNotInstalled
+		if snapshot.Managed {
+			message = "XIASS Tools-managed Claude Code settings were found, but the Claude Code CLI was not found."
+		} else {
+			message = "Claude Code CLI was not found. Local user settings can be inspected but do not prove the client is installed."
+		}
+	case !canWriteConfig:
+		state = agent.StateDegraded
+		message = "Claude Code settings are readable, but the rollback backup location could not be safely verified."
 	case snapshot.Managed:
 		state = agent.StateReady
 		message = "Claude Code user settings are configured by XIASS Tools."
-	case !cliFound && !snapshot.Location.Exists:
-		state = agent.StateNotInstalled
-		message = "Claude Code CLI was not found and no existing user settings file was detected."
 	case snapshot.Location.Exists:
 		message = "A valid Claude Code user settings file was detected."
 	}
@@ -138,6 +146,8 @@ func claudeCodeAgentSnapshotStatus(metadata agent.Metadata, snapshot claudeconfi
 			"managed":            fmt.Sprintf("%t", snapshot.Managed),
 			"cliPresent":         fmt.Sprintf("%t", cliFound),
 			"loopbackConfigured": fmt.Sprintf("%t", claudeCodeLoopbackConfigured(snapshot, validConfig)),
+			"backupAvailable":    fmt.Sprintf("%t", backupAvailable),
+			"loopbackChecked":    "false",
 		},
 		UpdatedAt: time.Now().UTC(),
 	}
@@ -173,9 +183,13 @@ func claudeCodeCapabilityStatuses(metadata agent.Metadata, validConfig, managed,
 			status.Reason = "Local Claude Code user-settings discovery completed."
 		case agent.CapabilityConfiguration:
 			status.Availability = agent.CapabilityAvailable
-			status.Available = validConfig
+			status.Available = validConfig && backupAvailable
 			if validConfig {
-				status.Reason = "The selected settings.json can be changed with verified atomic writes."
+				if backupAvailable {
+					status.Reason = "The selected settings.json can be changed with verified atomic writes and recovery backups."
+				} else {
+					status.Reason = "The selected settings.json is readable, but its recovery backup location is not safely available for writes."
+				}
 			} else {
 				status.Reason = "The selected settings.json must be repaired before it can be changed."
 			}
@@ -183,17 +197,20 @@ func claudeCodeCapabilityStatuses(metadata agent.Metadata, validConfig, managed,
 			status.Availability = agent.CapabilityAvailable
 			status.Available = validConfig
 			if validConfig {
-				status.Reason = "The explicit Claude Code model setting can be saved, and a user-supplied gateway credential can be used for one-shot model discovery."
+				status.Reason = "A user-supplied gateway credential can be used for one-shot model directory discovery; no current catalog or inference result is implied."
 			} else {
 				status.Reason = "A valid settings.json is required before model selection and gateway discovery are available."
 			}
 		case agent.CapabilityLocalProxy:
 			status.Availability = agent.CapabilityAvailable
-			status.Available = managed && loopbackConfigured
-			if status.Available {
-				status.Reason = "The managed API root is a verified local loopback endpoint."
+			// Detection deliberately never dials an arbitrary configured endpoint.
+			// A loopback URL is useful configuration metadata, not proof that a
+			// listener or a Claude-compatible proxy is running right now.
+			status.Available = false
+			if managed && loopbackConfigured {
+				status.Reason = "The managed API root points to a local loopback address, but endpoint health has not been tested."
 			} else {
-				status.Reason = "No managed local loopback API root is configured."
+				status.Reason = "No managed local loopback API root is configured or health-checked."
 			}
 		case agent.CapabilityDiagnostics:
 			status.Availability = agent.CapabilityAvailable

@@ -37,24 +37,35 @@ const isSupportedTarget = computed(() => props.target === "cursor" || props.targ
 const displayName = computed(() => isCursor.value ? "Cursor" : "Windsurf");
 const snapshot = computed(() => data.value?.snapshot || {});
 const busy = computed(() => loading.value || saving.value || removing.value || backupsLoading.value || Boolean(backupActionID.value));
-const canApply = computed(() => Boolean(data.value?.canApply && remoteURL.value.trim()));
-const canRemove = computed(() => Boolean(data.value?.canApply && snapshot.value.managedServerConfigured));
+// A valid current MCP JSON is insufficient for a write: the same operation
+// must also be able to create and verify a recovery point. Until that check
+// succeeds, keep the configuration strictly read-only instead of letting the
+// native transaction reject an apparently enabled save button.
+const recoveryPointsVerified = computed(() => !backupsLoading.value && !backupUnavailable.value && !backupError.value);
+const configurationEligible = computed(() => Boolean(data.value?.canApply && recoveryPointsVerified.value));
+const canApply = computed(() => Boolean(configurationEligible.value && remoteURL.value.trim()));
+const canRemove = computed(() => Boolean(configurationEligible.value && snapshot.value.managedServerConfigured));
 const recoveryPointCount = computed(() => backupItems.value.length);
 
 const clientState = computed(() => data.value?.clientDetected ? "已确认" : "未确认");
 const configState = computed(() => {
   if (!snapshot.value.valid) return "需要处理";
   if (snapshot.value.hasSensitiveConfiguration) return "只读保护";
-  return snapshot.value.exists ? "已验证" : "准备创建";
+  return snapshot.value.exists ? "结构已验证" : "准备创建";
 });
 const managedState = computed(() => snapshot.value.managedServerConfigured ? "已配置" : "未配置");
 const statusDescription = computed(() => {
   if (!data.value) return "等待本机检查。";
   if (!data.value.ok) return "本机 MCP 设置尚未通过安全检查；当前内容不会被修改。";
+  if (backupsLoading.value) return "正在核验可恢复备份；核验完成前不会写入全局 MCP 设置。";
+  if (backupUnavailable.value) return "当前安装包无法管理 MCP 恢复点；为保护现有设置，远程配置保持只读。";
+  if (backupError.value) return "MCP 恢复点无法安全验证；为保护现有设置，远程配置保持只读。";
   if (!data.value.clientDetected) return `尚未确认 ${displayName.value}；不会创建或修改全局 MCP 设置。`;
   if (snapshot.value.hasSensitiveConfiguration) return "检测到受保护的 MCP 设置。XIASS Tools 不会读取、展示或改写其中内容。";
   if (!snapshot.value.valid) return "全局 MCP 设置无法安全验证，修复前不会写入。";
-  return snapshot.value.managedServerConfigured ? "XIASS Tools 的 MCP 远程连接已配置。" : "全局 MCP 设置已验证，可以添加 XIASS Tools MCP 远程连接。";
+  return snapshot.value.managedServerConfigured
+    ? "XIASS Tools 的 MCP 远程配置已写入；尚未测试远端 MCP 服务。"
+    : "全局 MCP 设置与恢复点已验证，可以添加 XIASS Tools MCP 远程配置。";
 });
 
 function clearEndpoint() {
@@ -94,7 +105,9 @@ function applyBackupList(result) {
   const rawBackups = Array.isArray(result?.backups) ? result.backups : [];
   backupItems.value = rawBackups.map(safeRecoveryPoint).filter(Boolean);
   backupUnavailable.value = result?.unavailable === true;
-  return result?.ok === true;
+  const verified = result?.ok === true;
+  if (verified || backupUnavailable.value) backupError.value = "";
+  return verified;
 }
 
 function recoveryReasonLabel(reason) {
@@ -166,8 +179,12 @@ async function refreshAfterMutation() {
 async function save() {
   error.value = "";
   notice.value = "";
+	if (!configurationEligible.value) {
+		error.value = "无法安全验证 MCP 恢复点；当前全局 MCP 设置保持只读，未写入任何远程地址。";
+		return;
+	}
   if (!canApply.value) {
-    error.value = "请先确认客户端已安装、现有 MCP 设置可安全管理，并填写远程地址。";
+    error.value = "请先确认客户端已安装、现有 MCP 设置与恢复点均可安全管理，并填写远程地址。";
     return;
   }
   saving.value = true;
@@ -184,7 +201,7 @@ async function save() {
       return;
     }
     await refreshAfterMutation();
-    notice.value = "MCP 远程连接已安全保存，并创建了经过校验的恢复点。";
+    notice.value = "MCP 远程配置已安全保存，并创建了经过校验的恢复点；尚未测试远端 MCP 服务。";
     emit("changed");
   } catch {
     request.remoteUrl = "";
@@ -198,8 +215,12 @@ async function save() {
 async function removeManagedConnection() {
   error.value = "";
   notice.value = "";
+	if (!configurationEligible.value) {
+		error.value = "无法安全验证 MCP 恢复点；当前全局 MCP 设置保持只读。";
+		return;
+	}
   if (!canRemove.value) {
-    error.value = "请先确认客户端已安装且全局 MCP 设置可安全管理；受保护的设置不会被修改。";
+    error.value = "请先确认客户端已安装且全局 MCP 设置与恢复点均可安全管理；受保护的设置不会被修改。";
     return;
   }
   // A remote address in the draft is unrelated to removal and must not remain
@@ -304,12 +325,12 @@ watch(() => [props.open, props.target], ([open, target]) => {
       <div v-if="loading" class="state-block">正在检查本机 {{ displayName }} 与全局 MCP 设置…</div>
 
       <template v-else>
-        <section class="status-card" :class="{ guarded: snapshot.hasSensitiveConfiguration || !snapshot.valid }">
+        <section class="status-card" :class="{ guarded: snapshot.hasSensitiveConfiguration || !snapshot.valid || !configurationEligible }">
           <div>
-            <strong>{{ data?.canApply ? "可以安全配置" : "暂不可写入" }}</strong>
+            <strong>{{ configurationEligible ? "可以安全配置" : "暂不可写入" }}</strong>
             <span>{{ statusDescription }}</span>
           </div>
-          <span class="status-pill" :class="data?.canApply ? 'ok' : 'warn'">{{ data?.canApply ? "已验证" : "受保护" }}</span>
+          <span class="status-pill" :class="configurationEligible ? 'ok' : 'warn'">{{ configurationEligible ? "可保存" : "只读保护" }}</span>
         </section>
 
         <dl class="facts" aria-label="MCP 本机状态">
@@ -321,7 +342,7 @@ watch(() => [props.open, props.target], ([open, target]) => {
         <p v-if="notice" class="notice" role="status">{{ notice }}</p>
         <p v-if="error" class="error" role="alert">{{ error }}</p>
 
-        <section class="configuration-section" :aria-disabled="!data?.canApply">
+        <section class="configuration-section" :aria-disabled="!configurationEligible">
           <div class="section-heading">
             <div>
               <strong>远程 MCP 地址</strong>
@@ -336,7 +357,7 @@ watch(() => [props.open, props.target], ([open, target]) => {
               inputmode="url"
               spellcheck="false"
               placeholder="https://mcp.example.com/endpoint"
-              :disabled="!data?.canApply || busy"
+              :disabled="!configurationEligible || busy"
             />
             <small>地址只用于这一次保存，不会在工具中心、日志或诊断包中回显。</small>
           </label>
