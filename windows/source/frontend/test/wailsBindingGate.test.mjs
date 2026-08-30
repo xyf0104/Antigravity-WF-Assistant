@@ -7,10 +7,13 @@ const nativeBuild = "Build Windows x64";
 const generatedBindingGate = "Verify generated Wails bindings";
 
 function windowsJob(source) {
-  const marker = "\n  windows:\n";
-  const offset = source.indexOf(marker);
-  assert.notEqual(offset, -1, "release workflow must have a Windows job");
-  return source.slice(offset);
+  // GitHub's Windows checkout normally uses CRLF while local macOS checks use
+  // LF. The workflow is data, not a platform-specific contract, so the gate
+  // must inspect both byte representations instead of reporting a false
+  // missing-job failure on Windows.
+  const match = /\r?\n  windows:\r?\n/.exec(source);
+  assert.ok(match, "release workflow must have a Windows job");
+  return source.slice(match.index);
 }
 
 function assertBindingGateOrder(source, label) {
@@ -39,4 +42,8 @@ test("Windows workflows keep the real Wails binding gate after native generation
 
   assertBindingGateOrder(buildWorkflow, "build-windows workflow");
   assertBindingGateOrder(windowsJob(releaseWorkflow), "release workflow Windows job");
+  assertBindingGateOrder(
+    windowsJob(releaseWorkflow.replaceAll("\n", "\r\n")),
+    "release workflow Windows job with CRLF",
+  );
 });
