@@ -6,6 +6,7 @@ SetCompressor /SOLID lzma
 
 !define APP_NAME "XIASS Tools"
 !define APP_EXE "XIASS Tools.exe"
+!define APP_UNINSTALL_EXE "Uninstall XIASS Tools.exe"
 ; Keep the installed executable name stable while packaging a versioned build
 ; artifact. This lets local and CI builds coexist without overwriting a
 ; previous executable before NSIS has produced a verified installer.
@@ -65,11 +66,15 @@ Section "安装 ${APP_NAME}" MainSection
   SetOutPath "$INSTDIR"
   SetOverwrite on
   File "/oname=${APP_EXE}" "..\bin\${APP_SOURCE_EXE}"
-  WriteUninstaller "$INSTDIR\卸载 ${APP_NAME}.exe"
+  ; Use a stable ASCII executable filename so Windows Shell shortcuts and
+  ; silent upgrades do not depend on Unicode executable-path handling. The
+  ; user-facing Start Menu label remains Chinese below.
+  Delete "$INSTDIR\卸载 ${APP_NAME}.exe"
+  WriteUninstaller "$INSTDIR\${APP_UNINSTALL_EXE}"
 
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
-  CreateShortcut "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk" "$INSTDIR\卸载 ${APP_NAME}.exe"
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk" "$INSTDIR\${APP_UNINSTALL_EXE}"
 
   ; The optional shortcut section records whether this installer created the
   ; desktop link, so uninstall does not touch a user-created link. Preserve
@@ -80,7 +85,7 @@ Section "安装 ${APP_NAME}" MainSection
   WriteRegStr HKCU "${APP_UNINSTALL_KEY}" "Publisher" "${APP_PUBLISHER}"
   WriteRegStr HKCU "${APP_UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
   WriteRegStr HKCU "${APP_UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "${APP_UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\卸载 ${APP_NAME}.exe"'
+  WriteRegStr HKCU "${APP_UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\${APP_UNINSTALL_EXE}"'
   WriteRegDWORD HKCU "${APP_UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${APP_UNINSTALL_KEY}" "NoRepair" 1
 SectionEnd
@@ -98,6 +103,9 @@ Section "Uninstall"
     Delete "$DESKTOP\${APP_NAME}.lnk"
   ${EndIf}
   Delete "$INSTDIR\${APP_EXE}"
+  Delete "$INSTDIR\${APP_UNINSTALL_EXE}"
+  ; Remove the pre-v1.6.6 internal filename too, so upgrades do not leave an
+  ; obsolete standalone uninstaller in the application directory.
   Delete "$INSTDIR\卸载 ${APP_NAME}.exe"
   RMDir /r "$SMPROGRAMS\${APP_NAME}"
   RMDir "$INSTDIR"

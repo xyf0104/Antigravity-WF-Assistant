@@ -51,6 +51,10 @@ func TestVersionedArtifactsDeriveFromBuildVersion(t *testing.T) {
 		`!error "APP_VERSION is required. Run makensis with /DAPP_VERSION=<VERSION>."`,
 		`!define APP_SOURCE_EXE "XIASS Tools-v${APP_VERSION}.exe"`,
 		`!define APP_SETUP_EXE "XIASS-Tools-Windows-x64-v${APP_VERSION}-Setup.exe"`,
+		`!define APP_UNINSTALL_EXE "Uninstall XIASS Tools.exe"`,
+		`WriteUninstaller "$INSTDIR\${APP_UNINSTALL_EXE}"`,
+		`CreateShortcut "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk" "$INSTDIR\${APP_UNINSTALL_EXE}"`,
+		`Delete "$INSTDIR\卸载 ${APP_NAME}.exe"`,
 		`OutFile "..\bin\${APP_SETUP_EXE}"`,
 		`VIProductVersion "${APP_VERSION}.0"`,
 	} {
