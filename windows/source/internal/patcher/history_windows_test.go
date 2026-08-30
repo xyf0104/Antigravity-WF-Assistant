@@ -45,7 +45,7 @@ func TestMergeWindowsHistoryAtCombinesAllLegacyRootsWithoutOverwrite(t *testing.
 		t.Fatalf("current conversation was overwritten: %q, %v", shared, err)
 	}
 	for _, source := range []string{filepath.Dir(legacyIDE), filepath.Dir(legacyAgent)} {
-		if _, err := os.Stat(source + ".antigravity-byok-backup"); err != nil {
+		if _, err := os.Stat(source + ".antigravity-wf-backup"); err != nil {
 			t.Fatalf("backup for %s missing: %v", source, err)
 		}
 	}

@@ -183,7 +183,9 @@ func TestWindowsDesktopNativeSelectionRequiresVerifiedProductMetadata(t *testing
 	home := filepath.Join("C:", "Users", "fixture")
 	local := filepath.Join(home, "AppData", "Local")
 	roaming := filepath.Join(home, "AppData", "Roaming")
-	root := filepath.Join("D:", "Developer Tools", "Cursor")
+	// On Windows, "D:" is drive-relative rather than absolute. The native
+	// chooser always returns an absolute path, so model that contract exactly.
+	root := filepath.Join(`D:\`, "Developer Tools", "Cursor")
 	executable := filepath.Join(root, "Cursor.exe")
 	product := filepath.Join(root, "resources", "app", "product.json")
 	fixture := newWindowsFixture(home, local, roaming)
