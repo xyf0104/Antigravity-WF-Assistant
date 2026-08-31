@@ -306,10 +306,9 @@ jobs:
           cp latest.json release-assets/
           (
             cd release-assets
-            find . -maxdepth 1 -type f ! -name '*.sig' ! -name 'latest*.json' -print0 \
-              | sort -z \
-              | xargs -0 sha256sum \
-              | sed 's#  \./#  #' > SHA256SUMS.txt
+            node ../scripts/release/gen_checksums.cjs \
+              --input . \
+              --output SHA256SUMS.txt
           )
           test "$(wc -l < release-assets/SHA256SUMS.txt | tr -d ' ')" -eq 4
           node --test scripts/release/*.test.cjs
