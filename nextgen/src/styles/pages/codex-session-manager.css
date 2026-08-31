@@ -2,12 +2,14 @@
 .codex-session-manager {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: 14px;
   padding: 18px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-secondary);
   box-shadow: var(--shadow-sm);
+  container-type: inline-size;
 }
 
 .codex-session-usage-summary {
@@ -584,6 +586,64 @@
   }
 }
 
+/*
+ * Agent workspaces can be much narrower than the application viewport when
+ * the classic sidebar is expanded.  Viewport media queries therefore miss
+ * the exact state that used to squeeze the kind selector down to a few
+ * pixels.  Size the toolbar from its real card width instead.
+ */
+@container (max-width: 620px) {
+  .codex-session-manager__header,
+  .codex-session-manager__search,
+  .codex-session-manager__actions,
+  .codex-session-manager__action-group {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .codex-session-manager__search {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .codex-session-manager__kind-filter {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .codex-session-manager__kind-filter .single-select-dropdown-trigger {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .codex-session-manager__actions {
+    flex-direction: column;
+  }
+
+  .codex-session-manager__action-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    flex-basis: auto;
+  }
+
+  .codex-session-manager__action-button {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+@container (max-width: 420px) {
+  .codex-session-manager {
+    padding: 14px;
+  }
+
+  .codex-session-manager__action-group {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .codex-session-group__header-main,
 .codex-session-group__summary {
   display: flex;
@@ -640,7 +700,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 40px;
+  min-height: 44px;
   padding: 6px 8px;
   border-radius: 10px;
   transition: background 0.18s ease;
@@ -751,8 +811,8 @@
 }
 
 .codex-session-row__copy-button {
-  width: 28px;
-  height: 28px;
+  width: 44px;
+  height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -761,7 +821,11 @@
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.18s ease;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    color 0.18s ease;
 }
 
 .codex-session-row__copy-button:hover {

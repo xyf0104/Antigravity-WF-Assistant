@@ -2201,6 +2201,26 @@ pub async fn fetch_available_models() -> Result<Vec<AvailableModel>, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wakeup_cancel_scope_notifies_the_active_request_and_can_be_released() {
+        let scope_id = format!(
+            "wakeup-cancel-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos()
+        );
+        let receiver = get_wakeup_cancel_receiver(Some(&scope_id))
+            .expect("cancel receiver should be created")
+            .expect("cancel receiver should exist for a non-empty scope");
+
+        assert!(!*receiver.borrow());
+        cancel_wakeup_scope(&scope_id).expect("cancel scope should notify without failing");
+        assert!(*receiver.borrow());
+        release_wakeup_scope(&scope_id)
+            .expect("releasing an already-cancelled scope is idempotent");
+    }
+
     fn parse_available_models(value: serde_json::Value) -> AvailableModelsResponse {
         serde_json::from_value(value).expect("available-model response should deserialize")
     }

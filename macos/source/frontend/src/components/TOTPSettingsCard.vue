@@ -323,6 +323,7 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <div class="totp-page">
   <Card title="验证器（2FA）" subtitle="密钥只保存在本机系统凭据库；不会进入 XIASS Tools 的同步、日志或诊断文件。">
     <template #action>
       <Badge :tone="entries.length ? 'ok' : 'neutral'" :label="statusLabel" />
@@ -439,9 +440,11 @@ onUnmounted(() => {
       <Button variant="danger" :loading="Boolean(actionID)" :disabled="Boolean(actionID)" @click="removeEntry">删除</Button>
     </template>
   </Modal>
+  </div>
 </template>
 
 <style scoped>
+.totp-page { min-width:0; }
 .totp-card { display:flex; flex-direction:column; gap:12px; }
 .totp-intro { display:flex; gap:11px; padding:11px 12px; border:1px solid var(--accent-border); border-radius:var(--r-md); background:var(--accent-soft); }
 .totp-intro svg { width:25px; height:25px; flex:none; fill:var(--accent); }

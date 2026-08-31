@@ -4,8 +4,11 @@
   --workspace-surface: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: start;
+  flex: 0 0 auto;
   gap: 14px;
-  min-height: 100vh;
+  height: calc(100vh - 72px);
+  min-height: 720px;
   padding: 32px 28px 22px;
   color: var(--text-primary);
   background: transparent;
@@ -87,16 +90,16 @@
   border-radius: 999px;
   color: #65d4ae;
   background: rgba(25, 96, 79, 0.14);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
 .xiass-agent-workspace__navigation {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
-  gap: 7px;
+  gap: 8px;
   width: 100%;
-  padding: 7px;
+  padding: 8px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: 20px;
@@ -108,8 +111,8 @@
   grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
   gap: 9px;
-  min-height: 64px;
-  padding: 8px 12px 8px 9px;
+  min-height: 66px !important;
+  padding: 9px 13px 9px 10px;
   border: 1px solid transparent;
   border-radius: 14px;
   color: var(--text-secondary);
@@ -159,7 +162,7 @@
 .xiass-agent-workspace__navigation strong {
   min-width: 0;
   overflow: hidden;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -171,7 +174,7 @@
   max-width: none;
   overflow: hidden;
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.4;
   white-space: normal;
   -webkit-box-orient: vertical;
@@ -180,7 +183,7 @@
 
 .xiass-agent-workspace__canvas {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(58px, auto) minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -210,12 +213,12 @@
 
 .xiass-agent-workspace__section-head strong {
   color: var(--text-primary);
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .xiass-agent-workspace__section-head div span {
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .xiass-agent-workspace__section-status {
@@ -224,13 +227,14 @@
   border-radius: 999px;
   color: color-mix(in srgb, var(--workspace-accent) 84%, white);
   background: var(--workspace-accent-soft);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
 .xiass-agent-workspace__surface {
   min-width: 0;
-  min-height: 610px;
+  min-height: 0;
+  height: 100%;
   overflow: hidden;
   background: color-mix(in srgb, var(--xiass-glass-surface-soft, rgba(7, 34, 44, 0.4)) 72%, transparent);
 }
@@ -239,7 +243,7 @@
 .xiass-agent-workspace__panel {
   width: 100%;
   height: 100%;
-  min-height: 610px;
+  min-height: 0;
 }
 
 .xiass-agent-workspace__native[hidden],
@@ -251,7 +255,7 @@
   display: block;
   width: 100%;
   height: 100%;
-  min-height: 610px;
+  min-height: 0;
   border: 0;
   background: transparent;
 }
@@ -348,6 +352,31 @@
   .xiass-agent-workspace__navigation > button { grid-template-columns: 32px minmax(0, 1fr); }
 }
 
+/*
+ * Classic expanded sidebars leave roughly 700–900px for the workspace at
+ * these window widths.  Three stable columns keep Antigravity/Codex from
+ * growing to four navigation rows and preserve useful height for dialogs.
+ */
+@media (min-width: 981px) and (max-width: 1180px) {
+  .xiass-agent-workspace__navigation {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Wide desktop layouts use balanced rows instead of leaving a single orphan tab. */
+@media (min-width: 1181px) {
+  .xiass-agent-workspace[data-module='antigravity'] .xiass-agent-workspace__navigation,
+  .xiass-agent-workspace[data-module='codex'] .xiass-agent-workspace__navigation,
+  .xiass-agent-workspace[data-module='claude-code'] .xiass-agent-workspace__navigation {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .xiass-agent-workspace[data-module='cursor'] .xiass-agent-workspace__navigation,
+  .xiass-agent-workspace[data-module='windsurf'] .xiass-agent-workspace__navigation {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1400px) {
   .xiass-agent-workspace__navigation small {
     max-width: none;
@@ -359,12 +388,12 @@
   .xiass-agent-workspace__masthead { align-items: center; }
   .xiass-agent-workspace__trust { display: none; }
   .xiass-agent-workspace__identity p { display: none; }
-  .xiass-agent-workspace__navigation > button { min-height: 48px; padding-right: 10px; }
+  .xiass-agent-workspace__navigation > button { min-height: 48px !important; padding-right: 10px; }
   .xiass-agent-workspace__section-head { align-items: flex-start; flex-wrap: wrap; }
   .xiass-agent-workspace__surface,
   .xiass-agent-workspace__native,
   .xiass-agent-workspace__panel,
-  .xiass-agent-workspace__iframe { min-height: 540px; }
+  .xiass-agent-workspace__iframe { min-height: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

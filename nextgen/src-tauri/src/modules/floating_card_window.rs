@@ -24,6 +24,9 @@ static PENDING_MAIN_WINDOW_NAVIGATION: LazyLock<Mutex<Option<String>>> =
     LazyLock::new(|| Mutex::new(None));
 static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static MAIN_WINDOW_DESTROYED_TO_TRAY: AtomicBool = AtomicBool::new(false);
+// Destroying the last WebView can make Tauri emit one empty-window ExitRequested event.
+// Only that event should be kept alive. A later Dock Quit / Cmd+Q is a real user exit.
+static NEXT_EMPTY_WINDOW_EXIT_SHOULD_KEEP_ALIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -535,11 +538,24 @@ pub fn take_pending_main_window_navigation() -> Result<Option<String>, String> {
 
 pub fn request_app_exit() {
     APP_EXIT_REQUESTED.store(true, Ordering::SeqCst);
+    NEXT_EMPTY_WINDOW_EXIT_SHOULD_KEEP_ALIVE.store(false, Ordering::SeqCst);
 }
 
 pub fn should_keep_alive_after_main_window_destroyed() -> bool {
-    MAIN_WINDOW_DESTROYED_TO_TRAY.load(Ordering::SeqCst)
-        && !APP_EXIT_REQUESTED.load(Ordering::SeqCst)
+    let keep_alive_once = NEXT_EMPTY_WINDOW_EXIT_SHOULD_KEEP_ALIVE.swap(false, Ordering::SeqCst);
+    should_keep_alive_for_exit_state(
+        MAIN_WINDOW_DESTROYED_TO_TRAY.load(Ordering::SeqCst),
+        APP_EXIT_REQUESTED.load(Ordering::SeqCst),
+        keep_alive_once,
+    )
+}
+
+fn should_keep_alive_for_exit_state(
+    main_window_destroyed_to_tray: bool,
+    app_exit_requested: bool,
+    keep_alive_once: bool,
+) -> bool {
+    main_window_destroyed_to_tray && !app_exit_requested && keep_alive_once
 }
 
 /// Destroy the main WebView when minimizing to tray (community #686 full behavior).
@@ -547,9 +563,16 @@ pub fn should_keep_alive_after_main_window_destroyed() -> bool {
 pub fn destroy_main_window_to_tray<R: Runtime>(window: &Window<R>) -> Result<(), String> {
     // Persist size before destroy so tray reopen can restore geometry (#948 / #1132).
     main_window_state::capture_and_save_from_window_handle(window);
+    let will_leave_no_webview_windows = window
+        .app_handle()
+        .webview_windows()
+        .keys()
+        .all(|label| label == MAIN_WINDOW_LABEL);
     MAIN_WINDOW_DESTROYED_TO_TRAY.store(true, Ordering::SeqCst);
+    NEXT_EMPTY_WINDOW_EXIT_SHOULD_KEEP_ALIVE.store(will_leave_no_webview_windows, Ordering::SeqCst);
     if let Err(err) = window.destroy() {
         MAIN_WINDOW_DESTROYED_TO_TRAY.store(false, Ordering::SeqCst);
+        NEXT_EMPTY_WINDOW_EXIT_SHOULD_KEEP_ALIVE.store(false, Ordering::SeqCst);
         return Err(err.to_string());
     }
     // Defer working-set trim so WebView2 can finish teardown before a later recreate.
@@ -659,6 +682,7 @@ fn show_main_window_internal<R: Runtime>(app: &AppHandle<R>) -> Result<bool, Str
 
     if created {
         MAIN_WINDOW_DESTROYED_TO_TRAY.store(false, Ordering::SeqCst);
+        NEXT_EMPTY_WINDOW_EXIT_SHOULD_KEEP_ALIVE.store(false, Ordering::SeqCst);
         logger::log_info("[Window] 主窗口恢复完成，前端将重新加载");
     }
 
@@ -729,7 +753,7 @@ fn send_hidden_notification<R: Runtime>(app: &AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::must_recreate_main_window;
+    use super::{must_recreate_main_window, should_keep_alive_for_exit_state};
 
     #[test]
     fn recreates_when_window_missing() {
@@ -746,5 +770,22 @@ mod tests {
     fn force_recreates_stale_handle_after_tray_destroy() {
         // Windows/WebView2 may still resolve `main` after destroy; flag wins.
         assert!(must_recreate_main_window(true, true));
+    }
+
+    #[test]
+    fn tray_destroy_only_keeps_the_synthetic_exit_alive_once() {
+        assert!(should_keep_alive_for_exit_state(true, false, true));
+        assert!(!should_keep_alive_for_exit_state(true, false, false));
+    }
+
+    #[test]
+    fn explicit_exit_is_never_blocked_after_tray_destroy() {
+        assert!(!should_keep_alive_for_exit_state(true, true, true));
+    }
+
+    #[test]
+    fn failed_or_missing_tray_destroy_does_not_block_exit() {
+        assert!(!should_keep_alive_for_exit_state(false, false, true));
+        assert!(!should_keep_alive_for_exit_state(false, false, false));
     }
 }

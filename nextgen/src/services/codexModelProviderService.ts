@@ -457,11 +457,9 @@ async function saveProvidersToDisk(providers: CodexModelProvider[]): Promise<voi
 
 async function ensureProvidersLoaded(): Promise<CodexModelProvider[]> {
   if (cachedProviders !== null) return cloneProviders(cachedProviders);
-  const loadResult = await loadProvidersFromDisk().catch(() => ({
-    providers: [],
-    removedImageGenerationSetting: false,
-    migratedSupportsWebsockets: false,
-  }));
+  // 读取失败绝不能伪装成“没有供应商”。否则下一次新增或编辑会把暂时不可读的
+  // 原配置覆盖为空白状态，用户看到的结果就是配置无故消失。
+  const loadResult = await loadProvidersFromDisk();
   const loadedProviders = loadResult.providers;
   let loaded = loadedProviders.filter((provider) => {
     // 兼容清理：移除旧版本自动注入但未配置 API Key 的默认预设项
@@ -483,7 +481,8 @@ async function ensureProvidersLoaded(): Promise<CodexModelProvider[]> {
     loadResult.removedImageGenerationSetting ||
     loadResult.migratedSupportsWebsockets
   ) {
-    await saveProvidersToDisk(loaded).catch(() => { });
+    // 迁移保存失败时不要缓存一个只存在于内存的状态；让调用方展示错误并保留磁盘原件。
+    await saveProvidersToDisk(loaded);
   }
   cachedProviders = loaded;
   return cloneProviders(cachedProviders);
@@ -491,8 +490,9 @@ async function ensureProvidersLoaded(): Promise<CodexModelProvider[]> {
 
 async function writeProviders(providers: CodexModelProvider[]): Promise<void> {
   const next = cloneProviders(providers);
-  cachedProviders = next;
   await saveProvidersToDisk(next);
+  // 只有磁盘原子写入成功后才发布新缓存，避免界面显示“已保存”但重启后丢失。
+  cachedProviders = next;
 }
 
 export async function listCodexModelProviders(): Promise<CodexModelProvider[]> {

@@ -1035,7 +1035,7 @@ export function ZedAccountsPage() {
       {message && (
         <div className={`message-bar ${message.tone === 'error' ? 'error' : 'success'}`}>
           {message.text}
-          <button onClick={() => setMessage(null)}>
+          <button onClick={() => setMessage(null)} aria-label={t('common.close', '关闭')}>
             <X size={14} />
           </button>
         </div>

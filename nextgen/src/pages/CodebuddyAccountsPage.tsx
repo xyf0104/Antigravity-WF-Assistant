@@ -548,11 +548,11 @@ export function CodebuddyAccountsPage() {
           </td>
           <td className="sticky-action-cell table-action-cell">
             <div className="action-buttons">
-              <button className="action-btn success" onClick={() => handleInjectToVSCode?.(account.id)} disabled={!!injecting}><Play size={14} /></button>
-              <button className="action-btn" onClick={() => openTagModal(account.id)}><Tag size={14} /></button>
-              <button className="action-btn" onClick={() => handleRefresh(account.id)} disabled={refreshing === account.id}><RotateCw size={14} className={refreshing === account.id ? 'loading-spinner' : ''} /></button>
-              <button className="action-btn" onClick={() => handleExportByIds([account.id])}><Upload size={14} /></button>
-              <button className="action-btn danger" onClick={() => handleDelete(account.id)}><Trash2 size={14} /></button>
+              <button className="action-btn success" onClick={() => handleInjectToVSCode?.(account.id)} disabled={!!injecting} aria-label={t('common.shared.switchAccount', '切换账号')}><Play size={14} /></button>
+              <button className="action-btn" onClick={() => openTagModal(account.id)} aria-label={t('accounts.editTags', '编辑标签')}><Tag size={14} /></button>
+              <button className="action-btn" onClick={() => handleRefresh(account.id)} disabled={refreshing === account.id} aria-label={t('common.shared.refreshQuota', '刷新')}><RotateCw size={14} className={refreshing === account.id ? 'loading-spinner' : ''} /></button>
+              <button className="action-btn" onClick={() => handleExportByIds([account.id])} aria-label={t('common.shared.export.title', '导出')}><Upload size={14} /></button>
+              <button className="action-btn danger" onClick={() => handleDelete(account.id)} aria-label={t('common.delete', '删除')}><Trash2 size={14} /></button>
             </div>
           </td>
         </tr>
@@ -597,7 +597,7 @@ export function CodebuddyAccountsPage() {
       {message && (
         <div className={`message-bar ${message.tone === 'error' ? 'error' : 'success'}`}>
           {message.text}
-          <button onClick={() => setMessage(null)}><X size={14} /></button>
+          <button onClick={() => setMessage(null)} aria-label={t('common.close', '关闭')}><X size={14} /></button>
         </div>
       )}
 
@@ -790,7 +790,7 @@ export function CodebuddyAccountsPage() {
             <div className="modal-content ghcp-add-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>{t('codebuddy.addAccount', '添加 CodeBuddy 账号')}</h2>
-              <button className="modal-close" onClick={closeAddModal}><X size={18} /></button>
+              <button className="modal-close" onClick={closeAddModal} aria-label={t('common.close', '关闭')}><X size={18} /></button>
             </div>
             <div className="modal-tabs">
               <button className={`modal-tab ${addTab === 'oauth' ? 'active' : ''}`} onClick={() => openAddModal('oauth')}><Globe size={14} /> {t('common.shared.addModal.oauth', '授权登录')}</button>

@@ -34,7 +34,8 @@ defineEmits(["update:modelValue"]);
 }
 
 input {
-  height: 34px;
+  min-height: 44px;
+  height: 44px;
   padding: 0 12px;
   background: var(--bg-inset);
   border: 0.5px solid var(--separator-strong);
@@ -56,7 +57,7 @@ input.mono {
 }
 
 .hint {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-tertiary);
 }
 </style>

@@ -106,9 +106,7 @@ mod tests {
 
     #[test]
     fn provider_current_command_supports_all_account_pages() {
-        let _lock = crate::modules::test_support::env_lock()
-            .lock()
-            .expect("lock env");
+        let _lock = crate::modules::test_support::lock_env();
         let _guard = DataDirGuard::new("supported-platforms");
 
         for platform in [
@@ -140,9 +138,7 @@ mod tests {
 
     #[test]
     fn provider_current_command_rejects_unknown_platform() {
-        let _lock = crate::modules::test_support::env_lock()
-            .lock()
-            .expect("lock env");
+        let _lock = crate::modules::test_support::lock_env();
         let _guard = DataDirGuard::new("unsupported-platform");
 
         let error = resolve_provider_current_account_id("unknown-platform")

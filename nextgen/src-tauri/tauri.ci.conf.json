@@ -4,5 +4,13 @@
     "macOS": {
       "signingIdentity": "-"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IFhJQVNTIFRvb2xzIENJIHJ1bnRpbWUgc21va2Uga2V5",
+      "endpoints": [
+        "https://github.com/xyf0104/Antigravity-WF-Assistant/releases/latest/download/latest-{{target}}.json"
+      ]
+    }
   }
 }

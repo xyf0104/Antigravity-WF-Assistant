@@ -215,8 +215,8 @@ onMounted(async () => {
         </div>
 
         <div v-if="state.update.message" class="t-caption">{{ state.update.message }}</div>
-        <div v-if="error" class="result-box error">{{ error }}</div>
-        <div v-if="message" class="result-box success">{{ message }}</div>
+        <div v-if="error" class="result-box error" role="alert">{{ error }}</div>
+        <div v-if="message" class="result-box success" role="status" aria-live="polite">{{ message }}</div>
 
         <div class="row between" style="gap:8px; flex-wrap:wrap">
 		  <Button v-if="state.update.checking" variant="plain" @click="handleCancelCheck">取消检查</Button>
@@ -243,8 +243,8 @@ onMounted(async () => {
           <span>包含最近一次 Antigravity 运行日志</span>
           <span>单文件自动截断，避免诊断包过大</span>
         </div>
-        <div v-if="diagnosticError" class="result-box error">{{ diagnosticError }}</div>
-        <div v-if="diagnosticMessage" class="result-box success">{{ diagnosticMessage }}</div>
+        <div v-if="diagnosticError" class="result-box error" role="alert">{{ diagnosticError }}</div>
+        <div v-if="diagnosticMessage" class="result-box success" role="status" aria-live="polite">{{ diagnosticMessage }}</div>
         <div class="row end">
           <Button variant="filled" :loading="diagnosticBusy" :disabled="diagnosticBusy" @click="handleExportDiagnostics">导出诊断日志</Button>
         </div>

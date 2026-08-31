@@ -213,7 +213,7 @@ export function WorkbuddyAutoCheckinConfigModal({
             </button>
           </div>
 
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X size={18} />
           </button>
         </div>
@@ -378,7 +378,20 @@ export function WorkbuddyAutoCheckinConfigModal({
                                   : `未完成`}
                             </span>
                             {log.details && log.details.length > 0 && (
-                              <button className="btn-icon-toggle">
+                              <button
+                                type="button"
+                                className="btn-icon-toggle"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleExpand(log.id);
+                                }}
+                                aria-label={
+                                  isExpanded
+                                    ? t('common.collapse', '收起')
+                                    : t('common.expand', '展开')
+                                }
+                                aria-expanded={isExpanded}
+                              >
                                 {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                               </button>
                             )}

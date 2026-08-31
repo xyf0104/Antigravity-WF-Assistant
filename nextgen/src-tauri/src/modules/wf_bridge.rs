@@ -248,7 +248,9 @@ fn start_bridge(runtime: &mut WfBridgeRuntime) -> Result<WfBridgeSession, String
         .env("XIASS_WF_RPC_TOKEN", &token)
         .env("XIASS_WF_RPC_PORT", "0")
         .env("XIASS_PARENT_PID", std::process::id().to_string())
-        .stdin(Stdio::null())
+        // 子进程读取此匿名管道。父进程正常退出、崩溃或被强制终止时，操作系统
+        // 都会关闭写端，WF bridge 随即释放 HTTP 监听和本地代理端口。
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(target_os = "windows")]

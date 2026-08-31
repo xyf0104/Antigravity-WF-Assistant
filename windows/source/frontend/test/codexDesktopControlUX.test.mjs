@@ -88,7 +88,7 @@ test("pasted Codex Desktop paths are one-shot and never enter shared renderer st
 });
 
 test("provider changes guide a fresh safe history check instead of replaying history automatically", () => {
-  const historyStart = modalSource.indexOf('<section class="history-section">');
+  const historyStart = modalSource.indexOf('<section class="history-section"');
   assert.notEqual(historyStart, -1, "history section is missing");
   const historyEnd = modalSource.indexOf("</section>", historyStart);
   const history = modalSource.slice(historyStart, historyEnd + "</section>".length);

@@ -1096,9 +1096,15 @@ export function PlatformLayoutModal({
 
   return (
     <div className="modal-overlay">
-      <div className="modal modal-lg" onClick={(event) => event.stopPropagation()}>
+      <div
+        className="modal modal-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="platform-layout-dialog-title"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="modal-header">
-          <h2>{t('platformLayout.title', '平台布局')}</h2>
+          <h2 id="platform-layout-dialog-title">{t('platformLayout.title', '平台布局')}</h2>
           <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X />
           </button>

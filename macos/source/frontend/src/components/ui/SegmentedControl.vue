@@ -32,9 +32,10 @@ defineEmits(["update:modelValue"]);
 }
 
 .item {
-  padding: 5px 15px;
+  min-height: 44px;
+  padding: 7px 15px;
   border-radius: 7px;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 550;
   color: var(--text-secondary);
 	  transition: background-color 0.2s var(--ease), color 0.2s var(--ease), box-shadow 0.2s var(--ease);
@@ -60,7 +61,7 @@ defineEmits(["update:modelValue"]);
 
   .item {
     min-width: 0;
-    min-height: 40px;
+    min-height: 44px;
     padding: 7px 9px;
     white-space: normal;
     overflow-wrap: anywhere;

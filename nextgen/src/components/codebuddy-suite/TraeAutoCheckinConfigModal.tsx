@@ -132,7 +132,7 @@ export function TraeAutoCheckinConfigModal({
             <Settings size={18} />
             {t('trae.autoCheckin.title', 'TRAE SOLO CN 自动签到设置')}
           </h2>
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X size={18} />
           </button>
         </div>
@@ -159,7 +159,7 @@ export function TraeAutoCheckinConfigModal({
             <div className="message-bar error">
               <AlertCircle size={14} />
               <span>{error}</span>
-              <button onClick={() => setError(null)}>
+              <button onClick={() => setError(null)} aria-label={t('common.close', '关闭')}>
                 <X size={14} />
               </button>
             </div>

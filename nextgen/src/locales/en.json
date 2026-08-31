@@ -5218,7 +5218,7 @@
     "actions": {
       "collapseAll": "Collapse all",
       "expandAll": "Expand all",
-      "goAntigravity": "Go to Antigravity IDE",
+      "goAntigravity": "Go to Antigravity WF",
       "goCodex": "Go to Codex",
       "goDashboard": "Go to Dashboard",
       "goGitHubCopilot": "Go to GitHub Copilot",
@@ -5232,25 +5232,25 @@
     },
     "antigravity": {
       "cautions": {
-        "0": "If you see abnormal statuses (for example 403/refresh failed), refresh first, then decide whether to remove and re-login."
+        "0": "Quit the target Antigravity app before applying changes. Export diagnostics for unknown structures instead of forcing an overwrite."
       },
       "keywords": {
-        "0": "antigravity",
-        "1": "Account",
-        "2": "quota",
-        "3": "tags"
+        "0": "Antigravity WF",
+        "1": "local proxy",
+        "2": "models and images",
+        "3": "patches and diagnostics"
       },
       "outcomes": {
-        "0": "Supports OAuth, import, export, and bulk operations.",
-        "1": "Supports tag filtering, sorting, and grouped display."
+        "0": "Supports local proxying, model injection, image input and generation, files, and tool calls.",
+        "1": "Supports OAuth, account pools, route testing, multiple instances, diagnostics, and recoverable patches."
       },
       "steps": {
-        "0": "Click \"Add Account\" to complete authorization or import.",
-        "1": "Use \"Refresh All\" to sync one full round of quota status first.",
-        "2": "Sort by quota/reset time and choose the account you want to use now."
+        "0": "Check installation and proxy status in Runtime Overview, then apply the required patches.",
+        "1": "Configure credentials and test the route in Upstream Providers or Official Accounts.",
+        "2": "Enable models in Models & Images, then return to the overview and start Antigravity."
       },
-      "summary": "Manage the Antigravity IDE account lifecycle: add, refresh quota, switch, group, and tag.",
-      "title": "Antigravity IDE Account"
+      "summary": "Manage the Antigravity WF local proxy, patches, upstream models, official accounts, instances, wakeup tasks, and terminal permissions.",
+      "title": "Antigravity WF"
     },
     "blocks": {
       "cautions": "Common pitfalls / notes",
@@ -5348,16 +5348,16 @@
         "1": "Some platforms or capabilities are system-limited. Follow on-page prompts."
       },
       "keywords": {
-        "0": "Codex / GitHub Copilot / Windsurf / Kiro platforms",
-        "1": "github copilot",
+        "0": "Codex / Claude Code / Cursor / Windsurf",
+        "1": "claude code",
         "2": "windsurf",
-        "3": "kiro",
+        "3": "cursor",
         "4": "inject",
         "5": "account switch"
       },
       "outcomes": {
         "0": "Codex: account switching + quota refresh.",
-        "1": "GitHub Copilot/Windsurf/Kiro: support injection into VS Code chain.",
+        "1": "Claude Code, Cursor, and Windsurf keep their own real authorization, switching, and instance capabilities.",
         "2": "Each platform supports independent filtering, grouping, import, and export."
       },
       "steps": {
@@ -5366,7 +5366,7 @@
         "2": "Execute \"Switch/Inject\" and verify in client that it takes effect."
       },
       "summary": "The four platform pages share the same structure: account overview + multi-instance, with OAuth, Token/JSON import and switching.",
-      "title": "Codex / GitHub Copilot / Windsurf / Kiro Platforms"
+      "title": "Codex / Claude Code / Cursor / Windsurf"
     },
     "quickStart": {
       "cautions": {
@@ -5386,7 +5386,7 @@
       },
       "steps": {
         "0": "Open \"Dashboard\" and confirm the platforms you need are visible.",
-        "1": "Go to target platform page (for example Codex / GitHub Copilot), then add 1 account first.",
+        "1": "Open a target Agent such as Antigravity WF or Codex, then complete one working connection.",
         "2": "Use \"Switch/Inject\" button to verify account switching takes effect.",
         "3": "Then go to \"Multi-Instance\" and create 1 instance to verify isolation and parallel running."
       },

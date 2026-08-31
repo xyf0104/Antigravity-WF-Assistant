@@ -147,7 +147,8 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp dir");
-        std::env::set_var("XIASS_TOOLS_TEST_DATA_DIR", &dir);
+        let _test_data_dir =
+            crate::modules::test_support::ScopedEnvVar::set("XIASS_TOOLS_TEST_DATA_DIR", &dir);
 
         let account = DemoAccount {
             id: "a1".into(),
@@ -170,7 +171,6 @@ mod tests {
         assert_eq!(legacy, account);
         assert!(needs_migration);
 
-        std::env::remove_var("XIASS_TOOLS_TEST_DATA_DIR");
         let _ = fs::remove_dir_all(&dir);
     }
 }

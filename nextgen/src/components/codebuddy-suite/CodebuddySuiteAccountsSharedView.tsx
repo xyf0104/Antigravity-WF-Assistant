@@ -820,12 +820,14 @@ export function CodebuddySuiteAccountsSharedView<
                 className="action-btn success"
                 onClick={() => handleInjectToVSCode?.(account.id)}
                 disabled={!!injecting}
+                aria-label={t("common.shared.switchAccount", "切换账号")}
               >
                 <Play size={14} />
               </button>
               <button
                 className="action-btn"
                 onClick={() => openTagModal(account.id)}
+                aria-label={t("accounts.editTags", "编辑标签")}
               >
                 <Tag size={14} />
               </button>
@@ -833,6 +835,7 @@ export function CodebuddySuiteAccountsSharedView<
                 className="action-btn"
                 onClick={() => handleRefresh(account.id)}
                 disabled={refreshing === account.id}
+                aria-label={t("common.shared.refreshQuota", "刷新")}
               >
                 <RotateCw
                   size={14}
@@ -842,6 +845,7 @@ export function CodebuddySuiteAccountsSharedView<
               <button
                 className="action-btn"
                 onClick={() => handleExportByIds([account.id])}
+                aria-label={t("common.shared.export.title", "导出")}
               >
                 <Upload size={14} />
               </button>
@@ -862,6 +866,7 @@ export function CodebuddySuiteAccountsSharedView<
               <button
                 className="action-btn danger"
                 onClick={() => handleDelete(account.id)}
+                aria-label={t("common.delete", "删除")}
               >
                 <Trash2 size={14} />
               </button>
@@ -929,7 +934,7 @@ export function CodebuddySuiteAccountsSharedView<
           className={`message-bar ${message.tone === "error" ? "error" : "success"}`}
         >
           {message.text}
-          <button onClick={() => setMessage(null)}>
+          <button onClick={() => setMessage(null)} aria-label={t("common.close", "关闭")}>
             <X size={14} />
           </button>
         </div>
@@ -938,7 +943,7 @@ export function CodebuddySuiteAccountsSharedView<
       {syncMessage && (
         <div className="message-bar success">
           {syncMessage}
-          <button onClick={() => setSyncMessage(null)}>
+          <button onClick={() => setSyncMessage(null)} aria-label={t("common.close", "关闭")}>
             <X size={14} />
           </button>
         </div>

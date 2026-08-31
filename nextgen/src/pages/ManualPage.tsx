@@ -6,10 +6,12 @@ import {
   Compass,
   LayoutGrid,
   Lightbulb,
+  ListChecks,
   Rocket,
   Search,
   Settings,
   Sparkles,
+  TriangleAlert,
 } from 'lucide-react';
 import type { Page } from '../types/navigation';
 
@@ -62,7 +64,7 @@ export function ManualPage({ onNavigate, onOpenPlatformLayout }: ManualPageProps
         ],
         steps: [
           t('manual.quickStart.steps.0', '打开“仪表盘”，确认你需要管理的平台已经可见。'),
-          t('manual.quickStart.steps.1', '进入目标平台页（如 Codex / GitHub Copilot），先添加 1 个账号。'),
+          t('manual.quickStart.steps.1', '进入目标 Agent（如 Antigravity WF / Codex），先完成一个可用连接。'),
           t('manual.quickStart.steps.2', '使用“切换/注入”按钮验证切号生效。'),
           t('manual.quickStart.steps.3', '再进入“应用多开”创建 1 个实例，验证隔离和并行运行。'),
         ],
@@ -78,7 +80,7 @@ export function ManualPage({ onNavigate, onOpenPlatformLayout }: ManualPageProps
         ],
         actions: [
           { id: 'go-dashboard', kind: 'navigate', page: 'dashboard', label: t('manual.actions.goDashboard', '前往仪表盘'), primary: true },
-          { id: 'go-overview', kind: 'navigate', page: 'overview', label: t('manual.actions.goAntigravity', '前往 Antigravity IDE') },
+          { id: 'go-overview', kind: 'navigate', page: 'overview', label: t('manual.actions.goAntigravity', '前往 Antigravity WF') },
           { id: 'go-settings', kind: 'navigate', page: 'settings', label: t('manual.actions.goSettings', '前往设置') },
         ],
       },
@@ -116,31 +118,31 @@ export function ManualPage({ onNavigate, onOpenPlatformLayout }: ManualPageProps
       {
         id: 'antigravity',
         icon: <Sparkles size={18} />,
-        title: t('manual.antigravity.title', 'Antigravity IDE 账号管理'),
+        title: t('manual.antigravity.title', 'Antigravity WF'),
         summary: t(
           'manual.antigravity.summary',
-          '管理 Antigravity IDE 账号生命周期：添加、刷新配额、切换、分组与标签。',
+          '管理 Antigravity WF 的本地代理、补丁、上游模型、官方账号、应用多开、唤醒任务与终端权限。',
         ),
         outcomes: [
-          t('manual.antigravity.outcomes.0', '支持 OAuth、导入、导出和批量操作。'),
-          t('manual.antigravity.outcomes.1', '支持标签筛选、排序、分组展示。'),
+          t('manual.antigravity.outcomes.0', '支持本地代理、模型注入、识图、生图、文件与工具调用。'),
+          t('manual.antigravity.outcomes.1', '支持 OAuth、账户池、链路测试、多开、诊断与可恢复补丁。'),
         ],
         steps: [
-          t('manual.antigravity.steps.0', '点击“添加账号”完成授权或导入。'),
-          t('manual.antigravity.steps.1', '使用“刷新全部”先同步一轮配额状态。'),
-          t('manual.antigravity.steps.2', '按配额/重置时间排序，选择当前要使用的账号。'),
+          t('manual.antigravity.steps.0', '先在“运行总览”检查安装与代理状态，并应用所需补丁。'),
+          t('manual.antigravity.steps.1', '在“上游代理”或“官方账号”配置凭据并完成链路测试。'),
+          t('manual.antigravity.steps.2', '在“模型与生图”启用模型后回到总览启动 Antigravity。'),
         ],
         cautions: [
-          t('manual.antigravity.cautions.0', '若看到异常状态（如 403/刷新失败），先刷新再判断是否删除重登。'),
+          t('manual.antigravity.cautions.0', '修改前确认目标 Antigravity 已退出；未知结构应先导出诊断，不要强制覆盖。'),
         ],
         keywords: [
-          t('manual.antigravity.keywords.0', 'antigravity'),
-          t('manual.antigravity.keywords.1', '账号管理'),
-          t('manual.antigravity.keywords.2', '配额'),
-          t('manual.antigravity.keywords.3', '标签'),
+          t('manual.antigravity.keywords.0', 'Antigravity WF'),
+          t('manual.antigravity.keywords.1', '本地代理'),
+          t('manual.antigravity.keywords.2', '模型与生图'),
+          t('manual.antigravity.keywords.3', '补丁与诊断'),
         ],
         actions: [
-          { id: 'go-overview', kind: 'navigate', page: 'overview', label: t('manual.actions.goAntigravity', '前往 Antigravity IDE'), primary: true },
+          { id: 'go-overview', kind: 'navigate', page: 'overview', label: t('manual.actions.goAntigravity', '前往 Antigravity WF'), primary: true },
         ],
       },
       {
@@ -170,9 +172,9 @@ export function ManualPage({ onNavigate, onOpenPlatformLayout }: ManualPageProps
         ],
         keywords: [
           t('manual.providers.keywords.0', 'codex'),
-          t('manual.providers.keywords.1', 'github copilot'),
+          t('manual.providers.keywords.1', 'claude code'),
           t('manual.providers.keywords.2', 'windsurf'),
-          t('manual.providers.keywords.3', 'kiro'),
+          t('manual.providers.keywords.3', 'cursor'),
           t('manual.providers.keywords.4', '注入'),
           t('manual.providers.keywords.5', '切号'),
         ],
@@ -322,7 +324,7 @@ export function ManualPage({ onNavigate, onOpenPlatformLayout }: ManualPageProps
           t('manual.dataPrivacy.keywords.7', 'app.log'),
         ],
         actions: [
-          { id: 'go-overview', kind: 'navigate', page: 'overview', label: t('manual.actions.goAntigravity', '前往 Antigravity IDE'), primary: true },
+          { id: 'go-overview', kind: 'navigate', page: 'overview', label: t('manual.actions.goAntigravity', '前往 Antigravity WF'), primary: true },
           { id: 'go-settings', kind: 'navigate', page: 'settings', label: t('manual.actions.goSettings', '前往设置') },
         ],
       },
@@ -453,7 +455,10 @@ export function ManualPage({ onNavigate, onOpenPlatformLayout }: ManualPageProps
                   <div className="manual-card-body">
                     <div className="manual-info-grid">
                       <section className="manual-info-block">
-                        <h4>💡 {t('manual.blocks.outcomes', '这个功能能帮你什么')}</h4>
+                        <h4>
+                          <Lightbulb size={16} aria-hidden="true" />
+                          <span>{t('manual.blocks.outcomes', '这个功能能帮你什么')}</span>
+                        </h4>
                         <ul>
                           {section.outcomes.map((item, idx) => (
                             <li key={`${section.id}-outcome-${idx}`}>{item}</li>
@@ -461,7 +466,10 @@ export function ManualPage({ onNavigate, onOpenPlatformLayout }: ManualPageProps
                         </ul>
                       </section>
                       <section className="manual-info-block">
-                        <h4>🎯 {t('manual.blocks.steps', '推荐操作步骤')}</h4>
+                        <h4>
+                          <ListChecks size={16} aria-hidden="true" />
+                          <span>{t('manual.blocks.steps', '推荐操作步骤')}</span>
+                        </h4>
                         <ol>
                           {section.steps.map((item, idx) => (
                             <li key={`${section.id}-step-${idx}`}>{item}</li>
@@ -469,7 +477,10 @@ export function ManualPage({ onNavigate, onOpenPlatformLayout }: ManualPageProps
                         </ol>
                       </section>
                       <section className="manual-info-block caution">
-                        <h4>⚠️ {t('manual.blocks.cautions', '常见坑位 / 注意事项')}</h4>
+                        <h4>
+                          <TriangleAlert size={16} aria-hidden="true" />
+                          <span>{t('manual.blocks.cautions', '常见坑位 / 注意事项')}</span>
+                        </h4>
                         <ul>
                           {section.cautions.map((item, idx) => (
                             <li key={`${section.id}-caution-${idx}`}>{item}</li>

@@ -197,7 +197,6 @@ const XIASS_WORKSPACE_PAGE_REDIRECTS: Partial<Record<Page, Page>> = {
   instances: 'overview',
   wakeup: 'overview',
   verification: 'overview',
-  manual: 'dashboard',
 };
 
 const TOP_PROMO_DEFAULT_EXCLUDED_PAGES: readonly Page[] = ['api-relay', 'settings'];

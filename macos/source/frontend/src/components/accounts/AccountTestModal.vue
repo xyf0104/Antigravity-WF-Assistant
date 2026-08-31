@@ -273,7 +273,7 @@ async function copyOutput() {
         <div v-if="modelMenuOpen" class="model-picker-menu" role="listbox" :aria-activedescendant="selectedModelId ? `test-model-${selectedModelId}` : undefined">
           <div v-if="normalizedModels.length > 6" class="model-search-row">
             <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg>
-            <input v-model="modelSearch" type="search" placeholder="搜索模型…" @keydown.esc.stop="modelMenuOpen = false" />
+            <input v-model="modelSearch" type="search" aria-label="搜索测试模型" placeholder="搜索模型…" @keydown.esc.stop="modelMenuOpen = false" />
           </div>
           <div class="model-picker-options">
             <button
@@ -324,7 +324,7 @@ async function copyOutput() {
         </button>
         <div ref="terminalRef" class="terminal" role="log" aria-label="账户测试输出">
           <div v-if="status === 'idle' && !terminalLines.length" class="terminal-status muted-line">
-            <span class="terminal-mark">▶</span> 准备测试。点击“开始测试”按钮开始…
+            <span class="terminal-mark" aria-hidden="true"></span> 准备测试。点击“开始测试”按钮开始…
           </div>
           <div v-else-if="status === 'connecting' && !terminalLines.length" class="terminal-status warning-line">
             <span class="spinner" /> 连接 API 中…
@@ -333,8 +333,8 @@ async function copyOutput() {
             {{ line.text }}
           </div>
           <div v-if="streamingContent" class="terminal-line is-success">{{ streamingContent }}<span class="cursor">_</span></div>
-		  <div v-if="status === 'success' && !hasCompletionStep" class="terminal-result result-success">✓ 测试完成！</div>
-          <div v-else-if="status === 'error'" class="terminal-result result-error">× {{ errorMessage || "测试失败" }}</div>
+		  <div v-if="status === 'success' && !hasCompletionStep" class="terminal-result result-success"><svg class="terminal-result-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8" /></svg><span>测试完成！</span></div>
+          <div v-else-if="status === 'error'" class="terminal-result result-error"><svg class="terminal-result-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg><span>{{ errorMessage || "测试失败" }}</span></div>
         </div>
       </div>
 
@@ -355,15 +355,18 @@ async function copyOutput() {
       </div>
 
       <div class="test-footnote">
-        <span>▦ 测试模型</span>
-        <span>{{ selectedModelLooksLikeImage ? "◉ 模式：生图测试" : `◌ 提示词：“${(testPrompt || "hi").slice(0, 38)}${(testPrompt || "hi").length > 38 ? "…" : ""}”` }}</span>
+        <span>测试模型</span>
+        <span>{{ selectedModelLooksLikeImage ? "模式：生图测试" : `提示词：“${(testPrompt || "hi").slice(0, 38)}${(testPrompt || "hi").length > 38 ? "…" : ""}”` }}</span>
       </div>
     </section>
 
     <template #footer>
       <Button variant="plain" @click="close">{{ busy ? "取消" : "关闭" }}</Button>
       <Button :variant="status === 'success' ? 'filled' : 'filled'" :disabled="busy || !selectedModelId" :loading="busy" @click="startTest">
-        <span v-if="!busy" aria-hidden="true">{{ status === "idle" ? "▶" : "↻" }}</span>
+        <svg v-if="!busy" class="test-action-icon" viewBox="0 0 20 20" aria-hidden="true">
+          <path v-if="status === 'idle'" d="M7 5v10l8-5-8-5Z" />
+          <path v-else d="M16 8a6 6 0 1 0 .3 4M16 4v4h-4" />
+        </svg>
         {{ busy ? "测试中…" : status === "idle" ? "开始测试" : "重试" }}
       </Button>
     </template>
@@ -414,10 +417,11 @@ textarea { resize: vertical; min-height: 58px; padding: 11px 13px; line-height: 
 .terminal { max-height: 246px; min-height: 137px; overflow-y: auto; padding: 15px 16px; border: 1px solid var(--separator-strong); border-radius: 18px; color: var(--text-secondary); background: color-mix(in srgb, var(--bg-inset) 90%, #020b16); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 7%, transparent); font-family: var(--font-num); font-size: 13px; line-height: 1.55; }
 .terminal-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 .terminal-status { display: flex; align-items: center; gap: 8px; }
-.terminal-mark { color: var(--blue); }.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--orange); border-top-color: transparent; border-radius: 50%; animation: terminal-spin .75s linear infinite; }
+.terminal-mark { width: 8px; height: 8px; flex: 0 0 auto; border: 2px solid var(--blue); border-radius: 50%; }.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--orange); border-top-color: transparent; border-radius: 50%; animation: terminal-spin .75s linear infinite; }
 .is-muted, .muted-line { color: var(--text-tertiary); }.is-success, .result-success { color: var(--green); }.is-error, .result-error { color: var(--red); }.is-warning, .warning-line { color: var(--orange); }.is-info { color: var(--blue); }.is-purple { color: var(--teal); }
 .cursor { display: inline-block; margin-left: 1px; animation: cursor-blink .85s step-end infinite; }
 .terminal-result { display: flex; gap: 7px; margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--separator); font-size: 14px; font-weight: 600; }
+.terminal-result-icon, .test-action-icon { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 .copy-output { position: absolute; z-index: 1; right: 9px; top: 8px; padding: 5px 8px; border: 1px solid var(--separator); border-radius: 7px; color: var(--text-secondary); background: var(--bg-card); font-size: 11px; opacity: 0; transition: opacity .16s var(--ease), color .16s var(--ease); }
 .terminal-wrap:hover .copy-output, .copy-output:focus-visible { opacity: 1; }.copy-output:hover { color: var(--text-primary); }
 .images-area { display: grid; gap: 8px; }.images-title { color: var(--text-secondary); font-size: 12px; font-weight: 650; }.images-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 10px; }

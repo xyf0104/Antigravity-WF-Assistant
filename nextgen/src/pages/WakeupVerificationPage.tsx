@@ -1526,7 +1526,7 @@ export function WakeupVerificationPage({ onNavigate }: WakeupVerificationPagePro
             <div className="modal-header">
               <button className="btn btn-secondary icon-only" onClick={closeDetailModal} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{t('accounts.actions.viewDetails')}</h2>
-              <button className="modal-close" onClick={closeDetailModal}>
+              <button className="modal-close" onClick={closeDetailModal} aria-label={t('common.close', '关闭')}>
                 <X />
               </button>
             </div>

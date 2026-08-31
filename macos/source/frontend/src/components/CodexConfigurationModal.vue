@@ -40,6 +40,7 @@ import {
 const props = defineProps({
   open: Boolean,
   inline: Boolean,
+  section: { type: String, default: "" },
 });
 
 const emit = defineEmits(["close", "changed"]);
@@ -54,6 +55,7 @@ const actionID = ref("");
 const error = ref("");
 const notice = ref("");
 const data = ref(null);
+const configRoot = ref(null);
 const models = ref([]);
 const selectingXIASSKey = ref(false);
 const completingXIASSKey = ref(false);
@@ -1281,10 +1283,27 @@ function formatTime(value) {
   return time.toLocaleString();
 }
 
+async function focusRequestedSection() {
+  const section = ["provider", "models", "backups", "history", "desktop"].includes(props.section)
+    ? props.section
+    : "";
+  if (!section) return;
+  await nextTick();
+  const target = configRoot.value?.querySelector(`[data-section="${section}"]`);
+  if (!target) return;
+  if (target instanceof HTMLDetailsElement) target.open = true;
+  await nextTick();
+  target.scrollIntoView({ block: "start", behavior: "auto" });
+}
+
 watch(
-  () => props.open,
-  (open) => {
-    if (open) void load();
+  () => [props.open, props.section],
+  ([open], [wasOpen]) => {
+    if (open && !wasOpen) {
+      void load().then(focusRequestedSection);
+    } else if (open) {
+      void focusRequestedSection();
+    }
     else {
       draft.value.api_key = "";
       manualCodexDesktopPath.value = "";
@@ -1305,7 +1324,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Modal :open="open" title="配置 Codex" wide persistent :inline="inline" :closable="!saving && !removingXIASSProvider && !migratingLegacyProvider && !discovering && !repairingHistory && !desktopBusy" @close="close">
-    <div class="codex-config">
+    <div ref="configRoot" class="codex-config">
       <p class="intro">XIASS Tools 仅管理 <code>config.toml</code> 中独立的 <code>xiass_tools</code> Provider。不会读取 <code>auth.json</code>、不会替换无关 Provider；Codex Desktop 的打开、退出与重启只会在你主动确认后执行。</p>
 
       <div v-if="loading" class="state-block">正在读取本机 Codex 配置…</div>
@@ -1319,7 +1338,7 @@ onBeforeUnmount(() => {
           <code>{{ hasConfiguration ? "已找到本机 config.toml" : "尚未找到本机 config.toml" }}</code>
         </div>
 
-        <section class="desktop-control-section" aria-labelledby="codex-desktop-title">
+        <section class="desktop-control-section" data-section="desktop" aria-labelledby="codex-desktop-title">
           <div class="section-title">
             <strong id="codex-desktop-title">Codex Desktop 协作</strong>
             <span>先验证本机 App，再由你主动打开、退出或重启。安装路径仅在原生选择或手动粘贴时短暂用于本机校验，不会写入状态、日志或诊断。</span>
@@ -1345,7 +1364,7 @@ onBeforeUnmount(() => {
           <details v-if="desktopBridgeAvailable" class="manual-desktop-path">
             <summary>自动检测不到？粘贴本机 App 路径</summary>
             <div>
-              <input v-model="manualCodexDesktopPath" autocomplete="off" spellcheck="false" :disabled="desktopBusy" placeholder="Codex.app、Codex.exe 或 ChatGPT.exe 的完整路径" />
+              <input v-model="manualCodexDesktopPath" aria-label="Codex Desktop 应用路径" autocomplete="off" spellcheck="false" :disabled="desktopBusy" placeholder="Codex.app、Codex.exe 或 ChatGPT.exe 的完整路径" />
               <Button variant="plain" size="sm" :loading="desktopAction === 'manual-path'" :disabled="!desktopCanSelect || !manualCodexDesktopPath.trim()" @click="useManualCodexDesktopPath">验证路径</Button>
             </div>
             <p>路径只用于本次原生结构验证，提交后立即从页面清除；不会保存、显示在状态中或导出到日志与诊断。</p>
@@ -1423,7 +1442,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="form-section">
+        <section class="form-section" data-section="provider">
           <div class="section-title"><strong>上游连接</strong><span>{{ usingSavedCodexAccount ? "当前使用已保存的兼容账户。你仍可改用 XIASS API 网站选择 Key，或手动填写兼容 API；切换后会清除本次账户选择。" : "可直接从 XIASS API 网站选择自己的 Key，或手动填写兼容 API。网站选择的 Key 不会回传或保存到页面中。" }}</span></div>
           <div class="xiass-key-selection" :class="{ ready: xiassSelectionReady, pending: xiassSelectionPending }">
             <div class="xiass-key-copy">
@@ -1438,7 +1457,7 @@ onBeforeUnmount(() => {
             <details v-if="xiassSelectionPending" class="manual-callback">
               <summary>浏览器没有自动返回？粘贴完整回调地址</summary>
               <div>
-                <input v-model="manualCallbackURL" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:端口/callback#state=…&payload=…" />
+                <input v-model="manualCallbackURL" aria-label="XIASS API Key 选择回调地址" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:端口/callback#state=…&payload=…" />
                 <Button variant="plain" :loading="completingXIASSKey" :disabled="completingXIASSKey" @click="completeXIASSKeySelectionManually">完成回调</Button>
               </div>
               <p>地址只用于本次原生验证，提交后立即从页面清除，不会写入日志或本地存储。</p>
@@ -1462,7 +1481,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="form-section">
+        <section class="form-section" data-section="models">
           <div class="section-title"><strong>运行模型</strong><span>仅写入 Codex 支持的 <code>responses</code> Provider 配置。</span></div>
           <div class="split-fields">
             <label class="field"><span>默认模型</span><input v-model.trim="draft.model" list="codex-discovered-models" placeholder="gpt-5.6-sol" /></label>
@@ -1529,7 +1548,7 @@ onBeforeUnmount(() => {
           </details>
         </section>
 
-        <section class="history-section">
+        <section class="history-section" data-section="history">
           <div class="section-title"><strong>会话兼容与恢复</strong><span>仅在手动点击后检查并修复因切换 Provider 产生的不兼容本地记录；先创建可恢复备份，不会自动扫描或重写会话。</span></div>
           <div class="history-flow" :class="{ pending: providerChangePending, complete: historyCompatibilityChecked, blocked: historyRepairBlockedByDesktop }" role="status" aria-live="polite">
             <div class="history-flow-heading"><strong>安全顺序</strong><span>{{ historyCompatibilityState }}</span></div>
@@ -1543,7 +1562,7 @@ onBeforeUnmount(() => {
           <p v-if="historyRepairBlockedByDesktop" class="history-blocked">Codex Desktop 正在运行。为避免写入活跃会话，请先在上方退出 Codex 后再继续。</p>
         </section>
 
-        <details class="backup-section">
+        <details class="backup-section" data-section="backups">
           <summary>配置备份（{{ backupItems.length }}）</summary>
           <p v-if="!backupItems.length">尚无 XIASS Tools 创建的配置备份。</p>
           <div v-for="backup in backupItems" :key="backup.id" class="backup-row">
@@ -1592,6 +1611,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.codex-config [data-section] { scroll-margin-top: 16px; }
 .codex-config { display: grid; max-height: min(72vh, 760px); gap: 20px; overflow: auto; padding: 2px 8px 18px 2px; }
 .intro { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
 	.intro code, .section-title code, .model-tools code, .legacy-migration code { color: var(--accent-strong); font-family: var(--font-num); font-size: .94em; }

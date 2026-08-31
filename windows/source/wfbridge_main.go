@@ -79,6 +79,23 @@ func (h *wfBridgeEventHub) after(sequence uint64) (uint64, []wfBridgeEvent) {
 	return h.sequence, result
 }
 
+func wfBridgeParentExitSignal(parentPID string, input io.Reader) (<-chan struct{}, error) {
+	parentPID = strings.TrimSpace(parentPID)
+	if parentPID == "" {
+		return nil, nil
+	}
+	parsedPID, err := strconv.Atoi(parentPID)
+	if err != nil || parsedPID <= 0 {
+		return nil, fmt.Errorf("invalid XIASS_PARENT_PID %q", parentPID)
+	}
+	exited := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, input)
+		close(exited)
+	}()
+	return exited, nil
+}
+
 type wfBridgeServer struct {
 	application *App
 	token       string
@@ -99,6 +116,10 @@ func main() {
 			log.Fatalf("invalid XIASS_WF_RPC_PORT %q", rawPort)
 		}
 		port = parsed
+	}
+	parentExit, err := wfBridgeParentExitSignal(os.Getenv("XIASS_PARENT_PID"), os.Stdin)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	application := newApp()
@@ -158,6 +179,8 @@ func main() {
 
 	select {
 	case <-signals:
+	case <-parentExit:
+		log.Printf("[xiass-wf-bridge] XIASS Tools 父进程已退出，正在释放本地服务")
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("[xiass-wf-bridge] server stopped unexpectedly: %v", err)

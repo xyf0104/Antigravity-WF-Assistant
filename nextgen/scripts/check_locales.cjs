@@ -185,6 +185,7 @@ function isAllowedEnglishReuse(key, value) {
     'Trae CN',
     'TRAE SOLO CN',
     'Codex CLI',
+    'Codex / Claude Code / Cursor / Windsurf',
     '2FA',
     'Crontab',
     '🧩 Crontab',

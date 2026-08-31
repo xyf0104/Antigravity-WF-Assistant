@@ -5218,7 +5218,7 @@
     "actions": {
       "collapseAll": "全部收起",
       "expandAll": "全部展开",
-      "goAntigravity": "前往 Antigravity IDE",
+      "goAntigravity": "前往 Antigravity WF",
       "goCodex": "前往 Codex",
       "goDashboard": "前往仪表盘",
       "goGitHubCopilot": "前往 GitHub Copilot",
@@ -5232,25 +5232,25 @@
     },
     "antigravity": {
       "cautions": {
-        "0": "若看到异常状态（如 403/刷新失败），先刷新再判断是否删除重登。"
+        "0": "修改前确认目标 Antigravity 已退出；未知结构应先导出诊断，不要强制覆盖。"
       },
       "keywords": {
-        "0": "Antigravity IDE 账号",
-        "1": "账号管理",
-        "2": "配额",
-        "3": "标签"
+        "0": "Antigravity WF",
+        "1": "本地代理",
+        "2": "模型与生图",
+        "3": "补丁与诊断"
       },
       "outcomes": {
-        "0": "支持 OAuth、导入、导出和批量操作。",
-        "1": "支持标签筛选、排序、分组展示。"
+        "0": "支持本地代理、模型注入、识图、生图、文件与工具调用。",
+        "1": "支持 OAuth、账户池、链路测试、多开、诊断与可恢复补丁。"
       },
       "steps": {
-        "0": "点击“添加账号”完成授权或导入。",
-        "1": "使用“刷新全部”先同步一轮配额状态。",
-        "2": "按配额/重置时间排序，选择当前要使用的账号。"
+        "0": "先在“运行总览”检查安装与代理状态，并应用所需补丁。",
+        "1": "在“上游代理”或“官方账号”配置凭据并完成链路测试。",
+        "2": "在“模型与生图”启用模型后回到总览启动 Antigravity。"
       },
-      "summary": "管理 Antigravity IDE 账号生命周期：添加、刷新配额、切换、分组与标签。",
-      "title": "Antigravity IDE 账号管理"
+      "summary": "管理 Antigravity WF 的本地代理、补丁、上游模型、官方账号、应用多开、唤醒任务与终端权限。",
+      "title": "Antigravity WF"
     },
     "blocks": {
       "cautions": "常见坑位 / 注意事项",
@@ -5348,16 +5348,16 @@
         "1": "部分平台或能力受系统限制，请按页面提示处理。"
       },
       "keywords": {
-        "0": "Codex / GitHub Copilot / Windsurf / Kiro 平台",
-        "1": "GitHub Copilot 平台",
+        "0": "Codex / Claude Code / Cursor / Windsurf",
+        "1": "Claude Code",
         "2": "Windsurf 平台",
-        "3": "Kiro 平台",
+        "3": "Cursor",
         "4": "注入",
         "5": "切号"
       },
       "outcomes": {
         "0": "Codex：账号切换 + 配额刷新。",
-        "1": "GitHub Copilot/Windsurf/Kiro：支持注入到 VS Code 链路。",
+        "1": "Claude Code、Cursor 与 Windsurf：保留各自真实的授权、切换和实例能力。",
         "2": "每个平台都可独立做筛选、分组、导入导出。"
       },
       "steps": {
@@ -5366,7 +5366,7 @@
         "2": "执行“切换/注入”并在客户端验证生效。"
       },
       "summary": "四个平台页结构一致：账号总览 + 应用多开，支持 OAuth、Token/JSON 导入与切换。",
-      "title": "Codex / GitHub Copilot / Windsurf / Kiro 平台"
+      "title": "Codex / Claude Code / Cursor / Windsurf"
     },
     "quickStart": {
       "cautions": {
@@ -5386,7 +5386,7 @@
       },
       "steps": {
         "0": "打开“仪表盘”，确认你需要管理的平台已经可见。",
-        "1": "进入目标平台页（如 Codex / GitHub Copilot），先添加 1 个账号。",
+        "1": "进入目标 Agent（如 Antigravity WF / Codex），先完成一个可用连接。",
         "2": "使用“切换/注入”按钮验证切号生效。",
         "3": "再进入“应用多开”创建 1 个实例，验证隔离和并行运行。"
       },

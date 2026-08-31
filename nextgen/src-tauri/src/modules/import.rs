@@ -1280,9 +1280,9 @@ mod account_note_import_tests {
         ));
         let _ = fs::remove_dir_all(&data_dir);
         fs::create_dir_all(&data_dir).expect("create test data dir");
-        std::env::set_var("XIASS_TOOLS_TEST_DATA_DIR", &data_dir);
+        let _test_data_dir =
+            crate::modules::test_support::ScopedEnvVar::set("XIASS_TOOLS_TEST_DATA_DIR", &data_dir);
         let result = run();
-        std::env::remove_var("XIASS_TOOLS_TEST_DATA_DIR");
         let _ = fs::remove_dir_all(&data_dir);
         result
     }

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
 import {
@@ -14,10 +14,15 @@ import {
   migrateClaudeCodeLegacyBackup,
 } from "@/state/appState";
 
-const props = defineProps({ open: Boolean, inline: Boolean });
+const props = defineProps({
+  open: Boolean,
+  inline: Boolean,
+  section: { type: String, default: "" },
+});
 const emit = defineEmits(["close", "changed"]);
 
 const data = ref(null);
+const configRoot = ref(null);
 const draft = ref({
   baseUrl: "",
   credentialMode: "auth_token",
@@ -467,10 +472,26 @@ function close() {
   emit("close");
 }
 
-watch(() => props.open, (open) => {
+async function focusRequestedSection() {
+  const section = ["gateway", "model-test", "backups"].includes(props.section)
+    ? props.section
+    : "";
+  if (!section) return;
+  await nextTick();
+  const target = configRoot.value?.querySelector(`[data-section="${section}"]`);
+  if (!target) return;
+  if (target instanceof HTMLDetailsElement) target.open = true;
+  await nextTick();
+  target.scrollIntoView({ block: "start", behavior: "auto" });
+}
+
+watch(() => [props.open, props.section], ([open], [wasOpen]) => {
+  if (open && !wasOpen) {
+    void Promise.all([refresh(), refreshSavedAccountCandidates()]).then(focusRequestedSection);
+    return;
+  }
   if (open) {
-    void refresh();
-    void refreshSavedAccountCandidates();
+    void focusRequestedSection();
     return;
   }
   resetVisibleCredentials();
@@ -491,7 +512,7 @@ watch(() => draft.value.credentialMode, () => {
 
 <template>
   <Modal :open="open" title="配置 Claude Code" wide persistent :inline="inline" :closable="!busy" @close="close">
-    <div class="claude-config">
+    <div ref="configRoot" class="claude-config">
       <p class="intro">
         XIASS Tools 仅管理 Claude Code 用户 <code>settings.json</code> 中的 API 根地址、一个显式凭据方式、模型和网关模型目录开关。
         不读取或管理登录、OAuth、账号额度、会话、MCP、项目配置或托管设置。
@@ -576,7 +597,7 @@ watch(() => draft.value.credentialMode, () => {
           当前用户设置可读取，但 XIASS Tools 无法安全验证可恢复备份位置。为保护现有配置，保存与修改已禁用；使用本次手动输入凭据的模型目录获取和 Claude Messages 单次检查仍不会写入设置。
         </p>
 
-        <section class="configuration-section" :aria-disabled="!valid">
+        <section class="configuration-section" data-section="gateway" :aria-disabled="!valid">
           <div class="section-heading">
             <div>
               <strong>用户设置</strong>
@@ -628,7 +649,7 @@ watch(() => draft.value.credentialMode, () => {
             已保存标准网关模型发现开关，但检测到本机 Claude Code 的 Provider 路由或非必要流量限制；Claude Code 当前不会执行标准网关模型发现。XIASS Tools 不会自动删除这些用户管理的设置。
           </p>
 
-          <section class="gateway-checks" :class="{ unavailable: helperMode }">
+          <section class="gateway-checks" data-section="model-test" :class="{ unavailable: helperMode }">
             <div class="gateway-heading">
               <div>
                 <strong>网关实际检查</strong>
@@ -661,7 +682,7 @@ watch(() => draft.value.credentialMode, () => {
           </section>
         </section>
 
-        <details class="backup-section">
+        <details class="backup-section" data-section="backups">
           <summary>可恢复备份 <span>{{ backups.length }}</span></summary>
           <p>备份只包含这一个用户 settings.json 的校验副本，不包含账号、OAuth、会话或项目数据。</p>
           <div v-if="!backups.length" class="empty-backups">尚无可恢复备份。</div>
@@ -700,6 +721,7 @@ watch(() => draft.value.credentialMode, () => {
 </template>
 
 <style scoped>
+.claude-config [data-section] { scroll-margin-top: 16px; }
 .claude-config { display: grid; min-width: 0; gap: 13px; overflow-wrap: anywhere; }
 .intro { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
 .intro code, .current-state code { color: var(--accent-strong); font-family: var(--font-num); font-size: .95em; }

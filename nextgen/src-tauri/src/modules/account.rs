@@ -2414,7 +2414,8 @@ mod note_tests {
         ));
         let _ = fs::remove_dir_all(&data_dir);
         fs::create_dir_all(&data_dir).expect("create test data dir");
-        std::env::set_var("XIASS_TOOLS_TEST_DATA_DIR", &data_dir);
+        let _test_data_dir =
+            crate::modules::test_support::ScopedEnvVar::set("XIASS_TOOLS_TEST_DATA_DIR", &data_dir);
 
         let token = TokenData::new(
             "access-token".to_string(),
@@ -2470,7 +2471,6 @@ mod note_tests {
         assert!(cleared.mail_url.is_none());
         assert!(cleared.aux_email.is_none());
 
-        std::env::remove_var("XIASS_TOOLS_TEST_DATA_DIR");
         let _ = fs::remove_dir_all(&data_dir);
     }
 
@@ -2486,7 +2486,8 @@ mod note_tests {
         ));
         let _ = fs::remove_dir_all(&data_dir);
         fs::create_dir_all(&data_dir).expect("create test data dir");
-        std::env::set_var("XIASS_TOOLS_TEST_DATA_DIR", &data_dir);
+        let _test_data_dir =
+            crate::modules::test_support::ScopedEnvVar::set("XIASS_TOOLS_TEST_DATA_DIR", &data_dir);
 
         let pending = create_pending_oauth_account(
             "pending@example.com".to_string(),
@@ -2533,7 +2534,6 @@ mod note_tests {
         );
         assert_eq!(authorized.aux_email.as_deref(), Some("backup@example.test"));
 
-        std::env::remove_var("XIASS_TOOLS_TEST_DATA_DIR");
         let _ = fs::remove_dir_all(&data_dir);
     }
 }

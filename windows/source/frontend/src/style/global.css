@@ -2,22 +2,22 @@
 :root[data-theme="dark"] {
   --bg-base: rgba(4, 25, 33, 0.56);
   --bg-sidebar: rgba(7, 31, 41, 0.68);
-  --bg-elevated: rgba(15, 48, 59, 0.7);
-  --bg-card: rgba(12, 43, 55, 0.62);
-  --bg-card-hover: rgba(28, 70, 81, 0.7);
-  --bg-inset: rgba(3, 24, 33, 0.58);
+  --bg-elevated: rgba(15, 48, 59, 0.8);
+  --bg-card: rgba(12, 43, 55, 0.72);
+  --bg-card-hover: rgba(28, 70, 81, 0.8);
+  --bg-inset: rgba(3, 24, 33, 0.7);
   --bg-fill: rgba(148, 163, 184, 0.12);
   --bg-fill-hover: rgba(148, 163, 184, 0.2);
   --topbar-bg: rgba(8, 36, 47, 0.62);
-  --modal-bg: rgba(7, 31, 41, 0.86);
+  --modal-bg: rgba(7, 31, 41, 0.94);
   --embedded-workspace-backdrop: #03161d;
   --embedded-workspace-surface: #03161d;
-  --separator: rgba(197, 216, 240, 0.1);
-  --separator-strong: rgba(197, 216, 240, 0.18);
+  --separator: rgba(197, 216, 240, 0.16);
+  --separator-strong: rgba(197, 216, 240, 0.26);
   --text-primary: #f8fafc;
-  --text-secondary: rgba(226, 232, 240, 0.82);
-  --text-tertiary: rgba(203, 213, 225, 0.68);
-  --text-quaternary: rgba(203, 213, 225, 0.5);
+  --text-secondary: rgba(232, 239, 246, 0.9);
+  --text-tertiary: rgba(215, 226, 235, 0.78);
+  --text-quaternary: rgba(203, 218, 229, 0.64);
   --accent: #f59b48;
   --accent-hover: #ffad62;
   --accent-strong: #ffb86f;
@@ -43,22 +43,22 @@
 :root[data-theme="light"] {
   --bg-base: rgba(239, 248, 249, 0.68);
   --bg-sidebar: rgba(245, 252, 253, 0.76);
-  --bg-elevated: rgba(255, 255, 255, 0.82);
-  --bg-card: rgba(248, 253, 253, 0.72);
-  --bg-card-hover: rgba(255, 255, 255, 0.88);
-  --bg-inset: rgba(235, 240, 247, 0.75);
+  --bg-elevated: rgba(255, 255, 255, 0.9);
+  --bg-card: rgba(248, 253, 253, 0.84);
+  --bg-card-hover: rgba(255, 255, 255, 0.94);
+  --bg-inset: rgba(235, 240, 247, 0.86);
   --bg-fill: rgba(79, 97, 124, 0.09);
   --bg-fill-hover: rgba(79, 97, 124, 0.15);
   --topbar-bg: rgba(248, 250, 253, 0.72);
-  --modal-bg: rgba(248, 253, 253, 0.9);
+  --modal-bg: rgba(248, 253, 253, 0.96);
   --embedded-workspace-backdrop: #edf8f9;
   --embedded-workspace-surface: #edf8f9;
-  --separator: rgba(48, 65, 91, 0.1);
-  --separator-strong: rgba(48, 65, 91, 0.18);
+  --separator: rgba(48, 65, 91, 0.14);
+  --separator-strong: rgba(48, 65, 91, 0.24);
   --text-primary: #192337;
-  --text-secondary: rgba(32, 46, 69, 0.82);
-  --text-tertiary: rgba(43, 58, 83, 0.68);
-  --text-quaternary: rgba(55, 72, 98, 0.5);
+  --text-secondary: rgba(27, 43, 66, 0.9);
+  --text-tertiary: rgba(38, 55, 80, 0.78);
+  --text-quaternary: rgba(48, 66, 92, 0.64);
   --accent: #b95218;
   --accent-hover: #a94d15;
   --accent-strong: #b95218;
@@ -168,14 +168,15 @@ body {
 }
 
 :root[data-embedded="true"] button {
-  min-height: 40px !important;
+  min-width: 44px;
+  min-height: 44px !important;
   backdrop-filter: blur(13px) saturate(135%);
   -webkit-backdrop-filter: blur(13px) saturate(135%);
   touch-action: manipulation;
 }
 
 :root[data-embedded="true"] summary {
-  min-height: 40px;
+  min-height: 44px;
   align-items: center;
   touch-action: manipulation;
 }
@@ -192,7 +193,7 @@ body {
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
   select
 ) {
-  min-height: 40px;
+  min-height: 44px;
 }
 
 :root[data-embedded="true"] textarea {
@@ -207,23 +208,38 @@ body {
 }
 
 :root[data-embedded="true"] :is(.codex-config, .claude-config, .mcp-config) :is(p, li, label, dt, dd) {
-  font-size: 12px !important;
+  font-size: 13px !important;
   line-height: 1.6 !important;
 }
 
 :root[data-embedded="true"] :is(.codex-config, .claude-config, .mcp-config) :is(strong, .section-heading strong) {
-  font-size: 13px !important;
+  font-size: 14px !important;
   line-height: 1.45 !important;
 }
 
 :root[data-embedded="true"] :is(.codex-config, .claude-config, .mcp-config) :is(small, .section-heading span, .field > span) {
-  font-size: 12px !important;
+  font-size: 13px !important;
   line-height: 1.55 !important;
 }
 
+/*
+ * The source workbenches intentionally used 9–11px metadata to stay compact.
+ * That density is too small once the workbench is embedded inside the desktop
+ * shell, especially on scaled Windows displays.  Plain spans contain status,
+ * helper and flow copy, so give them the same readable floor as the rest of
+ * the embedded form without changing headings or numeric display elements.
+ */
+:root[data-embedded="true"] :is(.codex-config, .claude-config, .mcp-config) span {
+  font-size: 12.5px !important;
+  line-height: 1.5 !important;
+}
+
+:root[data-embedded="true"] .codex-config .history-flow li > span {
+  width: 22px !important;
+  height: 22px !important;
+}
+
 :root[data-embedded="true"] :is(.codex-config, .claude-config, .mcp-config) :is(
-  span,
-  small,
   code,
   button,
   input,
@@ -235,7 +251,11 @@ body {
   dt,
   dd
 ) {
-  font-size: 12px !important;
+  font-size: 13px !important;
+}
+
+:root[data-embedded="true"] :is(.codex-config, .claude-config, .mcp-config) code {
+  font-size: 12.5px !important;
 }
 
 :root[data-embedded="true"] .codex-config {
@@ -430,6 +450,16 @@ button {
   cursor: pointer;
 }
 
-input:focus,
-textarea:focus { outline: none; }
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 78%, white);
+  outline-offset: 2px;
+}
+
+input:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible),
+select:focus:not(:focus-visible) { outline: none; }
 ::placeholder { color: var(--text-quaternary); }

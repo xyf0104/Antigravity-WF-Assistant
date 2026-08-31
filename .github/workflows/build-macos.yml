@@ -73,6 +73,56 @@ jobs:
           test -n "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
 
+      - name: Smoke-test packaged macOS app startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find target/universal-apple-darwin/release/bundle -type d -name 'XIASS Tools.app' -print -quit)"
+          test -n "$app"
+          bundle_executable="$(plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")"
+          test -n "$bundle_executable"
+          executable="$app/Contents/MacOS/$bundle_executable"
+          test -x "$executable"
+          smoke_root="$(mktemp -d)"
+          cleanup() {
+            if [[ -n "${app_pid:-}" ]] && kill -0 "$app_pid" 2>/dev/null; then
+              kill "$app_pid" 2>/dev/null || true
+              wait "$app_pid" 2>/dev/null || true
+            fi
+            rm -rf "$smoke_root"
+          }
+          trap cleanup EXIT
+          XIASS_TOOLS_DATA_DIR="$smoke_root/data" "$executable" >"$smoke_root/stdout.log" 2>"$smoke_root/stderr.log" &
+          app_pid=$!
+          print_smoke_logs() {
+            cat "$smoke_root/stderr.log" 2>/dev/null || true
+            find "$smoke_root/data/logs" -type f -name 'app.log*' -exec cat {} + 2>/dev/null || true
+          }
+          frontend_ready=0
+          for _ in {1..45}; do
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              wait "$app_pid" || true
+              print_smoke_logs
+              echo "Packaged XIASS Tools exited before the frontend became ready" >&2
+              exit 1
+            fi
+            if find "$smoke_root/data/logs" -type f -name 'app.log*' -exec grep -Fq '[Diagnostics] 前端启动超时' {} + 2>/dev/null; then
+              print_smoke_logs
+              echo "Packaged XIASS Tools reported a frontend startup timeout" >&2
+              exit 1
+            fi
+            if find "$smoke_root/data/logs" -type f -name 'app.log*' -exec grep -Fq '[Diagnostics] 前端已就绪' {} + 2>/dev/null; then
+              frontend_ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$frontend_ready" -ne 1 ]]; then
+            print_smoke_logs
+            echo "Packaged XIASS Tools did not report frontend ready within 45 seconds" >&2
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: XIASS-Tools-Nextgen-macOS-universal

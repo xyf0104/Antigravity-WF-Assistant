@@ -787,6 +787,8 @@ pub fn run() {
             commands::wakeup::wakeup_load_history,
             commands::wakeup::wakeup_add_history,
             commands::wakeup::wakeup_clear_history,
+            commands::wakeup::wakeup_cancel_scope,
+            commands::wakeup::wakeup_release_scope,
             commands::wakeup::wakeup_verification_load_state,
             commands::wakeup::wakeup_verification_load_history,
             commands::wakeup::wakeup_verification_delete_history,

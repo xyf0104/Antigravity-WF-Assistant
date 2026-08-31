@@ -8,6 +8,15 @@ const CODEX_GROUPS_FILE: &str = "codex_account_groups.json";
 const CODEX_MODEL_PROVIDERS_FILE: &str = "codex_model_providers.json";
 const CODEX_MODEL_PROVIDER_TEST_TIMEOUT_SECS: u64 = 20;
 
+fn validate_codex_json_array(data: &str, label: &str) -> Result<(), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(data).map_err(|error| format!("{} JSON 无效: {}", label, error))?;
+    if !value.is_array() {
+        return Err(format!("{} 必须是 JSON 数组", label));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn load_codex_account_groups() -> Result<String, String> {
     let path = account::get_data_dir()?.join(CODEX_GROUPS_FILE);
@@ -19,12 +28,14 @@ pub async fn load_codex_account_groups() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn save_codex_account_groups(data: String) -> Result<(), String> {
+    validate_codex_json_array(&data, "Codex 账号分组")?;
     let dir = account::get_data_dir()?;
     if !dir.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {}", e))?;
     }
     let path = dir.join(CODEX_GROUPS_FILE);
-    std::fs::write(&path, data).map_err(|e| format!("Failed to write codex groups: {}", e))
+    crate::modules::atomic_write::write_string_atomic(&path, &data)
+        .map_err(|e| format!("Failed to write codex groups atomically: {}", e))
 }
 
 #[tauri::command]
@@ -39,12 +50,32 @@ pub async fn load_codex_model_providers() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn save_codex_model_providers(data: String) -> Result<(), String> {
+    validate_codex_json_array(&data, "Codex 模型供应商")?;
     let dir = account::get_data_dir()?;
     if !dir.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {}", e))?;
     }
     let path = dir.join(CODEX_MODEL_PROVIDERS_FILE);
-    std::fs::write(&path, data).map_err(|e| format!("Failed to write codex model providers: {}", e))
+    crate::modules::atomic_write::write_string_atomic(&path, &data)
+        .map_err(|e| format!("Failed to write codex model providers atomically: {}", e))
+}
+
+#[cfg(test)]
+mod codex_model_provider_storage_tests {
+    use super::validate_codex_json_array;
+
+    #[test]
+    fn validates_array_storage_payloads() {
+        assert!(validate_codex_json_array("[]", "test").is_ok());
+        assert!(validate_codex_json_array(r#"[{"id":"provider"}]"#, "test").is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_or_non_array_storage_payloads() {
+        assert!(validate_codex_json_array("{", "test").is_err());
+        assert!(validate_codex_json_array(r#"{"id":"provider"}"#, "test").is_err());
+        assert!(validate_codex_json_array("null", "test").is_err());
+    }
 }
 
 fn codex_model_provider_models_url(base_url: &str) -> Result<String, String> {

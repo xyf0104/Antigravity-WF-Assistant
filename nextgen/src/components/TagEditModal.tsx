@@ -402,6 +402,7 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
                   className="btn btn-secondary tag-add-btn"
                   onClick={() => { setGlobalRenamingTag(null); setInputValue(''); setError(''); }}
                   disabled={saving}
+                  aria-label={t('common.cancel', '取消')}
                 >
                   <X size={14} />
                 </button>

@@ -79,7 +79,7 @@ export function FileCorruptedModal({ error, onClose }: FileCorruptedModalProps) 
             <span>⚠️</span>
             {t('error.fileCorrupted.title', '文件读取失败')}
           </h2>
-          <button className="modal-close" onClick={onClose}><X size={20} /></button>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}><X size={20} /></button>
         </div>
 
         <div className="modal-body">

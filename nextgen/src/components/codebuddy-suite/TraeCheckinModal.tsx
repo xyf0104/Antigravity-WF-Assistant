@@ -190,7 +190,7 @@ export function TraeCheckinModal({
           <h2>
             <CalendarCheck size={20} /> {t('trae.checkin.modalTitle', 'TRAE SOLO CN 每日签到')}
           </h2>
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X size={18} />
           </button>
         </div>

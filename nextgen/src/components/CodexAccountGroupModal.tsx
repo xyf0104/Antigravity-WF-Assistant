@@ -252,7 +252,7 @@ export const CodexAccountGroupModal = ({
             <FolderOpen size={18} />
             {t('accounts.groups.manageTitle', '分组管理')}
           </h2>
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X size={18} />
           </button>
         </div>
@@ -551,7 +551,7 @@ export const CodexAddToGroupModal = ({
               ? t('accounts.groups.moveToGroup')
               : t('accounts.groups.addToGroup', '添加至分组')}
           </h2>
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X size={18} />
           </button>
         </div>
@@ -570,6 +570,7 @@ export const CodexAddToGroupModal = ({
               className="btn btn-primary"
               onClick={handleCreateAndAdd}
               disabled={!newName.trim()}
+              aria-label={t('accounts.groups.createAndAdd', '新建分组并添加')}
             >
               <Plus size={14} />
             </button>

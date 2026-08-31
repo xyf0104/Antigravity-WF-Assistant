@@ -19,7 +19,7 @@ test("tools center exposes only a guarded Cursor/Windsurf launch action", () => 
 	assert.match(toolsSource, /const macTarget/);
 	assert.match(toolsSource, /const windowsTarget/);
   assert.match(toolsSource, /event: "launch"/);
-  assert.match(toolsSource, /emit\(action\.event, platform\.agentId\)/);
+  assert.match(toolsSource, /emit\(action\.event, platform\.agentId, action\.id\)/);
   assert.match(appSource, /handleAgentLaunch/);
   assert.match(appSource, /@launch="handleAgentLaunch"/);
   assert.match(appSource, /launchDetectedAgent/);
@@ -28,7 +28,7 @@ test("tools center exposes only a guarded Cursor/Windsurf launch action", () => 
 test("Cursor and Windsurf use a native-only verified application chooser", () => {
   assert.match(toolsSource, /manualSelections:/);
   assert.match(toolsSource, /label: "选择应用"[\s\S]*event: "choose"/);
-  assert.match(toolsSource, /emit\(action\.event, platform\.agentId\)/);
+  assert.match(toolsSource, /emit\(action\.event, platform\.agentId, action\.id\)/);
   assert.match(toolsSource, /选择应用/);
   assert.match(appSource, /handleAgentChoose/);
   assert.match(appSource, /@choose="handleAgentChoose"/);
@@ -137,12 +137,36 @@ test("the left rail selects one independent Agent and Antigravity owns a horizon
 
 test("guarded tools remain reachable for read-only recovery and one-shot checks", () => {
   assert.match(toolsSource, /function triggerFunctionAction\(action, platform\)/);
+  assert.match(toolsSource, /<span[\s\S]*?v-if="!action\.event"[\s\S]*?aria-current="page"/);
+  assert.match(toolsSource, /<button[\s\S]*?v-else[\s\S]*?:data-action="action\.id"/);
   assert.match(toolsSource, /event: "configure"/);
   assert.match(toolsSource, /label: "备份 \/ 恢复"/);
   assert.match(toolsSource, /label: "恢复点"/);
   assert.match(toolsSource, /functionActionDisabled\(action, selectedPlatform\)/);
   assert.doesNotMatch(toolsSource, /!isAvailable\(.*configuration/);
   assert.match(claudeModalSource, /:disabled="!canManage \|\| !readyToSave \|\| busy"/);
+});
+
+test("shared configuration dialogs open the exact function selected in the Agent toolbar", () => {
+  assert.match(toolsSource, /emit\(action\.event, platform\.agentId, action\.id\)/);
+  assert.match(toolsSource, /:data-action="action\.id"/);
+  assert.match(toolsSource, /grid-template-columns: repeat\(auto-fit, minmax\(126px, 1fr\)\)/);
+  assert.match(appSource, /function handleAgentConfigure\(agentID, actionID = ""\)/);
+  assert.match(appSource, /codexConfigurationSection\.value = actionID/);
+  assert.match(appSource, /claudeCodeConfigurationSection\.value = actionID/);
+  assert.match(appSource, /mcpConfigurationAction\.value = actionID/);
+  assert.match(codexModalSource, /data-section="provider"/);
+  assert.match(codexModalSource, /data-section="models"/);
+  assert.match(codexModalSource, /data-section="history"/);
+  assert.match(codexModalSource, /data-section="backups"/);
+  assert.match(codexModalSource, /data-section="desktop"/);
+  assert.match(codexModalSource, /target\.scrollIntoView\(\{ block: "start", behavior: "auto" \}\)/);
+  assert.match(claudeModalSource, /data-section="gateway"/);
+  assert.match(claudeModalSource, /data-section="model-test"/);
+  assert.match(claudeModalSource, /target\.scrollIntoView\(\{ block: "start", behavior: "auto" \}\)/);
+  assert.match(mcpModalSource, /props\.action === "project-mcp"/);
+  assert.match(mcpModalSource, /props\.action !== "backups"/);
+  assert.match(mcpModalSource, /target\.scrollIntoView\(\{ block: "start", behavior: "auto" \}\)/);
 });
 
 test("guarded modals retain their recovery surface before returning a read-only error", () => {

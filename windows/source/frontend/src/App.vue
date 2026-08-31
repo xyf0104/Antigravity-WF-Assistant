@@ -45,9 +45,12 @@ const repatchDialogOpen = ref(false);
 const repatchError = ref("");
 const agentDetailOpen = ref(false);
 const codexConfigurationOpen = ref(false);
+const codexConfigurationSection = ref("");
 const claudeCodeConfigurationOpen = ref(false);
+const claudeCodeConfigurationSection = ref("");
 const mcpConfigurationOpen = ref(false);
 const mcpConfigurationTarget = ref("");
+const mcpConfigurationAction = ref("");
 const selectedAgentID = ref("");
 const selectedAgentDiagnostics = ref([]);
 let removeMainWindowShownListener = null;
@@ -197,22 +200,25 @@ async function handleAgentChoose(agentID) {
 	);
 }
 
-function handleAgentConfigure(agentID) {
+function handleAgentConfigure(agentID, actionID = "") {
 	if (agentID === "antigravity") {
 		activeModuleID.value = "antigravity";
 		antigravityTab.value = "models";
 		return;
 	}
 	if (agentID === "codex") {
+		codexConfigurationSection.value = actionID;
 		codexConfigurationOpen.value = true;
 		return;
 	}
 	if (agentID === "claude-code") {
+		claudeCodeConfigurationSection.value = actionID;
 		claudeCodeConfigurationOpen.value = true;
 		return;
 	}
 	if (agentID === "cursor" || agentID === "windsurf") {
 		mcpConfigurationTarget.value = agentID;
+		mcpConfigurationAction.value = actionID;
 		mcpConfigurationOpen.value = true;
 		return;
 	}
@@ -451,6 +457,7 @@ onUnmounted(() => {
 	<CodexConfigurationModal
 		:open="codexConfigurationOpen"
 		:inline="embeddedMode"
+		:section="codexConfigurationSection"
 		@close="codexConfigurationOpen = false"
 		@changed="handleCodexConfigurationChanged"
 	/>
@@ -458,6 +465,7 @@ onUnmounted(() => {
 	<ClaudeCodeConfigurationModal
 		:open="claudeCodeConfigurationOpen"
 		:inline="embeddedMode"
+		:section="claudeCodeConfigurationSection"
 		@close="claudeCodeConfigurationOpen = false"
 		@changed="handleClaudeCodeConfigurationChanged"
 	/>
@@ -466,6 +474,7 @@ onUnmounted(() => {
 		:open="mcpConfigurationOpen"
 		:inline="embeddedMode"
 		:target="mcpConfigurationTarget"
+		:action="mcpConfigurationAction"
 		@close="mcpConfigurationOpen = false"
 		@changed="handleMCPConfigurationChanged"
 	/>

@@ -1809,7 +1809,9 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="!state.accounts.length && !state.accountsLoading" class="empty">
-      <div class="empty-icon">◌</div>
+      <div class="empty-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5" /><path d="M5 19c.7-4 3.1-6 7-6s6.3 2 7 6" /></svg>
+      </div>
       <div class="t-headline">还没有 XIASS 上游账户</div>
       <div class="t-caption" style="margin-top: 5px">可先通过 OAuth 授权，也可添加 API Key / 令牌或导入账户凭据；之后把模型绑定到该账户或账户池。不会扫描、接管或导入其他客户端的登录会话。</div>
       <div class="row" style="gap: 8px; margin-top: 14px">
@@ -2268,7 +2270,7 @@ onBeforeUnmount(() => {
       <div class="col" style="gap: 10px">
         <div class="t-body">支持单账户对象、数组、<code>{"accounts": [...]}</code>、<code>{"data": [...]}</code>，以及 XIASS 风格的 <code>credentials</code>、<code>access_token</code>、<code>api_key</code> 字段。</div>
         <div class="t-caption">仅粘贴你有权使用的账户级 API / OAuth 凭据。客户端密钥、Cookie、浏览器或桌面会话以及未知私有字段不会导入；令牌不会回显到界面或日志。</div>
-        <textarea v-model="importText" class="import-text" spellcheck="false" placeholder='{"provider":"openai","api_key":"sk-...","base_url":"https://api.xiass.com"}'></textarea>
+        <textarea v-model="importText" class="import-text" aria-label="账户 JSON" spellcheck="false" placeholder='{"provider":"openai","api_key":"sk-...","base_url":"https://api.xiass.com"}'></textarea>
         <div v-if="importNotice" class="notice-box">{{ importNotice }}</div>
         <div v-if="importError" class="err-box">{{ importError }}</div>
       </div>
@@ -2351,7 +2353,8 @@ onBeforeUnmount(() => {
 .usage-detail-grid dt { color: var(--text-tertiary); font-size: 10.5px; }
 .usage-detail-grid dd { overflow: hidden; margin: 0; color: var(--text-primary); font: 650 14px var(--font-num); text-overflow: ellipsis; white-space: nowrap; }
 .empty { flex: 1; min-height: 270px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; text-align: center; border: 1px dashed var(--separator-strong); border-radius: var(--r-lg); }
-.empty-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; font-size: 28px; color: var(--accent-strong); background: var(--accent-soft); margin-bottom: 13px; }
+.empty-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; color: var(--accent-strong); background: var(--accent-soft); margin-bottom: 13px; }
+.empty-icon svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .editor { padding-bottom: 2px; }
 .section { display: flex; flex-direction: column; gap: 9px; padding: 12px; border: 1px solid var(--separator); border-radius: var(--r-md); background: color-mix(in srgb, var(--bg-inset) 58%, transparent); }
 .discover-box { background: color-mix(in srgb, var(--accent-soft) 28%, var(--bg-card)); }
@@ -2404,5 +2407,10 @@ select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3p
 .import-text { min-height: 220px; }
 @media (max-width: 900px) { .account-directory-toolbar { align-items: stretch; flex-direction: column; } .account-directory-meta { justify-content: space-between; } }
 @media (max-width: 700px) { .account-directory-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .directory-search-field { grid-column: span 2; } }
-@media (max-width: 620px) { .two-col, .usage-detail-grid { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr) minmax(112px, auto); } .select-row code { display: none; } .page-head { align-items: flex-start; flex-direction: column; } .account-actions { justify-content: flex-start; } .account-directory { padding: 10px; } .account-directory-filters { grid-template-columns: 1fr; } .directory-search-field { grid-column: auto; } .account-directory-meta, .account-bulk-actions { justify-content: flex-start; } .directory-selection-copy { flex-basis: 100%; white-space: normal; } }
+@media (max-width: 900px) {
+  .page-head { align-items: flex-start; flex-direction: column; }
+  .page-head > .row:last-child { width: 100%; flex-wrap: wrap; }
+  .page-head > .row:last-child :deep(.btn) { flex: 1 1 auto; white-space: nowrap; }
+}
+@media (max-width: 620px) { .two-col, .usage-detail-grid { grid-template-columns: 1fr; } .select-row { grid-template-columns: 16px minmax(0, 1fr) minmax(112px, auto); } .select-row code { display: none; } .account-actions { justify-content: flex-start; } .account-directory { padding: 10px; } .account-directory-filters { grid-template-columns: 1fr; } .directory-search-field { grid-column: auto; } .account-directory-meta, .account-bulk-actions { justify-content: flex-start; } .directory-selection-copy { flex-basis: 100%; white-space: normal; } }
 </style>

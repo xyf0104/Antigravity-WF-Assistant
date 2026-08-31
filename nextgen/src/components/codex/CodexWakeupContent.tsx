@@ -2847,7 +2847,7 @@ export function CodexWakeupContent({
                 <ChevronLeft size={14} />
               </button>
               <h2>{runtimeGuideTitle}</h2>
-              <button className="modal-close" onClick={closeRuntimeGuideModal} disabled={runtimeGuideRefreshing}>
+              <button className="modal-close" onClick={closeRuntimeGuideModal} disabled={runtimeGuideRefreshing} aria-label={t('common.close', '关闭')}>
                 <X />
               </button>
             </div>
@@ -2952,7 +2952,7 @@ export function CodexWakeupContent({
                 </button>
               )}
               <h2>{t('codex.wakeup.presetManagerTitle')}</h2>
-              <button className="modal-close" onClick={closePresetModal} disabled={saving}>
+              <button className="modal-close" onClick={closePresetModal} disabled={saving} aria-label={t('common.close', '关闭')}>
                 <X />
               </button>
             </div>
@@ -3099,7 +3099,7 @@ export function CodexWakeupContent({
             <div className="modal-header">
               <button className="btn btn-secondary icon-only" onClick={closeTaskModal} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{taskDraft.id ? t('codex.wakeup.editTaskTitle') : t('codex.wakeup.createTaskTitle')}</h2>
-              <button className="modal-close" onClick={closeTaskModal}>
+              <button className="modal-close" onClick={closeTaskModal} aria-label={t('common.close', '关闭')}>
                 <X />
               </button>
             </div>
@@ -3522,7 +3522,7 @@ export function CodexWakeupContent({
             <div className="modal-header">
               <button className="btn btn-secondary icon-only" onClick={closeTestModal} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{t('codex.wakeup.testTitle')}</h2>
-              <button className="modal-close" onClick={closeTestModal}>
+              <button className="modal-close" onClick={closeTestModal} aria-label={t('common.close', '关闭')}>
                 <X />
               </button>
             </div>
@@ -3664,7 +3664,7 @@ export function CodexWakeupContent({
             <div className="modal-header">
               <button className="btn btn-secondary icon-only" onClick={() => setShowHistoryModal(false)} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{t('codex.wakeup.historyTitle')}</h2>
-              <button className="modal-close" onClick={() => setShowHistoryModal(false)}>
+              <button className="modal-close" onClick={() => setShowHistoryModal(false)} aria-label={t('common.close', '关闭')}>
                 <X />
               </button>
             </div>
@@ -3766,6 +3766,7 @@ export function CodexWakeupContent({
                 className="modal-close"
                 onClick={() => { setExecutionSession(null); setExecutionSessionFromHistory(false); }}
                 disabled={executionSession.running}
+                aria-label={t('common.close', '关闭')}
               >
                 <X />
               </button>

@@ -392,7 +392,7 @@ export function CodexAccountsOverviewPanel(props: CodexAccountsViewProps) {
               className={`message-bar ${message.tone === "error" ? "error" : "success"}`}
             >
               {message.text}
-              <button onClick={() => setMessage(null)}>
+              <button onClick={() => setMessage(null)} aria-label={t("common.close", "关闭")}>
                 <X size={14} />
               </button>
             </div>
@@ -590,7 +590,11 @@ export function CodexAccountsOverviewPanel(props: CodexAccountsViewProps) {
                     "切换排序方向",
                   )}
                 >
-                  {sortDirection === "desc" ? "⬇" : "⬆"}
+                  {sortDirection === "desc" ? (
+                    <ArrowDown size={16} aria-hidden="true" />
+                  ) : (
+                    <ArrowUp size={16} aria-hidden="true" />
+                  )}
                 </button>
               )}
             </div>

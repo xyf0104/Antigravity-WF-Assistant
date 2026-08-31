@@ -169,6 +169,7 @@ export function CodebuddySessionManager({ platform, accounts = [] }: Props) {
               <button
                 className="codex-session-manager__search-clear"
                 onClick={handleClearKeyword}
+                aria-label={t('common.clear', '清空')}
               >
                 <X size={12} />
               </button>

@@ -17,7 +17,7 @@ interface SingleSelectDropdownProps {
   disabled?: boolean;
   ariaLabel?: string;
   placeholder?: string;
-  menuPlacement?: "down" | "up";
+  menuPlacement?: "auto" | "down" | "up";
   menuWidth?: number;
   menuMaxHeight?: number;
 }
@@ -31,7 +31,7 @@ export function SingleSelectDropdown({
   disabled = false,
   ariaLabel,
   placeholder,
-  menuPlacement = "down",
+  menuPlacement = "auto",
   menuWidth,
   menuMaxHeight = 280,
 }: SingleSelectDropdownProps) {
@@ -71,22 +71,27 @@ export function SingleSelectDropdown({
         rect.left,
         Math.max(12, window.innerWidth - width - 12),
       );
+      const availableAbove = Math.max(0, rect.top - 22);
+      const availableBelow = Math.max(0, window.innerHeight - rect.bottom - 22);
+      const desiredHeight = Math.min(menuMaxHeight, options.length * 42 + 16);
+      const openUp =
+        menuPlacement === "up" ||
+        (menuPlacement === "auto" &&
+          availableBelow < desiredHeight &&
+          availableAbove > availableBelow);
       const nextStyle =
-        menuPlacement === "up"
+        openUp
           ? {
               bottom: Math.round(window.innerHeight - rect.top + 10),
               left: Math.round(left),
               width: Math.round(width),
-              maxHeight: Math.min(menuMaxHeight, Math.max(160, rect.top - 20)),
+              maxHeight: Math.min(menuMaxHeight, availableAbove),
             }
           : {
               top: Math.round(rect.bottom + 10),
               left: Math.round(left),
               width: Math.round(width),
-              maxHeight: Math.min(
-                menuMaxHeight,
-                Math.max(160, window.innerHeight - rect.bottom - 20),
-              ),
+              maxHeight: Math.min(menuMaxHeight, availableBelow),
             };
       setMenuStyle((prev) =>
         prev &&
@@ -122,7 +127,7 @@ export function SingleSelectDropdown({
       window.removeEventListener("resize", updateMenuPosition);
       window.removeEventListener("scroll", updateMenuPosition, true);
     };
-  }, [menuMaxHeight, menuPlacement, menuWidth, open]);
+  }, [menuMaxHeight, menuPlacement, menuWidth, open, options.length]);
 
   useEffect(() => {
     if (!disabled) return;

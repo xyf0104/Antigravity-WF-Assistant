@@ -39,6 +39,22 @@ import { getMfaOtpToken, getMfaTimeRemaining, loadSavedMfaRecords, parseMfaCrede
 import { findFirstMailVerificationCode } from "../utils/mailVerificationCode";
 import { ACTIVE_GROUP_ID_FIELD, buildCodexAccountNoteForm, buildExportFileName, CODEX_BATCH_IMPORT_SESSION_STORAGE_KEY, CODEX_FILTER_PERSISTENCE_SCOPE, CODEX_HIDE_RELAY_QUOTA_LEGACY_KEY, CODEX_LOCAL_ACCESS_EXPANDED_KEY, CODEX_OVERVIEW_LAYOUT_MODE_KEY, EMPTY_CODEX_ACCOUNT_NOTE_FORM, EXPIRY_FILTER_FIELD, FILTER_TYPES_FIELD, getCodexAccountNoteTitle, getDirectoryPath, GROUP_FILTER_FIELD, hasCodexAccountNoteDetails, hasCodexAccountNoteFormDetails, isHttpLikeUrl, joinFilePath, normalizeCodexOverviewLayoutMode, normalizeHttpBaseUrl, readStoredLocalAccessAddressKind, SEARCH_QUERY_FIELD, shouldAutoHideBatchDeleteJob, type CodexAccountNoteFieldErrors, type CodexAccountNoteFormState, type CodexAccountNoteMailPreviewSnapshot, type CodexAccountNoteMailPreviewState, type CodexBatchImportFilter, type CodexCliLaunchModalState, type CodexOverviewGeneralConfig, type CodexOverviewLayoutMode } from "./codexAccountsControllerModel";
 
+function normalizeDirectoryForComparison(value: string): string {
+  const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function isDirectoryWithinDownloads(
+  directory: string | null,
+  downloadsDirectory: string | null,
+): boolean {
+  if (!directory || !downloadsDirectory) return false;
+  const normalizedDirectory = normalizeDirectoryForComparison(directory);
+  const normalizedDownloads = normalizeDirectoryForComparison(downloadsDirectory);
+  return normalizedDirectory === normalizedDownloads
+    || normalizedDirectory.startsWith(`${normalizedDownloads}/`);
+}
+
 /** 封装 useCodexAccountsPageController 的 useCodexAccountsBaseController 业务域状态与动作。 */
 export function useCodexAccountsBaseController() {
   const isMacOS = usePlatformRuntimeSupport("macos-only");
@@ -86,6 +102,8 @@ export function useCodexAccountsBaseController() {
     ] = useState(false);
     const [formattedExportPathCopied, setFormattedExportPathCopied] =
       useState(false);
+    const [formattedExportDownloadsDirectory, setFormattedExportDownloadsDirectory] =
+      useState<string | null>(null);
     const [formattedBatchSavingExportJson, setFormattedBatchSavingExportJson] =
       useState(false);
     const [formattedSavingExportDocumentId, setFormattedSavingExportDocumentId] =
@@ -1379,6 +1397,31 @@ export function useCodexAccountsBaseController() {
       clearExportModalError();
     }, [clearExportModalError, exportFormat, showExportModal]);
 
+    useEffect(() => {
+      if (!showExportModal) {
+        setFormattedExportDownloadsDirectory(null);
+        return;
+      }
+
+      let disposed = false;
+      void invoke<string>("get_downloads_dir")
+        .then((directory) => {
+          if (!disposed) {
+            setFormattedExportDownloadsDirectory(directory || null);
+          }
+        })
+        .catch((error) => {
+          console.warn("[CodexExport] get downloads dir failed:", error);
+          if (!disposed) {
+            setFormattedExportDownloadsDirectory(null);
+          }
+        });
+
+      return () => {
+        disposed = true;
+      };
+    }, [showExportModal]);
+
     const exportHasAgentIdentity = useMemo(() => {
       return hasCodexExportAgentIdentity(exportJsonContent);
     }, [exportJsonContent]);
@@ -1615,6 +1658,7 @@ export function useCodexAccountsBaseController() {
         let defaultPath: string | undefined;
         try {
           defaultPath = await invoke<string>("get_downloads_dir");
+          setFormattedExportDownloadsDirectory(defaultPath || null);
         } catch (error) {
           console.warn("[CodexExport] get downloads dir failed:", error);
         }
@@ -1659,12 +1703,25 @@ export function useCodexAccountsBaseController() {
     ]);
 
     const canOpenFormattedExportSavedDirectory = useMemo(
-      () => Boolean(formattedExportSavedPath),
-      [formattedExportSavedPath],
+      () => {
+        if (!formattedExportSavedPath) return false;
+        const directory = formattedExportSavedPathIsDirectory
+          ? formattedExportSavedPath
+          : getDirectoryPath(formattedExportSavedPath);
+        return isDirectoryWithinDownloads(
+          directory,
+          formattedExportDownloadsDirectory,
+        );
+      },
+      [
+        formattedExportDownloadsDirectory,
+        formattedExportSavedPath,
+        formattedExportSavedPathIsDirectory,
+      ],
     );
 
     const openFormattedExportSavedDirectory = useCallback(async () => {
-      if (!formattedExportSavedPath) return;
+      if (!formattedExportSavedPath || !canOpenFormattedExportSavedDirectory) return;
       try {
         clearExportModalError();
         await openPath(
@@ -1680,6 +1737,7 @@ export function useCodexAccountsBaseController() {
       }
     }, [
       clearExportModalError,
+      canOpenFormattedExportSavedDirectory,
       formattedExportSavedPath,
       formattedExportSavedPathIsDirectory,
       reportExportModalError,

@@ -1,4 +1,4 @@
-import { Activity, BadgeDollarSign, ChevronDown, Check, CircleAlert, Copy, Eye, EyeOff, FolderPlus, Gauge, Image, Pin, PinOff, Play, Plus, Power, RefreshCw, Route, Send, ShieldCheck, SlidersHorizontal, Trash2, Undo2, Wrench, X } from "lucide-react";
+import { Activity, ArrowRight, BadgeDollarSign, ChevronDown, Check, CircleAlert, Copy, Eye, EyeOff, FolderPlus, Gauge, Image, Pin, PinOff, Play, Plus, Power, RefreshCw, Route, Send, ShieldCheck, SlidersHorizontal, Trash2, Undo2, Wrench, X } from "lucide-react";
 import { CodexIcon } from "../components/icons/CodexIcon";
 import { ManualHelpIconButton } from "../components/ManualHelpIconButton";
 import { PlatformGroupSwitcher } from "../components/platform/PlatformGroupSwitcher";
@@ -3334,7 +3334,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                               />
                             </label>
                             <span className="codex-api-service-mapping-arrow">
-                              →
+                              <ArrowRight size={16} aria-hidden="true" />
                             </span>
                             <label>
                               <span>

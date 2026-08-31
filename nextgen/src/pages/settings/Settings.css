@@ -9,6 +9,8 @@
   animation: fadeUp 0.5s ease both;
   width: 100%;
   align-items: stretch;
+  container-type: inline-size;
+  container-name: settings-surface;
 }
 
 .settings-content {
@@ -1368,6 +1370,29 @@ html[data-theme='light'] .app-icon-squircle img {
   border-color: rgba(239, 68, 68, 0.35);
 }
 
+/* The classic sidebar can leave the settings canvas narrow while the browser
+ * viewport is still wider than the mobile breakpoint. Respond to the canvas
+ * itself so WebDAV actions wrap inside their card instead of being clipped. */
+@container settings-surface (max-width: 720px) {
+  .settings-webdav-status-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .settings-webdav-status-row .row-label,
+  .settings-webdav-actions {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .settings-webdav-actions {
+    align-self: auto;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 760px) {
   .settings-container,
   .settings-content,
@@ -1537,6 +1562,26 @@ html[data-theme='light'] .app-icon-squircle img {
 .settings-webdav-list-wrap .settings-backup-empty,
 .settings-webdav-list-wrap .settings-backup-item {
   background: var(--bg-secondary);
+}
+
+.settings-webdav-remote-toggle {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  align-self: flex-start;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+
+.settings-webdav-remote-toggle:hover {
+  color: var(--primary);
 }
 
 .settings-webdav-chevron {

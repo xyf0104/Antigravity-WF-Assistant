@@ -12,9 +12,10 @@ defineProps({
     class="btn"
     :class="[`v-${variant}`, `s-${size}`, { disabled: disabled || loading }]"
     :disabled="disabled || loading"
+    :aria-busy="loading || undefined"
   >
-    <span v-if="loading" class="loader spin"></span>
-    <slot v-else />
+    <span v-if="loading" class="loader spin" aria-hidden="true"></span>
+    <span class="btn-label"><slot /></span>
   </button>
 </template>
 
@@ -26,10 +27,11 @@ defineProps({
   gap: 6px;
   border-radius: var(--r-sm);
   font-weight: 550;
-  min-width: 0;
+  min-width: max-content;
+  max-width: 100%;
   line-height: 1.3;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow-wrap: normal;
   transition: transform 0.14s var(--spring), background 0.16s var(--ease),
     opacity 0.16s var(--ease);
   user-select: none;
@@ -39,19 +41,26 @@ defineProps({
   transform: scale(0.96);
 }
 
+.btn-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+}
+
 .s-md {
-  min-height: 40px;
+  min-height: 44px;
   height: auto;
   padding: 8px 14px;
   font-size: 14px;
 }
 
 .s-sm {
-  min-height: 40px;
+  min-height: 44px;
   height: auto;
   padding: 8px 10px;
-  font-size: 12.5px;
-  border-radius: 7px;
+  font-size: 13px;
+  border-radius: var(--r-sm);
 }
 
 .v-plain {

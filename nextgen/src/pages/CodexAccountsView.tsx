@@ -171,6 +171,7 @@ export function CodexAccountsView(props: CodexAccountsViewProps) {
                   <button
                     className="modal-close"
                     onClick={() => void handleCloseBatchImport()}
+                    aria-label={t("common.close", "关闭")}
                   >
                     <X size={18} />
                   </button>

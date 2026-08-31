@@ -80,10 +80,11 @@ export function SettingsPageView(props: SettingsPageViewProps) {
       'input, select, textarea',
     );
     controls.forEach((control) => {
+      const wrappingLabel = control.closest('label');
       if (
         control.getAttribute('aria-label')
         || control.getAttribute('aria-labelledby')
-        || control.closest('label')
+        || wrappingLabel?.textContent?.trim()
       ) return;
       const rowTitle = control.closest('.settings-row')?.querySelector<HTMLElement>('.row-title');
       const label = rowTitle?.textContent?.trim();

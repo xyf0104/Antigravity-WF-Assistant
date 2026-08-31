@@ -33,7 +33,7 @@ export function CloseConfirmDialog({ onClose }: CloseConfirmDialogProps) {
   return (
     <div className="close-dialog-overlay">
       <div className="close-dialog" onClick={(e) => e.stopPropagation()}>
-        <button className="close-dialog-x" onClick={onClose}>
+        <button className="close-dialog-x" onClick={onClose} aria-label={t('common.close', '关闭')}>
           <X size={18} />
         </button>
 

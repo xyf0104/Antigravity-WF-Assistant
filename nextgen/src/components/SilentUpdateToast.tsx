@@ -31,7 +31,11 @@ export const SilentUpdateToast: React.FC<SilentUpdateToastProps> = ({
           </button>
         </div>
       </div>
-      <button className="silent-update-toast-close" onClick={onDismiss}>
+      <button
+        className="silent-update-toast-close"
+        onClick={onDismiss}
+        aria-label={t('common.close', '关闭')}
+      >
         <X size={14} />
       </button>
     </div>

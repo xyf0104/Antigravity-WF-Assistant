@@ -2,6 +2,10 @@
   animation: fadeIn 0.24s ease-out;
 }
 
+.manual-page .page-title {
+  color: var(--text-primary);
+}
+
 .manual-toolbar {
   display: flex;
   align-items: center;
@@ -158,9 +162,17 @@
 }
 
 .manual-info-block h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin: 0 0 8px;
   font-size: 13px;
   color: var(--text-primary);
+}
+
+.manual-info-block h4 svg {
+  flex: 0 0 auto;
+  color: var(--primary);
 }
 
 .manual-info-block ul,

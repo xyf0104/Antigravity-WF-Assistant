@@ -686,9 +686,10 @@
 
     struct TestEnvGuard {
         home_dir: std::path::PathBuf,
-        previous_home: Option<String>,
-        previous_codex_home: Option<String>,
-        previous_data_dir: Option<String>,
+        previous_home: Option<std::ffi::OsString>,
+        previous_codex_home: Option<std::ffi::OsString>,
+        previous_test_data_dir: Option<std::ffi::OsString>,
+        previous_data_dir: Option<std::ffi::OsString>,
     }
 
     impl TestEnvGuard {
@@ -699,11 +700,10 @@
             fs::create_dir_all(&codex_home).expect("create codex home");
             fs::create_dir_all(&test_data_dir).expect("create test data dir");
 
-            let previous_home = std::env::var("HOME").ok();
-            let previous_codex_home = std::env::var("CODEX_HOME").ok();
-            let previous_data_dir = std::env::var("XIASS_TOOLS_TEST_DATA_DIR")
-                .ok()
-                .or_else(|| std::env::var("XIASS_TOOLS_DATA_DIR").ok());
+            let previous_home = std::env::var_os("HOME");
+            let previous_codex_home = std::env::var_os("CODEX_HOME");
+            let previous_test_data_dir = std::env::var_os("XIASS_TOOLS_TEST_DATA_DIR");
+            let previous_data_dir = std::env::var_os("XIASS_TOOLS_DATA_DIR");
             std::env::set_var("HOME", &home_dir);
             std::env::set_var("CODEX_HOME", &codex_home);
             std::env::set_var("XIASS_TOOLS_TEST_DATA_DIR", &test_data_dir);
@@ -713,6 +713,7 @@
                 home_dir,
                 previous_home,
                 previous_codex_home,
+                previous_test_data_dir,
                 previous_data_dir,
             }
         }
@@ -732,15 +733,13 @@
                 Some(value) => std::env::set_var("CODEX_HOME", value),
                 None => std::env::remove_var("CODEX_HOME"),
             }
+            match self.previous_test_data_dir.as_ref() {
+                Some(value) => std::env::set_var("XIASS_TOOLS_TEST_DATA_DIR", value),
+                None => std::env::remove_var("XIASS_TOOLS_TEST_DATA_DIR"),
+            }
             match self.previous_data_dir.as_ref() {
-                Some(value) => {
-                    std::env::set_var("XIASS_TOOLS_TEST_DATA_DIR", value);
-                    std::env::set_var("XIASS_TOOLS_DATA_DIR", value);
-                }
-                None => {
-                    std::env::remove_var("XIASS_TOOLS_TEST_DATA_DIR");
-                    std::env::remove_var("XIASS_TOOLS_DATA_DIR");
-                }
+                Some(value) => std::env::set_var("XIASS_TOOLS_DATA_DIR", value),
+                None => std::env::remove_var("XIASS_TOOLS_DATA_DIR"),
             }
             let _ = fs::remove_dir_all(&self.home_dir);
         }
@@ -748,18 +747,37 @@
 
     #[test]
     fn test_env_guard_redirects_codex_account_storage() {
-        let _lock = crate::modules::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let env = TestEnvGuard::new("codex-account-storage-isolation-test");
+        let _lock = crate::modules::test_support::lock_env();
+        let test_data_sentinel = std::env::temp_dir().join("xiass-test-data-sentinel");
+        let data_sentinel = std::env::temp_dir().join("xiass-data-sentinel");
+        let _test_data_restore = crate::modules::test_support::ScopedEnvVar::set(
+            "XIASS_TOOLS_TEST_DATA_DIR",
+            &test_data_sentinel,
+        );
+        let _data_restore = crate::modules::test_support::ScopedEnvVar::set(
+            "XIASS_TOOLS_DATA_DIR",
+            &data_sentinel,
+        );
 
-        let storage_path = get_accounts_storage_path();
+        {
+            let env = TestEnvGuard::new("codex-account-storage-isolation-test");
+            let storage_path = get_accounts_storage_path();
 
-        assert!(
-            storage_path.starts_with(&env.home_dir),
-            "Codex account storage should stay inside the test home, got {} for test home {}",
-            storage_path.display(),
-            env.home_dir.display()
+            assert!(
+                storage_path.starts_with(&env.home_dir),
+                "Codex account storage should stay inside the test home, got {} for test home {}",
+                storage_path.display(),
+                env.home_dir.display()
+            );
+        }
+
+        assert_eq!(
+            std::env::var_os("XIASS_TOOLS_TEST_DATA_DIR"),
+            Some(test_data_sentinel.into_os_string())
+        );
+        assert_eq!(
+            std::env::var_os("XIASS_TOOLS_DATA_DIR"),
+            Some(data_sentinel.into_os_string())
         );
     }
 
@@ -932,9 +950,7 @@
 
     #[test]
     fn load_account_clears_bound_oauth_local_gateway_flag() {
-        let _lock = crate::modules::test_support::env_lock()
-            .lock()
-            .expect("lock test env");
+        let _lock = crate::modules::test_support::lock_env();
         let _env = TestEnvGuard::new("codex-bound-oauth-clear-gateway");
         let mut account = CodexAccount::new_api_key(
             "api-bound-oauth-clear-gateway".to_string(),
@@ -957,9 +973,7 @@
 
     #[test]
     fn load_account_keeps_bound_oauth_account_id_when_gateway_false() {
-        let _lock = crate::modules::test_support::env_lock()
-            .lock()
-            .expect("lock test env");
+        let _lock = crate::modules::test_support::lock_env();
         let _env = TestEnvGuard::new("codex-bound-oauth-keep-id");
         let mut account = CodexAccount::new_api_key(
             "api-bound-oauth-keep-id".to_string(),

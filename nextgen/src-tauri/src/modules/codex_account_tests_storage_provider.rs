@@ -1781,9 +1781,7 @@ supports_websockets = false
 
     #[test]
     fn api_key_upsert_without_sync_preference_preserves_instance_model_catalog() {
-        let _lock = crate::modules::test_support::env_lock()
-            .lock()
-            .expect("lock test env");
+        let _lock = crate::modules::test_support::lock_env();
         let env = TestEnvGuard::new("codex-api-key-upsert-model-catalog-test");
         let api_key = "sk-upsert-model-catalog".to_string();
 

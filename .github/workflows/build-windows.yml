@@ -76,6 +76,59 @@ jobs:
           if ($msi.Count -ne 1) { throw "Expected one MSI, found $($msi.Count)" }
           if ($nsis.Count -ne 1) { throw "Expected one NSIS installer, found $($nsis.Count)" }
 
+      - name: Smoke-test packaged Windows app startup
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem target\x86_64-pc-windows-msvc\release -Filter 'xiass-tools.exe' -File | Select-Object -First 1
+          if (-not $app) { throw 'Packaged XIASS Tools executable was not found' }
+          $smokeRoot = Join-Path $env:RUNNER_TEMP ("xiass-tools-smoke-" + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $smokeRoot | Out-Null
+          $previousDataDir = $env:XIASS_TOOLS_DATA_DIR
+          $process = $null
+          try {
+            $env:XIASS_TOOLS_DATA_DIR = Join-Path $smokeRoot 'data'
+            $stdoutPath = Join-Path $smokeRoot 'stdout.log'
+            $stderrPath = Join-Path $smokeRoot 'stderr.log'
+            $process = Start-Process -FilePath $app.FullName -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+            $frontendReady = $false
+            for ($attempt = 0; $attempt -lt 45; $attempt++) {
+              $process.Refresh()
+              $appLog = if (Test-Path (Join-Path $smokeRoot 'data\logs')) {
+                ((Get-ChildItem (Join-Path $smokeRoot 'data\logs') -Filter 'app.log*' -File -ErrorAction SilentlyContinue | ForEach-Object {
+                  Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+                }) -join "`n")
+              } else { '' }
+              if ($process.HasExited) {
+                Get-Content $stderrPath -ErrorAction SilentlyContinue | Write-Host
+                $appLog | Write-Host
+                throw "Packaged XIASS Tools exited before the frontend became ready with code $($process.ExitCode)"
+              }
+              if ($appLog.Contains('[Diagnostics] 前端启动超时')) {
+                Get-Content $stderrPath -ErrorAction SilentlyContinue | Write-Host
+                $appLog | Write-Host
+                throw 'Packaged XIASS Tools reported a frontend startup timeout'
+              }
+              if ($appLog.Contains('[Diagnostics] 前端已就绪')) {
+                $frontendReady = $true
+                break
+              }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $frontendReady) {
+              Get-Content $stderrPath -ErrorAction SilentlyContinue | Write-Host
+              $appLog | Write-Host
+              throw 'Packaged XIASS Tools did not report frontend ready within 45 seconds'
+            }
+          }
+          finally {
+            $env:XIASS_TOOLS_DATA_DIR = $previousDataDir
+            if ($process -and -not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              $process.WaitForExit()
+            }
+            Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: XIASS-Tools-Nextgen-Windows-x64

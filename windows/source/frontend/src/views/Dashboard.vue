@@ -299,10 +299,11 @@ onUnmounted(() => {
 
       <!-- 刷新 -->
       <div class="metric-card" style="justify-content:center;align-items:center">
-        <button
+		<button
 			class="refresh-btn"
 			:class="{ spinning: state.dashboardRefreshing }"
 			:disabled="state.dashboardRefreshing"
+			aria-label="刷新首页"
 			title="刷新安装路径、真实版本、运行状态、连接状态和统计"
 			@click="refreshDashboard()"
 		>
@@ -633,15 +634,18 @@ onUnmounted(() => {
 
 /* 刷新按钮 */
 .refresh-btn {
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
   background: var(--bg-fill);
   color: var(--text-secondary);
-  transition: all 0.18s var(--ease);
+  transition:
+    background-color 0.18s var(--ease),
+    color 0.18s var(--ease),
+    transform 0.18s var(--ease);
 }
 .refresh-btn:hover {
   background: var(--bg-fill-hover);

@@ -807,6 +807,7 @@
 
     #[test]
     fn sidecar_preparation_stops_after_lifecycle_generation_changes() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-preparation-lifecycle");
         let collection = test_local_access_collection(vec!["account-1".to_string()]);
         let dir = std::env::temp_dir().join(format!(
             "cockpit-sidecar-cancel-test-{}",
@@ -2466,6 +2467,7 @@ wire_api = "responses"
 
     #[test]
     fn scoped_api_key_pool_discovers_spark_entitlement_from_effective_accounts() {
+        let _isolation = IsolatedLocalAccessTest::new("scoped-spark-entitlement");
         let mut plus = test_account_with_plan("plus");
         plus.id = "scoped-plus".to_string();
         plus.quota = Some(CodexQuota {
@@ -2562,8 +2564,8 @@ wire_api = "responses"
 
     struct LocalAccessTestDataGuard {
         data_dir: PathBuf,
-        previous_test_data_dir: Option<String>,
-        previous_data_dir: Option<String>,
+        previous_test_data_dir: Option<std::ffi::OsString>,
+        previous_data_dir: Option<std::ffi::OsString>,
         takeover_backup_path: PathBuf,
         previous_takeover_backup: Option<Vec<u8>>,
     }
@@ -2571,8 +2573,8 @@ wire_api = "responses"
     impl LocalAccessTestDataGuard {
         fn new(prefix: &str) -> Self {
             let data_dir = make_temp_dir(prefix);
-            let previous_test_data_dir = std::env::var("XIASS_TOOLS_TEST_DATA_DIR").ok();
-            let previous_data_dir = std::env::var("XIASS_TOOLS_DATA_DIR").ok();
+            let previous_test_data_dir = std::env::var_os("XIASS_TOOLS_TEST_DATA_DIR");
+            let previous_data_dir = std::env::var_os("XIASS_TOOLS_DATA_DIR");
             std::env::set_var("XIASS_TOOLS_TEST_DATA_DIR", &data_dir);
             std::env::set_var("XIASS_TOOLS_DATA_DIR", &data_dir);
 
@@ -2595,11 +2597,11 @@ wire_api = "responses"
 
     impl Drop for LocalAccessTestDataGuard {
         fn drop(&mut self) {
-            match self.previous_test_data_dir.as_deref() {
+            match self.previous_test_data_dir.as_ref() {
                 Some(value) => std::env::set_var("XIASS_TOOLS_TEST_DATA_DIR", value),
                 None => std::env::remove_var("XIASS_TOOLS_TEST_DATA_DIR"),
             }
-            match self.previous_data_dir.as_deref() {
+            match self.previous_data_dir.as_ref() {
                 Some(value) => std::env::set_var("XIASS_TOOLS_DATA_DIR", value),
                 None => std::env::remove_var("XIASS_TOOLS_DATA_DIR"),
             }
@@ -2615,6 +2617,23 @@ wire_api = "responses"
                 }
             }
             let _ = fs::remove_dir_all(&self.data_dir);
+        }
+    }
+
+    struct IsolatedLocalAccessTest {
+        // Restore the process environment before releasing the shared lock.
+        _data: LocalAccessTestDataGuard,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl IsolatedLocalAccessTest {
+        fn new(prefix: &str) -> Self {
+            let lock = crate::modules::test_support::lock_env();
+            let data = LocalAccessTestDataGuard::new(prefix);
+            Self {
+                _data: data,
+                _lock: lock,
+            }
         }
     }
 
@@ -2800,6 +2819,7 @@ wire_api = "responses"
 
     #[test]
     fn sidecar_oauth_auth_json_includes_access_token_expiry() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-oauth-expiry");
         let account = CodexAccount::new(
             "account-exp".to_string(),
             "exp@example.com".to_string(),
@@ -2850,6 +2870,7 @@ wire_api = "responses"
 
     #[test]
     fn provider_gateway_runtime_auth_sync_rewrites_access_token_without_refresh_token() {
+        let _isolation = IsolatedLocalAccessTest::new("provider-runtime-auth-sync");
         let sidecar_dir = make_temp_dir("codex-provider-runtime-auth-sync");
         let auths_dir = sidecar_auths_dir(&sidecar_dir);
         fs::create_dir_all(&auths_dir).expect("create auths dir");
@@ -2885,6 +2906,7 @@ wire_api = "responses"
 
     #[test]
     fn sidecar_agent_identity_auth_json_preserves_signing_credentials_without_tokens() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-agent-identity-auth");
         let mut account = CodexAccount::new(
             "agent-account".to_string(),
             "agent@example.com".to_string(),

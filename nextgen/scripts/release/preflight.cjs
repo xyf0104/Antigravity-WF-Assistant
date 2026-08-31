@@ -58,11 +58,27 @@ const wfFrontendDirectory = path.join(
   'source',
   'frontend'
 );
+const wfSourceDirectory = path.join(
+  repositoryRoot,
+  process.platform === 'win32' ? 'windows' : 'macos',
+  'source'
+);
+const cliProxyDirectory = path.join(
+  repositoryRoot,
+  'nextgen',
+  'sidecars',
+  'cockpit-cliproxy'
+);
 const wfFrontendTests = fs
   .readdirSync(path.join(wfFrontendDirectory, 'test'))
   .filter((name) => name.endsWith('.test.mjs'))
   .sort()
   .map((name) => path.join('test', name));
+const releaseRegressionTests = fs
+  .readdirSync(__dirname)
+  .filter((name) => name.endsWith('.test.cjs'))
+  .sort()
+  .map((name) => path.join('scripts', 'release', name));
 
 if (!hasFlag('--skip-brand-license')) {
   steps.push({
@@ -77,6 +93,14 @@ if (!hasFlag('--skip-locales')) {
     name: 'Locale completeness check',
     command: 'node',
     args: ['scripts/check_locales.cjs'],
+  });
+}
+
+if (!hasFlag('--skip-release-tests')) {
+  steps.push({
+    name: 'Release regression tests',
+    command: 'node',
+    args: ['--test', ...releaseRegressionTests],
   });
 }
 
@@ -111,6 +135,29 @@ if (!hasFlag('--skip-wf-frontend-test')) {
     args: ['--test', ...wfFrontendTests],
     cwd: wfFrontendDirectory,
   });
+}
+
+if (!hasFlag('--skip-go-test')) {
+  steps.push(
+    {
+      name: `${process.platform === 'win32' ? 'Windows' : 'macOS'} WF Go tests`,
+      command: 'go',
+      args: ['test', './...'],
+      cwd: wfSourceDirectory,
+    },
+    {
+      name: `${process.platform === 'win32' ? 'Windows' : 'macOS'} WF bridge lifecycle tests`,
+      command: 'go',
+      args: ['test', '-tags', 'wfbridge', '.'],
+      cwd: wfSourceDirectory,
+    },
+    {
+      name: 'Codex API sidecar Go tests',
+      command: 'go',
+      args: ['test', './...'],
+      cwd: cliProxyDirectory,
+    },
+  );
 }
 
 if (!hasFlag('--skip-cargo')) {

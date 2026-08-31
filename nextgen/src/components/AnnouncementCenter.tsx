@@ -304,7 +304,7 @@ function AnnouncementSurface({
   const currentTypeLabel = (type: string) => {
     if (type === 'feature') return t('announcement.type.feature', '✨ 新功能');
     if (type === 'warning') return t('announcement.type.warning', '⚠️ 警告');
-    if (type === 'urgent') return t('announcement.type.urgent', '🚨 紧急');
+    if (type === 'urgent') return t('announcement.type.urgent', '紧急');
     return t('announcement.type.info', 'ℹ️ 信息');
   };
 
@@ -323,6 +323,7 @@ function AnnouncementSurface({
             className={trigger === 'button' ? 'announcement-trigger-btn' : 'announcement-bell-btn'}
             onClick={() => setListOpen(true)}
             title={t('announcement.title', '公告')}
+            aria-label={t('announcement.title', '公告')}
           >
             <Bell size={16} />
             {trigger === 'button' ? (
@@ -340,9 +341,15 @@ function AnnouncementSurface({
       {listOpen &&
         renderInBody(
           <div className="modal-overlay announcement-modal-overlay">
-            <div className="modal announcement-list-modal" onClick={(event) => event.stopPropagation()}>
+            <div
+              className="modal announcement-list-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="announcement-list-dialog-title"
+              onClick={(event) => event.stopPropagation()}
+            >
               <div className="modal-header">
-                <h2>{t('announcement.title', '公告')}</h2>
+                <h2 id="announcement-list-dialog-title">{t('announcement.title', '公告')}</h2>
                 <button className="modal-close" onClick={() => setListOpen(false)} aria-label={t('common.close', '关闭')}>
                   <X size={16} />
                 </button>
@@ -407,7 +414,13 @@ function AnnouncementSurface({
       {detailAnnouncement &&
         renderInBody(
           <div className="modal-overlay announcement-modal-overlay">
-            <div className="modal announcement-detail-modal" onClick={(event) => event.stopPropagation()}>
+            <div
+              className="modal announcement-detail-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="announcement-detail-dialog-title"
+              onClick={(event) => event.stopPropagation()}
+            >
               <div className="modal-header">
                 <div className="announcement-detail-header-left">
                   {detailFromList ? (
@@ -418,7 +431,9 @@ function AnnouncementSurface({
                   <span className={`announcement-type-chip ${sanitizeTypeClass(String(detailAnnouncement.type))}`}>
                     {currentTypeLabel(String(detailAnnouncement.type))}
                   </span>
-                  <h2 className="announcement-detail-header-title">{detailAnnouncement.title}</h2>
+                  <h2 id="announcement-detail-dialog-title" className="announcement-detail-header-title">
+                    {detailAnnouncement.title}
+                  </h2>
                 </div>
                 <button className="modal-close" onClick={() => void closeDetail(false)} aria-label={t('common.close', '关闭')}>
                   <X size={16} />
@@ -488,7 +503,12 @@ function AnnouncementSurface({
 
       {imagePreviewUrl &&
         renderInBody(
-          <div className="announcement-image-preview-overlay">
+          <div
+            className="announcement-image-preview-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('announcement.imagePreview', '图片预览')}
+          >
             <div className="announcement-image-preview-wrapper">
               <button
                 type="button"
@@ -498,7 +518,11 @@ function AnnouncementSurface({
               >
                 <X size={18} />
               </button>
-              <img src={imagePreviewUrl} alt="preview" className="announcement-image-preview" />
+              <img
+                src={imagePreviewUrl}
+                alt={t('announcement.imagePreview', '图片预览')}
+                className="announcement-image-preview"
+              />
             </div>
           </div>,
         )}

@@ -13,6 +13,8 @@
   min-height: 100%;
   gap: 12px;
   animation: fadeUp 0.5s ease;
+  container-type: inline-size;
+  container-name: codex-api-service;
 }
 
 .codex-api-service-content {
@@ -184,6 +186,22 @@
 .codex-api-service-hero-actions .btn svg {
   width: 13px;
   height: 13px;
+}
+
+/*
+ * The unified Agent shell can leave this page much narrower than the browser
+ * viewport when the classic sidebar is expanded.  Respond to the page's real
+ * width so the action cluster never squeezes the title/status column.
+ */
+@container codex-api-service (max-width: 720px) {
+  .codex-api-service-hero {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .codex-api-service-hero-actions {
+    justify-content: flex-start;
+  }
 }
 
 .codex-api-service-page .single-select-dropdown.codex-api-service-title-mode-select {
@@ -533,8 +551,11 @@
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.45;
-  white-space: pre;
-  overflow: auto;
+  white-space: pre-wrap;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .codex-api-service-compat-models {

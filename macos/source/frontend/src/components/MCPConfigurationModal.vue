@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
 import {
@@ -22,10 +22,12 @@ const props = defineProps({
   open: Boolean,
   inline: Boolean,
   target: { type: String, default: "" },
+  action: { type: String, default: "" },
 });
 const emit = defineEmits(["close", "changed"]);
 
 const data = ref(null);
+const configRoot = ref(null);
 const mcpScope = ref("global");
 const projectSelection = ref({ id: "", name: "", expiresAt: "" });
 // This is intentionally component-local. It never enters appState,
@@ -412,14 +414,29 @@ function close() {
   emit("close");
 }
 
-watch(() => [props.open, props.target], ([open, target]) => {
+function applyRequestedAction() {
+  mcpScope.value = isCursor.value && props.action === "project-mcp" ? "project" : "global";
+}
+
+async function focusRequestedAction() {
+  if (props.action !== "backups") return;
+  await nextTick();
+  const target = configRoot.value?.querySelector('[data-section="backups"]');
+  if (!(target instanceof HTMLDetailsElement)) return;
+  target.open = true;
+  await nextTick();
+  target.scrollIntoView({ block: "start", behavior: "auto" });
+}
+
+watch(() => [props.open, props.target, props.action], ([open, target], [wasOpen]) => {
   clearEndpoint();
   error.value = "";
   notice.value = "";
   resetBackupView();
   if (open && target) {
-    if (target !== "cursor") mcpScope.value = "global";
-    void refresh();
+    applyRequestedAction();
+    if (!wasOpen) void refresh().then(focusRequestedAction);
+    else void focusRequestedAction();
     return;
   }
   if (!open) {
@@ -432,7 +449,7 @@ watch(() => [props.open, props.target], ([open, target]) => {
 
 <template>
   <Modal :open="open" :title="`配置 ${displayName} MCP`" wide persistent :inline="inline" :closable="!busy" @close="close">
-    <div class="mcp-config">
+    <div ref="configRoot" class="mcp-config">
       <p class="intro">
         XIASS Tools 只管理一个保留的远程 MCP 条目，不读取或改写账号、Cookie、令牌、聊天记录、数据库或其他 MCP 条目。
       </p>
@@ -498,7 +515,7 @@ watch(() => [props.open, props.target], ([open, target]) => {
           </label>
         </section>
 
-        <details class="recovery-points" :aria-label="`经过校验的${isProjectScope ? '项目' : '全局'} MCP 恢复点`">
+        <details class="recovery-points" data-section="backups" :aria-label="`经过校验的${isProjectScope ? '项目' : '全局'} MCP 恢复点`">
           <summary>
             <span>经过校验的{{ isProjectScope ? '项目' : '全局' }}恢复点</span>
             <small>{{ backupsLoading ? "正在检查" : backupUnavailable ? "需要更新" : `${recoveryPointCount} 个` }}</small>
@@ -550,8 +567,8 @@ watch(() => [props.open, props.target], ([open, target]) => {
 .mcp-config { display: grid; width: 100%; min-width: 0; gap: 16px; padding: 2px; overflow-x: clip; overflow-wrap: anywhere; }
 .intro { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
 .scope-ribbon { display: grid; gap: 10px; border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--separator)); border-radius: 10px; background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 7%, var(--bg-inset)), color-mix(in srgb, var(--teal) 5%, var(--bg-inset))); padding: 11px 12px; }
-.scope-ribbon-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.scope-ribbon-head > div:first-child { display: grid; min-width: 0; gap: 2px; }.scope-ribbon-head strong { color: var(--text-primary); font-size: 12px; }.scope-ribbon-head span { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
-.scope-options { display: inline-flex; flex: 0 0 auto; gap: 3px; border: 1px solid var(--separator-strong); border-radius: 8px; background: var(--bg-base); padding: 3px; }.scope-options button { min-height: 25px; border: 0; border-radius: 5px; background: transparent; color: var(--text-tertiary); font: inherit; font-size: 10px; font-weight: 700; padding: 0 8px; transition: color .16s var(--ease), background .16s var(--ease), box-shadow .16s var(--ease); }.scope-options button:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-fill-hover); }.scope-options button.active { background: color-mix(in srgb, var(--accent) 16%, var(--bg-fill)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent); color: var(--accent-strong); }.scope-options button:disabled { cursor: wait; opacity: .55; }.scope-options button:focus-visible, .project-handle :deep(.btn:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.scope-ribbon-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }.scope-ribbon-head > div:first-child { display: grid; min-width: min(100%, 260px); flex: 1 1 320px; gap: 2px; }.scope-ribbon-head strong { color: var(--text-primary); font-size: 12px; }.scope-ribbon-head span { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+.scope-options { display: inline-flex; flex: 0 1 auto; flex-wrap: wrap; gap: 3px; border: 1px solid var(--separator-strong); border-radius: 8px; background: var(--bg-base); padding: 3px; }.scope-options button { min-width: 0; min-height: 25px; flex: 1 1 92px; border: 0; border-radius: 5px; background: transparent; color: var(--text-tertiary); font: inherit; font-size: 10px; font-weight: 700; padding: 0 8px; transition: color .16s var(--ease), background .16s var(--ease), box-shadow .16s var(--ease); }.scope-options button:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-fill-hover); }.scope-options button.active { background: color-mix(in srgb, var(--accent) 16%, var(--bg-fill)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent); color: var(--accent-strong); }.scope-options button:disabled { cursor: wait; opacity: .55; }.scope-options button:focus-visible, .project-handle :deep(.btn:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
 .project-handle { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px dashed color-mix(in srgb, var(--accent) 34%, var(--separator)); padding-top: 10px; }.project-handle-copy { display: grid; min-width: 0; gap: 2px; }.project-handle-copy strong { overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.project-handle-copy span { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 .state-block { min-height: 112px; display: grid; place-items: center; border: 1px dashed var(--separator-strong); border-radius: 10px; color: var(--text-tertiary); font-size: 12px; }
 .status-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid color-mix(in srgb, var(--green) 42%, var(--separator)); border-left: 3px solid var(--green); border-radius: 10px; background: color-mix(in srgb, var(--green) 6%, var(--bg-inset)); padding: 11px 12px; }
@@ -571,7 +588,7 @@ watch(() => [props.open, props.target], ([open, target]) => {
 .notice { border: 1px solid color-mix(in srgb, var(--green) 35%, var(--separator)); background: color-mix(in srgb, var(--green) 7%, transparent); color: var(--green); }
 .error { border: 1px solid color-mix(in srgb, var(--red) 42%, var(--separator)); background: color-mix(in srgb, var(--red) 8%, transparent); color: var(--red); }
 .configuration-section { display: grid; min-width: 0; gap: 12px; border: 1px solid var(--separator); border-radius: 14px; background: var(--bg-inset); padding: 14px 16px 16px; }
-.section-heading { display: flex; min-width: 0; justify-content: space-between; gap: 12px; }.section-heading > div { display: grid; min-width: 0; gap: 3px; }
+.section-heading { display: flex; min-width: 0; flex-wrap: wrap; justify-content: space-between; gap: 12px; }.section-heading > div { display: grid; min-width: 0; flex: 1 1 260px; gap: 3px; }
 .section-heading strong { color: var(--text-primary); font-size: 12px; }.section-heading span { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 .field { display: grid; min-width: 0; gap: 6px; }.field > span { color: var(--text-secondary); font-size: 11px; }
 .field input { width: 100%; min-width: 0; border: 1px solid var(--separator-strong); border-radius: 8px; outline: none; background: var(--bg-base); color: var(--text-primary); font: inherit; font-family: var(--font-num); font-size: 12px; padding: 9px 10px; }
@@ -599,6 +616,7 @@ watch(() => [props.open, props.target], ([open, target]) => {
 
 /* Embedded workspaces keep their own readable rhythm even at narrow desktop widths. */
 .mcp-config { gap: 18px; padding: 4px 8px 20px; }
+.mcp-config > * { min-width: 0; }
 .intro { font-size: 13px; }
 .scope-ribbon-head strong { font-size: 13px; }
 .scope-ribbon-head span,
@@ -610,5 +628,6 @@ watch(() => [props.open, props.target], ([open, target]) => {
 .section-heading strong { font-size: 14px; }
 .field > span { font-size: 13px; }
 .field input { min-height: 42px; border-radius: 9px; font-size: 13px; padding: 10px 12px; }
+[data-section] { scroll-margin-top: 16px; }
 @media (max-width: 560px) { .scope-ribbon-head, .project-handle { align-items: stretch; flex-direction: column; }.scope-options { align-self: stretch; }.scope-options button { flex: 1 1 0; }.project-handle :deep(.btn) { justify-content: center; width: 100%; }.facts { grid-template-columns: 1fr; }.recovery-row { align-items: stretch; flex-direction: column; }.recovery-actions :deep(.btn), .recovery-refresh { justify-content: center; width: 100%; } }
 </style>

@@ -3418,9 +3418,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn removing_account_deletes_managed_profile_without_touching_unrelated_default_home() {
-        let _env_lock = crate::modules::test_support::env_lock()
-            .lock()
-            .expect("lock test environment");
+        let _env_lock = crate::modules::test_support::lock_env();
         let temp = TestDir::new();
         let _environment = EnvironmentGuard::new(&temp.0);
         let account = sample_account();
@@ -3447,9 +3445,7 @@ mod tests {
             InstanceStore,
         };
 
-        let _env_lock = crate::modules::test_support::env_lock()
-            .lock()
-            .expect("lock test environment");
+        let _env_lock = crate::modules::test_support::lock_env();
         let temp = TestDir::new();
         let _environment = EnvironmentGuard::new(&temp.0);
         let account = sample_account();
@@ -3793,9 +3789,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn known_test_fixture_is_not_returned_from_account_list() {
-        let _env_lock = crate::modules::test_support::env_lock()
-            .lock()
-            .expect("lock test environment");
+        let _env_lock = crate::modules::test_support::lock_env();
         let temp = TestDir::new();
         let _environment = EnvironmentGuard::new(&temp.0);
         save_account_locked(&sample_account()).expect("save account fixture");

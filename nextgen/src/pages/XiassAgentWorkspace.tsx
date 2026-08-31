@@ -192,7 +192,6 @@ export function XiassAgentWorkspace({
     document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
   );
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const navigationButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const activeItem = navigationItems.find((item) => item.id === view) ?? navigationItems[0];
   const activeTarget = activeItem?.target;
   const activePanelId = activeTarget?.kind === 'panel' ? activeTarget.panelId : null;
@@ -243,15 +242,6 @@ export function XiassAgentWorkspace({
       // Read-only browser profiles still need working navigation.
     }
   }, [module, navigationItems, view]);
-
-  useEffect(() => {
-    if (!activeItem) return;
-    navigationButtonRefs.current.get(activeItem.id)?.scrollIntoView({
-      behavior: 'auto',
-      block: 'nearest',
-      inline: 'nearest',
-    });
-  }, [activeItem]);
 
   useEffect(() => {
     if (!requestedView || requestedView === view) return;
@@ -321,10 +311,6 @@ export function XiassAgentWorkspace({
         {navigationItems.map((item) => (
           <button
             key={item.id}
-            ref={(node) => {
-              if (node) navigationButtonRefs.current.set(item.id, node);
-              else navigationButtonRefs.current.delete(item.id);
-            }}
             type="button"
             role="tab"
             aria-selected={view === item.id}

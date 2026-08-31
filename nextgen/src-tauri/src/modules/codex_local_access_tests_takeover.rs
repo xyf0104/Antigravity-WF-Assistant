@@ -304,6 +304,7 @@
 
     #[tokio::test]
     async fn sidecar_config_disables_chat_image_generation_for_bound_oauth_api_key_pool() {
+        let _isolation = IsolatedLocalAccessTest::new("bound-oauth-image-generation");
         let dir = make_temp_dir("codex-sidecar-bound-oauth-image-generation");
         let mut account = CodexAccount::new_api_key(
             "api-bound-oauth-1".to_string(),
@@ -341,6 +342,7 @@
 
     #[tokio::test]
     async fn sidecar_config_disables_chat_image_generation_for_oauth_pool() {
+        let _isolation = IsolatedLocalAccessTest::new("oauth-image-generation");
         let dir = make_temp_dir("codex-sidecar-oauth-image-generation");
         let account = CodexAccount::new(
             "oauth-image-generation-1".to_string(),
@@ -372,6 +374,7 @@
 
     #[tokio::test]
     async fn sidecar_config_uses_streaming_bootstrap_retry_setting() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-streaming-retries");
         let dir = make_temp_dir("codex-sidecar-streaming-bootstrap-retries");
         let account = CodexAccount::new(
             "oauth-streaming-retries-1".to_string(),
@@ -418,6 +421,7 @@
 
     #[tokio::test]
     async fn bound_oauth_local_gateway_config_uses_direct_codex_api_key_scope() {
+        let _isolation = IsolatedLocalAccessTest::new("bound-oauth-direct-scope");
         let dir = make_temp_dir("codex-sidecar-bound-oauth-direct-scope");
         let mut account = CodexAccount::new_api_key(
             "api-bound-oauth-direct-1".to_string(),
@@ -523,6 +527,7 @@
 
     #[test]
     fn resolves_sidecar_upstream_from_model_provider_when_account_holds_gateway_url() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-upstream-provider");
         let data_dir = make_temp_dir("codex-sidecar-upstream-providers");
         fs::write(
             data_dir.join("codex_model_providers.json"),
@@ -578,6 +583,7 @@
 
     #[test]
     fn sidecar_codex_key_uses_account_model_mappings() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-model-mappings");
         let mut account = CodexAccount::new_api_key(
             "deepseek-map-1".to_string(),
             "deepseek@example.com".to_string(),
@@ -622,6 +628,7 @@
 
     #[test]
     fn skips_sidecar_key_when_gateway_url_cannot_be_recovered() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-missing-gateway");
         let mut collection = test_local_access_collection(Vec::new());
         collection.port = 53549;
         let account = CodexAccount::new_api_key(
@@ -640,6 +647,7 @@
 
     #[test]
     fn sidecar_codex_key_skips_same_port_gateway_loopback_without_provider_recovery() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-same-port-loopback");
         let mut collection = test_local_access_collection(Vec::new());
         collection.port = 53549;
         let account = CodexAccount::new_api_key(
@@ -659,6 +667,7 @@
 
     #[test]
     fn sidecar_codex_key_allows_loopback_upstream_on_different_port() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-different-port-loopback");
         let mut collection = test_local_access_collection(Vec::new());
         collection.port = 63266;
         let account = CodexAccount::new_api_key(
@@ -689,6 +698,7 @@
 
     #[test]
     fn sidecar_codex_key_syncs_account_supports_websockets() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-websocket-support");
         let collection = test_local_access_collection(Vec::new());
         let mut account = CodexAccount::new_api_key(
             "api-ws-1".to_string(),
@@ -727,6 +737,7 @@
 
     #[test]
     fn sidecar_codex_key_allows_localhost_upstream_on_different_port() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-localhost-upstream");
         let mut collection = test_local_access_collection(Vec::new());
         collection.port = 63266;
         let account = CodexAccount::new_api_key(

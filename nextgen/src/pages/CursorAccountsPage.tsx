@@ -17,6 +17,8 @@ import {
   List,
   Search,
   ArrowDownWideNarrow,
+  ArrowUp,
+  ArrowDown,
   Tag,
   ChevronDown,
   Play,
@@ -1043,7 +1045,11 @@ export function CursorAccountsPage() {
           <button className="sort-direction-btn" onClick={() => setSortDirection((prev) => (prev === 'desc' ? 'asc' : 'desc'))}
             title={sortDirection === 'desc' ? t('common.shared.sort.descTooltip', '当前：降序，点击切换为升序') : t('common.shared.sort.ascTooltip', '当前：升序，点击切换为降序')}
             aria-label={t('common.shared.sort.toggleDirection', '切换排序方向')}>
-            {sortDirection === 'desc' ? '⬇' : '⬆'}
+            {sortDirection === 'desc' ? (
+              <ArrowDown size={16} aria-hidden="true" />
+            ) : (
+              <ArrowUp size={16} aria-hidden="true" />
+            )}
           </button>
         </div>
         <div className="toolbar-right">
@@ -1238,7 +1244,7 @@ export function CursorAccountsPage() {
                   <p className="section-desc">{t('cursor.oauth.desc', '点击下方按钮，在浏览器中完成 Cursor 授权登录。')}</p>
 
                   {oauthPrepareError ? (
-                    <div className="add-status error">
+                    <div className="add-status error" role="alert" aria-live="assertive">
                       <CircleAlert size={16} />
                       <span>{oauthPrepareError}</span>
                       <button className="btn btn-sm btn-outline" onClick={handleRetryOauth}>
@@ -1248,15 +1254,15 @@ export function CursorAccountsPage() {
                   ) : oauthUrl ? (
                     <div className="oauth-url-section">
                       <div className="oauth-url-box">
-                        <input type="text" value={oauthUrl} readOnly />
-                        <button onClick={handleCopyOauthUrl}>
+                        <input type="text" value={oauthUrl} readOnly aria-label={t('accounts.oauth.linkLabel', '授权链接')} />
+                        <button onClick={handleCopyOauthUrl} aria-label={t('common.copy', '复制')}>
                           {oauthUrlCopied ? <Check size={16} /> : <Copy size={16} />}
                         </button>
                       </div>
                       {!oauthUrl.includes('user_code=') && oauthUserCode && (
                         <div className="oauth-url-box">
-                          <input type="text" value={oauthUserCode} readOnly />
-                          <button onClick={handleCopyOauthUserCode}>
+                          <input type="text" value={oauthUserCode} readOnly aria-label={t('common.shared.oauth.deviceCode', '设备验证码')} />
+                          <button onClick={handleCopyOauthUserCode} aria-label={t('common.copy', '复制')}>
                             {oauthUserCodeCopied ? <Check size={16} /> : <Copy size={16} />}
                           </button>
                         </div>
@@ -1274,13 +1280,13 @@ export function CursorAccountsPage() {
                         {t('common.shared.oauth.openBrowser', '在浏览器中打开')}
                       </button>
                       {oauthPolling && (
-                        <div className="add-status loading">
+                        <div className="add-status loading" role="status" aria-live="polite">
                           <RefreshCw size={16} className="loading-spinner" />
                           <span>{t('common.shared.oauth.waiting', '等待授权完成...')}</span>
                         </div>
                       )}
                       {oauthCompleteError && (
-                        <div className="add-status error">
+                        <div className="add-status error" role="alert" aria-live="assertive">
                           <CircleAlert size={16} />
                           <span>{oauthCompleteError}</span>
                           {oauthTimedOut && (

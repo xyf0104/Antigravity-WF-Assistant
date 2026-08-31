@@ -227,7 +227,10 @@ function functionActionDisabled(action, platform) {
 
 function triggerFunctionAction(action, platform) {
   if (!action?.event || functionActionDisabled(action, platform)) return;
-  emit(action.event, platform.agentId);
+  // Several entries share one configuration dialog. Preserve the selected
+  // action so the dialog can open the exact section instead of making every
+  // toolbar button behave identically.
+  emit(action.event, platform.agentId, action.id);
 }
 
 function categoryLabel(category) {
@@ -275,20 +278,31 @@ function capabilityLabel(name) {
     <p v-else-if="message" class="tools-error" role="alert">{{ message }}</p>
 
     <nav v-if="selectedPlatform" class="agent-function-bar" :aria-label="`${selectedPlatform.displayName} 功能`">
-      <button
+      <template
         v-for="action in selectedFunctionActions"
         :key="action.id"
+      >
+        <span
+          v-if="!action.event"
+          class="agent-function-action active"
+          aria-current="page"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="actionIconPaths[action.icon]" /></svg>
+          <span>{{ action.label }}</span>
+        </span>
+        <button
+          v-else
         type="button"
         class="agent-function-action"
-        :class="{ active: !action.event }"
-        :aria-current="!action.event ? 'page' : undefined"
         :title="action.title || action.label"
+        :data-action="action.id"
         :disabled="functionActionDisabled(action, selectedPlatform)"
         @click="triggerFunctionAction(action, selectedPlatform)"
       >
         <svg :class="{ spin: functionActionBusy(action, selectedPlatform) }" viewBox="0 0 24 24" aria-hidden="true"><path :d="actionIconPaths[action.icon]" /></svg>
         <span>{{ action.label }}</span>
-      </button>
+        </button>
+      </template>
     </nav>
 
     <div v-if="selectedPlatform && actionMessage(selectedPlatform)?.message" class="tool-action-feedback" :class="actionMessage(selectedPlatform)?.tone || 'muted'" role="status" aria-live="polite">
@@ -448,11 +462,12 @@ function capabilityLabel(name) {
 .refresh-button svg { width: 16px; fill: none; stroke: var(--teal); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.9; }
 
 .agent-function-bar {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
   min-height: 48px;
   align-items: center;
   gap: 7px;
-  overflow-x: auto;
+  overflow: hidden;
   border: 1px solid var(--separator-strong);
   border-radius: var(--r-md);
   background: var(--bg-card);
@@ -462,9 +477,10 @@ function capabilityLabel(name) {
 
 .agent-function-action {
   display: inline-flex;
-  min-height: 34px;
-  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 40px;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   border: 1px solid transparent;
   border-radius: 9px;
@@ -472,6 +488,13 @@ function capabilityLabel(name) {
   padding: 0 11px;
   font-size: 13px;
   font-weight: 680;
+}
+
+.agent-function-action span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-function-action:hover:not(:disabled) {
@@ -679,6 +702,7 @@ function capabilityLabel(name) {
 }
 
 @media (max-width: 540px) {
+	.agent-function-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.tool-rail { grid-template-columns: minmax(0, 1fr); }
 	.tool-capabilities ul { grid-template-columns: 1fr; }
 	.tools-footer { align-items: flex-start; flex-direction: column; }

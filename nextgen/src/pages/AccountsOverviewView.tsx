@@ -418,7 +418,11 @@ export function AccountsOverviewView(props: AccountsOverviewViewProps) {
                 }
                 aria-label={t('accounts.sort.toggleDirection', '切换排序方向')}
               >
-                {sortDirection === 'desc' ? '⬇' : '⬆'}
+                {sortDirection === 'desc' ? (
+                  <ArrowDown size={16} aria-hidden="true" />
+                ) : (
+                  <ArrowUp size={16} aria-hidden="true" />
+                )}
               </button>
             ) : (
               <button

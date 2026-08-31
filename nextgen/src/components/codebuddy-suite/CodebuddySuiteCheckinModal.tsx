@@ -356,7 +356,7 @@ export function CodebuddySuiteCheckinModal<TAccount extends CodebuddySuiteAccoun
             <CalendarCheck size={20} /> {t('workbuddy.checkin.modalTitle', '每日签到')} -{' '}
             {platformLabel}
           </h2>
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X size={18} />
           </button>
         </div>

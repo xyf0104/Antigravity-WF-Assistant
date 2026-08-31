@@ -22,6 +22,8 @@ import {
   X,
   Search,
   ArrowDownWideNarrow,
+  ArrowUp,
+  ArrowDown,
   RefreshCw,
   ExternalLink,
   Eye,
@@ -2637,7 +2639,11 @@ export function InstancesManager<TAccount extends AccountLike>({
             }
             aria-label={t("instances.sort.toggleDirection", "切换排序方向")}
           >
-            {sortDirection === "asc" ? "⬆" : "⬇"}
+            {sortDirection === "asc" ? (
+              <ArrowUp size={16} aria-hidden="true" />
+            ) : (
+              <ArrowDown size={16} aria-hidden="true" />
+            )}
           </button>
           <button
             className="sort-direction-btn"
@@ -3184,6 +3190,9 @@ export function InstancesManager<TAccount extends AccountLike>({
         <div className="modal-overlay">
           <div
             className="modal modal-lg instance-editor-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="instance-editor-title"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="modal-header">
@@ -3195,7 +3204,7 @@ export function InstancesManager<TAccount extends AccountLike>({
               >
                 <ChevronLeft size={14} />
               </button>
-              <h2>
+              <h2 id="instance-editor-title">
                 {editing
                   ? t("instances.modal.editTitle", "编辑实例")
                   : t("instances.modal.createTitle", "新建实例")}
@@ -3210,8 +3219,9 @@ export function InstancesManager<TAccount extends AccountLike>({
             </div>
             <div className="modal-body">
               <div className="form-group">
-                <label>{t("instances.form.name", "实例名称")}</label>
+                <label htmlFor="instance-editor-name">{t("instances.form.name", "实例名称")}</label>
                 <input
+                  id="instance-editor-name"
                   className="form-input"
                   value={formName}
                   onChange={(e) => handleNameChange(e.target.value)}
@@ -3292,9 +3302,10 @@ export function InstancesManager<TAccount extends AccountLike>({
 
               {!hidePathFieldInEditModal && (
                 <div className="form-group">
-                  <label>{t("instances.form.path", "实例目录")}</label>
+                  <label htmlFor="instance-editor-path">{t("instances.form.path", "实例目录")}</label>
                   <div className="instance-path-row">
                     <input
+                      id="instance-editor-path"
                       className="form-input"
                       value={formPath}
                       onChange={(e) => setFormPath(e.target.value)}
@@ -3380,9 +3391,10 @@ export function InstancesManager<TAccount extends AccountLike>({
 
               {showWorkingDirField && (
                 <div className="form-group">
-                  <label>{t("instances.form.workingDir", "工作目录")}</label>
+                  <label htmlFor="instance-editor-working-dir">{t("instances.form.workingDir", "工作目录")}</label>
                   <div className="instance-path-row">
                     <input
+                      id="instance-editor-working-dir"
                       className="form-input"
                       value={formWorkingDir}
                       onChange={(e) => setFormWorkingDir(e.target.value)}
@@ -3583,8 +3595,9 @@ export function InstancesManager<TAccount extends AccountLike>({
                 )}
 
               <div className="form-group">
-                <label>{t("instances.form.extraArgs", "自定义启动参数")}</label>
+                <label htmlFor="instance-editor-extra-args">{t("instances.form.extraArgs", "自定义启动参数")}</label>
                 <textarea
+                  id="instance-editor-extra-args"
                   className="form-input instance-args-input"
                   value={formExtraArgs}
                   onChange={(e) => setFormExtraArgs(e.target.value)}

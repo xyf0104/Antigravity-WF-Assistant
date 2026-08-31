@@ -17,6 +17,8 @@ import {
   List,
   Search,
   ArrowDownWideNarrow,
+  ArrowUp,
+  ArrowDown,
   Tag,
   ChevronDown,
   Play,
@@ -1414,7 +1416,13 @@ export function WindsurfAccountsPage() {
               : (sortDirection === 'desc'
                 ? t('common.shared.sort.descTooltip', '当前：降序，点击切换为升序')
                 : t('common.shared.sort.ascTooltip', '当前：升序，点击切换为降序'))}
-            aria-label={t('common.shared.sort.toggleDirection', '切换排序方向')}>{sortDirection === 'desc' ? '⬇' : '⬆'}</button>
+            aria-label={t('common.shared.sort.toggleDirection', '切换排序方向')}>
+            {sortDirection === 'desc' ? (
+              <ArrowDown size={16} aria-hidden="true" />
+            ) : (
+              <ArrowUp size={16} aria-hidden="true" />
+            )}
+          </button>
         </div>
         <div className="toolbar-right">
           <button className="btn btn-primary icon-only" onClick={() => openAddModal('oauth')} title={t('common.shared.addAccount', '添加账号')} aria-label={t('common.shared.addAccount', '添加账号')}><Plus size={14} /></button>
@@ -1538,24 +1546,25 @@ export function WindsurfAccountsPage() {
               <div className="add-section">
                 <p className="section-desc">{t('windsurf.oauth.desc', '点击下方按钮，在浏览器中完成 Windsurf OAuth 授权。')}</p>
                 {oauthPrepareError ? (
-                  <div className="add-status error"><CircleAlert size={16} /><span>{oauthPrepareError}</span>
+                  <div className="add-status error" role="alert" aria-live="assertive"><CircleAlert size={16} /><span>{oauthPrepareError}</span>
                     <button className="btn btn-sm btn-outline" onClick={handleRetryOauth}>{t('common.shared.oauth.retry', '重新生成授权信息')}</button></div>
                 ) : oauthUrl ? (
                   <div className="oauth-url-section">
                     <div className="oauth-link">
                       <label>{t('accounts.oauth.linkLabel', '授权链接')}</label>
-                      <div className="oauth-url-box"><input type="text" value={oauthUrl} readOnly /><button onClick={handleCopyOauthUrl}>{oauthUrlCopied ? <Check size={16} /> : <Copy size={16} />}</button></div>
+                      <div className="oauth-url-box"><input type="text" value={oauthUrl} readOnly aria-label={t('accounts.oauth.linkLabel', '授权链接')} /><button onClick={handleCopyOauthUrl} aria-label={t('common.copy', '复制')}>{oauthUrlCopied ? <Check size={16} /> : <Copy size={16} />}</button></div>
                     </div>
                     {!oauthUrl.includes('user_code=') && oauthUserCode && (
-                      <div className="oauth-url-box"><input type="text" value={oauthUserCode} readOnly /><button onClick={handleCopyOauthUserCode}>{oauthUserCodeCopied ? <Check size={16} /> : <Copy size={16} />}</button></div>
+                      <div className="oauth-url-box"><input type="text" value={oauthUserCode} readOnly aria-label={t('common.shared.oauth.deviceCode', '设备验证码')} /><button onClick={handleCopyOauthUserCode} aria-label={t('common.copy', '复制')}>{oauthUserCodeCopied ? <Check size={16} /> : <Copy size={16} />}</button></div>
                     )}
                     {oauthMeta && (<p className="oauth-hint">{t('common.shared.oauth.meta', '授权有效期：{{expires}}s；轮询间隔：{{interval}}s', { expires: oauthMeta.expiresIn, interval: oauthMeta.intervalSeconds })}</p>)}
                     <button className="btn btn-primary btn-full" onClick={handleOpenOauthUrl}><Globe size={16} />{t('common.shared.oauth.openBrowser', '在浏览器中打开')}</button>
                     {oauthSupportsManualCallback && (
                       <div className="oauth-link">
-                        <label>{t('common.shared.oauth.manualCallbackLabel', '手动输入回调地址')}</label>
+                        <label htmlFor="windsurf-oauth-manual-callback">{t('common.shared.oauth.manualCallbackLabel', '手动输入回调地址')}</label>
                         <div className="oauth-url-box oauth-manual-input">
                           <input
+                            id="windsurf-oauth-manual-callback"
                             type="text"
                             value={oauthManualCallbackInput}
                             onChange={(e) => setOauthManualCallbackInput(e.target.value)}
@@ -1573,10 +1582,10 @@ export function WindsurfAccountsPage() {
                       </div>
                     )}
                     {oauthManualCallbackError && (
-                      <div className="add-status error"><CircleAlert size={16} /><span>{oauthManualCallbackError}</span></div>
+                      <div className="add-status error" role="alert" aria-live="assertive"><CircleAlert size={16} /><span>{oauthManualCallbackError}</span></div>
                     )}
-                    {oauthPolling && (<div className="add-status loading"><RefreshCw size={16} className="loading-spinner" /><span>{t('common.shared.oauth.waiting', '等待授权完成...')}</span></div>)}
-                    {oauthCompleteError && (<div className="add-status error"><CircleAlert size={16} /><span>{oauthCompleteError}</span>{oauthTimedOut && (<button className="btn btn-sm btn-outline" onClick={handleRetryOauth}>{t('common.shared.oauth.timeoutRetry', '刷新授权链接')}</button>)}</div>)}
+                    {oauthPolling && (<div className="add-status loading" role="status" aria-live="polite"><RefreshCw size={16} className="loading-spinner" /><span>{t('common.shared.oauth.waiting', '等待授权完成...')}</span></div>)}
+                    {oauthCompleteError && (<div className="add-status error" role="alert" aria-live="assertive"><CircleAlert size={16} /><span>{oauthCompleteError}</span>{oauthTimedOut && (<button className="btn btn-sm btn-outline" onClick={handleRetryOauth}>{t('common.shared.oauth.timeoutRetry', '刷新授权链接')}</button>)}</div>)}
                     <p className="oauth-hint">{t('common.shared.oauth.hint', 'Once authorized, this window will update automatically')}</p>
                   </div>
                 ) : (<div className="oauth-loading"><RefreshCw size={24} className="loading-spinner" /><span>{t('common.shared.oauth.preparing', '正在准备授权信息...')}</span></div>)}
@@ -1674,7 +1683,7 @@ export function WindsurfAccountsPage() {
                       }}
                     />
                     {passwordFieldError && (
-                      <div ref={passwordFieldErrorRef} className="add-status error" style={{ marginTop: 8 }}>
+                      <div ref={passwordFieldErrorRef} className="add-status error" role="alert" aria-live="assertive" style={{ marginTop: 8 }}>
                         <CircleAlert size={16} />
                         <span>{passwordFieldError}</span>
                       </div>
@@ -1833,7 +1842,7 @@ export function WindsurfAccountsPage() {
                               disabled={passwordSubmitting}
                             />
                             {passwordBatchDelimiterFieldError && (
-                              <div ref={passwordBatchDelimiterFieldErrorRef} className="add-status error" style={{ marginTop: 8 }}>
+                              <div ref={passwordBatchDelimiterFieldErrorRef} className="add-status error" role="alert" aria-live="assertive" style={{ marginTop: 8 }}>
                                 <CircleAlert size={16} />
                                 <span>{passwordBatchDelimiterFieldError}</span>
                               </div>
@@ -1874,7 +1883,7 @@ export function WindsurfAccountsPage() {
                       disabled={passwordSubmitting}
                     />
                     {passwordBatchFieldError && (
-                      <div ref={passwordBatchFieldErrorRef} className="add-status error" style={{ marginTop: 8 }}>
+                      <div ref={passwordBatchFieldErrorRef} className="add-status error" role="alert" aria-live="assertive" style={{ marginTop: 8 }}>
                         <CircleAlert size={16} />
                         <span>{passwordBatchFieldError}</span>
                       </div>

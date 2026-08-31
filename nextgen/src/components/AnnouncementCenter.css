@@ -26,7 +26,11 @@
   justify-content: center;
   box-shadow: var(--shadow-sm);
   cursor: pointer;
-  transition: all 0.2s;
+  transition:
+    background-color 0.2s,
+    border-color 0.2s,
+    color 0.2s,
+    box-shadow 0.2s;
 }
 
 .announcement-bell-btn:hover {
@@ -47,7 +51,11 @@
   gap: 6px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   cursor: pointer;
-  transition: all 0.2s;
+  transition:
+    background-color 0.2s,
+    border-color 0.2s,
+    color 0.2s,
+    box-shadow 0.2s;
   font-size: 13px;
   font-weight: 500;
   opacity: 0.9;
@@ -119,18 +127,18 @@
 }
 
 .announcement-toolbar-text-btn {
-  height: 30px;
+  min-height: 40px;
   min-width: 54px;
-  padding: 0 10px;
-  border: 1px solid var(--border-light);
-  border-radius: 8px;
-  background: transparent;
+  padding: 0 12px;
+  border: 1px solid var(--xiass-glass-border, var(--border-light));
+  border-radius: 10px;
+  background: var(--xiass-glass-surface-soft, var(--bg-tertiary));
   color: var(--text-secondary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   transition: background 0.2s, border-color 0.2s, color 0.2s;
@@ -140,6 +148,11 @@
   background: var(--bg-hover);
   border-color: var(--border);
   color: var(--text-primary);
+}
+
+.announcement-toolbar-text-btn:focus-visible {
+  outline: 2px solid var(--primary-color, #22d3c5);
+  outline-offset: 2px;
 }
 
 .announcement-toolbar-text-btn:disabled {
@@ -412,8 +425,8 @@
   }
 
   .announcement-toolbar-text-btn {
-    height: 30px;
-    padding: 0 10px;
+    min-height: 40px;
+    padding: 0 12px;
   }
 
   .announcement-item-title {

@@ -667,6 +667,9 @@
 }
 
 .token-format-collapse-summary {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
   padding: 9px 10px;
   font-size: 12px;
   color: var(--text-secondary);

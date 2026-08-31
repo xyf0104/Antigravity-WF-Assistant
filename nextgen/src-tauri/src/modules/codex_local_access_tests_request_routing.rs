@@ -876,6 +876,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
 
     #[test]
     fn auto_review_model_bypasses_legacy_gateway_model_filters() {
+        let _isolation = IsolatedLocalAccessTest::new("auto-review-model-visibility");
         let collection = test_local_access_collection(vec!["account-1".to_string()]);
         let api_key = ResolvedLocalApiKey {
             id: "key-1".to_string(),
@@ -909,6 +910,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
 
     #[test]
     fn api_key_model_visibility_includes_5_6_unless_explicitly_restricted() {
+        let _isolation = IsolatedLocalAccessTest::new("api-key-model-visibility");
         let collection = test_local_access_collection(vec!["account-1".to_string()]);
         let mut api_key = ResolvedLocalApiKey {
             id: "key-1".to_string(),
@@ -981,6 +983,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
 
     #[test]
     fn provider_gateway_models_are_visible_for_gateway_api_key() {
+        let _isolation = IsolatedLocalAccessTest::new("provider-gateway-model-visibility");
         let collection = test_local_access_collection(vec!["account-1".to_string()]);
         let api_key = ResolvedLocalApiKey {
             id: "provider_gateway_account-1".to_string(),

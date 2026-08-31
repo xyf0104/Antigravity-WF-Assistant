@@ -600,13 +600,10 @@
 .page-tabs-label {
   position: absolute;
   left: 0;
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  background: var(--gradient-primary);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: var(--text-primary);
 }
 
 .page-tabs-center {
@@ -621,13 +618,10 @@
 }
 
 .page-title {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  background: var(--gradient-primary);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: var(--text-primary);
 }
 
 .platform-header-title {
@@ -2709,6 +2703,12 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
     min-width: 0;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     justify-content: stretch;
+  }
+
+  .platform-layout-controls-grid {
+    /* The desktop flex-basis represents horizontal width. In the stacked
+       layout it becomes a vertical basis and creates a 310px empty gap. */
+    flex: 0 0 auto;
   }
 
   .platform-layout-row,

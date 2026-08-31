@@ -223,7 +223,8 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
             <Search className="search-icon" size={16} />
             <input
               type="text"
-              placeholder={t("common.search", "搜索...")}
+              aria-label={t("codex.modelProviders.searchAria", "搜索模型供应商")}
+              placeholder={t("common.search", "搜索…")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -295,7 +296,11 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
               title={t("common.shared.sort.toggleDirection", "切换排序方向")}
               aria-label={t("common.shared.sort.toggleDirection", "切换排序方向")}
             >
-              {providerSortDirection === "desc" ? "⬇" : "⬆"}
+              {providerSortDirection === "desc" ? (
+                <ArrowDown size={16} aria-hidden="true" />
+              ) : (
+                <ArrowUp size={16} aria-hidden="true" />
+              )}
             </button>
           )}
         </div>
@@ -944,7 +949,8 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                     <Search className="search-icon" size={16} />
                     <input
                       type="text"
-                      placeholder={t("common.search", "搜索...")}
+                      aria-label={t("codex.modelProviders.batchTest.searchAria", "搜索待测试供应商")}
+                      placeholder={t("common.search", "搜索…")}
                       value={batchTestSearchQuery}
                       onChange={(event) => setBatchTestSearchQuery(event.target.value)}
                     />
@@ -2038,6 +2044,10 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                         <Search className="search-icon" size={16} />
                         <input
                           type="text"
+                          aria-label={t(
+                            "codex.modelProviders.existingApiKeysSearch",
+                            "搜索已有 API Key…",
+                          )}
                           placeholder={t(
                             "codex.modelProviders.existingApiKeysSearch",
                             "搜索已有 API Key…",
@@ -2390,7 +2400,8 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                   <Search className="search-icon" size={16} />
                   <input
                     type="text"
-                    placeholder={t("common.search", "搜索...")}
+                    aria-label={t("codex.modelProviders.apiKeyPickerSearchAria", "搜索 API Key")}
+                    placeholder={t("common.search", "搜索…")}
                     value={pickerSearchQuery}
                     onChange={(event) => setPickerSearchQuery(event.target.value)}
                   />
@@ -2448,7 +2459,8 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                   <Search className="search-icon" size={16} />
                   <input
                     type="text"
-                    placeholder={t("common.search", "搜索...")}
+                    aria-label={t("codex.modelProviders.instancePickerSearchAria", "搜索 Codex 实例")}
+                    placeholder={t("common.search", "搜索…")}
                     value={pickerSearchQuery}
                     onChange={(event) => setPickerSearchQuery(event.target.value)}
                   />

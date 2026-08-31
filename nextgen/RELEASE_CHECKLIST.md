@@ -58,7 +58,9 @@ Run the root workflows `Build XIASS Tools Nextgen for macOS` and
 
 The macOS workflow verifies that the main executable, CLI proxy, and WF bridge contain both
 `x86_64` and `arm64`, and that the application passes strict deep code-signature validation. The
-Windows workflow verifies both sidecars and both installers exist and are non-empty.
+Windows workflow verifies both sidecars and both installers exist and are non-empty. Both platform
+workflows must also observe the `react_committed` frontend-ready signal; a process that exits early,
+reports a frontend timeout, or stays alive without mounting React must fail the smoke test.
 
 ## 4. Publish exactly one tagged release
 

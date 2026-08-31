@@ -3612,10 +3612,9 @@ export function DashboardPage({
                         ? 'info'
                         : 'windsurf';
           return (
-            <button
+            <div
               className="stat-card stat-card-button"
               key={entryId}
-              onClick={() => navigateToPlatform(platformId)}
               title={
                 groupExtraCount > 0
                   ? `${t('dashboard.switchTo', '切换到此账号')} · ${groupTooltip}`
@@ -3627,13 +3626,12 @@ export function DashboardPage({
                   +{groupExtraCount}
                 </span>
               )}
-              <div
+              <button
+                type="button"
                 className={`stat-icon-bg ${iconClass} stat-icon-trigger`}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onEasterEggTriggerClick();
-                }}
+                aria-label={t('dashboard.interactiveIcon', '互动图标')}
+                title={t('dashboard.interactiveIcon', '互动图标')}
+                onClick={onEasterEggTriggerClick}
               >
                 {group?.iconKind === 'custom' && group.iconCustomDataUrl ? (
                   <img
@@ -3645,12 +3643,19 @@ export function DashboardPage({
                 ) : (
                   renderPlatformIcon(group?.iconPlatformId ?? platformId, 24)
                 )}
-              </div>
-              <div className="stat-info">
-                <span className="stat-label">{label}</span>
-                <span className="stat-value">{entryCounts.get(entryId) ?? 0}</span>
-              </div>
-            </button>
+              </button>
+              <button
+                type="button"
+                className="stat-card-navigation"
+                onClick={() => navigateToPlatform(platformId)}
+                aria-label={`${label} ${entryCounts.get(entryId) ?? 0}`}
+              >
+                <span className="stat-info">
+                  <span className="stat-label">{label}</span>
+                  <span className="stat-value">{entryCounts.get(entryId) ?? 0}</span>
+                </span>
+              </button>
+            </div>
           );
         })}
 

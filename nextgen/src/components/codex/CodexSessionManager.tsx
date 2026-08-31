@@ -1536,6 +1536,7 @@ export function CodexSessionManager() {
               <Search size={14} />
               <input
                 type="text"
+                aria-label={t('codex.sessionManager.search.titleAria', '按会话标题搜索')}
                 value={titleSearchInput}
                 onChange={(event) => setTitleSearchInput(event.target.value)}
                 placeholder={t('codex.sessionManager.search.titlePlaceholder', '按标题搜索')}

@@ -129,7 +129,7 @@ export const AccountGroupModal = ({
             <FolderOpen size={18} />
             {t('accounts.groups.manageTitle')}
           </h2>
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X size={18} />
           </button>
         </div>
@@ -349,7 +349,7 @@ export const AddToGroupModal = ({ isOpen, onClose, accountIds, sourceGroupId, on
             <FolderPlus size={18} />
             {sourceGroupId ? t('accounts.groups.moveToGroup') : t('accounts.groups.addToGroup')}
           </h2>
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X size={18} />
           </button>
         </div>
@@ -368,6 +368,7 @@ export const AddToGroupModal = ({ isOpen, onClose, accountIds, sourceGroupId, on
               className="btn btn-primary"
               onClick={handleCreateAndAdd}
               disabled={!newName.trim()}
+              aria-label={t('accounts.groups.createAndAdd')}
             >
               <Plus size={14} />
             </button>

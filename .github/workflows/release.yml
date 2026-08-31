@@ -161,6 +161,56 @@ jobs:
           test -n "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
 
+      - name: Smoke-test release macOS app startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find target/universal-apple-darwin/release/bundle -type d -name 'XIASS Tools.app' -print -quit)"
+          test -n "$app"
+          bundle_executable="$(plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")"
+          test -n "$bundle_executable"
+          executable="$app/Contents/MacOS/$bundle_executable"
+          test -x "$executable"
+          smoke_root="$(mktemp -d)"
+          cleanup() {
+            if [[ -n "${app_pid:-}" ]] && kill -0 "$app_pid" 2>/dev/null; then
+              kill "$app_pid" 2>/dev/null || true
+              wait "$app_pid" 2>/dev/null || true
+            fi
+            rm -rf "$smoke_root"
+          }
+          trap cleanup EXIT
+          XIASS_TOOLS_DATA_DIR="$smoke_root/data" "$executable" >"$smoke_root/stdout.log" 2>"$smoke_root/stderr.log" &
+          app_pid=$!
+          print_smoke_logs() {
+            cat "$smoke_root/stderr.log" 2>/dev/null || true
+            find "$smoke_root/data/logs" -type f -name 'app.log*' -exec cat {} + 2>/dev/null || true
+          }
+          frontend_ready=0
+          for _ in {1..45}; do
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              wait "$app_pid" || true
+              print_smoke_logs
+              echo "Release XIASS Tools exited before the frontend became ready" >&2
+              exit 1
+            fi
+            if find "$smoke_root/data/logs" -type f -name 'app.log*' -exec grep -Fq '[Diagnostics] 前端启动超时' {} + 2>/dev/null; then
+              print_smoke_logs
+              echo "Release XIASS Tools reported a frontend startup timeout" >&2
+              exit 1
+            fi
+            if find "$smoke_root/data/logs" -type f -name 'app.log*' -exec grep -Fq '[Diagnostics] 前端已就绪' {} + 2>/dev/null; then
+              frontend_ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$frontend_ready" -ne 1 ]]; then
+            print_smoke_logs
+            echo "Release XIASS Tools did not report frontend ready within 45 seconds" >&2
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
@@ -240,6 +290,59 @@ jobs:
           $nsisSig = @(Get-ChildItem release-assets -Filter '*-setup.exe.sig')
           if ($msi.Count -ne 1 -or $msiSig.Count -ne 1) { throw 'MSI updater asset/signature set is incomplete' }
           if ($nsis.Count -ne 1 -or $nsisSig.Count -ne 1) { throw 'NSIS updater asset/signature set is incomplete' }
+
+      - name: Smoke-test release Windows app startup
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem target\x86_64-pc-windows-msvc\release -Filter 'xiass-tools.exe' -File | Select-Object -First 1
+          if (-not $app) { throw 'Packaged XIASS Tools executable was not found' }
+          $smokeRoot = Join-Path $env:RUNNER_TEMP ("xiass-tools-release-smoke-" + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $smokeRoot | Out-Null
+          $previousDataDir = $env:XIASS_TOOLS_DATA_DIR
+          $process = $null
+          try {
+            $env:XIASS_TOOLS_DATA_DIR = Join-Path $smokeRoot 'data'
+            $stdoutPath = Join-Path $smokeRoot 'stdout.log'
+            $stderrPath = Join-Path $smokeRoot 'stderr.log'
+            $process = Start-Process -FilePath $app.FullName -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+            $frontendReady = $false
+            for ($attempt = 0; $attempt -lt 45; $attempt++) {
+              $process.Refresh()
+              $appLog = if (Test-Path (Join-Path $smokeRoot 'data\logs')) {
+                ((Get-ChildItem (Join-Path $smokeRoot 'data\logs') -Filter 'app.log*' -File -ErrorAction SilentlyContinue | ForEach-Object {
+                  Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+                }) -join "`n")
+              } else { '' }
+              if ($process.HasExited) {
+                Get-Content $stderrPath -ErrorAction SilentlyContinue | Write-Host
+                $appLog | Write-Host
+                throw "Release XIASS Tools exited before the frontend became ready with code $($process.ExitCode)"
+              }
+              if ($appLog.Contains('[Diagnostics] 前端启动超时')) {
+                Get-Content $stderrPath -ErrorAction SilentlyContinue | Write-Host
+                $appLog | Write-Host
+                throw 'Release XIASS Tools reported a frontend startup timeout'
+              }
+              if ($appLog.Contains('[Diagnostics] 前端已就绪')) {
+                $frontendReady = $true
+                break
+              }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $frontendReady) {
+              Get-Content $stderrPath -ErrorAction SilentlyContinue | Write-Host
+              $appLog | Write-Host
+              throw 'Release XIASS Tools did not report frontend ready within 45 seconds'
+            }
+          }
+          finally {
+            $env:XIASS_TOOLS_DATA_DIR = $previousDataDir
+            if ($process -and -not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              $process.WaitForExit()
+            }
+            Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
 
       - uses: actions/upload-artifact@v4
         with:

@@ -2,6 +2,7 @@
 // 测试与生产实现共享 super 作用域，验证真实网关、持久化和请求协议行为。
     #[test]
     fn sidecar_auth_json_marks_personal_access_token_accounts() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-pat-auth-json");
         let mut account = CodexAccount::new(
             "account-at".to_string(),
             "at@example.com".to_string(),
@@ -91,6 +92,7 @@
 
     #[tokio::test]
     async fn prepare_sidecar_config_prunes_stale_auth_files_incrementally() {
+        let _isolation = IsolatedLocalAccessTest::new("sidecar-incremental-auth-files");
         let dir = make_temp_dir("codex-sidecar-incremental-auth-files");
         let account = CodexAccount::new(
             "oauth-incremental".to_string(),

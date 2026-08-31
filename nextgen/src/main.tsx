@@ -11,6 +11,16 @@ import {
 import { setBootSplashStage } from "./utils/bootSplash";
 import { hydrateUiPreferences } from "./utils/uiPreferences";
 
+function FrontendReadyMarker() {
+  React.useEffect(() => {
+    recordFrontendStage("react_commit_complete");
+    setBootSplashStage("react_mounted");
+    markFrontendReady("react_committed");
+  }, []);
+
+  return null;
+}
+
 initErrorReporter();
 recordFrontendStage("script_loaded");
 setBootSplashStage("script_loaded");
@@ -108,6 +118,24 @@ async function installBrowserPreviewRuntime(): Promise<void> {
         };
       }
       return previewGeneralConfig;
+    }
+    if (
+      command === "load_codex_account_groups"
+      || command === "load_codex_model_providers"
+    ) {
+      // These production commands return serialized JSON. Returning null here
+      // makes the browser preview look like a corrupted user configuration and
+      // masks real UI console errors during page-by-page review.
+      return "[]";
+    }
+    if (command === "load_ui_preferences") {
+      return { values: {} };
+    }
+    if (command === "load_user_memory") {
+      return { dismissed: {}, lists: {} };
+    }
+    if (command === "load_antigravity_switch_history") {
+      return [];
     }
     if (command === "wf_bridge_get_session") {
       return {
@@ -207,13 +235,9 @@ void installBrowserPreviewRuntime().then(() => hydrateUiPreferences()).then(asyn
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
       <AppRuntimeGuard>
+        <FrontendReadyMarker />
         <App />
       </AppRuntimeGuard>
     </React.StrictMode>,
   );
-
-  window.requestAnimationFrame(() => {
-    setBootSplashStage("react_mounted");
-    markFrontendReady("react_mounted");
-  });
 });

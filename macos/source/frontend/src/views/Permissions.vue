@@ -90,7 +90,7 @@ onMounted(async () => {
 
         <div v-if="mode === 'custom' && enabled" class="custom-rules">
           <div class="t-footnote">每行一条规则</div>
-          <textarea v-model="customText" rows="6" spellcheck="false" placeholder="command(go test *)&#10;command(npm run build)&#10;command(python *)"></textarea>
+          <textarea v-model="customText" rows="6" aria-label="自定义命令规则" spellcheck="false" placeholder="command(go test *)&#10;command(npm run build)&#10;command(python *)"></textarea>
           <div class="t-caption">规则必须是 command(...) 格式。匹配语义由 Antigravity Language Server 决定。</div>
         </div>
 
@@ -98,8 +98,8 @@ onMounted(async () => {
           <strong>高风险：</strong>任何 Agent 生成的终端命令都可能无需再次确认执行。仅在工作区内容和指令来源完全可信时使用。
         </div>
 
-        <div v-if="error" class="result-box error">{{ error }}</div>
-        <div v-if="message" class="result-box success">{{ message }}</div>
+        <div v-if="error" class="result-box error" role="alert">{{ error }}</div>
+        <div v-if="message" class="result-box success" role="status" aria-live="polite">{{ message }}</div>
 
         <div class="row between" style="gap:10px;flex-wrap:wrap">
           <div class="t-caption">{{ managedSummary }}</div>

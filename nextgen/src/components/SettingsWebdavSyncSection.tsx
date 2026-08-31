@@ -186,6 +186,14 @@ export function SettingsWebdavSyncSection() {
     setSettingsLoading(true);
     try {
       const next = await getWebdavSyncSettings();
+      // Browser preview and a partially initialized native bridge can return
+      // an empty payload. Keep the safe form defaults instead of surfacing an
+      // internal "reading url" error to the user.
+      if (!next) {
+        setSettings(null);
+        setFeedback(null);
+        return;
+      }
       applySettings(next);
       if (next.has_password && next.username.trim() && isRemoteExpandedRef.current) {
         await loadRemoteFiles();
@@ -617,7 +625,7 @@ export function SettingsWebdavSyncSection() {
           </div>
         </div>
 
-        <div className="settings-row settings-row--align-start">
+        <div className="settings-row settings-row--align-start settings-webdav-status-row">
           <div className="row-label">
             <div className="row-title">{t('settings.webdav.statusTitle', '同步状态')}</div>
             <div className="row-desc">{t('settings.webdav.statusDesc', '远端恢复需要手动选择备份，不会静默覆盖本地数据。')}</div>
@@ -665,19 +673,22 @@ export function SettingsWebdavSyncSection() {
 
         <div
           className="settings-row settings-row--align-start settings-row--no-border settings-webdav-remote-header"
-          style={{ cursor: 'pointer', userSelect: 'none' }}
-          onClick={toggleRemoteExpanded}
         >
           <div className="row-label">
-            <div className="row-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              className="settings-webdav-remote-toggle"
+              aria-expanded={isRemoteExpanded}
+              onClick={toggleRemoteExpanded}
+            >
               <span className={`settings-webdav-chevron ${isRemoteExpanded ? 'expanded' : ''}`}>
-                <ChevronRight size={16} />
+                <ChevronRight size={16} aria-hidden="true" />
               </span>
               {t('settings.webdav.remoteListTitle', '远端备份')}
-            </div>
+            </button>
             <div className="row-desc">{t('settings.webdav.remoteListDesc', '仅显示匹配 XIASS 自动/手动备份命名的 JSON 与 ZIP 文件。')}</div>
           </div>
-          <div className="row-control" onClick={(e) => e.stopPropagation()}>
+          <div className="row-control">
             {isRemoteExpanded && (
               <button
                 className="btn btn-secondary"

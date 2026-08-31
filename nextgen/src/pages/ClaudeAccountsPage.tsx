@@ -3427,6 +3427,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                     <label>{t('claude.desktopOAuth.nameLabel', '账号名称')}</label>
                     <input
                       className="form-input"
+                      aria-label={t('claude.desktopOAuth.nameLabel', '账号名称')}
                       value={desktopAccountNameInput}
                       onChange={(event) => setDesktopAccountNameInput(event.target.value)}
                       placeholder={t('claude.desktopOAuth.namePlaceholder', '可选，例如 Claude Free')}
@@ -3538,6 +3539,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                     </p>
                     <div className="oauth-url-box oauth-manual-input">
                       <input
+                        aria-label={t('claude.oauth.callbackLabel', '回调链接或授权 code')}
                         value={oauthCallbackInput}
                         onChange={(event) => {
                           setOauthCallbackInput(event.target.value);
@@ -3557,6 +3559,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                     </div>
                     <div className="oauth-url-box oauth-manual-input">
                       <input
+                        aria-label={t('claude.oauth.emailLabel', '邮箱提示')}
                         value={oauthEmailHint}
                         onChange={(event) => setOauthEmailHint(event.target.value)}
                         placeholder={t('claude.oauth.emailPlaceholder', '邮箱（无法自动识别时填写）')}

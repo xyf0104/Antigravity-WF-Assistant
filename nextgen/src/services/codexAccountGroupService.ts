@@ -163,14 +163,12 @@ function cloneGroups(groups: CodexAccountGroup[]): CodexAccountGroup[] {
 }
 
 async function loadGroupsFromDisk(): Promise<CodexAccountGroup[]> {
-  try {
-    const raw: string = await invoke('load_codex_account_groups');
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return cloneGroups(parsed.map((item) => normalizeCodexGroup(item ?? {})));
-  } catch {
-    return [];
+  const raw: string = await invoke('load_codex_account_groups');
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error('Codex 账号分组文件结构无效；已保留磁盘原件，没有按空分组覆盖');
   }
+  return cloneGroups(parsed.map((item) => normalizeCodexGroup(item ?? {})));
 }
 
 async function saveGroupsToDisk(groups: CodexAccountGroup[]): Promise<void> {

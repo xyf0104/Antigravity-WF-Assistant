@@ -4,11 +4,43 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestWFBridgeParentPipeSignalsExitOnEOF(t *testing.T) {
+	reader, writer := io.Pipe()
+	exited, err := wfBridgeParentExitSignal("123", reader)
+	if err != nil {
+		t.Fatalf("create parent exit signal: %v", err)
+	}
+	select {
+	case <-exited:
+		t.Fatal("parent exit signal fired before the pipe closed")
+	default:
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close parent pipe: %v", err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("parent exit signal did not fire after EOF")
+	}
+}
+
+func TestWFBridgeParentPipeRejectsInvalidPIDAndAllowsStandaloneMode(t *testing.T) {
+	if exited, err := wfBridgeParentExitSignal("", strings.NewReader("")); err != nil || exited != nil {
+		t.Fatalf("standalone mode should disable parent monitoring: signal=%v err=%v", exited, err)
+	}
+	if _, err := wfBridgeParentExitSignal("not-a-pid", strings.NewReader("")); err == nil {
+		t.Fatal("invalid parent PID must be rejected")
+	}
+}
 
 func TestWFBridgeEventHubReturnsOnlyNewEvents(t *testing.T) {
 	hub := &wfBridgeEventHub{}

@@ -201,7 +201,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({
             <Package size={20} />
             {t('group_settings.title', '分组管理')}
           </h2>
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
             <X size={20} />
           </button>
         </div>
