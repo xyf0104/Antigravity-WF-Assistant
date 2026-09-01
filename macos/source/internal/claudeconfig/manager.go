@@ -265,6 +265,72 @@ func (m *Manager) Apply(input ApplyConfig) (ApplyResult, error) {
 	return result, err
 }
 
+// ApplyModel is the narrow companion to Apply for an account whose
+// credential is owned and injected by another XIASS Tools native component.
+// It never reads, rewrites, or returns a credential; it transactionally
+// updates only the documented top-level model setting and preserves all env
+// entries already present in settings.json.
+func (m *Manager) ApplyModel(model string) (ApplyResult, error) {
+	if err := m.validatePaths(); err != nil {
+		return ApplyResult{}, err
+	}
+	model, err := normalizeModelIdentifier(model)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+
+	var result ApplyResult
+	err = m.withLock(func() error {
+		if err := ensureDirectoryNoSymlink(m.ConfigDir); err != nil {
+			return err
+		}
+		original, existed, mode, err := readRegularFile(m.SettingsPath, maxSettingsBytes)
+		if err != nil {
+			return err
+		}
+		var document settingsDocument
+		if existed {
+			document, err = parseSettings(original)
+			if err != nil {
+				return errInvalidSettings
+			}
+		} else {
+			document = settingsDocument{root: make(map[string]json.RawMessage), env: make(map[string]json.RawMessage)}
+		}
+		updated, err := document.updatedModel(model)
+		if err != nil {
+			return errors.New("could not prepare Claude model setting")
+		}
+		if err := verifySelectedModel(updated, model); err != nil {
+			return errors.New("generated Claude model setting did not verify")
+		}
+		backup, err := m.createBackup(original, existed, mode, "model_selection")
+		if err != nil {
+			return err
+		}
+		if err := ensureFileUnchanged(m.SettingsPath, original, existed); err != nil {
+			return err
+		}
+		if err := writeFileAtomic(m.SettingsPath, updated, secureMode(mode)); err != nil {
+			return m.rollbackMutation(errors.New("could not write Claude model setting"), original, existed, mode)
+		}
+		if m.afterAtomicWriteForTest != nil && m.afterAtomicWriteForTest() != nil {
+			return m.rollbackMutation(errors.New("Claude model setting read-back verification failed"), original, existed, mode)
+		}
+		written, writtenExists, _, err := readRegularFile(m.SettingsPath, maxSettingsBytes)
+		if err != nil || !writtenExists || !bytes.Equal(written, updated) || verifySelectedModel(written, model) != nil {
+			return m.rollbackMutation(errors.New("Claude model setting read-back verification failed"), original, existed, mode)
+		}
+		backup.AppliedSHA256 = sha256Hex(written)
+		if err := m.writeManifest(backup); err != nil {
+			return m.rollbackMutation(errors.New("could not verify Claude model backup metadata"), original, existed, mode)
+		}
+		result = ApplyResult{BackupID: backup.ID, SettingsSHA256: backup.AppliedSHA256}
+		return nil
+	})
+	return result, err
+}
+
 // Restore restores only a checksum-verified backup. It first creates a safety
 // backup of the current settings state, then atomically writes/removes the
 // target and reads it back. A tampered or foreign backup is never applied.

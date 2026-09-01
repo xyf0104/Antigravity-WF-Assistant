@@ -45,21 +45,8 @@ pub fn set_app_path(app: String, path: String) -> Result<(), String> {
             }
             "codex" => current.codex_app_path = normalized_path,
             "claude" => current.claude_app_path = normalized_path,
-            "zed" => current.zed_app_path = normalized_path,
-            "vscode" => current.vscode_app_path = normalized_path,
             "windsurf" => current.windsurf_app_path = normalized_path,
-            "kiro" => current.kiro_app_path = normalized_path,
             "cursor" => current.cursor_app_path = normalized_path,
-            "codebuddy" => current.codebuddy_app_path = normalized_path,
-            "codebuddy_cn" => current.codebuddy_cn_app_path = normalized_path,
-            "qoder" => current.qoder_app_path = normalized_path,
-            "zcode" => current.zcode_app_path = normalized_path,
-            "trae" => current.trae_app_path = normalized_path,
-            "trae_solo" => current.trae_solo_app_path = normalized_path,
-            "trae_cn" => current.trae_cn_app_path = normalized_path,
-            "trae_solo_cn" => current.trae_solo_cn_app_path = normalized_path,
-            "workbuddy" => current.workbuddy_app_path = normalized_path,
-            "opencode" => current.opencode_app_path = normalized_path,
             _ => return Err("未知应用类型".to_string()),
         }
         Ok(())
@@ -122,14 +109,9 @@ pub fn detect_app_path(app: String, force: Option<bool>) -> Result<Option<String
     let force = force.unwrap_or(false);
     match app.as_str() {
         "windsurf" => Ok(modules::windsurf_instance::detect_and_save_windsurf_launch_path(force)),
-        "kiro" => Ok(modules::kiro_instance::detect_and_save_kiro_launch_path(
-            force,
-        )),
         "cursor" => Ok(modules::cursor_instance::detect_and_save_cursor_launch_path(force)),
         "claude" => Ok(modules::claude_instance::detect_and_save_claude_launch_path(force)),
-        "antigravity" | "antigravity_ide" | "antigravity_legacy" | "codex" | "zed" | "vscode"
-        | "codebuddy" | "codebuddy_cn" | "qoder" | "zcode" | "trae" | "trae_solo" | "trae_cn"
-        | "trae_solo_cn" | "opencode" | "workbuddy" => Ok(
+        "antigravity" | "antigravity_ide" | "antigravity_legacy" | "codex" => Ok(
             modules::process::detect_and_save_app_path(app.as_str(), force),
         ),
         _ => Err("未知应用类型".to_string()),
@@ -182,9 +164,7 @@ pub async fn scan_app_launch_targets(
 ) -> Result<Vec<modules::process::AppLaunchCandidate>, String> {
     match app.as_str() {
         "antigravity" | "antigravity_ide" | "antigravity_legacy" | "codex" | "claude"
-        | "vscode" | "windsurf" | "kiro" | "cursor" | "codebuddy" | "codebuddy_cn" | "qoder"
-        | "zcode" | "trae" | "trae_solo" | "trae_cn" | "trae_solo_cn" | "workbuddy" | "zed"
-        | "opencode" => {}
+        | "windsurf" | "cursor" => {}
         _ => return Err("未知应用类型".to_string()),
     }
     let _ = scan_roots;
@@ -265,8 +245,34 @@ pub fn handle_window_close(
     // 执行操作
     match action.as_str() {
         "minimize" => {
-            if let Err(err) = modules::floating_card_window::destroy_main_window_to_tray(&window) {
-                modules::logger::log_warn(&format!("[Window] 销毁主窗口失败，回退隐藏: {}", err));
+            let config = config::get_user_config();
+            if crate::should_preserve_main_window_for_menu_bar_refresh(
+                cfg!(target_os = "macos"),
+                config.menu_bar_quota_enabled,
+            ) {
+                if let Err(err) = window.hide() {
+                    modules::logger::log_warn(&format!(
+                        "[Window] 隐藏主窗口失败，回退为销毁 WebView: {}",
+                        err
+                    ));
+                    if let Err(destroy_err) =
+                        modules::floating_card_window::destroy_main_window_to_tray(&window)
+                    {
+                        modules::logger::log_warn(&format!(
+                            "[Window] 销毁主窗口 WebView 失败: {}",
+                            destroy_err
+                        ));
+                    }
+                } else {
+                    let _ = modules::tray::update_tray_menu(window.app_handle());
+                }
+            } else if let Err(err) =
+                modules::floating_card_window::destroy_main_window_to_tray(&window)
+            {
+                modules::logger::log_warn(&format!(
+                    "[Window] 销毁主窗口失败，回退隐藏: {}",
+                    err
+                ));
                 let _ = window.hide();
                 modules::process_memory::trim_idle_process_memory();
             }

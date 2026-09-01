@@ -1,5 +1,11 @@
 // Codex 账号模块：Codex home paths, storage migration and mutation/refresh locks。
 // 通过 include! 保持原 modules::codex_account 作用域，完整保留私有调用关系。
+const DATA_DIR_OVERRIDE_ENV_VARS: [&str; 3] = [
+    "XIASS_TOOLS_TEST_DATA_DIR",
+    "COCKPIT_TEST_DATA_DIR",
+    "XIASS_TOOLS_DATA_DIR",
+];
+
 pub(crate) fn client_instance_id_for_profile_dir(base_dir: &Path) -> String {
     base_dir
         .file_name()
@@ -143,6 +149,32 @@ fn migrate_codex_data_if_needed(new_data_dir: &Path) {
     }
 }
 
+fn has_explicit_data_dir_override<'a>(
+    values: impl IntoIterator<Item = Option<&'a str>>,
+) -> bool {
+    values
+        .into_iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty())
+}
+
+fn should_migrate_legacy_codex_data_from_values<'a>(
+    values: impl IntoIterator<Item = Option<&'a str>>,
+) -> bool {
+    !has_explicit_data_dir_override(values)
+}
+
+/// An explicit data-directory override creates an isolated profile. It must not
+/// silently import account data or its encryption keys from a user's normal
+/// profile, which is particularly important for installer/runtime smoke tests.
+fn should_migrate_legacy_codex_data() -> bool {
+    let values: Vec<Option<String>> = DATA_DIR_OVERRIDE_ENV_VARS
+        .iter()
+        .map(|key| std::env::var(key).ok())
+        .collect();
+    should_migrate_legacy_codex_data_from_values(values.iter().map(|value| value.as_deref()))
+}
+
 /// 获取我们的多账号存储路径（统一使用 ~/.xiass_tools/）
 fn get_accounts_storage_path() -> PathBuf {
     let data_dir = account::get_data_dir().unwrap_or_else(|_| {
@@ -151,7 +183,9 @@ fn get_accounts_storage_path() -> PathBuf {
             .join(".xiass_tools")
     });
     fs::create_dir_all(&data_dir).ok();
-    migrate_codex_data_if_needed(&data_dir);
+    if should_migrate_legacy_codex_data() {
+        migrate_codex_data_if_needed(&data_dir);
+    }
     data_dir.join("codex_accounts.json")
 }
 
@@ -642,8 +676,43 @@ fn sync_identity_from_tokens(account: &mut CodexAccount) {
 
 #[cfg(test)]
 mod xiass_legacy_storage_migration_tests {
-    use super::copy_legacy_codex_data_if_needed;
+    use super::{
+        copy_legacy_codex_data_if_needed, has_explicit_data_dir_override,
+        should_migrate_legacy_codex_data_from_values, DATA_DIR_OVERRIDE_ENV_VARS,
+    };
     use std::fs;
+
+    #[test]
+    fn explicit_data_directory_values_disable_legacy_migration() {
+        assert_eq!(
+            DATA_DIR_OVERRIDE_ENV_VARS,
+            [
+                "XIASS_TOOLS_TEST_DATA_DIR",
+                "COCKPIT_TEST_DATA_DIR",
+                "XIASS_TOOLS_DATA_DIR",
+            ]
+        );
+        assert!(has_explicit_data_dir_override([
+            None,
+            Some(" /private/tmp/xiass-smoke "),
+            None,
+        ]));
+        assert!(!has_explicit_data_dir_override([
+            None,
+            Some("   "),
+            None,
+        ]));
+        assert!(should_migrate_legacy_codex_data_from_values([
+            None,
+            Some("   "),
+            None,
+        ]));
+        assert!(!should_migrate_legacy_codex_data_from_values([
+            None,
+            Some(" /private/tmp/xiass-smoke "),
+            None,
+        ]));
+    }
 
     #[test]
     fn legacy_storage_is_copied_without_deleting_the_source() {

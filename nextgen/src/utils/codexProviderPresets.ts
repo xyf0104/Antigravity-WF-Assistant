@@ -101,7 +101,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
       "https://api-slb.packyapi.com/v1",
     ],
     website: "https://www.packyapi.com",
-    apiKeyUrl: "https://www.packyapi.com/register?aff=cc-switch",
+    apiKeyUrl: "https://www.packyapi.com/register",
     isPartner: true,
   },
   {
@@ -114,7 +114,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
       "https://api-bwg.cubence.com/v1",
     ],
     website: "https://cubence.com",
-    apiKeyUrl: "https://cubence.com/signup?code=CCSWITCH&source=ccs",
+    apiKeyUrl: "https://cubence.com/signup",
     isPartner: true,
   },
   {
@@ -122,7 +122,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     name: "AIGoCode",
     baseUrls: ["https://api.aigocode.com"],
     website: "https://aigocode.com",
-    apiKeyUrl: "https://aigocode.com/invite/CC-SWITCH",
+    apiKeyUrl: "https://aigocode.com",
     isPartner: true,
   },
   {
@@ -130,7 +130,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     name: "RightCode",
     baseUrls: ["https://right.codes/codex/v1"],
     website: "https://www.right.codes",
-    apiKeyUrl: "https://www.right.codes/register?aff=CCSWITCH",
+    apiKeyUrl: "https://www.right.codes/register",
     isPartner: true,
   },
   {
@@ -142,7 +142,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
       "https://anti.sssaicode.com/api/v1",
     ],
     website: "https://www.sssaicode.com",
-    apiKeyUrl: "https://www.sssaicode.com/register?ref=DCP0SM",
+    apiKeyUrl: "https://www.sssaicode.com/register",
     isPartner: true,
   },
   {
@@ -150,7 +150,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     name: "Micu",
     baseUrls: ["https://www.openclaudecode.cn/v1"],
     website: "https://www.openclaudecode.cn",
-    apiKeyUrl: "https://www.openclaudecode.cn/register?aff=aOYQ",
+    apiKeyUrl: "https://www.openclaudecode.cn/register",
     isPartner: true,
   },
   {
@@ -188,7 +188,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     baseUrls: ["https://api.modelverse.cn/v1"],
     website: "https://www.compshare.cn",
     apiKeyUrl:
-      "https://www.compshare.cn/coding-plan?ytag=GPU_YY_YX_git_cc-switch",
+      "https://www.compshare.cn/coding-plan",
     isPartner: true,
   },
   {
@@ -215,7 +215,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
       "https://api.claudecode.net.cn/api/codex/backend-api/codex",
     ],
     website: "https://www.aicodemirror.com",
-    apiKeyUrl: "https://www.aicodemirror.com/register?invitecode=9915W3",
+    apiKeyUrl: "https://www.aicodemirror.com/register",
     isPartner: true,
   },
   {
@@ -223,7 +223,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     name: "AICoding",
     baseUrls: ["https://api.aicoding.sh"],
     website: "https://aicoding.sh",
-    apiKeyUrl: "https://aicoding.sh/i/CCSWITCH",
+    apiKeyUrl: "https://aicoding.sh",
     isPartner: true,
   },
   {
@@ -231,7 +231,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     name: "CrazyRouter",
     baseUrls: ["https://crazyrouter.com/v1"],
     website: "https://www.crazyrouter.com",
-    apiKeyUrl: "https://www.crazyrouter.com/register?aff=OZcm&ref=cc-switch",
+    apiKeyUrl: "https://www.crazyrouter.com/register",
     isPartner: true,
   },
   {
@@ -267,7 +267,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     baseUrls: ["https://open.bigmodel.cn/api/coding/paas/v4"],
     modelCatalog: ["glm-5.1"],
     website: "https://open.bigmodel.cn",
-    apiKeyUrl: "https://www.bigmodel.cn/claude-code?ic=RRVJPB5SII",
+    apiKeyUrl: "https://www.bigmodel.cn/claude-code",
   },
   {
     id: "zhipu_glm_en",
@@ -275,7 +275,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     baseUrls: ["https://api.z.ai/api/coding/paas/v4"],
     modelCatalog: ["glm-5.1"],
     website: "https://z.ai",
-    apiKeyUrl: "https://z.ai/subscribe?ic=8JVLJQFSKB",
+    apiKeyUrl: "https://z.ai/subscribe",
   },
   {
     id: "volcengine_agentplan",
@@ -395,7 +395,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     baseUrls: ["https://cp.compshare.cn/v1"],
     website: "https://www.compshare.cn",
     apiKeyUrl:
-      "https://www.compshare.cn/coding-plan?ytag=GPU_YY_YX_git_cc-switch",
+      "https://www.compshare.cn/coding-plan",
   },
   {
     id: "lemondata",

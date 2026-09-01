@@ -1,5 +1,274 @@
 // Codex Session Visibility：Atomic rollout/SQLite backup and restore operations。
 // 通过 include! 保持原模块作用域、私有调用关系和修复事务行为。
+const SESSION_VISIBILITY_REPAIR_MANIFEST_FILE: &str = "manifest.json";
+const SESSION_VISIBILITY_REPAIR_OPERATION_VERSION: u8 = 2;
+const MAX_SESSION_VISIBILITY_REPAIR_MANIFEST_BYTES: u64 = 128 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionVisibilityRepairOperationStatus {
+    Prepared,
+    Applying,
+    Committed,
+    RolledBack,
+}
+
+impl Default for SessionVisibilityRepairOperationStatus {
+    fn default() -> Self {
+        // Backups written before the operation journal existed were created
+        // only after the repair completed successfully. Treat them as
+        // terminal so an upgrade never replays an old backup.
+        Self::Committed
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionVisibilityRepairOperationManifest {
+    #[serde(default = "legacy_session_visibility_repair_manifest_version")]
+    version: u8,
+    instance_id: String,
+    instance_root: String,
+    target_provider: String,
+    created_at: String,
+    #[serde(default)]
+    instance_scope: String,
+    #[serde(default)]
+    operation_status: SessionVisibilityRepairOperationStatus,
+    #[serde(default)]
+    operation_updated_at: String,
+    #[serde(default)]
+    operation_message: String,
+    #[serde(default)]
+    has_sqlite_backup: bool,
+    #[serde(default)]
+    sqlite_files: Vec<String>,
+    #[serde(default)]
+    has_session_index_backup: bool,
+    #[serde(default)]
+    has_global_state_backup: bool,
+    #[serde(default)]
+    rollout_files: Vec<String>,
+}
+
+fn legacy_session_visibility_repair_manifest_version() -> u8 {
+    1
+}
+
+fn session_visibility_repair_backup_scope_dir(data_dir: &Path) -> Result<PathBuf, String> {
+    let root = modules::backup_storage::get_backup_root_dir()?;
+    Ok(root
+        .join("behavior")
+        .join("codex")
+        .join(modules::backup_storage::scope_for_path(data_dir)))
+}
+
+fn is_session_visibility_repair_backup_name(name: &str) -> bool {
+    name.starts_with(SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX)
+        && name.ends_with(SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX)
+}
+
+fn validate_session_visibility_repair_backup_dir(
+    scope_dir: &Path,
+    backup_dir: &Path,
+) -> Result<(), String> {
+    if backup_dir.parent() != Some(scope_dir) {
+        return Err("会话可见性修复备份目录不属于当前实例范围".to_string());
+    }
+    let name = backup_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "会话可见性修复备份目录名无效".to_string())?;
+    if !is_session_visibility_repair_backup_name(name) {
+        return Err("会话可见性修复备份目录名无效".to_string());
+    }
+    let metadata = fs::symlink_metadata(backup_dir)
+        .map_err(|_| "无法读取会话可见性修复备份目录".to_string())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("会话可见性修复备份目录不安全".to_string());
+    }
+    Ok(())
+}
+
+fn operation_manifest_path(backup_dir: &Path) -> PathBuf {
+    backup_dir.join(SESSION_VISIBILITY_REPAIR_MANIFEST_FILE)
+}
+
+fn read_session_visibility_repair_operation_manifest(
+    scope_dir: &Path,
+    backup_dir: &Path,
+) -> Result<SessionVisibilityRepairOperationManifest, String> {
+    validate_session_visibility_repair_backup_dir(scope_dir, backup_dir)?;
+    let manifest_path = operation_manifest_path(backup_dir);
+    let metadata = fs::symlink_metadata(&manifest_path)
+        .map_err(|_| "会话可见性修复操作清单不存在".to_string())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_SESSION_VISIBILITY_REPAIR_MANIFEST_BYTES
+    {
+        return Err("会话可见性修复操作清单不安全".to_string());
+    }
+    let manifest = serde_json::from_slice::<SessionVisibilityRepairOperationManifest>(
+        &fs::read(&manifest_path).map_err(|_| "无法读取会话可见性修复操作清单".to_string())?,
+    )
+    .map_err(|_| "会话可见性修复操作清单无效".to_string())?;
+    if manifest.version > SESSION_VISIBILITY_REPAIR_OPERATION_VERSION
+        || manifest.instance_id.trim().is_empty()
+        || manifest.instance_root.trim().is_empty()
+        || manifest.target_provider.trim().is_empty()
+    {
+        return Err("会话可见性修复操作清单校验失败".to_string());
+    }
+    Ok(manifest)
+}
+
+fn write_session_visibility_repair_operation_manifest(
+    backup_dir: &Path,
+    manifest: &SessionVisibilityRepairOperationManifest,
+) -> Result<(), String> {
+    let serialized = serde_json::to_string_pretty(manifest)
+        .map_err(|_| "序列化会话可见性修复操作清单失败".to_string())?;
+    modules::atomic_write::write_string_atomic(
+        &operation_manifest_path(backup_dir),
+        &format!("{serialized}\n"),
+    )
+    .map_err(|error| format!("写入会话可见性修复操作清单失败: {error}"))
+}
+
+fn set_session_visibility_repair_operation_status(
+    scope_dir: &Path,
+    backup_dir: &Path,
+    status: SessionVisibilityRepairOperationStatus,
+    message: &str,
+) -> Result<(), String> {
+    let mut manifest = read_session_visibility_repair_operation_manifest(scope_dir, backup_dir)?;
+    manifest.operation_status = status;
+    manifest.operation_updated_at = Utc::now().to_rfc3339();
+    manifest.operation_message = message.trim().chars().take(240).collect();
+    write_session_visibility_repair_operation_manifest(backup_dir, &manifest)
+}
+
+fn recover_incomplete_session_visibility_repairs(
+    data_dir: &Path,
+    instance_id: &str,
+    instance_running: bool,
+) -> Result<(), String> {
+    let scope_dir = session_visibility_repair_backup_scope_dir(data_dir)?;
+    recover_incomplete_session_visibility_repairs_in_scope(
+        data_dir,
+        instance_id,
+        instance_running,
+        &scope_dir,
+    )
+}
+
+fn recover_incomplete_session_visibility_repairs_in_scope(
+    data_dir: &Path,
+    instance_id: &str,
+    instance_running: bool,
+    scope_dir: &Path,
+) -> Result<(), String> {
+    let scope_metadata = match fs::symlink_metadata(scope_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("无法读取会话可见性修复备份范围".to_string()),
+    };
+    if !scope_metadata.is_dir() || scope_metadata.file_type().is_symlink() {
+        return Err("会话可见性修复备份范围不安全".to_string());
+    }
+
+    let mut candidates = fs::read_dir(scope_dir)
+        .map_err(|_| "无法列出会话可见性修复备份".to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            let file_name = entry.file_name();
+            let name = file_name.to_str()?;
+            (file_type.is_dir()
+                && !file_type.is_symlink()
+                && is_session_visibility_repair_backup_name(name))
+            .then_some(entry.path())
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+
+    for backup_dir in candidates {
+        let manifest =
+            match read_session_visibility_repair_operation_manifest(scope_dir, &backup_dir) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    modules::logger::log_warn(&format!(
+                    "[Codex Session Visibility] 跳过无法验证的历史修复备份: backup={}, error={}",
+                    backup_dir.display(),
+                    error
+                ));
+                    continue;
+                }
+            };
+        // Version 1 has no state marker. It was created by the older completed
+        // flow and must never be treated as an interrupted operation.
+        if manifest.version < SESSION_VISIBILITY_REPAIR_OPERATION_VERSION
+            || manifest.instance_scope != modules::backup_storage::scope_for_path(data_dir)
+        {
+            continue;
+        }
+        if manifest.instance_id != instance_id {
+            modules::logger::log_warn(&format!(
+                "[Codex Session Visibility] 跳过实例 ID 不匹配的历史修复备份: backup={}",
+                backup_dir.display()
+            ));
+            continue;
+        }
+
+        match manifest.operation_status {
+            SessionVisibilityRepairOperationStatus::Prepared => {
+                set_session_visibility_repair_operation_status(
+                    scope_dir,
+                    &backup_dir,
+                    SessionVisibilityRepairOperationStatus::RolledBack,
+                    "恢复：上次修复在写入前结束",
+                )?;
+                modules::logger::log_info(&format!(
+                    "[Codex Session Visibility] 已关闭未写入的历史修复操作: backup={}",
+                    backup_dir.display()
+                ));
+            }
+            SessionVisibilityRepairOperationStatus::Applying => {
+                if instance_running {
+                    return Err(format!(
+                        "检测到未完成的 Codex 历史会话修复；请先退出 {} 后重试，以便安全恢复备份",
+                        instance_id
+                    ));
+                }
+                restore_instance_files_from_backup(
+                    data_dir,
+                    &backup_dir,
+                    manifest.has_sqlite_backup,
+                )
+                .map_err(|error| {
+                    format!(
+                        "恢复未完成的 Codex 历史会话修复失败；已保留备份以便再次尝试: {}",
+                        error
+                    )
+                })?;
+                set_session_visibility_repair_operation_status(
+                    scope_dir,
+                    &backup_dir,
+                    SessionVisibilityRepairOperationStatus::RolledBack,
+                    "恢复：已从未完成修复前的备份自动回滚",
+                )?;
+                modules::logger::log_info(&format!(
+                    "[Codex Session Visibility] 已自动恢复未完成的历史修复: backup={}",
+                    backup_dir.display()
+                ));
+            }
+            SessionVisibilityRepairOperationStatus::Committed
+            | SessionVisibilityRepairOperationStatus::RolledBack => {}
+        }
+    }
+
+    Ok(())
+}
 fn format_sqlite_write_error(path: &Path, error: &rusqlite::Error) -> String {
     let message = error.to_string();
     let lowered = message.to_ascii_lowercase();
@@ -349,10 +618,21 @@ fn list_backup_sqlite_files(root: &Path) -> Result<Vec<PathBuf>, String> {
                 error
             )
         })?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "SQLite 备份包含不安全的符号链接: {}",
+                path.display()
+            ));
+        }
         if file_type.is_dir() {
             result.extend(list_backup_sqlite_files(&path)?);
         } else if file_type.is_file() {
             result.push(path);
+        } else {
+            return Err(format!(
+                "SQLite 备份包含不支持的文件类型: {}",
+                path.display()
+            ));
         }
     }
     result.sort();
@@ -370,16 +650,16 @@ fn backup_instance_files(
     options: CodexSessionVisibilityRepairOptions,
 ) -> Result<PathBuf, String> {
     let scope = modules::backup_storage::scope_for_path(data_dir);
-    let backup_dir = modules::backup_storage::behavior_backup_dir(
-        "codex",
-        &scope,
-        &format!(
-            "{}{}{}",
-            SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX,
-            Utc::now().format("%Y%m%d-%H%M%S"),
-            SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX
-        ),
-    )?;
+    let operation_id = format!(
+        "{}{}-{}{}",
+        SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX,
+        Utc::now().format("%Y%m%d-%H%M%S"),
+        uuid::Uuid::new_v4(),
+        SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX
+    );
+    let backup_dir = modules::backup_storage::behavior_backup_dir("codex", &scope, &operation_id)?;
+    let scope_dir = session_visibility_repair_backup_scope_dir(data_dir)?;
+    validate_session_visibility_repair_backup_dir(&scope_dir, &backup_dir)?;
 
     let mut backed_up_files = Vec::new();
     let mut sqlite_backup_files = Vec::new();
@@ -460,41 +740,38 @@ fn backup_instance_files(
         }
     }
 
-    let manifest = json!({
-        "instanceId": instance_id,
-        "instanceRoot": data_dir,
-        "targetProvider": target_provider,
-        "createdAt": Utc::now().to_rfc3339(),
-        "hasSqliteBackup": !sqlite_backup_files.is_empty(),
-        "sqliteFiles": sqlite_backup_files,
-        "hasSessionIndexBackup": session_index_backup_created,
-        "hasGlobalStateBackup": global_state_backup_created,
-        "rolloutFiles": backed_up_files,
-    });
-    fs::write(
-        backup_dir.join("manifest.json"),
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&manifest)
-                .map_err(|error| format!("序列化可见性修复备份清单失败: {}", error))?
-        ),
-    )
-    .map_err(|error| {
-        format!(
-            "写入可见性修复备份清单失败 ({}): {}",
-            backup_dir.display(),
-            error
-        )
-    })?;
+    let created_at = Utc::now().to_rfc3339();
+    let manifest = SessionVisibilityRepairOperationManifest {
+        version: SESSION_VISIBILITY_REPAIR_OPERATION_VERSION,
+        instance_id: instance_id.to_string(),
+        instance_root: data_dir.to_string_lossy().to_string(),
+        target_provider: target_provider.to_string(),
+        created_at: created_at.clone(),
+        instance_scope: scope,
+        operation_status: SessionVisibilityRepairOperationStatus::Prepared,
+        operation_updated_at: created_at,
+        operation_message: "备份已验证，等待开始写入".to_string(),
+        has_sqlite_backup: !sqlite_backup_files.is_empty(),
+        sqlite_files: sqlite_backup_files,
+        has_session_index_backup: session_index_backup_created,
+        has_global_state_backup: global_state_backup_created,
+        rollout_files: backed_up_files,
+    };
+    write_session_visibility_repair_operation_manifest(&backup_dir, &manifest)?;
 
     Ok(backup_dir)
 }
 
 fn parse_session_visibility_repair_backup_timestamp(name: &str) -> Option<&str> {
-    let timestamp = name
+    let operation_id = name
         .strip_prefix(SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX)?
         .strip_suffix(SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX)?;
-    if timestamp.len() != 15 {
+    // v1 backups used only the timestamp. v2 adds a UUID to prevent two
+    // repairs started in the same second from sharing a directory. Keep both
+    // layouts recognizable so retention follows the same rule as creation.
+    let timestamp = operation_id.get(..15)?;
+    let suffix = operation_id.get(15..)?;
+    if !suffix.is_empty() && (suffix == "-" || !suffix.starts_with('-')) {
         return None;
     }
     if !timestamp.chars().enumerate().all(|(index, value)| {
@@ -522,13 +799,14 @@ fn prune_session_visibility_repair_backups(instances: &[CodexSyncInstance]) {
 }
 
 fn prune_instance_session_visibility_repair_backups(data_dir: &Path) -> Result<(), String> {
-    let entries = match fs::read_dir(data_dir) {
+    let scope_dir = session_visibility_repair_backup_scope_dir(data_dir)?;
+    let entries = match fs::read_dir(&scope_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(format!(
-                "读取实例目录失败 ({}): {}",
-                data_dir.display(),
+                "读取会话可见性修复备份目录失败 ({}): {}",
+                scope_dir.display(),
                 error
             ));
         }
@@ -545,7 +823,7 @@ fn prune_instance_session_visibility_repair_backups(data_dir: &Path) -> Result<(
                 error
             )
         })?;
-        if !file_type.is_dir() {
+        if !file_type.is_dir() || file_type.is_symlink() {
             continue;
         }
 
@@ -556,6 +834,20 @@ fn prune_instance_session_visibility_repair_backups(data_dir: &Path) -> Result<(
         let Some(timestamp) = parse_session_visibility_repair_backup_timestamp(file_name) else {
             continue;
         };
+
+        // A prepared/applying journal is the only copy that can restore an
+        // interrupted repair. Never remove it during routine retention.
+        let manifest = match read_session_visibility_repair_operation_manifest(&scope_dir, &entry.path()) {
+            Ok(manifest) => manifest,
+            Err(_) => continue,
+        };
+        if matches!(
+            manifest.operation_status,
+            SessionVisibilityRepairOperationStatus::Prepared
+                | SessionVisibilityRepairOperationStatus::Applying
+        ) {
+            continue;
+        }
         backups.push((timestamp.to_string(), entry.path()));
     }
 
@@ -607,6 +899,12 @@ fn restore_directory_contents(source_root: &Path, target_root: &Path) -> Result<
                 error
             )
         })?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "会话可见性修复备份包含不安全的符号链接: {}",
+                source_path.display()
+            ));
+        }
         let relative = source_path
             .strip_prefix(source_root)
             .map_err(|_| format!("无法计算备份相对路径: {}", source_path.display()))?;
@@ -618,6 +916,13 @@ fn restore_directory_contents(source_root: &Path, target_root: &Path) -> Result<
             })?;
             restore_directory_contents(&source_path, &target_path)?;
             continue;
+        }
+
+        if !file_type.is_file() {
+            return Err(format!(
+                "会话可见性修复备份包含不支持的文件类型: {}",
+                source_path.display()
+            ));
         }
 
         if let Some(parent) = target_path.parent() {

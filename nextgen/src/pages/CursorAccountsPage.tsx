@@ -152,8 +152,19 @@ export function CursorAccountsPage() {
           intervalSeconds: resp.intervalSeconds,
         };
       },
+      peekLogin: async () => {
+        const resp = await cursorService.peekCursorOAuthLogin();
+        if (!resp) return null;
+        return {
+          loginId: resp.loginId,
+          verificationUri: resp.verificationUri,
+          expiresIn: resp.expiresIn,
+          intervalSeconds: resp.intervalSeconds,
+        };
+      },
       completeLogin: (loginId: string) => cursorService.completeCursorOAuthLogin(loginId),
       cancelLogin: (loginId?: string) => cursorService.cancelCursorOAuthLogin(loginId),
+      preservePendingOnUnmount: true,
     },
     dataService: {
       importFromJson: cursorService.importCursorFromJson,
@@ -669,8 +680,8 @@ export function CursorAccountsPage() {
           </div>
 
           <div className="account-sub-line">
-            <span className="kiro-table-subline" title={`Auth ID: ${maskedAuthIdText}`}>
-              Auth ID: {maskedAuthIdText}
+            <span className="kiro-table-subline" title={`${t('cursor.authId', 'Auth ID')}: ${maskedAuthIdText}`}>
+              {t('cursor.authId', 'Auth ID')}: {maskedAuthIdText}
             </span>
           </div>
 
@@ -688,7 +699,7 @@ export function CursorAccountsPage() {
               <>
                 <div className="quota-item windsurf-credit-item">
                   <div className="quota-header">
-                    <span className="quota-label">Total Usage</span>
+                    <span className="quota-label">{t('cursor.quota.totalUsage', 'Total Usage')}</span>
                     <span className={`quota-pct ${total.quotaClass}`}>{total.valueText}</span>
                   </div>
                   {total.costText && (
@@ -708,7 +719,7 @@ export function CursorAccountsPage() {
 
                 <div className="quota-item windsurf-credit-item">
                   <div className="quota-header">
-                    <span className="quota-label">Auto + Composer</span>
+                    <span className="quota-label">{t('cursor.quota.autoComposer', 'Auto + Composer')}</span>
                     <span className={`quota-pct ${auto.quotaClass}`}>{auto.valueText}</span>
                   </div>
                   <div className="quota-bar-track">
@@ -718,7 +729,7 @@ export function CursorAccountsPage() {
 
                 <div className="quota-item windsurf-credit-item">
                   <div className="quota-header">
-                    <span className="quota-label">API Usage</span>
+                    <span className="quota-label">{t('cursor.quota.apiUsage', 'API Usage')}</span>
                     <span className={`quota-pct ${api.quotaClass}`}>{api.valueText}</span>
                   </div>
                   <div className="quota-bar-track">
@@ -826,7 +837,7 @@ export function CursorAccountsPage() {
                 </div>
               )}
               <div className="account-sub-line">
-                <span className="kiro-table-subline">Auth ID: {maskedAuthIdText}</span>
+                <span className="kiro-table-subline">{t('cursor.authId', 'Auth ID')}: {maskedAuthIdText}</span>
               </div>
               {accountTags.length > 0 && (
                 <div className="account-tags-inline">
@@ -841,7 +852,7 @@ export function CursorAccountsPage() {
             {hasQuotaData ? (
               <div className="quota-item windsurf-table-credit-item">
                 <div className="quota-header">
-                  <span className="quota-name">Total Usage</span>
+                  <span className="quota-name">{t('cursor.quota.totalUsage', 'Total Usage')}</span>
                   <span className={`quota-value ${total.quotaClass}`}>{total.valueText}</span>
                 </div>
                 {total.costText && (
@@ -867,7 +878,7 @@ export function CursorAccountsPage() {
               <>
                 <div className="quota-item windsurf-table-credit-item">
                   <div className="quota-header">
-                    <span className="quota-name">Auto + Composer</span>
+                    <span className="quota-name">{t('cursor.quota.autoComposer', 'Auto + Composer')}</span>
                     <span className={`quota-value ${auto.quotaClass}`}>{auto.valueText}</span>
                   </div>
                   <div className="quota-progress-track">
@@ -1160,8 +1171,8 @@ export function CursorAccountsPage() {
                 </th>
                 <th style={{ width: 240 }}>{t('common.shared.columns.email', '邮箱')}</th>
                 <th style={{ width: 120 }}>{t('common.shared.columns.plan', '计划')}</th>
-                <th>Total Usage</th>
-                <th>Usage Details</th>
+                <th>{t('cursor.quota.totalUsage', 'Total Usage')}</th>
+                <th>{t('cursor.quota.usageDetails', 'Usage Details')}</th>
                 <th className="sticky-action-header table-action-header">{t('common.shared.columns.actions', '操作')}</th>
               </tr>
             </thead>
@@ -1192,8 +1203,8 @@ export function CursorAccountsPage() {
                 </th>
                 <th style={{ width: 240 }}>{t('common.shared.columns.email', '邮箱')}</th>
                 <th style={{ width: 120 }}>{t('common.shared.columns.plan', '计划')}</th>
-                <th>Total Usage</th>
-                <th>Usage Details</th>
+                <th>{t('cursor.quota.totalUsage', 'Total Usage')}</th>
+                <th>{t('cursor.quota.usageDetails', 'Usage Details')}</th>
                 <th className="sticky-action-header table-action-header">{t('common.shared.columns.actions', '操作')}</th>
               </tr>
             </thead>

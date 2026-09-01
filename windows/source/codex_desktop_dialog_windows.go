@@ -12,8 +12,8 @@ import (
 // selectCodexDesktopNativeTarget keeps a chooser path on the Go side. The
 // renderer receives only the post-validation redacted status, never the EXE
 // path selected in this native panel.
-func selectCodexDesktopNativeTarget(ctx context.Context) (string, bool, error) {
-	selected, err := runtime.OpenFileDialog(ctx, runtime.OpenDialogOptions{
+func selectCodexDesktopNativeTarget(app *App, ctx context.Context) (string, bool, error) {
+	selected, err := app.openFileDialog(runtime.OpenDialogOptions{
 		Title: "选择 Codex 或 ChatGPT Desktop 应用",
 		Filters: []runtime.FileFilter{{
 			DisplayName: "Codex / ChatGPT 应用 (*.exe)",

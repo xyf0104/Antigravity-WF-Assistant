@@ -72,32 +72,115 @@ jobs:
           app="$(find target/universal-apple-darwin/release/bundle -type d -name 'XIASS Tools.app' -print -quit)"
           test -n "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
+          bundle_executable="$(plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")"
+          main_arches="$(lipo -archs "$app/Contents/MacOS/$bundle_executable")"
+          [[ "$main_arches" == *x86_64* && "$main_arches" == *arm64* ]]
+          for license in \
+            CC-BY-NC-SA-4.0-LEGALCODE.txt \
+            XIASS-Tools-MIT.txt \
+            XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt \
+            ORIGIN_AND_LICENSE.md \
+            THIRD_PARTY_NOTICES.md \
+            Tauri-APACHE-2.0.txt \
+            Tauri-MIT.txt \
+            jsQR-APACHE-2.0.txt \
+            Lucide-ISC-and-MIT.txt \
+            protobufjs-BSD-3-Clause.txt \
+            React-MIT.txt \
+            CLIProxyAPI-MIT.txt; do
+            test -s "$app/Contents/Resources/licenses/$license"
+          done
 
-      - name: Smoke-test packaged macOS app startup
+      - name: Smoke-test DMG installation and app startup
         shell: bash
         run: |
           set -euo pipefail
-          app="$(find target/universal-apple-darwin/release/bundle -type d -name 'XIASS Tools.app' -print -quit)"
-          test -n "$app"
-          bundle_executable="$(plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")"
-          test -n "$bundle_executable"
-          executable="$app/Contents/MacOS/$bundle_executable"
-          test -x "$executable"
           smoke_root="$(mktemp -d)"
+          dmg="$(find target/universal-apple-darwin/release/bundle -type f -name '*.dmg' -print -quit)"
+          test -s "$dmg"
+          mount_point="$smoke_root/mounted"
+          install_root="$smoke_root/Applications"
+          cocoa_home="$smoke_root/home"
+          mkdir -p "$mount_point" "$install_root" "$cocoa_home"
+          mounted=0
+          app=''
+          executable=''
+          app_pid=''
+          find_smoke_pids() {
+            ps -ax -o pid=,command= | awk -v expected="$app/Contents/MacOS/" 'index($0, expected) { print $1 }'
+          }
+          find_smoke_main_pid() {
+            # Consume the complete ps stream. Exiting awk early causes ps to
+            # receive SIGPIPE under `set -o pipefail`, which masks a healthy app.
+            ps -ax -o pid=,command= | awk -v expected="$executable" 'index($0, expected) && !found { print $1; found = 1 }'
+          }
+          stop_smoke_app() {
+            local pid
+            for pid in $(find_smoke_pids); do
+              kill "$pid" 2>/dev/null || true
+            done
+            for _ in {1..10}; do
+              [[ -z "$(find_smoke_pids)" ]] && return
+              sleep 1
+            done
+            for pid in $(find_smoke_pids); do
+              kill -KILL "$pid" 2>/dev/null || true
+            done
+          }
           cleanup() {
-            if [[ -n "${app_pid:-}" ]] && kill -0 "$app_pid" 2>/dev/null; then
-              kill "$app_pid" 2>/dev/null || true
-              wait "$app_pid" 2>/dev/null || true
+            [[ -n "$app" ]] && stop_smoke_app
+            if [[ "$mounted" -eq 1 ]]; then
+              hdiutil detach "$mount_point" -force >/dev/null 2>&1 || true
             fi
             rm -rf "$smoke_root"
           }
           trap cleanup EXIT
-          XIASS_TOOLS_DATA_DIR="$smoke_root/data" "$executable" >"$smoke_root/stdout.log" 2>"$smoke_root/stderr.log" &
-          app_pid=$!
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount_point"
+          mounted=1
+          source_app="$(find "$mount_point" -maxdepth 2 -type d -name 'XIASS Tools.app' -print -quit)"
+          test -n "$source_app"
+          ditto "$source_app" "$install_root/XIASS Tools.app"
+          app="$install_root/XIASS Tools.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          bundle_executable="$(plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")"
+          test -n "$bundle_executable"
+          executable="$app/Contents/MacOS/$bundle_executable"
+          test -x "$executable"
+          # Tauri may preserve a sidecar's plain filename in a Universal bundle
+          # or append a target suffix. Accept both forms, then verify its arches.
+          for sidecar_pattern in 'xiass-wf-bridge*' 'xiass-cliproxy*'; do
+            installed_sidecar="$(find "$app/Contents" -type f -name "$sidecar_pattern" -print -quit)"
+            test -x "$installed_sidecar"
+            installed_arches="$(lipo -archs "$installed_sidecar")"
+            [[ "$installed_arches" == *x86_64* && "$installed_arches" == *arm64* ]]
+          done
+          installed_wf_bridge="$(find "$app/Contents" -type f -name 'xiass-wf-bridge*' -print -quit)"
+          test -x "$installed_wf_bridge"
+          node scripts/release/smoke_wf_bridge_sidecar.mjs \
+            --binary "$installed_wf_bridge" \
+            --platform macos
           print_smoke_logs() {
             cat "$smoke_root/stderr.log" 2>/dev/null || true
             find "$smoke_root/data/logs" -type f -name 'app.log*' -exec cat {} + 2>/dev/null || true
           }
+          open -n -g -F \
+            --env "RUST_LOG=info" \
+            --env "CFFIXED_USER_HOME=$cocoa_home" \
+            --env "XIASS_TOOLS_DATA_DIR=$smoke_root/data" \
+            --env "XIASS_TOOLS_PACKAGE_SMOKE=1" \
+            --stdout "$smoke_root/stdout.log" \
+            --stderr "$smoke_root/stderr.log" \
+            "$app"
+          for _ in {1..15}; do
+            app_pid="$(find_smoke_main_pid)"
+            [[ -n "$app_pid" ]] && break
+            sleep 1
+          done
+          if [[ -z "$app_pid" ]]; then
+            print_smoke_logs
+            echo "Packaged XIASS Tools did not start through LaunchServices" >&2
+            exit 1
+          fi
           frontend_ready=0
           for _ in {1..45}; do
             if ! kill -0 "$app_pid" 2>/dev/null; then

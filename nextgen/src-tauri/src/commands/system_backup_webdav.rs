@@ -361,6 +361,9 @@ fn collect_auto_backup_platforms_from_value(
 
     let mut result = Vec::new();
     for (platform, payload) in platforms {
+        if !is_production_backup_platform(platform) {
+            continue;
+        }
         let exported_data = payload
             .get("exported_data")
             .or_else(|| payload.get("data"))
@@ -384,6 +387,32 @@ fn collect_auto_backup_platforms_from_value(
     }
     result.sort_by(|left, right| left.platform.cmp(&right.platform));
     result
+}
+
+fn is_production_backup_platform(platform: &str) -> bool {
+    matches!(
+        platform,
+        "antigravity" | "codex" | "claude_manager" | "windsurf" | "cursor"
+    )
+}
+
+fn validate_production_backup_scope(content: &str) -> Result<(), String> {
+    let value = serde_json::from_str::<serde_json::Value>(content)
+        .map_err(|err| format!("自动备份 JSON 解析失败: {}", err))?;
+    let accounts = value
+        .get("accounts")
+        .filter(|item| item.is_object())
+        .unwrap_or(&value);
+    let Some(platforms) = accounts.get("platforms").and_then(|item| item.as_object()) else {
+        return Ok(());
+    };
+    if let Some(platform) = platforms
+        .keys()
+        .find(|platform| !is_production_backup_platform(platform))
+    {
+        return Err(format!("自动备份包含不可用平台: {}", platform));
+    }
+    Ok(())
 }
 
 fn collect_auto_backup_platforms(json_content: &str) -> Vec<AutoBackupPlatformEntry> {
@@ -573,6 +602,7 @@ pub fn update_auto_backup_last_run(
 #[tauri::command]
 pub fn write_auto_backup_file(file_name: String, content: String) -> Result<String, String> {
     modules::backup_storage::ensure_backup_write_available()?;
+    validate_production_backup_scope(&content)?;
     let safe_name = sanitize_auto_backup_file_name(&file_name)?;
     if !safe_name.ends_with(".json") {
         return Err("自动备份主文件必须为 JSON".to_string());
@@ -590,6 +620,36 @@ pub fn write_auto_backup_file(file_name: String, content: String) -> Result<Stri
     }
 
     Ok(path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod production_scope_tests {
+    use super::{collect_auto_backup_platforms_from_value, validate_production_backup_scope};
+
+    #[test]
+    fn backup_metadata_ignores_hidden_legacy_platforms() {
+        let value = serde_json::json!({
+            "accounts": {
+                "platforms": {
+                    "codex": { "account_count": 2 },
+                    "zed": { "account_count": 4 },
+                    "kiro": { "account_count": 1 }
+                }
+            }
+        });
+        let platforms = collect_auto_backup_platforms_from_value(&value);
+        assert_eq!(platforms.len(), 1);
+        assert_eq!(platforms[0].platform, "codex");
+    }
+
+    #[test]
+    fn managed_backup_write_rejects_hidden_platform_payloads() {
+        let content = serde_json::json!({
+            "accounts": { "platforms": { "codebuddy": { "account_count": 1 } } }
+        })
+        .to_string();
+        assert!(validate_production_backup_scope(&content).is_err());
+    }
 }
 
 #[tauri::command]

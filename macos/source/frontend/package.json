@@ -1,7 +1,7 @@
 {
   "name": "antigravity-wf-assistant-frontend",
   "private": true,
-  "version": "1.6.8",
+  "version": "1.7.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,8 @@
     "test:update-check": "node --test test/updateCheckState.test.mjs"
   },
   "dependencies": {
+    "jsqr": "1.4.0",
+    "protobufjs": "8.7.1",
     "simple-icons": "16.29.0",
     "vue": "^3.5.40"
   },

@@ -1,10 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { UnlockFireworksOverlay } from '../components/UnlockFireworksOverlay';
 import { SettingsAccountTransferSection } from '../components/SettingsAccountTransferSection';
 import { SettingsWebdavSyncSection } from '../components/SettingsWebdavSyncSection';
+import { useEscClose } from '../hooks/useEscClose';
+import { loadLegalNotices, type LegalNoticeDocument } from '../services/legalNoticesService';
 import './settings/Settings.css';
 import { Github, User, Save, AlertCircle, RefreshCw, FileText, Download, X } from 'lucide-react';
-import xiassToolsLogo from '../../src-tauri/icons/icon.png';
+import xiassToolsLogo from '../../src-tauri/icons/app-icon-source.png';
 import type { PlatformId } from '../types/platform';
 import type { useSettingsPageController } from "./SettingsPage";
 import { SettingsGeneralPanel } from "./SettingsGeneralPanel";
@@ -15,6 +17,15 @@ export type SettingsPageViewProps = ReturnType<typeof useSettingsPageController>
 /** 渲染 SettingsPage 的界面；业务状态与动作统一由 Controller 提供。 */
 export function SettingsPageView(props: SettingsPageViewProps) {
   const settingsContainerRef = useRef<HTMLDivElement>(null);
+  const licenseNoticeDialogRef = useRef<HTMLDivElement>(null);
+  const licenseNoticeTriggerRef = useRef<HTMLButtonElement>(null);
+  const licenseNoticeCloseButtonRef = useRef<HTMLButtonElement>(null);
+  const [licenseNoticeOpen, setLicenseNoticeOpen] = useState(false);
+  const [legalNotices, setLegalNotices] = useState<LegalNoticeDocument[]>([]);
+  const [selectedLegalNoticeId, setSelectedLegalNoticeId] = useState<string | null>(null);
+  const [legalNoticesLoading, setLegalNoticesLoading] = useState(false);
+  const [legalNoticesFailed, setLegalNoticesFailed] = useState(false);
+  const [legalNoticesReloadVersion, setLegalNoticesReloadVersion] = useState(0);
   const {
     activeTab,
     actualPort,
@@ -91,6 +102,122 @@ export function SettingsPageView(props: SettingsPageViewProps) {
       if (label) control.setAttribute('aria-label', label);
     });
   });
+
+  useEscClose(licenseNoticeOpen, () => setLicenseNoticeOpen(false));
+
+  useEffect(() => {
+    if (!licenseNoticeOpen) {
+      return;
+    }
+
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const frameId = window.requestAnimationFrame(() => {
+      licenseNoticeCloseButtonRef.current?.focus();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      (licenseNoticeTriggerRef.current ?? previouslyFocused)?.focus();
+    };
+  }, [licenseNoticeOpen]);
+
+  useEffect(() => {
+    if (!licenseNoticeOpen) {
+      return;
+    }
+
+    let cancelled = false;
+    setLegalNoticesLoading(true);
+    setLegalNoticesFailed(false);
+
+    void loadLegalNotices()
+      .then((collection) => {
+        if (cancelled) {
+          return;
+        }
+        setLegalNotices(collection.notices);
+        setSelectedLegalNoticeId((current) =>
+          current && collection.notices.some((notice) => notice.id === current)
+            ? current
+            : collection.notices[0].id,
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLegalNotices([]);
+          setSelectedLegalNoticeId(null);
+          setLegalNoticesFailed(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLegalNoticesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [licenseNoticeOpen, legalNoticesReloadVersion]);
+
+  const selectedLegalNotice = legalNotices.find((notice) => notice.id === selectedLegalNoticeId)
+    ?? legalNotices[0]
+    ?? null;
+
+  const retryLegalNoticeLoad = () => {
+    setLegalNoticesReloadVersion((version) => version + 1);
+  };
+
+  const handleLegalNoticeTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, currentIndex: number) => {
+    const isPrevious = event.key === 'ArrowUp' || event.key === 'ArrowLeft';
+    const isNext = event.key === 'ArrowDown' || event.key === 'ArrowRight';
+    const isBoundary = event.key === 'Home' || event.key === 'End';
+    if (!isPrevious && !isNext && !isBoundary) {
+      return;
+    }
+
+    event.preventDefault();
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? legalNotices.length - 1
+        : (currentIndex + (isNext ? 1 : -1) + legalNotices.length) % legalNotices.length;
+    const nextNotice = legalNotices[nextIndex];
+    if (!nextNotice) {
+      return;
+    }
+
+    setSelectedLegalNoticeId(nextNotice.id);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`settings-license-tab-${nextNotice.id}`)?.focus();
+    });
+  };
+
+  const handleLicenseDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Tab') {
+      return;
+    }
+
+    const focusableElements = Array.from(
+      licenseNoticeDialogRef.current?.querySelectorAll<HTMLElement>('[data-license-dialog-focusable]') ?? [],
+    );
+    if (focusableElements.length === 0) {
+      return;
+    }
+
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements[focusableElements.length - 1];
+    const currentIndex = focusableElements.indexOf(document.activeElement as HTMLElement);
+    if (event.shiftKey && (currentIndex <= 0 || document.activeElement === firstElement)) {
+      event.preventDefault();
+      lastElement.focus();
+    } else if (!event.shiftKey && (currentIndex === -1 || document.activeElement === lastElement)) {
+      event.preventDefault();
+      firstElement.focus();
+    }
+  };
 
   return (
     <main className="main-content">
@@ -530,16 +657,17 @@ export function SettingsPageView(props: SettingsPageViewProps) {
                 <p>XIASS Tools</p>
               </button>
 
-              <button type="button" className="credit-item" onClick={() => openLink('https://github.com/jlcodes99/cockpit-tools')}>
-                <div className="credit-icon credit-icon--upstream"><Github size={24} /></div>
-                <h3>{t('settings.about.upstreamAttribution', '上游来源')}</h3>
-                <p>jlcodes99 / cockpit-tools · CC BY-NC-SA 4.0</p>
-              </button>
-
-              <button type="button" className="credit-item" onClick={() => openLink('https://creativecommons.org/licenses/by-nc-sa/4.0/')}>
+              <button
+                type="button"
+                className="credit-item credit-item--license-notice"
+                onClick={() => setLicenseNoticeOpen(true)}
+                aria-haspopup="dialog"
+                aria-expanded={licenseNoticeOpen}
+                ref={licenseNoticeTriggerRef}
+              >
                 <div className="credit-icon credit-icon--license"><FileText size={24} /></div>
-                <h3>{t('settings.about.license', '开源许可')}</h3>
-                <p>CC BY-NC-SA 4.0</p>
+                <h3>{t('settings.about.licensesAndNotices', '开源许可与第三方声明')}</h3>
+                <p>{t('settings.about.licensesAndNoticesDesc', '查看归属与许可证')}</p>
               </button>
             </div>
           </div>
@@ -728,6 +856,120 @@ export function SettingsPageView(props: SettingsPageViewProps) {
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={handleCloseReleaseHistory}>
+                {t('common.close', '关闭')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {licenseNoticeOpen && (
+        <div className="modal-overlay">
+          <div
+            className="modal settings-license-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-license-title"
+            aria-describedby="settings-license-description"
+            aria-busy={legalNoticesLoading}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={handleLicenseDialogKeyDown}
+            ref={licenseNoticeDialogRef}
+          >
+            <div className="modal-header">
+              <h2 id="settings-license-title">
+                {t('settings.about.licensesAndNotices', '开源许可与第三方声明')}
+              </h2>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setLicenseNoticeOpen(false)}
+                aria-label={t('common.close', '关闭')}
+                data-license-dialog-focusable
+                ref={licenseNoticeCloseButtonRef}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="modal-body settings-license-body">
+              <p id="settings-license-description">
+                {t(
+                  'settings.about.licenseIntro',
+                  'XIASS Tools 包含受开源许可证约束的组件。以下内容从当前安装包离线读取，不依赖网络，也不会访问你的本机文件。',
+                )}
+              </p>
+              {legalNoticesLoading && (
+                <div className="settings-license-status" role="status" aria-live="polite">
+                  <RefreshCw size={16} className="spin" aria-hidden="true" />
+                  {t('settings.about.licenseLoading', '正在读取内置许可资料…')}
+                </div>
+              )}
+              {legalNoticesFailed && (
+                <div className="settings-license-status settings-license-status-error" role="alert">
+                  <span>
+                    {t(
+                      'settings.about.licenseLoadFailed',
+                      '无法读取内置许可资料。请重新安装 XIASS Tools 后重试。',
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={retryLegalNoticeLoad}
+                    data-license-dialog-focusable
+                  >
+                    {t('common.retry', '重试')}
+                  </button>
+                </div>
+              )}
+              {!legalNoticesLoading && !legalNoticesFailed && selectedLegalNotice && (
+                <div className="settings-license-layout">
+                  <div
+                    className="settings-license-tabs"
+                    role="tablist"
+                    aria-label={t('settings.about.licenseDocuments', '内置许可资料')}
+                  >
+                    {legalNotices.map((notice, index) => {
+                      const isActive = notice.id === selectedLegalNotice.id;
+                      return (
+                        <button
+                          key={notice.id}
+                          type="button"
+                          className={`settings-license-tab${isActive ? ' active' : ''}`}
+                          role="tab"
+                          id={`settings-license-tab-${notice.id}`}
+                          aria-selected={isActive}
+                          aria-controls={`settings-license-panel-${notice.id}`}
+                          tabIndex={isActive ? 0 : -1}
+                          onClick={() => setSelectedLegalNoticeId(notice.id)}
+                          onKeyDown={(event) => handleLegalNoticeTabKeyDown(event, index)}
+                          data-license-dialog-focusable
+                        >
+                          {notice.title}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <section
+                    className="settings-license-document"
+                    role="tabpanel"
+                    id={`settings-license-panel-${selectedLegalNotice.id}`}
+                    aria-labelledby={`settings-license-tab-${selectedLegalNotice.id}`}
+                    tabIndex={0}
+                    data-license-dialog-focusable
+                  >
+                    <h3>{selectedLegalNotice.title}</h3>
+                    <pre>{selectedLegalNotice.content}</pre>
+                  </section>
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setLicenseNoticeOpen(false)}
+                data-license-dialog-focusable
+              >
                 {t('common.close', '关闭')}
               </button>
             </div>

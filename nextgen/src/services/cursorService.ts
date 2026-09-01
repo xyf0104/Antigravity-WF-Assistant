@@ -17,6 +17,15 @@ export async function startCursorOAuthLogin(): Promise<CursorOAuthLoginStartResp
   return response;
 }
 
+/** Cursor OAuth: read a still-valid app-private login flow after restart. */
+export async function peekCursorOAuthLogin(): Promise<CursorOAuthLoginStartResponse | null> {
+  const response = await invoke<CursorOAuthLoginStartResponse | null>('cursor_oauth_login_peek');
+  if (!response || typeof response.loginId !== 'string' || !response.loginId.trim()) {
+    return null;
+  }
+  return response;
+}
+
 /** Cursor OAuth: 等待轮询完成（用户在浏览器完成登录后返回账号） */
 export async function completeCursorOAuthLogin(loginId: string): Promise<CursorAccount> {
   return await invoke('cursor_oauth_login_complete', { loginId });

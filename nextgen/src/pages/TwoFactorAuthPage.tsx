@@ -22,6 +22,7 @@ export function TwoFactorAuthPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [migrationWarning, setMigrationWarning] = useState('');
+  const [iframeReady, setIframeReady] = useState(false);
   const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>(() =>
     document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
   );
@@ -96,6 +97,27 @@ export function TwoFactorAuthPage() {
     return url.toString();
   }, [resolvedTheme, session]);
 
+  useEffect(() => {
+    setIframeReady(false);
+  }, [iframeUrl]);
+
+  useEffect(() => {
+    if (!session) return;
+    const expectedOrigin = new URL(session.url).origin;
+    const handleEmbeddedReady = (event: MessageEvent) => {
+      if (
+        event.origin !== expectedOrigin
+        || event.source !== iframeRef.current?.contentWindow
+        || event.data?.type !== 'xiass-wf-ready'
+      ) {
+        return;
+      }
+      setIframeReady(true);
+    };
+    window.addEventListener('message', handleEmbeddedReady);
+    return () => window.removeEventListener('message', handleEmbeddedReady);
+  }, [session]);
+
   const deliverToken = useCallback(() => {
     if (!session || !iframeRef.current?.contentWindow) return;
     iframeRef.current.contentWindow.postMessage(
@@ -147,15 +169,25 @@ export function TwoFactorAuthPage() {
             </button>
           </div>
         ) : session ? (
-          <iframe
-            ref={iframeRef}
-            className="two-factor-secure-page__iframe"
-            src={iframeUrl}
-            name={session.token}
-            title="XIASS 本机 2FA 验证器"
-            onLoad={deliverToken}
-            allow="clipboard-read; clipboard-write"
-          />
+          <>
+            {!iframeReady ? (
+              <div className="two-factor-secure-page__state" role="status">
+                <RefreshCw size={22} className="spin" />
+                <strong>正在打开本机验证器</strong>
+                <span>安全组件就绪后会自动显示。</span>
+              </div>
+            ) : null}
+            <iframe
+              ref={iframeRef}
+              className={`two-factor-secure-page__iframe${iframeReady ? ' is-ready' : ''}`}
+              src={iframeUrl}
+              name={session.token}
+              title="XIASS 本机 2FA 验证器"
+              onLoad={deliverToken}
+              aria-hidden={!iframeReady}
+              allow="clipboard-read; clipboard-write"
+            />
+          </>
         ) : null}
       </section>
     </main>

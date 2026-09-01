@@ -15,12 +15,12 @@ import (
 // selectAgentDesktopNativeTarget is deliberately native-only. It never accepts
 // a Vue path string, and the generic file pattern is still followed by strict
 // Go-side product-metadata/executable verification.
-func selectAgentDesktopNativeTarget(ctx context.Context, identifier agent.ID) (string, bool, error) {
+func selectAgentDesktopNativeTarget(app *App, ctx context.Context, identifier agent.ID) (string, bool, error) {
 	title, pattern, ok := agentDesktopDialogOptions(identifier)
 	if !ok {
 		return "", false, errors.New("unsupported desktop application")
 	}
-	selected, err := runtime.OpenFileDialog(ctx, runtime.OpenDialogOptions{
+	selected, err := app.openFileDialog(runtime.OpenDialogOptions{
 		Title: title,
 		Filters: []runtime.FileFilter{{
 			DisplayName: "受支持的应用 (*.exe)",

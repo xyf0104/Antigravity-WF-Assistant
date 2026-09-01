@@ -82,7 +82,8 @@
         "sharedCreditPackage": "共享資源包",
         "account": "帳號",
         "createdAt": "建立時間",
-        "userId": "使用者 ID"
+        "userId": "使用者 ID",
+        "teamName": "團隊名稱"
       },
       "empty": {
         "title": "暫無帳號"
@@ -738,8 +739,6 @@
       "floatingCardShowNowAction": "顯示懸浮卡片",
       "dataDir": "資料目錄",
       "dataDirDesc": "帳號與設定檔的儲存位置。",
-      "topRightAdVisible": "顯示頂部推廣",
-      "topRightAdVisibleDesc": "關閉後隱藏應用頂部推廣位，不影響贊助商頁面。",
       "opencodeTitle": "OpenCode 連動",
       "opencodeRestart": "切換 Codex 時自動重新啟動 OpenCode",
       "opencodeRestartDesc": "同步切換 OpenCode 裡的 Codex 帳號資訊",
@@ -1196,7 +1195,7 @@
       "importModalDesc": "選擇要匯入的資料類型。舊版帳號備份會自動按「僅帳號資料」處理。",
       "selectionTitle": "資料範圍",
       "accountsOptionTitle": "帳號資料",
-      "accountsOptionDesc": "包含可還原的平台帳號備份，並持續相容舊版帳號 JSON。Grok CLI 憑證不在其中，需另外匯入官方 auth.json。",
+      "accountsOptionDesc": "包含 XIASS 平台帳號及 Antigravity WF 的帳號、模型供應商與設定。此 JSON 含憑證，僅在你選擇帳號備份時產生；不會讀取或包含 Codex auth.json。",
       "configOptionTitle": "設定資料",
       "configOptionDesc": "包含應用設定、群組、實例、喚醒任務與模型 Provider 設定。",
       "exportConfirm": "匯出資料",
@@ -4806,7 +4805,11 @@
     "subscription": "訂閱方案",
     "injectToCursor": "切換至 Cursor",
     "quota": {
-      "onDemand": "按需使用"
+      "onDemand": "按需使用",
+      "totalUsage": "總用量",
+      "autoComposer": "自動與 Composer",
+      "apiUsage": "API 用量",
+      "usageDetails": "用量明細"
     },
     "title": "Cursor 帳號管理",
     "instances": {
@@ -4844,7 +4847,8 @@
       "quotaFailed": "配額查詢失敗 ({{count}})",
       "cleanQuotaFailedAction": "刪除配額查詢失敗的帳號 ({{count}})",
       "cleanQuotaFailedConfirm": "確定要刪除全部 {{count}} 個配額查詢失敗的帳號嗎？"
-    }
+    },
+    "authId": "授權 ID"
   },
   "breakout": {
     "gameOver": "本局結束",
@@ -5838,16 +5842,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "中轉站",
-    "title": "APIKEY.FUN 中轉站",
+    "title": "XIASS API 中轉站",
     "description": "XIASS 官方合作中轉站，為使用者提供穩定、開放、高性價比的大模型 API 接入服務。支援 Claude、OpenAI、Gemini 等主流模型，適合在 Codex、Gemini CLI、Claude Code 及其他開發工具中統一配置使用。透過 XIASS 專屬連結註冊，可享最高儲值永久 95 折優惠。",
     "register": "專屬註冊連結",
     "docs": "官方文件",
     "viewNow": "立即查看",
     "queryTitle": "金鑰額度查詢",
-    "queryDesc": "輸入 APIKEY.FUN 的 API Key 後會自動查詢額度。",
+    "queryDesc": "輸入 XIASS API 的 API Key 後會自動查詢額度。",
     "keyNotSet": "尚未輸入金鑰",
     "apiKeyLabel": "API 金鑰",
-    "apiKeyPlaceholder": "貼上在 APIKEY.FUN 控制台建立的 API Key",
+    "apiKeyPlaceholder": "貼上在 XIASS API 控制台建立的 API Key",
     "hideKey": "隱藏",
     "showKey": "顯示",
     "endpointLabel": "接入端點",
@@ -5858,7 +5862,7 @@
     "saving": "寫入中",
     "saveSuccess": "已寫入 Codex Provider：{{name}}",
     "toolsTitle": "一鍵寫入客戶端",
-    "toolsDesc": "依照 APIKEY.FUN 文件與 CC Switch 的落盤方式，直接寫入本機客戶端設定檔。",
+    "toolsDesc": "依照 XIASS API 文件與 XIASS Tools 的落盤方式，直接寫入本機客戶端設定檔。",
     "endpoint": {
       "global": "全球線路",
       "globalDesc": "官方預設 API Base，適合多數網路環境。",
@@ -5954,7 +5958,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "已帶入 APIKEY.FUN 設定，請確認後加入 Claude。"
+      "claudeDesktopReady": "已帶入 XIASS API 設定，請確認後加入 Claude。"
     },
     "copyKey": "複製金鑰",
     "clearKey": "清除輸入"
@@ -6130,7 +6134,7 @@
     "apiKey": {
       "desc": "將 Claude CLI API Key 儲存為獨立憑證；切換或啟動 CLI 時會寫入 Claude Code settings.json 的 env，不會寫入 Claude 登入狀態。",
       "nameLabel": "帳號名稱",
-      "namePlaceholder": "選填，例如 APIKEY.FUN",
+      "namePlaceholder": "選填，例如 XIASS API",
       "keyLabel": "API 金鑰",
       "placeholder": "貼上供應商 API Key",
       "hide": "隱藏 API Key",

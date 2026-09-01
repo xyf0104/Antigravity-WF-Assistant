@@ -1,6 +1,7 @@
 /* ============================================
    XIASS Tools - Design System
-   Brand Direction: deep-sea command deck with floating blue-gray surfaces
+   Light baseline: Cockpit's original neutral canvas and surface hierarchy.
+   XIASS-specific deep-sea treatment is isolated to the explicit dark branch.
    ============================================ */
 
 :root {
@@ -10,45 +11,46 @@
     sans-serif;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', monospace;
 
-  /* Brand Colors */
-  --primary: #c2410c;
-  --primary-hover: #9a3412;
-  --primary-light: rgba(194, 65, 12, 0.13);
-  --accent: #2f719f;
+  /* Original Cockpit light palette. Keep this at the base layer so every
+     component has a correct light value before the optional XIASS layer loads. */
+  --primary: #1d4ed8;
+  --primary-hover: #1e40af;
+  --primary-light: rgba(29, 78, 216, 0.12);
+  --accent: #0ea5a5;
 
   /* Status Colors */
-  --success: #15803d;
-  --warning: #b45309;
-  --warning-strong: #c2410c;
-  --danger: #b91c1c;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --warning-strong: #f97316;
+  --danger: #ef4444;
 
   /* Background Colors */
-  --bg-primary: #e9f0f5;
+  --bg-primary: #f6f5f2;
   /* Solid surfaces: dialogs / dropdowns / menus (no transparency) */
-  --bg-secondary: #f8fbfd;
+  --bg-secondary: #ffffff;
   --bg-surface: var(--bg-secondary);
   /* Soft panels: cards / list rows (slight transparency to show gradient) */
-  --bg-tertiary: #dce7ef;
-  --bg-card: rgba(244, 249, 252, 0.92);
-  --bg-hover: rgba(20, 54, 79, 0.08);
+  --bg-tertiary: #eef2f7;
+  --bg-card: rgba(255, 255, 255, 0.75);
+  --bg-hover: rgba(15, 23, 42, 0.06);
 
   /* Text Colors */
-  --text-primary: #102638;
-  --text-secondary: #3d5c70;
-  --text-tertiary: #48677b;
-  --text-muted: #48677b;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #64748b;
+  --text-muted: #94a3b8;
 
   /* Border Colors */
-  --border: rgba(33, 72, 99, 0.22);
-  --border-light: rgba(33, 72, 99, 0.13);
+  --border: rgba(15, 23, 42, 0.12);
+  --border-light: rgba(15, 23, 42, 0.08);
 
   /* Shadows */
-  --shadow-sm: 0 3px 10px rgba(5, 29, 47, 0.09);
-  --shadow-md: 0 14px 30px rgba(5, 29, 47, 0.14);
-  --shadow-lg: 0 24px 52px rgba(5, 29, 47, 0.2);
+  --shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 12px 24px rgba(15, 23, 42, 0.12);
+  --shadow-lg: 0 20px 40px rgba(15, 23, 42, 0.18);
 
   /* Gradients */
-  --gradient-primary: linear-gradient(135deg, #ff9a4a 0%, #f97316 56%, #dc4f0b 100%);
+  --gradient-primary: linear-gradient(135deg, #1d4ed8 0%, #0ea5a5 100%);
   --gradient-success: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
   --gradient-danger: linear-gradient(135deg, #f97316 0%, #ef4444 100%);
 
@@ -172,9 +174,9 @@
 
 body {
   font-family: var(--font-sans);
-  background: radial-gradient(circle at 14% 8%, rgba(49, 112, 156, 0.16), transparent 42%),
-    radial-gradient(circle at 88% 2%, rgba(249, 115, 22, 0.08), transparent 34%),
-    linear-gradient(160deg, #f4f8fb 0%, #e6eef4 54%, #dbe7ef 100%);
+  background: radial-gradient(circle at 12% 10%, rgba(29, 78, 216, 0.12), transparent 45%),
+    radial-gradient(circle at 90% 5%, rgba(14, 165, 165, 0.12), transparent 40%),
+    linear-gradient(180deg, #f8f7f4 0%, #eef1f6 100%);
   color: var(--text-primary);
   line-height: 1.6;
   color-scheme: light;

@@ -7,8 +7,6 @@ import (
 
 	"antigravity-wf-assistant/internal/codexconfig"
 	"antigravity-wf-assistant/internal/codexselection"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // errCodexXIASSLifecycleNotApplied stays entirely on the native side. It
@@ -61,7 +59,10 @@ func (a *App) StartCodexXIASSKeySelection(siteURL string) CodexKeySelectionStatu
 	if err != nil {
 		return CodexKeySelectionStatus{OK: false, Message: "无法启动 XIASS API Key 选择。请检查网站地址后重试。"}
 	}
-	runtime.BrowserOpenURL(a.ctx, started.ConnectURL)
+	if err := a.openExternalURL(started.ConnectURL); err != nil {
+		a.codexKeySelectionService().Cancel(started.State.SessionID)
+		return CodexKeySelectionStatus{OK: false, Message: "无法打开 XIASS API Key 选择页，请稍后重试。"}
+	}
 	return CodexKeySelectionStatus{OK: true, Message: started.State.Message, Selection: started.State}
 }
 

@@ -99,6 +99,16 @@ func normalizeApplyConfig(input ApplyConfig) (normalizedApplyConfig, error) {
 	}, nil
 }
 
+// normalizeModelIdentifier is shared by the full configuration transaction
+// and the embedded-account model-only transaction. It deliberately keeps the
+// same narrow Claude Code model grammar in both paths.
+func normalizeModelIdentifier(value string) (string, error) {
+	if value == "" || len(value) > maxModelBytes || !modelPattern.MatchString(value) {
+		return "", errInvalidModel
+	}
+	return value, nil
+}
+
 // normalizeCredential enforces one documented Claude Code credential mode.
 // Keeping the modes mutually exclusive prevents a stale higher-precedence
 // value from silently overriding the value a user just saved.
@@ -268,6 +278,22 @@ func (document settingsDocument) updated(config normalizedApplyConfig) ([]byte, 
 	return append(updated, '\n'), nil
 }
 
+// updatedModel changes only the documented top-level Claude Code model field.
+// Existing env entries, including credentials managed by another native
+// component, remain byte-for-byte semantic values in the parsed document.
+func (document settingsDocument) updatedModel(model string) ([]byte, error) {
+	encodedModel, err := json.Marshal(model)
+	if err != nil {
+		return nil, errors.New("encode Claude model setting")
+	}
+	document.root["model"] = encodedModel
+	updated, err := json.MarshalIndent(document.root, "", "  ")
+	if err != nil {
+		return nil, errors.New("encode Claude user settings")
+	}
+	return append(updated, '\n'), nil
+}
+
 func verifyManagedSettings(data []byte, config normalizedApplyConfig) error {
 	document, err := parseSettings(data)
 	if err != nil {
@@ -299,6 +325,18 @@ func verifyManagedSettings(data []byte, config normalizedApplyConfig) error {
 		}
 	default:
 		return errors.New("managed settings verification failed")
+	}
+	return nil
+}
+
+func verifySelectedModel(data []byte, model string) error {
+	document, err := parseSettings(data)
+	if err != nil {
+		return err
+	}
+	actual, ok := stringValue(document.root["model"])
+	if !ok || actual != model {
+		return errors.New("generated Claude model setting did not verify")
 	}
 	return nil
 }

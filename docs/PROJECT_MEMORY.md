@@ -11,9 +11,9 @@
 当前受支持的本机集成包括：
 
 - Antigravity IDE / Antigravity 2.x：保留经过验证的本地代理、补丁、模型、账户池、图片、重试、历史、启动与诊断工作流。
-- Codex：管理独立的 `xiass_tools` Provider、本机模型发现、校验备份/恢复、可选历史兼容检查、静态 OpenAI Responses 账户复用，以及经过确认的 Desktop 生命周期协作。
-- Claude Code：只管理明确的用户 `settings.json` API 根地址、授权令牌和模型字段，包含校验备份/恢复及静态 Anthropic Messages 账户复用。
-- Cursor / Windsurf：只管理文档化 MCP JSON 中由 XIASS Tools 自己拥有的远程 MCP 条目，包含校验恢复点；Cursor 另支持用户通过原生目录选择器明确选择的项目 `.cursor/mcp.json`，Windsurf 仅支持全局设置。
+- Codex：管理独立的 `xiass_tools` Provider、本机模型发现、校验备份/恢复、可选历史兼容检查、OAuth / API Key / Token / JSON / 本机账号导入、额度、切换、实例和经过确认的 Desktop 生命周期协作。
+- Claude Code：管理 Claude / Claude Code 的 OAuth、API Key、JSON、本机登录态导入、额度、切换和实例，以及用户明确的 Gateway、`settings.json` API 根地址、授权令牌和模型字段。
+- Cursor / Windsurf：管理用户主动发起的 OAuth、Token / JSON / 本机导入、额度、切换/注入和实例；同时管理 XIASS Tools 自己拥有的 MCP 条目与校验恢复点。Cursor 另支持用户通过原生目录选择器明确选择的项目 `.cursor/mcp.json`，Windsurf 仅支持全局设置。
 - 本地验证器（2FA）：标准 TOTP 导入、验证码显示、用户主动发起的加密导出，以及经密码验证和事务回滚保护的加密备份导入恢复；密钥只能存入系统凭据库。
 
 ## 最高优先级
@@ -22,7 +22,7 @@
 2. **不破坏已验证的 Antigravity 逻辑。** 补丁、代理、图片路由、模型注入、端口处理、历史恢复和安装结构检测只能做最小必要修改；未知结构保持零写入并导出可诊断事实。
 3. **Windows 与 macOS 逻辑同步。** 允许因系统 API、路径、签名、安装器和托盘机制不同而有实现差异，但 API 语义、错误边界、数据安全与用户操作结果必须对等。
 4. **不伪装能力。** 未实现、未验证或不安全的功能必须显示为不可用/需要处理，不能用“已连接”“支持全部版本”“账号已授权”等文字替代真实结果。
-5. **安全配置而非凭据抓取。** 不读取或导入浏览器 Cookie、私有数据库、第三方账户文件、会话、OAuth 状态、订阅/额度存储或聊天历史，除非功能明确使用公开且用户主动提供的配置表面。
+5. **显式授权而非凭据抓取。** 默认不后台扫描、批量导入或上传浏览器 Cookie、未选择客户端的私有数据库、会话、OAuth 状态、订阅/额度存储或聊天历史。用户点击“从本机导入”“OAuth”或“切换/注入”后，可以按对应 Agent 已验证的本机规则处理必要授权资料；只有用户在设置中开启“本机账号自动导入”后，才会在本机监听五个已支持 Agent 的登录变更。原始认证文件不进入日志、诊断或未经授权的导出。
 
 ## Antigravity 不变约束
 
@@ -48,9 +48,9 @@
 
 | 集成 | 可以做 | 不可以声称或实现为自动能力 |
 | --- | --- | --- |
-| Codex | `config.toml` Provider、上游模型发现、校验备份/恢复、显式历史兼容、静态 OpenAI Responses 账户复用、已验证 Desktop 正常退出/启动 | 读取 `auth.json`、导入官方会话、将 OAuth/刷新令牌当静态凭据、伪造订阅/额度、强制结束进程 |
-| Claude Code | 明确的用户 `settings.json` 字段、校验备份/恢复及静态 Anthropic Messages 账户复用 | 客户端 OAuth/账号导入、将 OAuth/刷新令牌当静态凭据、会话、项目设置、MCP、用量/订阅读取 |
-| Cursor / Windsurf | 固定全局 MCP 路径中的 XIASS Tools 条目与校验恢复点；已发现且再次验证的安装可从工具中心打开 | 账号、Cookie、Token、聊天、数据库、任意文件路径或私有存储 |
+| Codex | `config.toml` Provider、上游模型发现、校验备份/恢复、显式历史兼容；用户主动 OAuth、API Key / Token / JSON、本机 Codex / ChatGPT Desktop 导入、额度刷新、账号切换和实例 | 不后台读取 `auth.json` 或官方会话；不把认证文件纳入统一备份/诊断；不伪造订阅/额度；不对未确认目标强制结束进程 |
+| Claude Code | Claude / Claude Code 的 OAuth、API Key、JSON、本机登录态导入、额度、切换和实例；用户明确的 `settings.json` / Gateway 配置与备份恢复 | 不自动扫描未选择的 Claude 数据；不处理项目设置或 MCP 以外的未授权数据；不把凭据写入日志、诊断或共享状态 |
+| Cursor / Windsurf | OAuth、Token / JSON / 本机导入、额度刷新、账号注入、多实例，以及 XIASS MCP 条目和恢复点 | 不后台读取认证存储；仅在用户导入或切换时处理必要的客户端认证数据；不接管未选择账户、其他 MCP、聊天或无关数据库 |
 | TOTP | 本机系统凭据库、标准 TOTP、加密导出与加密备份导入恢复 | 将密钥写入 `localStorage`、日志、诊断、共享状态或明文文件 |
 
 ## 品牌与兼容性规则

@@ -118,6 +118,11 @@ if (!hasFlag('--skip-build')) {
     command: 'npm',
     args: ['run', 'build'],
   });
+  steps.push({
+    name: 'XIASS production asset scope',
+    command: 'node',
+    args: ['scripts/verify_product_asset_scope.cjs'],
+  });
 }
 
 if (!hasFlag('--skip-cargo') || !hasFlag('--skip-cargo-test')) {

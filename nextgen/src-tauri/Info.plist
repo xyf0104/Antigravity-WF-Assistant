@@ -6,6 +6,8 @@
   <string>XIASS Tools</string>
   <key>CFBundleName</key>
   <string>XIASS Tools</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
   <key>LSRequiresCarbon</key>
   <false/>
 </dict>

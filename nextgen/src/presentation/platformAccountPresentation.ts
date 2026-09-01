@@ -1740,7 +1740,7 @@ export function buildCursorAccountPresentation(
   if (totalPercent != null) {
     quotaItems.push({
       key: "total",
-      label: "Total Usage",
+      label: t("cursor.quota.totalUsage", "Total Usage"),
       percentage: totalPercent,
       quotaClass: getCursorUsageQuotaClass(totalPercent),
       valueText: `${totalPercent}%`,
@@ -1754,7 +1754,7 @@ export function buildCursorAccountPresentation(
   if (autoPercent != null) {
     quotaItems.push({
       key: "auto",
-      label: "Auto + Composer",
+      label: t("cursor.quota.autoComposer", "Auto + Composer"),
       percentage: autoPercent,
       quotaClass: getCursorUsageQuotaClass(autoPercent),
       valueText: `${autoPercent}%`,
@@ -1764,7 +1764,7 @@ export function buildCursorAccountPresentation(
   if (apiPercent != null) {
     quotaItems.push({
       key: "api",
-      label: "API Usage",
+      label: t("cursor.quota.apiUsage", "API Usage"),
       percentage: apiPercent,
       quotaClass: getCursorUsageQuotaClass(apiPercent),
       valueText: `${apiPercent}%`,

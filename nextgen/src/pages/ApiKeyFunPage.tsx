@@ -34,7 +34,7 @@ import {
   getApiKeyFunPrefillPage,
   type ApiKeyFunPrefillTarget,
 } from '../utils/apiKeyFunPrefill';
-import apiKeyFunIcon from '../assets/icons/apikey-fun.png';
+import xiassToolsLogo from '../../src-tauri/icons/app-icon-source.png';
 import './ApiKeyFunPage.css';
 
 type ManagedApiKey = {
@@ -474,7 +474,7 @@ export function ApiKeyFunPage() {
     <div className="apikey-fun-page">
       <header className="apikey-fun-header-brand">
         <div className="apikey-fun-brand-main">
-          <img src={apiKeyFunIcon} alt="" className="apikey-fun-brand-logo" />
+          <img src={xiassToolsLogo} alt="" className="apikey-fun-brand-logo" />
           <div className="apikey-fun-brand-text">
             <div className="apikey-fun-eyebrow-container">
               <span className="apikey-fun-eyebrow">{t('apiKeyFun.eyebrow', '中转站')}</span>

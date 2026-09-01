@@ -89,7 +89,8 @@
         "sharedCreditPackage": "Shared Credit Package",
         "account": "Account",
         "createdAt": "Created Time",
-        "userId": "User ID"
+        "userId": "User ID",
+        "teamName": "Team Name"
       },
       "empty": {
         "title": "No Accounts"
@@ -414,16 +415,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "Relay",
-    "title": "APIKEY.FUN",
+    "title": "XIASS API",
     "description": "The official XIASS partner relay, providing stable, open, and cost-effective large-model API access. It supports mainstream models such as Claude, OpenAI, and Gemini, and is suitable for unified configuration across Codex, Gemini CLI, Claude Code, and other developer tools. Register through the XIASS exclusive link to get a permanent top-up discount of up to 5%.",
     "register": "Exclusive signup",
     "docs": "Official docs",
     "viewNow": "View now",
     "queryTitle": "Key Quota Lookup",
-    "queryDesc": "Enter an APIKEY.FUN API Key to query quota automatically.",
+    "queryDesc": "Enter an XIASS API API Key to query quota automatically.",
     "keyNotSet": "No key entered",
     "apiKeyLabel": "API Key",
-    "apiKeyPlaceholder": "Paste the API Key created in the APIKEY.FUN console",
+    "apiKeyPlaceholder": "Paste the API Key created in the XIASS API console",
     "hideKey": "Hide",
     "showKey": "Show",
     "endpointLabel": "Endpoint",
@@ -434,7 +435,7 @@
     "saving": "Writing",
     "saveSuccess": "Written to Codex Provider: {{name}}",
     "toolsTitle": "Write Client Config",
-    "toolsDesc": "Write local client config files directly, following the APIKEY.FUN docs and CC Switch file layout.",
+    "toolsDesc": "Write local client config files directly, following the XIASS API docs and XIASS Tools file layout.",
     "endpoint": {
       "global": "Global",
       "globalDesc": "Official default API Base for most network environments.",
@@ -532,7 +533,7 @@
       "claudeShort": "Claude"
     },
     "prefill": {
-      "claudeDesktopReady": "APIKEY.FUN settings are filled in. Confirm to add them to Claude."
+      "claudeDesktopReady": "XIASS API settings are filled in. Confirm to add them to Claude."
     }
   },
   "platformLayout": {
@@ -947,8 +948,6 @@
       "floatingCardShowNowAction": "Show floating card",
       "dataDir": "Data Directory",
       "dataDirDesc": "Storage location for accounts and configuration files.",
-      "topRightAdVisible": "Show top promo",
-      "topRightAdVisibleDesc": "Hide the top promo slot in the app. The Sponsors page is not affected.",
       "opencodeTitle": "OpenCode Integration",
       "opencodeAuthOverwrite": "Overwrite OpenCode login when switching Codex",
       "opencodeAuthOverwriteDesc": "When off, only Codex is switched and OpenCode keeps its current login state",
@@ -1322,7 +1321,7 @@
       "importModalDesc": "Choose what to import. Legacy account backups are handled as account-only imports.",
       "selectionTitle": "Data Scope",
       "accountsOptionTitle": "Account Data",
-      "accountsOptionDesc": "Includes restorable platform account backups and keeps legacy account JSON compatible. Grok CLI credentials are excluded; import the official auth.json separately.",
+      "accountsOptionDesc": "Includes XIASS platform accounts plus Antigravity WF accounts, model providers, and settings. This credential-bearing JSON is created only when account backup is selected; Codex auth.json is never read or included.",
       "configOptionTitle": "Config Data",
       "configOptionDesc": "Includes app settings, groups, instances, wakeup tasks, and model provider config.",
       "exportConfirm": "Export Data",
@@ -2329,8 +2328,8 @@
       "modelConfigDialogDescription": "Configure visible models, reasoning levels, context windows, and compact limits for each model.",
       "applyModelConfig": "Apply settings",
       "defaultModel": "Default model",
-      "repairCompleted": "Session visibility repair completed"
-      ,"forceRefreshTitle": "Force-refresh Token",
+      "repairCompleted": "Session visibility repair completed",
+      "forceRefreshTitle": "Force-refresh Token",
       "forceRefreshReady": "OAuth tokens can be refreshed manually",
       "forceRefreshDescription": "Use refresh_token to obtain new access_token and id_token values. This may rotate the current refresh token.",
       "forceRefreshUnavailable": "Unavailable for this account type",
@@ -5111,7 +5110,11 @@
     "subscription": "Subscription",
     "injectToCursor": "Switch to Cursor",
     "quota": {
-      "onDemand": "On-Demand"
+      "onDemand": "On-Demand",
+      "totalUsage": "Total Usage",
+      "autoComposer": "Auto + Composer",
+      "apiUsage": "API Usage",
+      "usageDetails": "Usage Details"
     },
     "title": "Cursor Account",
     "instances": {
@@ -5149,7 +5152,8 @@
       "quotaFailed": "Quota query failed ({{count}})",
       "cleanQuotaFailedAction": "Delete quota-failed accounts ({{count}})",
       "cleanQuotaFailedConfirm": "Delete all {{count}} account(s) with quota query failures?"
-    }
+    },
+    "authId": "Auth ID"
   },
   "breakout": {
     "gameOver": "Game Over",
@@ -6139,7 +6143,7 @@
     "apiKey": {
       "desc": "Save a Claude CLI API Key as a separate credential. Switching or launching Claude CLI writes provider env values into Claude Code settings.json and does not write Claude sign-in state.",
       "nameLabel": "Account name",
-      "namePlaceholder": "Optional, for example APIKEY.FUN",
+      "namePlaceholder": "Optional, for example XIASS API",
       "keyLabel": "API Key",
       "placeholder": "Paste provider API Key",
       "hide": "Hide API Key",

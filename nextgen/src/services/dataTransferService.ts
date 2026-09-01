@@ -1,13 +1,17 @@
 import { invoke } from '@tauri-apps/api/core';
 import {
-  ACCOUNT_TRANSFER_SCHEMA,
   AccountTransferBundle,
   AccountTransferImportProgress,
   AccountTransferImportResult,
   buildAccountTransferBundle,
   importAllAccountsFromTransferJson,
 } from './accountTransferService';
-import { ALL_PLATFORM_IDS, PlatformId } from '../types/platform';
+import {
+  ALL_PLATFORM_IDS,
+  isProductionAgentAccountPlatform,
+  PRODUCTION_AGENT_ACCOUNT_PLATFORM_IDS,
+  PlatformId,
+} from '../types/platform';
 import * as claudeService from './claudeService';
 import { getGroupSettings, GroupSettings, saveGroupSettings } from './groupService';
 import {
@@ -61,8 +65,13 @@ import * as traeService from './traeService';
 import * as workbuddyService from './workbuddyService';
 import type { InstanceLaunchMode } from '../types/instance';
 import type { ClaudeAccount } from '../types/claude';
+import {
+  XIASS_DATA_TRANSFER_SCHEMA,
+  isSupportedAccountTransferSchema,
+  isSupportedDataTransferSchema,
+} from '../utils/transferSchemas';
 
-const DATA_TRANSFER_SCHEMA = 'cockpit-tools.data-transfer';
+const DATA_TRANSFER_SCHEMA = XIASS_DATA_TRANSFER_SCHEMA;
 const DATA_TRANSFER_VERSION = 1;
 const WAKEUP_ENABLED_KEY = 'agtools.wakeup.enabled';
 const WAKEUP_TASKS_KEY = 'agtools.wakeup.tasks';
@@ -70,24 +79,18 @@ const WAKEUP_TASKS_KEY = 'agtools.wakeup.tasks';
 const INSTANCE_PLATFORMS = [
   'antigravity',
   'codex',
-  'github-copilot',
   'windsurf',
-  'kiro',
   'cursor',
-  'grok',
-  'codebuddy',
-  'codebuddy_cn',
-  'qoder',
-  'zcode',
-  'trae',
-  'workbuddy',
 ] as const;
 
 type InstancePlatform = (typeof INSTANCE_PLATFORMS)[number];
 type TransferAccountRecord = Record<string, unknown> & { id: string };
 type AccountLoader = () => Promise<TransferAccountRecord[]>;
 type LegacyFormat = 'data_bundle' | 'account_bundle' | 'legacy_account_json';
-type DataTransferWarningCode = 'accounts_section_missing' | 'config_section_missing';
+type DataTransferWarningCode =
+  | 'accounts_section_missing'
+  | 'config_section_missing'
+  | 'wf_helper_section_missing';
 
 async function listClaudeManagerTransferAccounts(): Promise<TransferAccountRecord[]> {
   const accounts = await claudeService.listClaudeAccounts();
@@ -406,11 +409,11 @@ function firstLegacySample(value: unknown): Record<string, unknown> | null {
 }
 
 function isDataTransferBundle(value: unknown): value is DataTransferBundle {
-  return isRecord(value) && value.schema === DATA_TRANSFER_SCHEMA;
+  return isRecord(value) && isSupportedDataTransferSchema(value.schema);
 }
 
 function isAccountTransferBundleLike(value: unknown): boolean {
-  return isRecord(value) && value.schema === ACCOUNT_TRANSFER_SCHEMA;
+  return isRecord(value) && isSupportedAccountTransferSchema(value.schema);
 }
 
 function buildAccountRegistry(
@@ -437,7 +440,7 @@ function buildAccountRegistry(
 
 async function loadAccountRegistry(): Promise<AccountRegistry> {
   const entries: Array<readonly [PlatformId, TransferAccountRecord[]]> = [];
-  for (const platform of ALL_PLATFORM_IDS) {
+  for (const platform of PRODUCTION_AGENT_ACCOUNT_PLATFORM_IDS) {
     const accounts = await ACCOUNT_LOADERS[platform]();
     entries.push([platform, accounts] as const);
   }
@@ -1196,6 +1199,9 @@ function synthesizeAccountImportResult(
     platform_success_count: importedCount > 0 ? 1 : 0,
     platform_failed_count: importedCount > 0 ? 0 : 1,
     platform_skipped_count: 0,
+    wf_helper_restored: false,
+    wf_helper_account_count: 0,
+    wf_helper_model_count: 0,
     details: [
       {
         platform,
@@ -1279,6 +1285,9 @@ async function importLegacyAccountJson(
   platform: PlatformId,
   jsonContent: string,
 ): Promise<AccountTransferImportResult> {
+  if (!isProductionAgentAccountPlatform(platform)) {
+    throw new Error('unsupported_legacy_account_json');
+  }
   const importer = LEGACY_IMPORTERS[platform];
   if (!importer) {
     throw new Error('unsupported_legacy_account_json');
@@ -1343,6 +1352,9 @@ export async function importDataTransferJson(
         accountResult = await importAllAccountsFromTransferJson(JSON.stringify(parsed.accounts), {
           onProgress: options.onAccountProgress,
         });
+        if (!accountResult.wf_helper_restored) {
+          warnings.push('wf_helper_section_missing');
+        }
       } else {
         warnings.push('accounts_section_missing');
       }
@@ -1383,7 +1395,10 @@ export async function importDataTransferJson(
       imported_account_count: accountResult.imported_count,
       account_result: accountResult,
       config_result: null,
-      warnings: options.includeConfig ? ['config_section_missing'] : [],
+      warnings: [
+        ...(options.includeConfig ? ['config_section_missing' as const] : []),
+        ...(!accountResult.wf_helper_restored ? ['wf_helper_section_missing' as const] : []),
+      ],
     };
   }
 

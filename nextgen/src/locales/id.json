@@ -89,7 +89,8 @@
         "sharedCreditPackage": "Paket Kredit Bersama",
         "account": "Akun",
         "createdAt": "Waktu Dibuat",
-        "userId": "ID Pengguna"
+        "userId": "ID Pengguna",
+        "teamName": "Nama tim"
       },
       "empty": {
         "title": "Belum Ada Akun"
@@ -796,8 +797,6 @@
       "floatingCardShowNowAction": "Tampilkan kartu mengambang",
       "dataDir": "Direktori Data",
       "dataDirDesc": "Lokasi penyimpanan akun dan berkas konfigurasi.",
-      "topRightAdVisible": "Tampilkan promo atas",
-      "topRightAdVisibleDesc": "Sembunyikan slot promo atas di aplikasi. Halaman Sponsor tidak terpengaruh.",
       "opencodeTitle": "Integrasi OpenCode",
       "opencodeAuthOverwrite": "Timpa login OpenCode saat mengganti Codex",
       "opencodeAuthOverwriteDesc": "Jika dinonaktifkan, hanya Codex yang diganti dan OpenCode mempertahankan status login saat ini",
@@ -1243,7 +1242,7 @@
       "importModalDesc": "Pilih data yang ingin diimpor. Cadangan akun lama akan diproses sebagai impor akun saja.",
       "selectionTitle": "Cakupan data",
       "accountsOptionTitle": "Data akun",
-      "accountsOptionDesc": "Mencakup cadangan akun platform yang dapat dipulihkan dan tetap kompatibel dengan JSON akun lama. Kredensial Grok CLI tidak disertakan; impor auth.json resmi secara terpisah.",
+      "accountsOptionDesc": "Mencakup akun XIASS serta akun, penyedia model, dan pengaturan Antigravity WF. JSON berisi kredensial hanya dibuat saat cadangan akun dipilih; Codex auth.json tidak pernah dibaca atau disertakan.",
       "configOptionTitle": "Data konfigurasi",
       "configOptionDesc": "Mencakup pengaturan aplikasi, grup, instance, tugas wakeup, dan konfigurasi penyedia model.",
       "exportConfirm": "Ekspor data",
@@ -4959,7 +4958,11 @@
     "subscription": "Subscription​",
     "injectToCursor": "Switch to Cursor​",
     "quota": {
-      "onDemand": "Sesuai permintaan"
+      "onDemand": "Sesuai permintaan",
+      "totalUsage": "Total penggunaan",
+      "autoComposer": "Otomatis + Composer",
+      "apiUsage": "Penggunaan API",
+      "usageDetails": "Detail penggunaan"
     },
     "title": "Cursor Account​",
     "instances": {
@@ -4997,7 +5000,8 @@
       "quotaFailed": "Permintaan kuota gagal ({{count}})",
       "cleanQuotaFailedAction": "Hapus akun dengan permintaan kuota gagal ({{count}})",
       "cleanQuotaFailedConfirm": "Hapus semua {{count}} akun yang permintaan kuotanya gagal?"
-    }
+    },
+    "authId": "ID otorisasi"
   },
   "breakout": {
     "gameOver": "Game Over​",
@@ -5838,16 +5842,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "Perantara",
-    "title": "Relay APIKEY.FUN",
+    "title": "Relay XIASS API",
     "description": "Relay mitra resmi XIASS menyediakan akses API model besar yang stabil, terbuka, dan hemat biaya. Layanan ini mendukung model utama seperti Claude, OpenAI, dan Gemini, serta cocok untuk konfigurasi terpadu di Codex, Gemini CLI, Claude Code, dan alat pengembang lainnya. Dengan mendaftar melalui tautan eksklusif XIASS, Anda bisa mendapatkan diskon isi ulang permanen hingga 5%.",
     "register": "Tautan eksklusif",
     "docs": "Dokumen resmi",
     "viewNow": "Lihat sekarang",
     "queryTitle": "Kuota kunci",
-    "queryDesc": "Masukkan API Key APIKEY.FUN untuk memeriksa kuota otomatis.",
+    "queryDesc": "Masukkan API Key XIASS API untuk memeriksa kuota otomatis.",
     "keyNotSet": "Belum ada kunci",
     "apiKeyLabel": "Kunci API",
-    "apiKeyPlaceholder": "Tempel API Key yang dibuat di konsol APIKEY.FUN",
+    "apiKeyPlaceholder": "Tempel API Key yang dibuat di konsol XIASS API",
     "hideKey": "Sembunyikan",
     "showKey": "Tampilkan",
     "endpointLabel": "Titik akses",
@@ -5858,7 +5862,7 @@
     "saving": "Menulis",
     "saveSuccess": "Ditulis ke Codex Provider: {{name}}",
     "toolsTitle": "Tulis config klien",
-    "toolsDesc": "Menulis file konfigurasi klien lokal sesuai dokumen APIKEY.FUN dan tata letak CC Switch.",
+    "toolsDesc": "Menulis file konfigurasi klien lokal sesuai dokumen XIASS API dan tata letak XIASS Tools.",
     "endpoint": {
       "global": "Jalur global",
       "globalDesc": "API Base resmi bawaan untuk sebagian besar jaringan.",
@@ -5954,7 +5958,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "Konfigurasi APIKEY.FUN sudah terisi. Konfirmasi untuk menambahkannya ke Claude."
+      "claudeDesktopReady": "Konfigurasi XIASS API sudah terisi. Konfirmasi untuk menambahkannya ke Claude."
     },
     "copyKey": "Copy Key​",
     "clearKey": "Clear input​"
@@ -6130,7 +6134,7 @@
     "apiKey": {
       "desc": "Simpan API Key Claude CLI sebagai kredensial terpisah. Saat beralih atau menjalankan CLI, nilai env penyedia ditulis ke Claude Code settings.json tanpa menulis status masuk Claude.",
       "nameLabel": "Nama akun",
-      "namePlaceholder": "Opsional, mis. APIKEY.FUN",
+      "namePlaceholder": "Opsional, mis. XIASS API",
       "keyLabel": "Kunci API",
       "placeholder": "Tempel API Key provider",
       "hide": "Sembunyikan API Key",

@@ -20,12 +20,8 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import apiKeyFunIcon from '../assets/icons/apikey-fun.png';
 import { isMenuVisiblePlatform, MENU_VISIBLE_PLATFORM_IDS, PlatformId } from '../types/platform';
-import { useSponsorStore } from '../stores/useSponsorStore';
 import {
-  API_RELAY_LAYOUT_ENTRY_ID,
-  ApiRelayLayoutEntryId,
   getGroupChildConfig,
   parseGroupEntryId,
   parsePlatformEntryId,
@@ -53,11 +49,11 @@ interface PlatformLayoutModalProps {
   onClose: () => void;
 }
 
-type LayoutEntryId = PlatformLayoutEntryId | ApiRelayLayoutEntryId;
+type LayoutEntryId = PlatformLayoutEntryId;
 
 interface LayoutEntryItem {
   id: LayoutEntryId;
-  type: 'platform' | 'group' | 'api-relay';
+  type: 'platform' | 'group';
   label: string;
   hidden: boolean;
   group: PlatformLayoutGroup | null;
@@ -96,10 +92,6 @@ function normalizeCustomIconName(fileName?: string) {
     return `Custom ${new Date().toLocaleDateString()}`;
   }
   return trimmed;
-}
-
-function isPlatformLayoutEntryId(id: LayoutEntryId): id is PlatformLayoutEntryId {
-  return id !== API_RELAY_LAYOUT_ENTRY_ID;
 }
 
 function loadCustomIcons(): PlatformLayoutCustomIcon[] {
@@ -367,22 +359,16 @@ export function PlatformLayoutModal({
     sidebarEntryIds,
     trayPlatformIds,
     platformGroups,
-    apiRelaySidebarVisible,
-    apiRelayDashboardVisible,
     apiRelayEntryOrder,
     reorderGroupPlatforms,
     setLayoutEntryOrder,
     setHiddenEntry,
     setSidebarEntry,
     setTrayPlatform,
-    setApiRelaySidebarVisible,
-    setApiRelayDashboardVisible,
     upsertPlatformGroup,
     removePlatformGroup,
     resetPlatformLayout,
   } = usePlatformLayoutStore();
-  const apiRelayEntryEnabled = useSponsorStore((state) => Boolean(state.state.sponsorModule));
-
   const [draggingId, setDraggingId] = useState<LayoutEntryId | null>(null);
   const [dropTargetId, setDropTargetId] = useState<LayoutEntryId | null>(null);
   const [draggingChild, setDraggingChild] = useState<{ groupId: string; platformId: PlatformId } | null>(null);
@@ -471,39 +457,18 @@ export function PlatformLayoutModal({
       });
     }
 
-    if (apiRelayEntryEnabled) {
-      const insertIndex = Math.max(0, Math.min(apiRelayEntryOrder, result.length));
-      result.splice(insertIndex, 0, {
-        id: API_RELAY_LAYOUT_ENTRY_ID,
-        type: 'api-relay',
-        label: t('nav.apiRelay', '中转站'),
-        hidden: !apiRelayDashboardVisible,
-        group: null,
-        defaultPlatformId: null,
-        platformIds: [],
-      });
-    }
-
     return result;
   }, [
     orderedEntryIds,
     platformGroups,
     hiddenSet,
     t,
-    apiRelayEntryEnabled,
-    apiRelayEntryOrder,
-    apiRelayDashboardVisible,
   ]);
 
-  const layoutEntryOrderIds = useMemo<LayoutEntryId[]>(() => {
-    const result: LayoutEntryId[] = [...orderedEntryIds];
-    if (!apiRelayEntryEnabled) {
-      return result;
-    }
-    const insertIndex = Math.max(0, Math.min(apiRelayEntryOrder, result.length));
-    result.splice(insertIndex, 0, API_RELAY_LAYOUT_ENTRY_ID);
-    return result;
-  }, [apiRelayEntryEnabled, apiRelayEntryOrder, orderedEntryIds]);
+  const layoutEntryOrderIds = useMemo<LayoutEntryId[]>(
+    () => [...orderedEntryIds],
+    [orderedEntryIds],
+  );
 
   const allGroupIds = useMemo(
     () => entries.filter((entry) => entry.type === 'group' && !!entry.group).map((entry) => entry.id),
@@ -705,11 +670,7 @@ export function PlatformLayoutModal({
   };
 
   const commitLayoutEntryOrder = (nextIds: LayoutEntryId[]) => {
-    const nextApiRelayOrder = nextIds.indexOf(API_RELAY_LAYOUT_ENTRY_ID);
-    setLayoutEntryOrder(
-      nextIds.filter(isPlatformLayoutEntryId),
-      nextApiRelayOrder >= 0 ? nextApiRelayOrder : apiRelayEntryOrder,
-    );
+    setLayoutEntryOrder(nextIds, apiRelayEntryOrder);
   };
 
   const handleDragStart = (event: ReactMouseEvent, id: LayoutEntryId) => {
@@ -779,42 +740,26 @@ export function PlatformLayoutModal({
     setExpandedGroupIds(allGroupIds);
   };
 
-  const isSidebarEntrySelected = (entry: LayoutEntryItem) =>
-    entry.type === 'api-relay'
-      ? apiRelaySidebarVisible
-      : sidebarSet.has(entry.id as PlatformLayoutEntryId);
+  const isSidebarEntrySelected = (entry: LayoutEntryItem) => sidebarSet.has(entry.id);
 
-  const isDashboardEntryVisible = (entry: LayoutEntryItem) =>
-    entry.type === 'api-relay' ? apiRelayDashboardVisible : !entry.hidden;
+  const isDashboardEntryVisible = (entry: LayoutEntryItem) => !entry.hidden;
 
   const handleBulkSidebar = (enabled: boolean) => {
     entries.forEach((entry) => {
-      if (entry.type === 'api-relay') {
-        setApiRelaySidebarVisible(false);
-        return;
-      }
-      setSidebarEntry(entry.id as PlatformLayoutEntryId, false);
+      setSidebarEntry(entry.id, false);
     });
     if (!enabled) {
       return;
     }
     const targetEntries = entries.slice(0, sidebarSelectionLimit);
     targetEntries.forEach((entry) => {
-      if (entry.type === 'api-relay') {
-        setApiRelaySidebarVisible(true);
-        return;
-      }
-      setSidebarEntry(entry.id as PlatformLayoutEntryId, true);
+      setSidebarEntry(entry.id, true);
     });
   };
 
   const handleBulkDashboard = (enabled: boolean) => {
     entries.forEach((entry) => {
-      if (entry.type === 'api-relay') {
-        setApiRelayDashboardVisible(enabled);
-        return;
-      }
-      setHiddenEntry(entry.id as PlatformLayoutEntryId, !enabled);
+      setHiddenEntry(entry.id, !enabled);
     });
   };
 
@@ -1205,24 +1150,20 @@ export function PlatformLayoutModal({
             }}
           >
             {entries.map((entry) => {
-              const isApiRelayEntry = entry.type === 'api-relay';
               const selected = isSidebarEntrySelected(entry);
               const sidebarFull = sidebarSelectedCount >= sidebarSelectionLimit;
               const sidebarDisabled = !selected && sidebarFull;
               const isGroup = entry.type === 'group' && !!entry.group;
               const groupId = entry.id;
               const groupExpanded = isGroup && expandedGroupIds.includes(groupId);
-              const groupTrayEnabled = isApiRelayEntry
-                ? false
-                : isGroup
-                  ? entry.platformIds.every((platformId) => traySet.has(platformId))
-                  : entry.defaultPlatformId
-                    ? traySet.has(entry.defaultPlatformId)
-                    : false;
+              const groupTrayEnabled = isGroup
+                ? entry.platformIds.every((platformId) => traySet.has(platformId))
+                : entry.defaultPlatformId
+                  ? traySet.has(entry.defaultPlatformId)
+                  : false;
 
               const rowClass = [
                 'platform-layout-row',
-                isApiRelayEntry ? 'is-api-relay-entry' : '',
                 entry.hidden ? 'is-hidden' : '',
                 draggingId === entry.id ? 'is-dragging' : '',
                 draggingId && draggingId !== entry.id ? 'is-drop-candidate' : '',
@@ -1273,26 +1214,8 @@ export function PlatformLayoutModal({
                         </button>
                       )}
 
-                      {isApiRelayEntry && (
-                        <button
-                          type="button"
-                          className="platform-layout-expand-trigger"
-                          disabled
-                          aria-label={t('platformLayout.expandChildren', '展开子级')}
-                        >
-                          <ChevronRight size={14} />
-                        </button>
-                      )}
-
                       <div className="platform-layout-icon">
-                        {isApiRelayEntry ? (
-                          <img
-                            src={apiKeyFunIcon}
-                            alt=""
-                            className="platform-layout-group-icon"
-                            style={{ width: 18, height: 18 }}
-                          />
-                        ) : entry.group ? (
+                        {entry.group ? (
                           renderGroupIcon(entry.group, 18)
                         ) : entry.defaultPlatformId ? (
                           renderPlatformIcon(entry.defaultPlatformId, 18)
@@ -1318,11 +1241,7 @@ export function PlatformLayoutModal({
                           checked={selected}
                           disabled={sidebarDisabled}
                           onChange={(event) => {
-                            if (isApiRelayEntry) {
-                              setApiRelaySidebarVisible(event.target.checked);
-                              return;
-                            }
-                            setSidebarEntry(entry.id as PlatformLayoutEntryId, event.target.checked);
+                            setSidebarEntry(entry.id, event.target.checked);
                           }}
                         />
                         <span>{t('platformLayout.sidebarToggle', '侧边栏显示')}</span>
@@ -1331,35 +1250,19 @@ export function PlatformLayoutModal({
                       <label className="platform-layout-toggle">
                         <input
                           type="checkbox"
-                          checked={isApiRelayEntry ? apiRelayDashboardVisible : !entry.hidden}
+                          checked={!entry.hidden}
                           onChange={(event) => {
-                            if (isApiRelayEntry) {
-                              setApiRelayDashboardVisible(event.target.checked);
-                              return;
-                            }
-                            setHiddenEntry(entry.id as PlatformLayoutEntryId, !event.target.checked);
+                            setHiddenEntry(entry.id, !event.target.checked);
                           }}
                         />
                         <span>{t('platformLayout.dashboardToggle', '仪表盘显示')}</span>
                       </label>
 
-                      <label
-                        className={`platform-layout-toggle ${isApiRelayEntry ? 'is-disabled' : ''}`}
-                        title={
-                          isApiRelayEntry
-                            ? t('platformLayout.apiRelayTrayDisabled', '中转站暂不支持菜单栏显示')
-                            : undefined
-                        }
-                      >
+                      <label className="platform-layout-toggle">
                         <input
                           type="checkbox"
                           checked={groupTrayEnabled}
-                          disabled={isApiRelayEntry}
-                          readOnly={isApiRelayEntry}
                           onChange={() => {
-                            if (isApiRelayEntry) {
-                              return;
-                            }
                             const target = !groupTrayEnabled;
                             entry.platformIds.forEach((platformId) => setTrayPlatform(platformId, target));
                           }}
@@ -1372,16 +1275,6 @@ export function PlatformLayoutModal({
                           type="button"
                           className="action-btn"
                           onClick={() => openEditGroupEditor(entry.group!)}
-                          title={t('platformLayout.editGroup', '编辑')}
-                          aria-label={t('platformLayout.editGroup', '编辑')}
-                        >
-                          <Pencil size={13} />
-                        </button>
-                      ) : isApiRelayEntry ? (
-                        <button
-                          type="button"
-                          className="action-btn"
-                          disabled
                           title={t('platformLayout.editGroup', '编辑')}
                           aria-label={t('platformLayout.editGroup', '编辑')}
                         >

@@ -75,8 +75,12 @@ fn oauth_client_config(
     Ok((CLIENT_ID, CLIENT_SECRET, key))
 }
 
-/// 生成 OAuth 授权 URL
-pub fn get_auth_url(redirect_uri: &str, state: Option<&str>) -> String {
+/// 生成 OAuth 授权 URL。
+///
+/// Antigravity 的桌面登录始终使用 PKCE。调用方必须为当前登录会话生成并
+/// 保留 `code_verifier`，这里只接收其 S256 challenge，避免出现无 PKCE 的
+/// 授权链接。
+pub fn get_auth_url(redirect_uri: &str, state: &str, code_challenge: &str) -> String {
     let (client_id, _, _) = oauth_client_config(None).expect("默认 OAuth client 配置无效");
     let scopes = vec![
         "openid",
@@ -88,36 +92,54 @@ pub fn get_auth_url(redirect_uri: &str, state: Option<&str>) -> String {
     ]
     .join(" ");
 
-    let mut params = vec![
+    let params = vec![
         ("client_id", client_id),
         ("redirect_uri", redirect_uri),
         ("response_type", "code"),
         ("scope", &scopes),
         ("access_type", "offline"),
         ("prompt", "consent"),
+        ("code_challenge", code_challenge),
+        ("code_challenge_method", "S256"),
+        ("state", state),
     ];
-
-    if let Some(state) = state.filter(|value| !value.trim().is_empty()) {
-        params.push(("state", state));
-    }
 
     let url = url::Url::parse_with_params(AUTH_URL, &params).expect("无效的 Auth URL");
     url.to_string()
 }
 
-/// 使用 Authorization Code 交换 Token
-pub async fn exchange_code(code: &str, redirect_uri: &str) -> Result<TokenResponse, String> {
-    crate::modules::logger::log_info(&format!("开始 Token 交换, redirect_uri: {}", redirect_uri));
-    let client = crate::utils::http::create_client(15);
-    let (client_id, client_secret, client_key) = oauth_client_config(None)?;
-
-    let params = [
+fn token_exchange_params<'a>(
+    client_id: &'a str,
+    client_secret: &'a str,
+    code: &'a str,
+    redirect_uri: &'a str,
+    code_verifier: &'a str,
+) -> [(&'static str, &'a str); 6] {
+    [
         ("client_id", client_id),
         ("client_secret", client_secret),
         ("code", code),
         ("redirect_uri", redirect_uri),
         ("grant_type", "authorization_code"),
-    ];
+        ("code_verifier", code_verifier),
+    ]
+}
+
+/// 使用 Authorization Code 交换 Token
+pub async fn exchange_code(
+    code: &str,
+    redirect_uri: &str,
+    code_verifier: &str,
+) -> Result<TokenResponse, String> {
+    if code_verifier.trim().is_empty() {
+        return Err("OAuth PKCE code verifier 不能为空".to_string());
+    }
+
+    crate::modules::logger::log_info(&format!("开始 Token 交换, redirect_uri: {}", redirect_uri));
+    let client = crate::utils::http::create_client(15);
+    let (client_id, client_secret, client_key) = oauth_client_config(None)?;
+
+    let params = token_exchange_params(client_id, client_secret, code, redirect_uri, code_verifier);
 
     let response = client
         .post(TOKEN_URL)
@@ -155,6 +177,57 @@ pub async fn exchange_code(code: &str, redirect_uri: &str) -> Result<TokenRespon
         let msg = format!("Token 交换失败 ({})，body_len={}", status, error_text.len());
         crate::modules::logger::log_error(&msg);
         Err(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_auth_url, token_exchange_params};
+
+    #[test]
+    fn authorization_url_requires_s256_pkce_parameters() {
+        let auth_url = get_auth_url(
+            "http://localhost:49152/oauth-callback",
+            "state-value",
+            "challenge-value",
+        );
+        let url = url::Url::parse(&auth_url).expect("valid authorization URL");
+        let query = url
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            query.get("code_challenge").map(|value| value.as_ref()),
+            Some("challenge-value")
+        );
+        assert_eq!(
+            query
+                .get("code_challenge_method")
+                .map(|value| value.as_ref()),
+            Some("S256")
+        );
+        assert_eq!(
+            query.get("state").map(|value| value.as_ref()),
+            Some("state-value")
+        );
+    }
+
+    #[test]
+    fn token_exchange_carries_the_matching_pkce_verifier() {
+        let params = token_exchange_params(
+            "client-id",
+            "client-secret",
+            "authorization-code",
+            "http://localhost:49152/oauth-callback",
+            "verifier-value",
+        );
+        assert_eq!(
+            params
+                .iter()
+                .find(|(key, _)| *key == "code_verifier")
+                .map(|(_, value)| *value),
+            Some("verifier-value")
+        );
     }
 }
 

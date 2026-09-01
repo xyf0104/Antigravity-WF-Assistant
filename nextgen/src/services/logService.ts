@@ -18,6 +18,13 @@ export interface LogSnapshot {
   available_files: ManagedLogFile[];
 }
 
+export interface DiagnosticExportResult {
+  path: string;
+  parent_log_count: number;
+  helper_log_count: number;
+  helper_status: string;
+}
+
 export async function getLogSnapshot(
   fileName?: string,
   lineLimit?: number,
@@ -27,4 +34,8 @@ export async function getLogSnapshot(
 
 export async function openLogDirectory(): Promise<void> {
   return await invoke('logs_open_log_directory');
+}
+
+export async function exportDiagnostics(destination: string): Promise<DiagnosticExportResult> {
+  return invoke<DiagnosticExportResult>('logs_export_diagnostics', { destination });
 }

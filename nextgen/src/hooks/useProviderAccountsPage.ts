@@ -99,10 +99,14 @@ export interface OAuthStartOptions {
 
 export interface OAuthService {
   startLogin: (options?: OAuthStartOptions) => Promise<OAuthStartResponse | null>;
+  /** Returns a restart-resumable browser login without creating a new flow. */
+  peekLogin?: () => Promise<OAuthStartResponse | null>;
   completeLogin: (loginId: string) => Promise<unknown>;
   cancelLogin: (loginId?: string) => Promise<void>;
   submitCallbackUrl?: (loginId: string, callbackUrl: string) => Promise<void>;
   openAuthUrl?: (url: string, incognito?: boolean) => Promise<void>;
+  /** Keep a durable flow when the page is torn down during an app restart. */
+  preservePendingOnUnmount?: boolean;
 }
 
 export interface OAuthStartResponse {
@@ -2047,6 +2051,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   const oauthLoginIdRef = useRef<string | null>(null);
   const oauthCompletingRef = useRef(false);
   const oauthAttemptSeqRef = useRef(0);
+  const oauthPageTeardownRef = useRef(false);
 
   const oauthLog = useCallback(
     (...args: unknown[]) => {
@@ -2129,6 +2134,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     if (!showAddModalRef.current || !oauthTabKeys.includes(addTabRef.current)) return;
     if (oauthActiveRef.current) return;
     if (oauthCompletingRef.current) return;
+    oauthPageTeardownRef.current = false;
     const attemptSeq = ++oauthAttemptSeqRef.current;
     oauthActiveRef.current = true;
     setOauthPrepareError(null);
@@ -2149,14 +2155,22 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
 
     void (async () => {
       try {
-        const resp = await oauthService.startLogin({ tabKey: addTabRef.current });
+        const resumed = await oauthService.peekLogin?.();
+        const resp = resumed ?? await oauthService.startLogin({ tabKey: addTabRef.current });
         if (!resp || typeof resp.loginId !== 'string' || !resp.loginId.trim()) {
           throw new Error('原生授权服务未返回有效会话信息，请稍后重试');
         }
         started = true;
 
         if (attemptSeq !== oauthAttemptSeqRef.current) {
-          oauthService.cancelLogin(resp.loginId).catch(() => {});
+          // An explicit modal close still cancels the flow. During a component
+          // teardown, a durable provider can retain the just-created session so
+          // the next app launch can adopt it instead of opening a second login.
+          const preservesTeardownFlow =
+            oauthService.preservePendingOnUnmount && oauthPageTeardownRef.current;
+          if (!preservesTeardownFlow) {
+            oauthService.cancelLogin(resp.loginId).catch(() => {});
+          }
           oauthLog('忽略过期 OAuth start 响应', { attemptSeq, loginId: resp.loginId });
           return;
         }
@@ -2177,7 +2191,8 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
 
         oauthLog('授权信息已就绪并展示在弹框', {
           loginId: resp.loginId,
-          url,
+          resumed: Boolean(resumed),
+          authorizationUrlLength: url.length,
           expiresIn: resp.expiresIn,
           intervalSeconds: resp.intervalSeconds,
           attemptSeq,
@@ -2301,10 +2316,13 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   useEffect(
     () => () => {
       oauthAttemptSeqRef.current += 1;
+      oauthPageTeardownRef.current = Boolean(oauthServiceRef.current?.preservePendingOnUnmount);
       const loginId = oauthLoginIdRef.current ?? undefined;
-      if (loginId) {
+      if (loginId && !oauthServiceRef.current?.preservePendingOnUnmount) {
         oauthLog('页面卸载，准备取消授权流程', { loginId });
         oauthServiceRef.current?.cancelLogin(loginId).catch(() => {});
+      } else if (loginId) {
+        oauthLog('页面卸载，保留可恢复 OAuth 授权流程', { loginId });
       }
       oauthActiveRef.current = false;
       oauthCompletingRef.current = false;
@@ -2321,7 +2339,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
       await navigator.clipboard.writeText(oauthUrl);
       oauthLog('已复制授权链接', {
         loginId: oauthLoginIdRef.current,
-        authUrl: oauthUrl,
+        authorizationUrlLength: oauthUrl.length,
       });
       setOauthUrlCopied(true);
       window.setTimeout(() => setOauthUrlCopied(false), 1200);
@@ -2440,7 +2458,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     setOauthCompleteError(null);
     oauthLog('用户点击打开授权链接', {
       loginId: oauthLoginIdRef.current,
-      authUrl: oauthUrl,
+      authorizationUrlLength: oauthUrl.length,
       incognito,
     });
     try {
@@ -2450,7 +2468,9 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
         await openUrl(oauthUrl);
       }
     } catch (e) {
-      console.error('打开授权链接失败:', e);
+      // Browser-launch errors may echo the authorization URL. Keep it out of
+      // DevTools/diagnostic output while still surfacing the failure in the UI.
+      console.error('打开授权链接失败');
       const msg = String(e).replace(/^Error:\s*/, '');
       setOauthCompleteError(`${t('common.shared.oauth.failed', '授权失败')}: ${msg}`);
       await navigator.clipboard.writeText(oauthUrl).catch(() => {});
@@ -2500,23 +2520,30 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   ]);
 
   // ─── Flow Notice ──────────────────────────────────────────────────────
+  const flowNoticePreferenceKey = flowNoticeCollapsedKey
+    ? `${flowNoticeCollapsedKey}.v2`
+    : undefined;
+
   const [isFlowNoticeCollapsed, setIsFlowNoticeCollapsed] = useState<boolean>(() => {
-    if (!flowNoticeCollapsedKey) return false;
+    // The unified workspaces are action-first. Version the preference instead
+    // of inheriting a tall pre-workspace banner from older releases.
+    if (!flowNoticePreferenceKey) return true;
     try {
-      return localStorage.getItem(flowNoticeCollapsedKey) === '1';
+      const persisted = localStorage.getItem(flowNoticePreferenceKey);
+      return persisted === null ? true : persisted === '1';
     } catch {
-      return false;
+      return true;
     }
   });
 
   useEffect(() => {
-    if (!flowNoticeCollapsedKey) return;
+    if (!flowNoticePreferenceKey) return;
     try {
-      localStorage.setItem(flowNoticeCollapsedKey, isFlowNoticeCollapsed ? '1' : '0');
+      localStorage.setItem(flowNoticePreferenceKey, isFlowNoticeCollapsed ? '1' : '0');
     } catch {
       // ignore persistence failures
     }
-  }, [isFlowNoticeCollapsed, flowNoticeCollapsedKey]);
+  }, [isFlowNoticeCollapsed, flowNoticePreferenceKey]);
 
   // ─── Current Account ──────────────────────────────────────────────────
   const [localCurrentAccountId, setLocalCurrentAccountId] = useState<string | null>(() => {

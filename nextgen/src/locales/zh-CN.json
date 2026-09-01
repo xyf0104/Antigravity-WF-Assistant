@@ -81,10 +81,11 @@
       "columns": {
         "actions": "操作",
         "plan": "订阅",
-        "addOnPromptCredits": "Add-on prompt credits",
+        "teamName": "团队名称",
+        "addOnPromptCredits": "附加提示词额度",
         "credits": "制作人员",
         "email": "邮箱",
-        "promptCredits": "User Prompt credits",
+        "promptCredits": "用户提示词额度",
         "creditPackage": "附加 Credits",
         "sharedCreditPackage": "共享资源包",
         "account": "账号",
@@ -235,8 +236,8 @@
         "noData": "暂无配额数据",
         "queryFailed": "配额查询失败",
         "resetDone": "已重置",
-        "hourly": "Inline Suggestions",
-        "weekly": "Chat messages",
+        "hourly": "行内建议",
+        "weekly": "聊天消息",
         "resetAt": "重置：{{time}}",
         "expiresAt": "到期时间：{{time}}",
         "leftPercent": "剩余 {{value}}%"
@@ -252,13 +253,13 @@
         "relativeWithAbsolute": "{{relative}} ({{absolute}})"
       },
       "credits": {
-        "leftInline": "{{left}} left",
+        "leftInline": "剩余 {{left}}",
         "availableAiCredits": "可用 AI 积分",
         "periodEndOnly": "周期结束：{{end}}",
         "periodRange": "周期：{{start}} - {{end}}",
         "planEndsIn": "配额周期剩余 {{days}} 天",
         "planEndsUnknown": "配额周期时间未知",
-        "usedLine": "{{used}} / {{total}} used",
+        "usedLine": "已用 {{used}} / {{total}}",
         "planEndsInHours": "{{hours}} 小时后重置"
       },
       "flowNotice": {
@@ -266,8 +267,8 @@
       },
       "injecting": "注入中...",
       "usage": {
-        "resetLine": "Allowance resets {{dateText}}.",
-        "resetUnknown": "Allowance resets -"
+        "resetLine": "额度将于 {{dateText}} 重置",
+        "resetUnknown": "额度重置时间未知"
       },
       "updated": {
         "label": "更新于 {{relative}}前"
@@ -414,16 +415,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "中转站",
-    "title": "APIKEY.FUN 中转站",
+    "title": "XIASS API 中转站",
     "description": "XIASS 官方合作中转站，为用户提供稳定、开放、高性价比的大模型 API 接入服务。支持 Claude、OpenAI、Gemini 等主流模型，适合在 Codex、Gemini CLI、Claude Code 及其他开发工具中统一配置使用。通过 XIASS 专属链接注册，可享受最高充值永久 95 折优惠。",
     "register": "专属注册链接",
     "docs": "官方文档",
     "viewNow": "立即查看",
     "queryTitle": "密钥额度查询",
-    "queryDesc": "输入 APIKEY.FUN 的 API Key 后自动查询额度。",
+    "queryDesc": "输入 XIASS API 的 API Key 后自动查询额度。",
     "keyNotSet": "未输入秘钥",
     "apiKeyLabel": "API 密钥",
-    "apiKeyPlaceholder": "粘贴 APIKEY.FUN 控制台创建的 API Key",
+    "apiKeyPlaceholder": "粘贴 XIASS API 控制台创建的 API Key",
     "hideKey": "隐藏",
     "showKey": "显示",
     "endpointLabel": "接入端点",
@@ -434,7 +435,7 @@
     "saving": "写入中",
     "saveSuccess": "已写入 Codex Provider：{{name}}",
     "toolsTitle": "一键写入客户端",
-    "toolsDesc": "按 APIKEY.FUN 文档和 CC Switch 的落盘方式，直接写入本机客户端配置文件。",
+    "toolsDesc": "按 XIASS API 文档和 XIASS Tools 的落盘方式，直接写入本机客户端配置文件。",
     "endpoint": {
       "global": "全球线路",
       "globalDesc": "官方默认 API Base，适合大多数网络环境。",
@@ -532,7 +533,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "已带入 APIKEY.FUN 配置，请确认后添加到 Claude。"
+      "claudeDesktopReady": "已带入 XIASS API 配置，请确认后添加到 Claude。"
     }
   },
   "platformLayout": {
@@ -947,8 +948,6 @@
       "floatingCardShowNowAction": "显示悬浮卡片",
       "dataDir": "数据目录",
       "dataDirDesc": "账号与配置文件的存储位置。",
-      "topRightAdVisible": "显示顶部推广",
-      "topRightAdVisibleDesc": "关闭后隐藏应用顶部推广位。",
       "opencodeTitle": "OpenCode 联动",
       "opencodeAuthOverwrite": "切换 Codex 时覆盖 OpenCode 登录信息",
       "opencodeAuthOverwriteDesc": "关闭后仅切换 Codex，不会改写 OpenCode 当前登录态",
@@ -1322,7 +1321,7 @@
       "importModalDesc": "选择要导入的数据类型。旧版账号备份会自动按“仅账号数据”处理。",
       "selectionTitle": "数据范围",
       "accountsOptionTitle": "账号数据",
-      "accountsOptionDesc": "包含可恢复的平台账号备份，并继续兼容旧版账号 JSON。Grok CLI 凭据不在其中，需单独导入官方 auth.json。",
+      "accountsOptionDesc": "包含 XIASS 平台账号及 Antigravity WF 的账户、模型供应商和设置。该 JSON 含凭据，仅在你选择账号备份时生成；不会读取或包含 Codex auth.json。",
       "configOptionTitle": "配置数据",
       "configOptionDesc": "包含应用设置、分组、实例、唤醒任务与模型 Provider 配置。",
       "exportConfirm": "导出数据",
@@ -2329,8 +2328,8 @@
       "modelConfigDialogDescription": "为每个模型配置可见性、推理强度、上下文窗口和压缩阈值。",
       "applyModelConfig": "应用配置",
       "defaultModel": "默认模型",
-      "repairCompleted": "会话可见性修复完成"
-      ,"forceRefreshTitle": "强制刷新 Token",
+      "repairCompleted": "会话可见性修复完成",
+      "forceRefreshTitle": "强制刷新 Token",
       "forceRefreshReady": "可手动刷新 OAuth Token",
       "forceRefreshDescription": "使用 refresh_token 获取新的 access_token 和 id_token；当前 refresh_token 可能会被轮换。",
       "forceRefreshUnavailable": "当前账号类型不可用",
@@ -5030,10 +5029,10 @@
     "injectRequireClose": "请先关闭 Windsurf 再进行切换。",
     "flowNotice": {
       "title": "Windsurf 账号管理说明（点击展开/收起）",
-      "desc": "切换账号时需要读取 Windsurf 本地认证存储，并按客户端兼容规则调用系统凭据能力完成会话解密与写回；数据仅在本机处理。",
-      "inject": "一键切号：本工具读取本机 Windsurf 加密材料（DPAPI/Keychain/Secret Service），处理 state.vscdb 中的认证会话并写回 Windsurf 令牌 —— 全部在本机完成。",
-      "reason": "权限需求：读取 Windsurf 认证数据库（state.vscdb），并使用系统加密能力（Windows DPAPI / macOS Keychain / Linux Secret Service）处理登录会话的解密与写回。",
-      "storage": "读取范围：仅处理 Windsurf 登录会话相关数据，所有流程均在本地执行。"
+      "desc": "只有在你点击“从本机导入”或“切换账号”后，工具才会读取 Windsurf 本地认证存储，并按客户端兼容规则调用系统凭据能力完成会话解密与写回；数据仅在本机处理。",
+      "inject": "一键切号：仅在你确认切换后，工具才读取本机 Windsurf 加密材料（DPAPI/Keychain/Secret Service），处理 state.vscdb 中的认证会话并写回 Windsurf 令牌。",
+      "reason": "权限范围：仅在本机导入或切换时读取 Windsurf 认证数据库（state.vscdb），并使用系统加密能力（Windows DPAPI / macOS Keychain / Linux Secret Service）处理登录会话的解密与写回。",
+      "storage": "读取范围：仅处理所选 Windsurf 账号需要的登录会话数据；不会后台扫描，也不会将认证文件原文上传到 XIASS 服务。"
     }
   },
   "kiro": {
@@ -5111,8 +5110,13 @@
     "subscription": "订阅状态",
     "injectToCursor": "切换到 Cursor",
     "quota": {
-      "onDemand": "按需使用"
+      "onDemand": "按需使用",
+      "totalUsage": "总用量",
+      "autoComposer": "自动与 Composer",
+      "apiUsage": "API 用量",
+      "usageDetails": "用量明细"
     },
+    "authId": "授权 ID",
     "title": "Cursor 账号管理",
     "instances": {
       "unsupported": {
@@ -5136,14 +5140,14 @@
       "batchExample": "批量示例（JSON）"
     },
     "import": {
-      "localDesc": "支持从本机 Cursor 客户端或 JSON 文件导入账号数据。",
+      "localDesc": "点击“从本机 Cursor 导入”后，才会读取本机 Cursor 当前登录资料；也可选择 JSON 文件导入账号数据。",
       "localClient": "从本机 Cursor 导入"
     },
     "flowNotice": {
       "title": "Cursor 账号管理说明（点击展开/收起）",
-      "desc": "支持从本地 Cursor 安装导入、粘贴 JWT 令牌或 OAuth 授权登录来管理 Cursor 账号。",
-      "reason": "权限范围：读取并写入 Cursor 本地认证存储（state.vscdb），用于账号导入与令牌注入（切号）。",
-      "storage": "网络请求范围：刷新配额时携带 JWT 向 cursor.com 官方接口请求使用量、用户信息及订阅信息；不向任何第三方服务器上传数据。"
+      "desc": "支持用户主动从本地 Cursor 安装导入、粘贴 JWT 令牌或完成 OAuth 授权来管理 Cursor 账号。",
+      "reason": "权限范围：仅在点击“从本机导入”或“切换/注入”时读取并写入 Cursor 本地认证存储（state.vscdb）。",
+      "storage": "网络请求范围：刷新配额时携带 JWT 向 cursor.com 官方接口请求使用量、用户信息及订阅信息；不会将本机认证文件原文上传到 XIASS 服务。"
     },
     "filters": {
       "quotaFailed": "配额查询失败 ({{count}})",
@@ -5417,7 +5421,7 @@
       "steps": {
         "0": "先在“通用”页完成语言/主题/路径的基础设置。",
         "1": "再按平台调自动刷新与告警阈值。",
-        "2": "网络服务改端口后按提示重启生效。"
+        "2": "本地服务配置变更后按提示重启即可生效。"
       },
       "summary": "集中管理语言、主题、自动刷新、告警阈值、应用路径与网络服务配置。",
       "title": "设置与系统能力"
@@ -5577,7 +5581,7 @@
       "overdueField": "是否欠费",
       "overdueYes": "是",
       "overdueNo": "否",
-      "usageUpdatedAt": "Updated: {{time}}"
+      "usageUpdatedAt": "更新：{{time}}"
     },
     "runtime": {
       "title": "当前 Zed 会话",
@@ -6059,7 +6063,7 @@
       "jsonPlaceholder": "粘贴导出的 Claude 账号 JSON",
       "desktopJsonPlaceholder": "粘贴导出的 Claude Gateway 账号 JSON",
       "cliJsonPlaceholder": "粘贴导出的 Claude CLI 账号 JSON",
-      "localDesc": "读取本机官方 Claude 当前登录态，复制为本工具本地账号快照。"
+      "localDesc": "点击导入后读取本机官方 Claude 当前登录态，复制为本工具本地账号快照。"
     },
     "subPlatform": {
       "label": "Claude 子平台",
@@ -6069,13 +6073,13 @@
     "deleteCurrentDisabled": "当前账号不可删除",
     "flowNotice": {
       "title": "Claude 账号管理说明（点击展开/收起）",
-      "desc": "本工具可管理 Claude 登录态与 Anthropic API Key。Claude 登录会在平台授权窗口完成并先保存到本地账号库；切号时才写入官方 Claude。",
-      "permission": "权限范围：读取/写入官方 Claude 应用数据目录；API Key 与 Claude 快照保存于本工具本地账号数据。",
+      "desc": "本工具可管理 Claude 登录态与 Anthropic API Key。只有在你选择 OAuth、本机导入或切换账号后，才会处理对应资料；Claude 登录会先保存到本地账号库，切号时才写入官方 Claude。",
+      "permission": "权限范围：仅在本机导入或切换时读取/写入官方 Claude 应用数据目录；API Key 与 Claude 快照保存于本工具本地账号数据。",
       "network": "网络范围：Claude 登录窗口访问 claude.ai；刷新账号会请求 Claude Web 相关接口；API Key 导入本身不联网。",
-      "desktopDesc": "本工具可管理 Claude 登录态。登录会先保存到本地账号库；切号时才写入官方 Claude。",
-      "cliDesc": "本工具可管理 Claude Code OAuth 与多供应商 API Key。OAuth 切号会写入本机 Claude Code 配置；API Key 会写入 Claude Code settings.json 的 env。",
-      "desktopPermission": "权限范围：读取/写入官方 Claude 应用数据目录；Claude 快照保存于本工具本地账号数据。",
-      "cliPermission": "权限范围：读取/写入本机 Claude Code 配置目录与 macOS Keychain 中的 Claude Code 凭据；API Key 账号保存于本工具本地账号数据，并在切换或启动 CLI 时明文写入 settings.json 的 env。",
+      "desktopDesc": "本工具可管理 Claude 登录态。用户完成授权或本机导入后，登录会先保存到本地账号库；选择切号时才写入官方 Claude。",
+      "cliDesc": "本工具可管理 Claude Code OAuth 与多供应商 API Key。仅在用户选择切换或启动 CLI 时，OAuth 才会写入本机 Claude Code 配置，API Key 才会写入 Claude Code settings.json 的 env。",
+      "desktopPermission": "权限范围：仅在本机导入或切换时读取/写入官方 Claude 应用数据目录；Claude 快照保存于本工具本地账号数据。",
+      "cliPermission": "权限范围：仅在本机导入、切换或启动 CLI 时读取/写入本机 Claude Code 配置目录与 macOS Keychain 中的 Claude Code 凭据；API Key 账号保存于本工具本地账号数据，并在切换或启动 CLI 时明文写入 settings.json 的 env。",
       "desktopNetwork": "网络范围：Claude 登录窗口访问 claude.ai；刷新账号会请求 Claude Web 相关接口。",
       "cliNetwork": "网络范围：OAuth 授权访问 Claude 官方授权页和 token/profile/usage 接口；API Key 导入不联网，启动后由 Claude CLI 访问所选供应商。"
     },
@@ -6103,8 +6107,8 @@
     },
     "quota": {
       "title": "额度",
-      "fiveHour": "Current session",
-      "sevenDay": "Current week (all models)",
+      "fiveHour": "当前会话",
+      "sevenDay": "本周（全部模型）",
       "sonnet": "Sonnet额",
       "extra": "额外用量",
       "empty": "暂无额度",
@@ -6139,7 +6143,7 @@
     "apiKey": {
       "desc": "保存 Claude CLI API Key 作为独立凭证；切换或启动 CLI 时会写入 Claude Code settings.json 的 env，不会写入 Claude 登录态。",
       "nameLabel": "账号名称",
-      "namePlaceholder": "可选，例如 APIKEY.FUN",
+      "namePlaceholder": "可选，例如 XIASS API",
       "keyLabel": "API 密钥",
       "placeholder": "粘贴供应商 API Key",
       "hide": "隐藏 API Key",

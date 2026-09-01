@@ -93,7 +93,7 @@ func (a *App) ExportTOTPEncrypted(password string) Result {
 	if err != nil {
 		return Result{OK: false, Message: "无法创建加密验证器备份。请确认导出密码与系统凭据库后重试。"}
 	}
-	destination, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+	destination, err := a.saveFileDialog(runtime.SaveDialogOptions{
 		Title:           "导出加密验证器备份",
 		DefaultFilename: "XIASS-Tools-TOTP-" + time.Now().Format("20060102-150405") + ".json",
 		Filters: []runtime.FileFilter{{
@@ -122,7 +122,7 @@ func (a *App) ImportTOTPEncrypted(password string) TOTPStatus {
 	if a.ctx == nil {
 		return TOTPStatus{OK: false, Message: "助手尚未完成启动，请稍后再试。"}
 	}
-	source, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+	source, err := a.openFileDialog(runtime.OpenDialogOptions{
 		Title: "导入加密验证器备份",
 		Filters: []runtime.FileFilter{{
 			DisplayName: "XIASS Tools 加密备份 (*.json)", Pattern: "*.json",

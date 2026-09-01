@@ -1078,6 +1078,13 @@ fn legacy_backup_roots() -> Vec<(String, PathBuf)> {
     roots
 }
 
+fn is_production_backup_source(source: &str) -> bool {
+    matches!(
+        source,
+        "scheduled" | "antigravity" | "codex" | "claude" | "windsurf" | "cursor"
+    )
+}
+
 fn legacy_codex_instance_backup_dirs() -> Vec<(String, PathBuf)> {
     let mut instance_dirs = Vec::new();
     if let Ok(store) = codex_instance::load_instance_store() {
@@ -1203,6 +1210,9 @@ fn scan_managed_root(root: &Path, map: &mut HashMap<String, UsageAccumulator>) {
             };
             for category in categories.flatten() {
                 let source = category.file_name().to_string_lossy().to_string();
+                if !is_production_backup_source(&source) {
+                    continue;
+                }
                 scan_tree(&category.path(), &source, map, 0);
             }
         } else if name == Some("legacy") {
@@ -1226,6 +1236,9 @@ pub fn get_backup_usage() -> Result<BackupUsageSummary, String> {
     let mut seen = HashSet::new();
     seen.insert(root.to_string_lossy().to_lowercase());
     for (source, path) in legacy_backup_roots() {
+        if !is_production_backup_source(&source) {
+            continue;
+        }
         let key = path.to_string_lossy().to_lowercase();
         if seen.insert(key) {
             scan_tree(&path, &source, &mut map, 0);

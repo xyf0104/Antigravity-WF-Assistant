@@ -37,6 +37,13 @@ pub struct FloatingCardInstanceContext {
     pub bound_account_id: String,
 }
 
+fn is_production_floating_card_platform(platform_id: &str) -> bool {
+    matches!(
+        platform_id.trim(),
+        "antigravity" | "antigravity_ide" | "codex" | "claude_manager" | "windsurf" | "cursor"
+    )
+}
+
 fn is_instance_floating_card_window_label(label: &str) -> bool {
     label.starts_with(INSTANCE_FLOATING_CARD_WINDOW_LABEL_PREFIX)
 }
@@ -100,6 +107,9 @@ pub fn set_floating_card_instance_context<R: Runtime>(
     window_label: &str,
     context: FloatingCardInstanceContext,
 ) -> Result<(), String> {
+    if !is_production_floating_card_platform(&context.platform_id) {
+        return Err("floating_card_platform_not_available".to_string());
+    }
     {
         let mut contexts = FLOATING_CARD_INSTANCE_CONTEXTS
             .lock()
@@ -108,6 +118,28 @@ pub fn set_floating_card_instance_context<R: Runtime>(
     }
 
     emit_floating_card_context_changed(app, window_label, Some(context))
+}
+
+#[cfg(test)]
+mod production_scope_tests {
+    use super::is_production_floating_card_platform;
+
+    #[test]
+    fn floating_card_rejects_legacy_hidden_platforms() {
+        for platform in ["zed", "kiro", "github-copilot", "codebuddy", "trae"] {
+            assert!(!is_production_floating_card_platform(platform));
+        }
+        for platform in [
+            "antigravity",
+            "antigravity_ide",
+            "codex",
+            "claude_manager",
+            "windsurf",
+            "cursor",
+        ] {
+            assert!(is_production_floating_card_platform(platform));
+        }
+    }
 }
 
 fn floating_card_window_config(

@@ -32,6 +32,30 @@ export interface CodexQuickConfig {
   experimental_model_catalog_default_model_id?: string | null;
 }
 
+/** A verified private recovery point for one Codex config.toml change. */
+export interface CodexConfigBackupInfo {
+  version: number;
+  id: string;
+  createdAt: number;
+  source: string;
+  originalExisted: boolean;
+  bytes: number;
+  sha256: string;
+  valid: boolean;
+}
+
+export interface CodexConfigBackupVerification {
+  id: string;
+  valid: boolean;
+  message: string;
+}
+
+export interface CodexConfigRestoreResult {
+  restoredBackupId: string;
+  safetyBackupId: string;
+  restored: boolean;
+}
+
 export type CodexAppSpeed = "standard" | "fast";
 export type CodexFingerprintMode = "off" | "device" | "session" | "full";
 

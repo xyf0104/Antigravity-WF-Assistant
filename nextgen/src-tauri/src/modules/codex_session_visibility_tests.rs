@@ -884,6 +884,148 @@ use super::*;
     }
 
     #[test]
+    fn repair_backup_name_accepts_legacy_and_uuid_operation_layouts() {
+        assert_eq!(
+            parse_session_visibility_repair_backup_timestamp(
+                "backup-20260814-120000-session-visibility-repair",
+            ),
+            Some("20260814-120000")
+        );
+        assert_eq!(
+            parse_session_visibility_repair_backup_timestamp(
+                "backup-20260814-120000-3d20f36a-64ab-425a-b6ea-5728f0e3c9d2-session-visibility-repair",
+            ),
+            Some("20260814-120000")
+        );
+        assert!(parse_session_visibility_repair_backup_timestamp(
+            "backup-20260814-120000--session-visibility-repair",
+        )
+        .is_none());
+        assert!(parse_session_visibility_repair_backup_timestamp(
+            "backup-20260814-12000x-session-visibility-repair",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn interrupted_applying_operation_recovers_rollout_sqlite_and_manifest() {
+        let data_dir = make_temp_dir("codex-session-visibility-interrupted-recovery-data");
+        let scope_dir = make_temp_dir("codex-session-visibility-interrupted-recovery-scope");
+        let instance_id = "interrupted-instance";
+        let rollout_relative = Path::new("sessions/2026/08/14/rollout-thread-1.jsonl");
+        let rollout_path = data_dir.join(rollout_relative);
+        fs::create_dir_all(rollout_path.parent().expect("rollout parent"))
+            .expect("create rollout parent");
+        fs::write(
+            &rollout_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"model_provider\":\"old\"}}\n",
+        )
+        .expect("write original rollout");
+
+        let db_path = data_dir.join(STATE_DB_FILE);
+        let connection = Connection::open(&db_path).expect("open sqlite");
+        connection
+            .execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT)",
+                [],
+            )
+            .expect("create threads table");
+        connection
+            .execute(
+                "INSERT INTO threads (id, model_provider) VALUES ('thread-1', 'old')",
+                [],
+            )
+            .expect("insert original row");
+        drop(connection);
+
+        let backup_dir = scope_dir.join(format!(
+            "{}20260814-120000-{}{}",
+            SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX,
+            uuid::Uuid::new_v4(),
+            SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX
+        ));
+        fs::create_dir_all(backup_dir.join("files").join(rollout_relative.parent().expect("rollout relative parent")))
+            .expect("create backup rollout parent");
+        fs::copy(
+            &rollout_path,
+            backup_dir.join("files").join(rollout_relative),
+        )
+        .expect("copy rollout backup");
+        let sqlite_files = backup_sqlite_databases(
+            &data_dir,
+            &backup_dir,
+            repair_options(CodexSessionVisibilityRepairMode::Quick),
+        )
+        .expect("create sqlite snapshot");
+        assert!(!sqlite_files.is_empty());
+
+        let now = Utc::now().to_rfc3339();
+        let manifest = SessionVisibilityRepairOperationManifest {
+            version: SESSION_VISIBILITY_REPAIR_OPERATION_VERSION,
+            instance_id: instance_id.to_string(),
+            instance_root: data_dir.to_string_lossy().to_string(),
+            target_provider: "relay".to_string(),
+            created_at: now.clone(),
+            instance_scope: modules::backup_storage::scope_for_path(&data_dir),
+            operation_status: SessionVisibilityRepairOperationStatus::Applying,
+            operation_updated_at: now,
+            operation_message: "fixture: interrupted while applying".to_string(),
+            has_sqlite_backup: true,
+            sqlite_files,
+            has_session_index_backup: false,
+            has_global_state_backup: false,
+            rollout_files: vec![rollout_relative.to_string_lossy().to_string()],
+        };
+        write_session_visibility_repair_operation_manifest(&backup_dir, &manifest)
+            .expect("write applying manifest");
+
+        fs::write(
+            &rollout_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"model_provider\":\"new\"}}\n",
+        )
+        .expect("write interrupted rollout");
+        let connection = Connection::open(&db_path).expect("reopen sqlite");
+        connection
+            .execute(
+                "UPDATE threads SET model_provider = 'new' WHERE id = 'thread-1'",
+                [],
+            )
+            .expect("write interrupted sqlite");
+        drop(connection);
+
+        recover_incomplete_session_visibility_repairs_in_scope(
+            &data_dir,
+            instance_id,
+            false,
+            &scope_dir,
+        )
+        .expect("recover interrupted operation");
+
+        let restored_rollout = fs::read_to_string(&rollout_path).expect("read restored rollout");
+        assert!(restored_rollout.contains("\"model_provider\":\"old\""));
+        let connection = Connection::open(&db_path).expect("open restored sqlite");
+        let provider = connection
+            .query_row(
+                "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("read restored provider");
+        assert_eq!(provider, "old");
+
+        let restored_manifest =
+            read_session_visibility_repair_operation_manifest(&scope_dir, &backup_dir)
+                .expect("read restored manifest");
+        assert_eq!(
+            restored_manifest.operation_status,
+            SessionVisibilityRepairOperationStatus::RolledBack
+        );
+
+        fs::remove_dir_all(&data_dir).expect("cleanup data dir");
+        fs::remove_dir_all(&scope_dir).expect("cleanup scope dir");
+    }
+
+    #[test]
     fn deep_repair_rebuilds_local_catalog_and_reports_encrypted_history() {
         let data_dir = make_temp_dir("codex-session-deep-catalog-test");
         let sqlite_dir = data_dir.join(SQLITE_DIR_NAME);

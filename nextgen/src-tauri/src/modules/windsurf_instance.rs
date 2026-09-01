@@ -169,6 +169,108 @@ fn resolve_account_label(account: &WindsurfAccount, auth_status: &Value) -> Stri
         .unwrap_or_else(|| "windsurf_user".to_string())
 }
 
+/// Build a complete, self-contained `windsurfAuthStatus` for the selected account.
+///
+/// Accounts can change between the legacy API-key flow and the Devin/Auth1 flow.
+/// Do not preserve Auth1-only values when the next account does not provide them:
+/// stale session or organization identifiers can make the IDE authenticate as the
+/// previously selected account.
+fn build_windsurf_auth_status(
+    account: &WindsurfAccount,
+    access_token: &str,
+    api_key: &str,
+    api_server_url: &str,
+    account_label: &str,
+) -> Value {
+    let mut auth_status = account
+        .windsurf_auth_status_raw
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !auth_status.is_object() {
+        auth_status = serde_json::json!({});
+    }
+
+    let is_auth1_token = access_token.starts_with("devin-session-token$");
+    let display_name = normalize_non_empty_text(account.github_name.as_deref())
+        .unwrap_or_else(|| account_label.to_string());
+    let display_email = normalize_non_empty_text(account.github_email.as_deref());
+
+    let Some(obj) = auth_status.as_object_mut() else {
+        return serde_json::json!({});
+    };
+
+    obj.insert("apiKey".to_string(), Value::String(api_key.to_string()));
+    obj.insert("name".to_string(), Value::String(display_name.clone()));
+    match display_email.clone() {
+        Some(email) => {
+            obj.insert("email".to_string(), Value::String(email));
+        }
+        None => {
+            obj.remove("email");
+        }
+    }
+    obj.insert(
+        "apiServerUrl".to_string(),
+        Value::String(api_server_url.to_string()),
+    );
+    obj.insert("status".to_string(), Value::String("SignedIn".to_string()));
+    obj.insert(
+        "user".to_string(),
+        serde_json::json!({
+            "name": display_name,
+            "email": display_email,
+        }),
+    );
+    obj.insert(
+        "timestamp".to_string(),
+        Value::Number(serde_json::Number::from(Utc::now().timestamp_millis())),
+    );
+
+    if is_auth1_token {
+        obj.insert(
+            "sessionToken".to_string(),
+            Value::String(access_token.to_string()),
+        );
+        obj.insert("authMethod".to_string(), Value::String("auth1".to_string()));
+
+        for (key, value) in [
+            (
+                "userStatusProtoBinaryBase64",
+                normalize_non_empty_text(account.devin_user_status_proto_b64.as_deref()),
+            ),
+            (
+                "accountId",
+                normalize_non_empty_text(account.devin_account_id.as_deref()),
+            ),
+            (
+                "primaryOrgId",
+                normalize_non_empty_text(account.devin_org_id.as_deref()),
+            ),
+        ] {
+            match value {
+                Some(value) => {
+                    obj.insert(key.to_string(), Value::String(value));
+                }
+                None => {
+                    obj.remove(key);
+                }
+            }
+        }
+    } else {
+        for key in [
+            "sessionToken",
+            "authMethod",
+            "userStatusProtoBinaryBase64",
+            "accountId",
+            "primaryOrgId",
+        ] {
+            obj.remove(key);
+        }
+    }
+
+    auth_status
+}
+
 fn decode_buffer_data(buffer: &Value) -> Result<Vec<u8>, String> {
     let data_arr = buffer["data"]
         .as_array()
@@ -221,12 +323,17 @@ fn query_existing_secret_prefix(conn: &Connection, key: &str) -> Result<Option<S
     Ok(detect_prefix(&encrypted_bytes).map(|prefix| prefix.to_string()))
 }
 
-fn upsert_item(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
-    conn.execute(
-        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
-        (key, value),
-    )
-    .map_err(|e| format!("写入 {} 失败: {}", key, e))?;
+fn upsert_item(
+    transaction: &rusqlite::Transaction<'_>,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+            (key, value),
+        )
+        .map_err(|e| format!("写入 {} 失败: {}", key, e))?;
     Ok(())
 }
 
@@ -494,11 +601,11 @@ fn encode_encrypted_buffer_json(
     .map_err(|e| format!("序列化 Buffer 失败: {}", e))
 }
 
-fn upsert_windsurf_extension_state(
+fn build_windsurf_extension_state_content(
     conn: &Connection,
     api_server_url: &str,
     access_token: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let existing: Option<String> = conn
         .query_row(
             "SELECT value FROM ItemTable WHERE key = ?1",
@@ -543,22 +650,33 @@ fn upsert_windsurf_extension_state(
         }
     }
 
-    let serialized = serde_json::to_string(&state)
-        .map_err(|e| format!("序列化 {} 失败: {}", WINDSURF_EXTENSION_STATE_KEY, e))?;
-    upsert_item(conn, WINDSURF_EXTENSION_STATE_KEY, &serialized)
+    serde_json::to_string(&state)
+        .map_err(|e| format!("序列化 {} 失败: {}", WINDSURF_EXTENSION_STATE_KEY, e))
 }
 
-fn write_windsurf_auth_data(
+#[derive(Debug)]
+struct WindsurfAuthWritePlan {
+    auth_status_content: String,
+    sessions_secret_content: String,
+    api_server_secret_content: String,
+    selected_auth_value: String,
+    extension_state_content: String,
+    onboarding_content: String,
+    login_key: String,
+    usage_key: String,
+    usage_content: String,
+}
+
+fn build_windsurf_auth_write_plan(
     conn: &Connection,
     profile_dir: &Path,
     auth_status: &Value,
     account_label: &str,
     access_token: &str,
     api_server_url: &str,
-) -> Result<(), String> {
+) -> Result<WindsurfAuthWritePlan, String> {
     let auth_status_content = serde_json::to_string(auth_status)
         .map_err(|e| format!("序列化 windsurfAuthStatus 失败: {}", e))?;
-    upsert_item(conn, WINDSURF_AUTH_STATUS_KEY, &auth_status_content)?;
 
     let existing_sessions_prefix =
         query_existing_secret_prefix(conn, WINDSURF_SESSIONS_SECRET_KEY)?;
@@ -573,59 +691,120 @@ fn write_windsurf_auth_data(
     }]);
     let sessions_plain = serde_json::to_string(&sessions_payload)
         .map_err(|e| format!("序列化 windsurf_auth.sessions 失败: {}", e))?;
-    let encrypted_sessions = encode_encrypted_buffer_json(
+    let sessions_secret_content = encode_encrypted_buffer_json(
         sessions_plain.as_bytes(),
         existing_sessions_prefix.as_deref(),
         profile_dir,
     )?;
-    upsert_item(conn, WINDSURF_SESSIONS_SECRET_KEY, &encrypted_sessions)?;
 
     let existing_api_server_prefix =
         query_existing_secret_prefix(conn, WINDSURF_API_SERVER_SECRET_KEY)?;
-    let encrypted_api_server = encode_encrypted_buffer_json(
+    let api_server_secret_content = encode_encrypted_buffer_json(
         api_server_url.as_bytes(),
         existing_api_server_prefix.as_deref(),
         profile_dir,
     )?;
-    upsert_item(conn, WINDSURF_API_SERVER_SECRET_KEY, &encrypted_api_server)?;
 
-    upsert_item(conn, WINDSURF_SELECTED_AUTH_KEY, account_label)?;
-    upsert_windsurf_extension_state(conn, api_server_url, access_token)?;
-
-    // Onboarding 状态：标记新手向导已完成，避免 Windsurf 启动后弹引导浮窗
-    let onboarding = serde_json::json!({
+    let extension_state_content =
+        build_windsurf_extension_state_content(conn, api_server_url, access_token)?;
+    let onboarding_content = serde_json::to_string(&serde_json::json!({
         "completed": true,
         "version": 1,
         "timestamp": Utc::now().timestamp_millis(),
-    });
-    upsert_item(
-        conn,
-        "windsurfOnboarding",
-        &serde_json::to_string(&onboarding)
-            .map_err(|e| format!("序列化 windsurfOnboarding 失败: {}", e))?,
-    )?;
-
-    conn.execute("DELETE FROM ItemTable WHERE key LIKE 'windsurf_auth-%'", [])
-        .map_err(|e| format!("清理旧 windsurf_auth-* 键失败: {}", e))?;
+    }))
+    .map_err(|e| format!("序列化 windsurfOnboarding 失败: {}", e))?;
 
     let login_key = format!("windsurf_auth-{}", account_label);
     let usage_key = format!("windsurf_auth-{}-usages", account_label);
-    // 本地 Devin 3.x 写入的 extensionName 为 "Devin"；旧 Windsurf 为 "Windsurf"。
-    // 统一写 Devin 以匹配当前客户端字段，旧客户端忽略该展示字段。
-    let usage_value = serde_json::json!([{
+    let usage_content = serde_json::to_string(&serde_json::json!([{
         "extensionId": "codeium.windsurf",
         "extensionName": "Devin",
         "scopes": [],
         "lastUsed": Utc::now().timestamp_millis()
-    }]);
-    upsert_item(conn, &login_key, "[]")?;
-    upsert_item(
-        conn,
-        &usage_key,
-        &serde_json::to_string(&usage_value).map_err(|e| format!("序列化 usages 失败: {}", e))?,
-    )?;
+    }]))
+    .map_err(|e| format!("序列化 usages 失败: {}", e))?;
 
-    Ok(())
+    Ok(WindsurfAuthWritePlan {
+        auth_status_content,
+        sessions_secret_content,
+        api_server_secret_content,
+        selected_auth_value: account_label.to_string(),
+        extension_state_content,
+        onboarding_content,
+        login_key,
+        usage_key,
+        usage_content,
+    })
+}
+
+/// Commit all profile-owned Windsurf account records together.
+///
+/// Both the default workspace and every managed instance use this path.  The
+/// encrypted payloads are built before the transaction starts, so encryption or
+/// serialization errors cannot leave a partially switched account behind.
+fn write_windsurf_auth_records_transactionally(
+    conn: &mut Connection,
+    plan: &WindsurfAuthWritePlan,
+) -> Result<(), String> {
+    let transaction = conn
+        .transaction()
+        .map_err(|e| format!("开始 Windsurf 配置事务失败: {}", e))?;
+
+    upsert_item(
+        &transaction,
+        WINDSURF_AUTH_STATUS_KEY,
+        &plan.auth_status_content,
+    )?;
+    upsert_item(
+        &transaction,
+        WINDSURF_SESSIONS_SECRET_KEY,
+        &plan.sessions_secret_content,
+    )?;
+    upsert_item(
+        &transaction,
+        WINDSURF_API_SERVER_SECRET_KEY,
+        &plan.api_server_secret_content,
+    )?;
+    upsert_item(
+        &transaction,
+        WINDSURF_SELECTED_AUTH_KEY,
+        &plan.selected_auth_value,
+    )?;
+    upsert_item(
+        &transaction,
+        WINDSURF_EXTENSION_STATE_KEY,
+        &plan.extension_state_content,
+    )?;
+    upsert_item(&transaction, "windsurfOnboarding", &plan.onboarding_content)?;
+
+    transaction
+        .execute("DELETE FROM ItemTable WHERE key LIKE 'windsurf_auth-%'", [])
+        .map_err(|e| format!("清理旧 windsurf_auth-* 键失败: {}", e))?;
+    upsert_item(&transaction, &plan.login_key, "[]")?;
+    upsert_item(&transaction, &plan.usage_key, &plan.usage_content)?;
+
+    transaction
+        .commit()
+        .map_err(|e| format!("提交 Windsurf 配置事务失败: {}", e))
+}
+
+fn write_windsurf_auth_data(
+    conn: &mut Connection,
+    profile_dir: &Path,
+    auth_status: &Value,
+    account_label: &str,
+    access_token: &str,
+    api_server_url: &str,
+) -> Result<(), String> {
+    let plan = build_windsurf_auth_write_plan(
+        conn,
+        profile_dir,
+        auth_status,
+        account_label,
+        access_token,
+        api_server_url,
+    )?;
+    write_windsurf_auth_records_transactionally(conn, &plan)
 }
 
 fn instances_path() -> Result<PathBuf, String> {
@@ -2357,14 +2536,14 @@ pub fn inject_account_to_profile(profile_dir: &Path, account_id: &str) -> Result
     let account = windsurf_account::load_account(account_id)
         .ok_or_else(|| format!("绑定账号不存在: {}", account_id))?;
     let db_path = ensure_state_db_for_injection(profile_dir)?;
-    let conn = Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
+    let mut conn = Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
 
-    let mut auth_status = account
+    let mut auth_status_hint = account
         .windsurf_auth_status_raw
         .clone()
         .unwrap_or_else(|| serde_json::json!({}));
-    if !auth_status.is_object() {
-        auth_status = serde_json::json!({});
+    if !auth_status_hint.is_object() {
+        auth_status_hint = serde_json::json!({});
     }
 
     let access_token = resolve_account_session_access_token(&account)
@@ -2376,87 +2555,18 @@ pub fn inject_account_to_profile(profile_dir: &Path, account_id: &str) -> Result
         resolve_account_api_key(&account)
             .ok_or_else(|| "账号缺少 Windsurf apiKey，无法注入本地配置".to_string())?
     };
-    let api_server_url = resolve_account_api_server_url(&account, &auth_status);
-    let account_label = resolve_account_label(&account, &auth_status);
-
-    if let Some(obj) = auth_status.as_object_mut() {
-        obj.insert("apiKey".to_string(), Value::String(api_key.clone()));
-        let display_name = normalize_non_empty_text(account.github_name.as_deref())
-            .unwrap_or_else(|| account_label.clone());
-        let display_email = normalize_non_empty_text(account.github_email.as_deref());
-        obj.insert("name".to_string(), Value::String(display_name.clone()));
-        if let Some(email) = display_email.clone() {
-            obj.insert("email".to_string(), Value::String(email));
-        }
-        obj.insert(
-            "apiServerUrl".to_string(),
-            Value::String(api_server_url.clone()),
-        );
-        // 关键: IDE 通过 status="SignedIn" 判断已登录，缺这个字段会显示未登录
-        obj.insert("status".to_string(), Value::String("SignedIn".to_string()));
-        // 关键: IDE 头像旁边显示用户名/邮箱靠这个嵌套对象
-        let mut user_obj = serde_json::Map::new();
-        user_obj.insert("name".to_string(), Value::String(display_name));
-        user_obj.insert(
-            "email".to_string(),
-            display_email
-                .as_ref()
-                .map(|e| Value::String(e.clone()))
-                .unwrap_or(Value::Null),
-        );
-        obj.insert("user".to_string(), Value::Object(user_obj));
-        // 时间戳标记本次切号
-        obj.insert(
-            "timestamp".to_string(),
-            Value::Number(serde_json::Number::from(Utc::now().timestamp_millis())),
-        );
-        if is_auth1_token {
-            obj.insert(
-                "sessionToken".to_string(),
-                Value::String(access_token.clone()),
-            );
-            obj.insert("authMethod".to_string(), Value::String("auth1".to_string()));
-            // Devin 账号: 写入 UserStatus protobuf 让 IDE 启动时 UI 显示信息完整
-            // (账号名/邮箱/计划状态等都从这个 proto 解出来)
-            if let Some(proto_b64) = account
-                .devin_user_status_proto_b64
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                obj.insert(
-                    "userStatusProtoBinaryBase64".to_string(),
-                    Value::String(proto_b64.to_string()),
-                );
-            }
-            // 同时把 account_id / org_id 也塞进去，IDE 启动时可能会读
-            if let Some(account_id) = account
-                .devin_account_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                obj.insert(
-                    "accountId".to_string(),
-                    Value::String(account_id.to_string()),
-                );
-            }
-            if let Some(org_id) = account
-                .devin_org_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                obj.insert(
-                    "primaryOrgId".to_string(),
-                    Value::String(org_id.to_string()),
-                );
-            }
-        }
-    }
+    let api_server_url = resolve_account_api_server_url(&account, &auth_status_hint);
+    let account_label = resolve_account_label(&account, &auth_status_hint);
+    let auth_status = build_windsurf_auth_status(
+        &account,
+        &access_token,
+        &api_key,
+        &api_server_url,
+        &account_label,
+    );
 
     write_windsurf_auth_data(
-        &conn,
+        &mut conn,
         profile_dir,
         &auth_status,
         &account_label,
@@ -2469,7 +2579,15 @@ pub fn inject_account_to_profile(profile_dir: &Path, account_id: &str) -> Result
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_preferred_windsurf_user_data_dir, state_db_under_user_data_dir};
+    use super::{
+        build_windsurf_auth_status, pick_preferred_windsurf_user_data_dir,
+        state_db_under_user_data_dir, write_windsurf_auth_records_transactionally,
+        WindsurfAuthWritePlan, WINDSURF_API_SERVER_SECRET_KEY, WINDSURF_AUTH_STATUS_KEY,
+        WINDSURF_EXTENSION_STATE_KEY, WINDSURF_SELECTED_AUTH_KEY, WINDSURF_SESSIONS_SECRET_KEY,
+    };
+    use crate::models::windsurf::WindsurfAccount;
+    use rusqlite::{Connection, OptionalExtension};
+    use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2483,6 +2601,189 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn test_account(raw_status: serde_json::Value) -> WindsurfAccount {
+        serde_json::from_value(json!({
+            "id": "windsurf_test_account",
+            "github_login": "new-login",
+            "github_id": 1,
+            "github_access_token": "sk-ws-01-new-token",
+            "copilot_token": "copilot-token",
+            "windsurf_api_key": "sk-ws-01-new-token",
+            "windsurf_auth_status_raw": raw_status,
+            "created_at": 0,
+            "last_used": 0,
+        }))
+        .expect("construct Windsurf test account")
+    }
+
+    fn create_auth_state_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open temporary state database");
+        conn.execute_batch("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .expect("create ItemTable");
+        conn
+    }
+
+    fn read_item(conn: &Connection, key: &str) -> Option<String> {
+        conn.query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()
+        .expect("read state value")
+    }
+
+    fn seed_previous_auth_state(conn: &Connection) {
+        for (key, value) in [
+            (
+                WINDSURF_AUTH_STATUS_KEY,
+                "{\"email\":\"old@example.com\",\"authMethod\":\"auth1\"}",
+            ),
+            (WINDSURF_SESSIONS_SECRET_KEY, "old-sessions-secret"),
+            (WINDSURF_API_SERVER_SECRET_KEY, "old-api-server-secret"),
+            (WINDSURF_SELECTED_AUTH_KEY, "old-login"),
+            (
+                WINDSURF_EXTENSION_STATE_KEY,
+                "{\"apiServerUrl\":\"https://old.example\"}",
+            ),
+            ("windsurfOnboarding", "{\"completed\":false}"),
+            ("windsurf_auth-old-login", "[]"),
+            ("windsurf_auth-old-login-usages", "[{\"old\":true}]"),
+        ] {
+            conn.execute(
+                "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+                (key, value),
+            )
+            .expect("seed previous Windsurf auth state");
+        }
+    }
+
+    fn test_write_plan() -> WindsurfAuthWritePlan {
+        WindsurfAuthWritePlan {
+            auth_status_content:
+                "{\"status\":\"SignedIn\",\"name\":\"new-login\",\"user\":{\"email\":null}}"
+                    .to_string(),
+            sessions_secret_content: "new-sessions-secret".to_string(),
+            api_server_secret_content: "new-api-server-secret".to_string(),
+            selected_auth_value: "new-login".to_string(),
+            extension_state_content: "{\"apiServerUrl\":\"https://new.example\"}".to_string(),
+            onboarding_content: "{\"completed\":true}".to_string(),
+            login_key: "windsurf_auth-new-login".to_string(),
+            usage_key: "windsurf_auth-new-login-usages".to_string(),
+            usage_content: "[{\"extensionId\":\"codeium.windsurf\"}]".to_string(),
+        }
+    }
+
+    #[test]
+    fn non_auth1_status_clears_stale_devin_fields_and_missing_email() {
+        let account = test_account(json!({
+            "email": "old@example.com",
+            "sessionToken": "devin-session-token$old",
+            "authMethod": "auth1",
+            "userStatusProtoBinaryBase64": "old-proto",
+            "accountId": "account-old",
+            "primaryOrgId": "org-old",
+        }));
+
+        let status = build_windsurf_auth_status(
+            &account,
+            "sk-ws-01-new-token",
+            "sk-ws-01-new-token",
+            "https://new.example",
+            "new-login",
+        );
+        let status = status.as_object().expect("auth status object");
+
+        for key in [
+            "email",
+            "sessionToken",
+            "authMethod",
+            "userStatusProtoBinaryBase64",
+            "accountId",
+            "primaryOrgId",
+        ] {
+            assert!(
+                !status.contains_key(key),
+                "new non-Auth1 account must not retain {key}"
+            );
+        }
+        assert_eq!(
+            status.get("apiKey").and_then(|value| value.as_str()),
+            Some("sk-ws-01-new-token")
+        );
+        assert_eq!(
+            status.get("user").and_then(|value| value.get("email")),
+            Some(&serde_json::Value::Null)
+        );
+    }
+
+    #[test]
+    fn transactional_auth_write_replaces_profile_state_and_clears_old_account_history() {
+        let mut conn = create_auth_state_db();
+        seed_previous_auth_state(&conn);
+        let plan = test_write_plan();
+
+        write_windsurf_auth_records_transactionally(&mut conn, &plan)
+            .expect("replace Windsurf profile auth state");
+
+        assert_eq!(
+            read_item(&conn, WINDSURF_AUTH_STATUS_KEY).as_deref(),
+            Some(plan.auth_status_content.as_str())
+        );
+        assert_eq!(
+            read_item(&conn, WINDSURF_SESSIONS_SECRET_KEY).as_deref(),
+            Some(plan.sessions_secret_content.as_str())
+        );
+        assert_eq!(
+            read_item(&conn, WINDSURF_API_SERVER_SECRET_KEY).as_deref(),
+            Some(plan.api_server_secret_content.as_str())
+        );
+        assert_eq!(
+            read_item(&conn, WINDSURF_SELECTED_AUTH_KEY).as_deref(),
+            Some("new-login")
+        );
+        assert_eq!(read_item(&conn, "windsurf_auth-old-login"), None);
+        assert_eq!(read_item(&conn, "windsurf_auth-old-login-usages"), None);
+        assert_eq!(
+            read_item(&conn, "windsurf_auth-new-login").as_deref(),
+            Some("[]")
+        );
+        assert_eq!(
+            read_item(&conn, "windsurf_auth-new-login-usages").as_deref(),
+            Some(plan.usage_content.as_str())
+        );
+    }
+
+    #[test]
+    fn transactional_auth_write_rolls_back_on_secret_write_failure() {
+        let mut conn = create_auth_state_db();
+        seed_previous_auth_state(&conn);
+        conn.execute_batch(
+            "CREATE TRIGGER reject_windsurf_sessions
+             BEFORE INSERT ON ItemTable
+             WHEN NEW.key = 'secret://{\"extensionId\":\"codeium.windsurf\",\"key\":\"windsurf_auth.sessions\"}'
+             BEGIN
+                 SELECT RAISE(ABORT, 'blocked by fixture');
+             END;",
+        )
+        .expect("create failure trigger");
+
+        let error = write_windsurf_auth_records_transactionally(&mut conn, &test_write_plan())
+            .expect_err("fixture must reject a secret write");
+        assert!(error.contains("windsurf_auth.sessions"));
+        assert_eq!(
+            read_item(&conn, WINDSURF_AUTH_STATUS_KEY).as_deref(),
+            Some("{\"email\":\"old@example.com\",\"authMethod\":\"auth1\"}"),
+            "earlier account writes must be rolled back"
+        );
+        assert_eq!(
+            read_item(&conn, WINDSURF_SESSIONS_SECRET_KEY).as_deref(),
+            Some("old-sessions-secret")
+        );
+        assert_eq!(
+            read_item(&conn, "windsurf_auth-old-login").as_deref(),
+            Some("[]")
+        );
     }
 
     #[test]

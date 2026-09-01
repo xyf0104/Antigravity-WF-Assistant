@@ -1,18 +1,6 @@
 import { ReactNode, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Clock3, FolderOpen, Github, Layers, Server } from 'lucide-react';
-import { CodexIcon } from '../icons/CodexIcon';
-import { ClaudeIcon } from '../icons/ClaudeIcon';
-import { WindsurfIcon } from '../icons/WindsurfIcon';
-import { KiroIcon } from '../icons/KiroIcon';
-import { CursorIcon } from '../icons/CursorIcon';
-import { GrokIcon } from '../icons/GrokIcon';
-import { CodebuddyIcon } from '../icons/CodebuddyIcon';
-import { QoderIcon } from '../icons/QoderIcon';
-import { TraeCnIcon, TraeIcon, TraeSoloCnIcon, TraeSoloIcon } from '../icons/TraeIcon';
-import { WorkbuddyIcon } from '../icons/WorkbuddyIcon';
-import { ZedIcon } from '../icons/ZedIcon';
-import { ZcodeIcon } from '../icons/ZcodeIcon';
+import { Clock3, FolderOpen, Layers, Server } from 'lucide-react';
 import { ManualHelpIconButton } from '../ManualHelpIconButton';
 import { PlatformId } from '../../types/platform';
 import {
@@ -20,7 +8,7 @@ import {
   resolveGroupChildName,
   usePlatformLayoutStore,
 } from '../../stores/usePlatformLayoutStore';
-import { getPlatformLabel } from '../../utils/platformMeta';
+import { getPlatformLabel, renderPlatformIcon } from '../../utils/platformMeta';
 import { PlatformGroupSwitcher } from './PlatformGroupSwitcher';
 import { useRemoteConfigStore } from '../../stores/useRemoteConfigStore';
 import {
@@ -74,71 +62,71 @@ interface TabSpec {
 const CONFIGS: Record<PlatformOverviewHeaderId, PlatformOverviewConfig> = {
   codex: {
     platformLabel: 'Codex',
-    overviewIcon: <CodexIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('codex', 18),
   },
   claude: {
     platformLabel: 'Claude',
-    overviewIcon: <ClaudeIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('claude_manager', 18),
   },
   zed: {
     platformLabel: 'Zed',
-    overviewIcon: <ZedIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('zed', 18),
   },
   'github-copilot': {
     platformLabel: 'GitHub Copilot',
-    overviewIcon: <Github className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('github-copilot', 18),
   },
   windsurf: {
     platformLabel: 'Windsurf',
-    overviewIcon: <WindsurfIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('windsurf', 18),
   },
   kiro: {
     platformLabel: 'Kiro',
-    overviewIcon: <KiroIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('kiro', 18),
   },
   cursor: {
     platformLabel: 'Cursor',
-    overviewIcon: <CursorIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('cursor', 18),
   },
   grok: {
     platformLabel: 'Grok CLI',
-    overviewIcon: <GrokIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('grok', 18),
   },
   codebuddy: {
     platformLabel: 'CodeBuddy',
-    overviewIcon: <CodebuddyIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('codebuddy', 18),
   },
   codebuddy_cn: {
     platformLabel: 'CodeBuddy CN',
-    overviewIcon: <CodebuddyIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('codebuddy_cn', 18),
   },
   qoder: {
     platformLabel: 'Qoder',
-    overviewIcon: <QoderIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('qoder', 18),
   },
   zcode: {
     platformLabel: 'ZCode',
-    overviewIcon: <ZcodeIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('zcode', 18),
   },
   trae: {
     platformLabel: 'Trae',
-    overviewIcon: <TraeIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('trae', 18),
   },
   trae_solo: {
     platformLabel: 'TRAE SOLO',
-    overviewIcon: <TraeSoloIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('trae_solo', 18),
   },
   trae_cn: {
     platformLabel: 'Trae CN',
-    overviewIcon: <TraeCnIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('trae_cn', 18),
   },
   trae_solo_cn: {
     platformLabel: 'TRAE SOLO CN',
-    overviewIcon: <TraeSoloCnIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('trae_solo_cn', 18),
   },
   workbuddy: {
     platformLabel: 'WorkBuddy',
-    overviewIcon: <WorkbuddyIcon className="tab-icon" />,
+    overviewIcon: renderPlatformIcon('workbuddy', 18),
   },
 };
 

@@ -6,51 +6,12 @@ fn resolve_provider_current_account_id(platform: &str) -> Result<Option<String>,
             let accounts = crate::modules::windsurf_account::list_accounts();
             Ok(crate::modules::windsurf_account::resolve_current_account_id(&accounts))
         }
-        "kiro" => {
-            let accounts = crate::modules::kiro_account::list_accounts();
-            Ok(crate::modules::kiro_account::resolve_current_account_id(
-                &accounts,
-            ))
-        }
         "cursor" => {
             let accounts = crate::modules::cursor_account::list_accounts();
             Ok(crate::modules::cursor_account::resolve_current_account_id(
                 &accounts,
             ))
         }
-        "codebuddy" => {
-            let accounts = crate::modules::codebuddy_account::list_accounts();
-            Ok(crate::modules::codebuddy_account::resolve_current_account_id(&accounts))
-        }
-        "codebuddy_cn" | "codebuddy-cn" => {
-            let accounts = crate::modules::codebuddy_cn_account::list_accounts();
-            Ok(crate::modules::codebuddy_cn_account::resolve_current_account_id(&accounts))
-        }
-        "qoder" => {
-            let accounts = crate::modules::qoder_account::list_accounts();
-            Ok(crate::modules::qoder_account::resolve_current_account_id(
-                &accounts,
-            ))
-        }
-        "trae" | "trae_solo" | "trae-solo" | "trae_cn" | "trae-cn" | "trae_solo_cn"
-        | "trae-solo-cn" => {
-            let platform = crate::modules::trae_account::TraePlatformKind::parse(Some(platform))?;
-            let accounts = crate::modules::trae_account::list_accounts();
-            Ok(
-                crate::modules::trae_account::resolve_current_account_id_for_platform(
-                    &accounts, platform,
-                ),
-            )
-        }
-        "workbuddy" => {
-            let accounts = crate::modules::workbuddy_account::list_accounts();
-            Ok(crate::modules::workbuddy_account::resolve_current_account_id(&accounts))
-        }
-        "github_copilot" | "github-copilot" | "ghcp" => {
-            let accounts = crate::modules::github_copilot_account::list_accounts();
-            Ok(crate::modules::github_copilot_account::resolve_current_account_id(&accounts))
-        }
-        "zed" => Ok(crate::modules::zed_account::resolve_current_account_id()),
         other => Err(format!("不支持的平台: {}", other)),
     }
 }
@@ -105,34 +66,24 @@ mod tests {
     }
 
     #[test]
-    fn provider_current_command_supports_all_account_pages() {
+    fn provider_current_command_supports_production_generic_provider_pages() {
         let _lock = crate::modules::test_support::lock_env();
         let _guard = DataDirGuard::new("supported-platforms");
 
-        for platform in [
-            "windsurf",
-            "kiro",
-            "cursor",
-            "codebuddy",
-            "codebuddy_cn",
-            "codebuddy-cn",
-            "qoder",
-            "trae",
-            "trae_solo",
-            "trae_cn",
-            "trae_solo_cn",
-            "workbuddy",
-            "github_copilot",
-            "github-copilot",
-            "ghcp",
-            "zed",
-        ] {
+        for platform in ["windsurf", "cursor"] {
             let result = resolve_provider_current_account_id(platform)
                 .unwrap_or_else(|err| panic!("platform {platform} should be supported: {err}"));
             assert_eq!(
                 result, None,
                 "empty data dir should have no current account"
             );
+        }
+    }
+
+    #[test]
+    fn provider_current_command_rejects_hidden_platforms() {
+        for platform in ["kiro", "codebuddy", "trae", "github-copilot", "zed"] {
+            assert!(resolve_provider_current_account_id(platform).is_err());
         }
     }
 

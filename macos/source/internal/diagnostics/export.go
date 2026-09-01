@@ -89,6 +89,39 @@ type archiveSummary struct {
 	Snapshot     any    `json:"snapshot,omitempty"`
 }
 
+type CollectedLog struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+// CollectLocalLogs returns the same fixed, bounded and redacted helper-owned
+// log set used by Export. It is intended for the authenticated Tauri bridge so
+// the parent can build one diagnostic archive without receiving storage paths.
+func CollectLocalLogs(storageDir, home string) ([]CollectedLog, error) {
+	result := make([]CollectedLog, 0, 6)
+	for _, name := range []string{
+		preUpgradeApplicationLogName + ".1",
+		preUpgradeApplicationLogName,
+		applicationLogName + ".1",
+		applicationLogName,
+		"proxy-trace.jsonl",
+		"proxy_runtime.json",
+	} {
+		data, err := readTail(filepath.Join(storageDir, name), maxExportedFileBytes)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("无法收集 WF 诊断日志")
+		}
+		result = append(result, CollectedLog{
+			Name:    filepath.ToSlash(filepath.Join("wf-helper", name)),
+			Content: string(boundTail(redact(data, home), maxExportedFileBytes)),
+		})
+	}
+	return result, nil
+}
+
 // Init installs a bounded persistent application log. Existing log calls do
 // not need to change, and the file is retained solely in the private XIASS
 // Tools data directory for an explicit user-initiated diagnostic export.

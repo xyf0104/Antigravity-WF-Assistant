@@ -69,6 +69,24 @@ export const XIASS_AGENT_PLATFORM_IDS: readonly PlatformId[] = [
   'cursor',
 ];
 
+/** Account domains allowed to execute in production transfer/import workflows. */
+export const PRODUCTION_AGENT_ACCOUNT_PLATFORM_IDS = [
+  'antigravity',
+  'codex',
+  'claude_manager',
+  'windsurf',
+  'cursor',
+] as const satisfies readonly PlatformId[];
+
+export type ProductionAgentAccountPlatformId =
+  (typeof PRODUCTION_AGENT_ACCOUNT_PLATFORM_IDS)[number];
+
+export function isProductionAgentAccountPlatform(
+  platformId: PlatformId,
+): platformId is ProductionAgentAccountPlatformId {
+  return (PRODUCTION_AGENT_ACCOUNT_PLATFORM_IDS as readonly PlatformId[]).includes(platformId);
+}
+
 export const MENU_HIDDEN_PLATFORM_IDS: PlatformId[] = ALL_PLATFORM_IDS.filter(
   (platformId) => !XIASS_AGENT_PLATFORM_IDS.includes(platformId),
 );

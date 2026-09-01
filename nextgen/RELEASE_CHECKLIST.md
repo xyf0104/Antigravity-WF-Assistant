@@ -53,12 +53,12 @@ artifacts; it does not claim Apple notarization or Windows Authenticode.
 Run the root workflows `Build XIASS Tools Nextgen for macOS` and
 `Build XIASS Tools Nextgen for Windows` against the frozen commit. They must produce:
 
-- macOS: one Universal `.app` and one Universal `.dmg`
+- macOS 12+: one Universal `.app` and one Universal `.dmg`
 - Windows: one x64 `.msi` and one x64 NSIS `-setup.exe`
 
 The macOS workflow verifies that the main executable, CLI proxy, and WF bridge contain both
-`x86_64` and `arm64`, and that the application passes strict deep code-signature validation. The
-Windows workflow verifies both sidecars and both installers exist and are non-empty. Both platform
+`x86_64` and `arm64`, declares macOS 12.0 as its minimum system version, and that the application
+passes strict deep code-signature validation. The Windows workflow verifies both sidecars and both installers exist and are non-empty. Both platform
 workflows must also observe the `react_committed` frontend-ready signal; a process that exits early,
 reports a frontend timeout, or stays alive without mounting React must fail the smoke test.
 
@@ -75,14 +75,16 @@ git push origin "v${version}"
 
 The root `Publish XIASS Tools Nextgen Release` workflow then:
 
-1. verifies the tag, package version, both changelogs, and updater credentials;
+1. verifies that the tag points at the remote `main` head and matches the package version, both
+   changelogs, and updater credentials;
 2. builds macOS Universal and Windows x64 in parallel;
-3. stages only approved installer/updater assets;
-4. verifies updater signatures and generates target manifests, `latest.json`, and
-   `SHA256SUMS.txt`;
+3. stages only approved installer/updater assets and verifies the bundled offline license set;
+4. cryptographically verifies all updater signatures against the embedded public key and generates
+   target manifests, `latest.json`, and `SHA256SUMS.txt`;
 5. creates or reuses a draft release;
-6. uploads the complete verified asset set and checks the remote asset count; and
-7. publishes the draft as the latest release only after every previous step succeeds.
+6. requires exactly 13 approved attachments and compares the complete local and remote name sets;
+7. publishes the draft as the latest release only after every previous step succeeds; and
+8. fetches every live target manifest and updater binary after publication.
 
 Do not manually upload additional `.zip`, portable executables, raw `.app` directories, source
 packages, or build folders. GitHub may display its automatic source-code links; those are generated
@@ -95,7 +97,8 @@ in-application updates even though it is not a user-facing installer.
 
 ## 5. Verify the published release
 
-After the workflow publishes the draft, run from `nextgen/`:
+The workflow runs the following verification after publishing. It can also be repeated locally from
+`nextgen/`:
 
 ```bash
 version="$(node -p "require('./package.json').version")"

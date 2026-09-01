@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, CircleAlert, FolderOpen, Save, X } from 'lucide-react';
+import { ChevronLeft, CircleAlert, FolderOpen, History, Save, X } from 'lucide-react';
 import {
   getCodexConfigTomlPath,
   getCodexQuickConfig,
@@ -11,10 +11,13 @@ import { useEscClose } from '../../hooks/useEscClose';
 import type { CodexExperimentalModelDefinition, CodexQuickConfig } from '../../types/codex';
 import { getCodexExperimentalModelErrorMessage } from '../../utils/codexExperimentalModel';
 import { CodexExperimentalModelEditor } from './CodexExperimentalModelEditor';
+import { CodexConfigRecoveryModal } from './CodexConfigRecoveryModal';
 
 export function CodexQuickConfigCard({ onClose }: { onClose?: () => void }) {
   const { t } = useTranslation();
-  useEscClose(true, onClose ?? (() => {}));
+  const [showRecovery, setShowRecovery] = useState(false);
+  // The nested recovery dialog owns Esc while it is open.
+  useEscClose(!showRecovery, onClose ?? (() => {}));
   const [configPath, setConfigPath] = useState('~/.codex/config.toml');
   const [loadedConfig, setLoadedConfig] = useState<CodexQuickConfig | null>(null);
   const [catalogEnabled, setCatalogEnabled] = useState(false);
@@ -46,7 +49,16 @@ export function CodexQuickConfigCard({ onClose }: { onClose?: () => void }) {
         getCodexConfigTomlPath(),
         getCodexQuickConfig(),
       ]);
-      setConfigPath(path);
+      if (!config) {
+        setError(
+          t(
+            'codex.modelProviders.quickConfig.runtimeUnavailable',
+            '当前环境未连接本机 Codex 配置。请在已安装的 XIASS Tools 中打开。',
+          ),
+        );
+        return;
+      }
+      setConfigPath(typeof path === 'string' && path.trim() ? path : '~/.codex/config.toml');
       applyLoadedConfig(config);
     } catch (err) {
       setError(
@@ -270,6 +282,19 @@ export function CodexQuickConfigCard({ onClose }: { onClose?: () => void }) {
         <div className="modal-footer">
           <button
             className="btn btn-secondary"
+            onClick={() => {
+              setError(null);
+              setNotice(null);
+              setShowRecovery(true);
+            }}
+            disabled={opening || saving}
+            type="button"
+          >
+            <History size={14} />
+            {t('codex.modelProviders.quickConfig.recoveryPoints', '恢复点')}
+          </button>
+          <button
+            className="btn btn-secondary"
             onClick={() => void handleOpenConfig()}
             disabled={opening || loading}
             type="button"
@@ -281,6 +306,19 @@ export function CodexQuickConfigCard({ onClose }: { onClose?: () => void }) {
           </button>
         </div>
       </div>
+      <CodexConfigRecoveryModal
+        open={showRecovery}
+        onClose={() => setShowRecovery(false)}
+        onRestored={() => {
+          setNotice(
+            t(
+              'codex.modelProviders.quickConfig.recoverySuccess',
+              '配置已恢复。请重启 Codex 以加载新的配置。',
+            ),
+          );
+          void reload();
+        }}
+      />
     </div>
   );
 }

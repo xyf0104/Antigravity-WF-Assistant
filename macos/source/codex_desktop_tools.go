@@ -72,7 +72,7 @@ func (a *App) SelectCodexDesktopInstallation() CodexDesktopControlStatus {
 	}
 	a.codexDesktopOperation.Lock()
 	defer a.codexDesktopOperation.Unlock()
-	selectedPath, cancelled, err := selectCodexDesktopNativeTarget(a.ctx)
+	selectedPath, cancelled, err := selectCodexDesktopNativeTarget(a, a.ctx)
 	if err != nil {
 		return a.codexDesktopFailureStatus("无法打开 Codex 应用选择窗口。")
 	}

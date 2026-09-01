@@ -1252,13 +1252,98 @@ pub fn import_from_local() -> Result<Option<CursorAccount>, String> {
 // Inject (write auth fields back to Cursor's state.vscdb)
 // ---------------------------------------------------------------------------
 
-fn upsert_vscdb_item(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
-    conn.execute(
-        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
-        (key, value),
-    )
-    .map_err(|e| format!("写入 {} 失败: {}", key, e))?;
+fn upsert_vscdb_item(
+    transaction: &rusqlite::Transaction<'_>,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+            (key, value),
+        )
+        .map_err(|e| format!("写入 {} 失败: {}", key, e))?;
     Ok(())
+}
+
+fn delete_vscdb_item(transaction: &rusqlite::Transaction<'_>, key: &str) -> Result<(), String> {
+    transaction
+        .execute("DELETE FROM ItemTable WHERE key = ?1", [key])
+        .map_err(|e| format!("清除 {} 失败: {}", key, e))?;
+    Ok(())
+}
+
+fn write_or_clear_vscdb_item(
+    transaction: &rusqlite::Transaction<'_>,
+    key: &str,
+    value: Option<&str>,
+) -> Result<(), String> {
+    match normalize_non_empty(value) {
+        Some(value) => upsert_vscdb_item(transaction, key, &value),
+        None => delete_vscdb_item(transaction, key),
+    }
+}
+
+/// Synchronize every Cursor-owned authentication field as one SQLite transaction.
+///
+/// A missing optional field must actively clear the previous account's value.  In
+/// particular, retaining an old refresh token or auth ID after changing accounts
+/// can make Cursor silently refresh the wrong identity.  Both default-profile and
+/// multi-instance injection call this helper through the public wrappers below.
+fn write_cursor_account_to_vscdb(
+    conn: &mut Connection,
+    account: &CursorAccount,
+) -> Result<(), String> {
+    let access_token = normalize_non_empty(Some(account.access_token.as_str()))
+        .ok_or_else(|| "Cursor 账号缺少 access token，无法注入本地配置".to_string())?;
+    let transaction = conn
+        .transaction()
+        .map_err(|e| format!("开始 Cursor 配置事务失败: {}", e))?;
+
+    write_or_clear_vscdb_item(
+        &transaction,
+        "cursorAuth/accessToken",
+        Some(access_token.as_str()),
+    )?;
+    write_or_clear_vscdb_item(
+        &transaction,
+        "cursorAuth/refreshToken",
+        account.refresh_token.as_deref(),
+    )?;
+    write_or_clear_vscdb_item(
+        &transaction,
+        "cursorAuth/cachedEmail",
+        Some(account.email.as_str()),
+    )?;
+    let auth_id = resolve_account_auth_id(account);
+    write_or_clear_vscdb_item(&transaction, "cursorAuth/authId", auth_id.as_deref())?;
+    write_or_clear_vscdb_item(
+        &transaction,
+        "cursorAuth/stripeMembershipType",
+        account.membership_type.as_deref(),
+    )?;
+    write_or_clear_vscdb_item(
+        &transaction,
+        "cursorAuth/stripeSubscriptionStatus",
+        account.subscription_status.as_deref(),
+    )?;
+    let sign_up_type = normalize_cursor_sign_up_type(account.sign_up_type.as_deref());
+    write_or_clear_vscdb_item(
+        &transaction,
+        "cursorAuth/cachedSignUpType",
+        sign_up_type.as_deref(),
+    )?;
+
+    write_or_clear_vscdb_item(
+        &transaction,
+        "cursor.accessToken",
+        Some(access_token.as_str()),
+    )?;
+    write_or_clear_vscdb_item(&transaction, "cursor.email", Some(account.email.as_str()))?;
+
+    transaction
+        .commit()
+        .map_err(|e| format!("提交 Cursor 配置事务失败: {}", e))
 }
 
 pub fn inject_to_cursor(account_id: &str) -> Result<(), String> {
@@ -1269,23 +1354,9 @@ pub fn inject_to_cursor(account_id: &str) -> Result<(), String> {
         return Err(format!("Cursor state.vscdb 不存在: {}", db_path.display()));
     }
 
-    let conn =
+    let mut conn =
         Connection::open(&db_path).map_err(|e| format!("打开 Cursor 本地数据库失败: {}", e))?;
-
-    upsert_vscdb_item(&conn, "cursorAuth/accessToken", &account.access_token)?;
-    if let Some(ref rt) = account.refresh_token {
-        upsert_vscdb_item(&conn, "cursorAuth/refreshToken", rt)?;
-    }
-    upsert_vscdb_item(&conn, "cursorAuth/cachedEmail", &account.email)?;
-    if let Some(ref mt) = account.membership_type {
-        upsert_vscdb_item(&conn, "cursorAuth/stripeMembershipType", mt)?;
-    }
-    if let Some(ref ss) = account.subscription_status {
-        upsert_vscdb_item(&conn, "cursorAuth/stripeSubscriptionStatus", ss)?;
-    }
-
-    upsert_vscdb_item(&conn, "cursor.accessToken", &account.access_token)?;
-    upsert_vscdb_item(&conn, "cursor.email", &account.email)?;
+    write_cursor_account_to_vscdb(&mut conn, &account)?;
 
     logger::log_info(&format!(
         "[Cursor Account] 注入成功: id={}, email={}",
@@ -1301,23 +1372,9 @@ pub fn inject_to_cursor_at_path(db_path: &std::path::Path, account_id: &str) -> 
         return Err(format!("Cursor state.vscdb 不存在: {}", db_path.display()));
     }
 
-    let conn =
+    let mut conn =
         Connection::open(db_path).map_err(|e| format!("打开 Cursor 本地数据库失败: {}", e))?;
-
-    upsert_vscdb_item(&conn, "cursorAuth/accessToken", &account.access_token)?;
-    if let Some(ref rt) = account.refresh_token {
-        upsert_vscdb_item(&conn, "cursorAuth/refreshToken", rt)?;
-    }
-    upsert_vscdb_item(&conn, "cursorAuth/cachedEmail", &account.email)?;
-    if let Some(ref mt) = account.membership_type {
-        upsert_vscdb_item(&conn, "cursorAuth/stripeMembershipType", mt)?;
-    }
-    if let Some(ref ss) = account.subscription_status {
-        upsert_vscdb_item(&conn, "cursorAuth/stripeSubscriptionStatus", ss)?;
-    }
-
-    upsert_vscdb_item(&conn, "cursor.accessToken", &account.access_token)?;
-    upsert_vscdb_item(&conn, "cursor.email", &account.email)?;
+    write_cursor_account_to_vscdb(&mut conn, &account)?;
 
     logger::log_info(&format!(
         "[Cursor Account] 注入成功(自定义路径): id={}, email={}, path={}",
@@ -2155,4 +2212,173 @@ pub fn run_quota_alert_if_needed(
 
     crate::modules::account::dispatch_quota_alert(&payload);
     Ok(Some(payload))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_vscdb_item, write_cursor_account_to_vscdb};
+    use crate::models::cursor::CursorAccount;
+    use rusqlite::Connection;
+
+    fn account_with_all_managed_fields() -> CursorAccount {
+        CursorAccount {
+            id: "cursor_test_account".to_string(),
+            email: "new@example.com".to_string(),
+            auth_id: Some("user_new".to_string()),
+            name: None,
+            tags: None,
+            access_token: "new-access-token".to_string(),
+            refresh_token: Some("new-refresh-token".to_string()),
+            membership_type: Some("pro".to_string()),
+            subscription_status: Some("active".to_string()),
+            sign_up_type: Some("SIGN_UP_TYPE_GOOGLE".to_string()),
+            cursor_auth_raw: None,
+            cursor_usage_raw: None,
+            status: None,
+            status_reason: None,
+            quota_query_last_error: None,
+            quota_query_last_error_at: None,
+            usage_updated_at: None,
+            created_at: 0,
+            last_used: 0,
+        }
+    }
+
+    fn create_state_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory state database");
+        conn.execute_batch("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .expect("create ItemTable");
+        conn
+    }
+
+    fn seed_previous_account(conn: &Connection) {
+        for (key, value) in [
+            ("cursorAuth/accessToken", "old-access-token"),
+            ("cursorAuth/refreshToken", "old-refresh-token"),
+            ("cursorAuth/cachedEmail", "old@example.com"),
+            ("cursorAuth/authId", "user_old"),
+            ("cursorAuth/stripeMembershipType", "enterprise"),
+            ("cursorAuth/stripeSubscriptionStatus", "past_due"),
+            ("cursorAuth/cachedSignUpType", "Github"),
+            ("cursor.accessToken", "old-access-token"),
+            ("cursor.email", "old@example.com"),
+        ] {
+            conn.execute(
+                "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+                (key, value),
+            )
+            .expect("seed previous account value");
+        }
+    }
+
+    #[test]
+    fn cursor_injection_replaces_every_managed_identity_field() {
+        let mut conn = create_state_db();
+        seed_previous_account(&conn);
+
+        write_cursor_account_to_vscdb(&mut conn, &account_with_all_managed_fields())
+            .expect("replace Cursor account");
+
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/accessToken").as_deref(),
+            Some("new-access-token")
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/refreshToken").as_deref(),
+            Some("new-refresh-token")
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/cachedEmail").as_deref(),
+            Some("new@example.com")
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/authId").as_deref(),
+            Some("user_new")
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/stripeMembershipType").as_deref(),
+            Some("pro")
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/stripeSubscriptionStatus").as_deref(),
+            Some("active")
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/cachedSignUpType").as_deref(),
+            Some("Google")
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursor.accessToken").as_deref(),
+            Some("new-access-token")
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursor.email").as_deref(),
+            Some("new@example.com")
+        );
+    }
+
+    #[test]
+    fn cursor_injection_clears_stale_optional_fields_from_previous_account() {
+        let mut conn = create_state_db();
+        seed_previous_account(&conn);
+        let mut account = account_with_all_managed_fields();
+        account.refresh_token = None;
+        account.auth_id = None;
+        account.membership_type = None;
+        account.subscription_status = None;
+        account.sign_up_type = None;
+
+        write_cursor_account_to_vscdb(&mut conn, &account)
+            .expect("switch to sparse Cursor account");
+
+        for key in [
+            "cursorAuth/refreshToken",
+            "cursorAuth/authId",
+            "cursorAuth/stripeMembershipType",
+            "cursorAuth/stripeSubscriptionStatus",
+            "cursorAuth/cachedSignUpType",
+        ] {
+            assert_eq!(
+                read_vscdb_item(&conn, key),
+                None,
+                "stale field must be removed: {key}"
+            );
+        }
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/accessToken").as_deref(),
+            Some("new-access-token")
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/cachedEmail").as_deref(),
+            Some("new@example.com")
+        );
+    }
+
+    #[test]
+    fn cursor_injection_rolls_back_if_any_managed_write_fails() {
+        let mut conn = create_state_db();
+        seed_previous_account(&conn);
+        conn.execute_batch(
+            "CREATE TRIGGER reject_cached_email
+             BEFORE INSERT ON ItemTable
+             WHEN NEW.key = 'cursorAuth/cachedEmail'
+             BEGIN
+                 SELECT RAISE(ABORT, 'blocked by fixture');
+             END;",
+        )
+        .expect("create failure trigger");
+
+        let error = write_cursor_account_to_vscdb(&mut conn, &account_with_all_managed_fields())
+            .expect_err("fixture must reject one managed write");
+        assert!(error.contains("cursorAuth/cachedEmail"));
+        assert_eq!(
+            read_vscdb_item(&conn, "cursorAuth/accessToken").as_deref(),
+            Some("old-access-token"),
+            "earlier writes must roll back with the failed transaction"
+        );
+        assert_eq!(
+            read_vscdb_item(&conn, "cursor.email").as_deref(),
+            Some("old@example.com")
+        );
+    }
 }

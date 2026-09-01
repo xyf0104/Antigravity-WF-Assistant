@@ -41,43 +41,43 @@
 }
 
 :root[data-theme="light"] {
-  --bg-base: rgba(239, 248, 249, 0.68);
-  --bg-sidebar: rgba(245, 252, 253, 0.76);
-  --bg-elevated: rgba(255, 255, 255, 0.9);
-  --bg-card: rgba(248, 253, 253, 0.84);
-  --bg-card-hover: rgba(255, 255, 255, 0.94);
-  --bg-inset: rgba(235, 240, 247, 0.86);
-  --bg-fill: rgba(79, 97, 124, 0.09);
-  --bg-fill-hover: rgba(79, 97, 124, 0.15);
-  --topbar-bg: rgba(248, 250, 253, 0.72);
-  --modal-bg: rgba(248, 253, 253, 0.96);
-  --embedded-workspace-backdrop: #edf8f9;
-  --embedded-workspace-surface: #edf8f9;
-  --separator: rgba(48, 65, 91, 0.14);
-  --separator-strong: rgba(48, 65, 91, 0.24);
-  --text-primary: #192337;
-  --text-secondary: rgba(27, 43, 66, 0.9);
-  --text-tertiary: rgba(38, 55, 80, 0.78);
-  --text-quaternary: rgba(48, 66, 92, 0.64);
-  --accent: #b95218;
-  --accent-hover: #a94d15;
-  --accent-strong: #b95218;
-  --accent-soft: rgba(239, 142, 62, 0.13);
-  --accent-border: rgba(225, 119, 37, 0.22);
-  --brand-surface: rgba(255, 169, 91, 0.14);
-  --brand-border: rgba(225, 119, 37, 0.16);
-  --green: #08783f;
-  --green-dim: #075f34;
-  --orange: #a64f00;
-  --red: #b4232c;
-  --purple: #6930a8;
-  --teal: #08707b;
-  --blue: #1d5bb5;
-  --blue-soft: rgba(45, 112, 214, 0.12);
-  --ambient-one: rgba(64, 196, 190, 0.12);
-  --ambient-two: rgba(103, 126, 224, 0.1);
-  --shadow-card: 0 16px 38px rgba(58, 75, 103, 0.09);
-  --shadow-brand: 0 12px 26px rgba(225, 119, 37, 0.1);
+  --bg-base: #f6f5f2;
+  --bg-sidebar: rgba(255, 255, 255, 0.75);
+  --bg-elevated: #ffffff;
+  --bg-card: rgba(255, 255, 255, 0.75);
+  --bg-card-hover: #ffffff;
+  --bg-inset: #eef2f7;
+  --bg-fill: rgba(15, 23, 42, 0.06);
+  --bg-fill-hover: rgba(15, 23, 42, 0.1);
+  --topbar-bg: rgba(255, 255, 255, 0.92);
+  --modal-bg: #ffffff;
+  --embedded-workspace-backdrop: #f6f5f2;
+  --embedded-workspace-surface: #f6f5f2;
+  --separator: rgba(15, 23, 42, 0.12);
+  --separator-strong: rgba(15, 23, 42, 0.18);
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #64748b;
+  --text-quaternary: #94a3b8;
+  --accent: #1d4ed8;
+  --accent-hover: #1e40af;
+  --accent-strong: #1d4ed8;
+  --accent-soft: rgba(29, 78, 216, 0.12);
+  --accent-border: rgba(29, 78, 216, 0.24);
+  --brand-surface: rgba(14, 165, 165, 0.12);
+  --brand-border: rgba(14, 165, 165, 0.24);
+  --green: #22c55e;
+  --green-dim: #16a34a;
+  --orange: #f59e0b;
+  --red: #ef4444;
+  --purple: #9333ea;
+  --teal: #0ea5a5;
+  --blue: #1d4ed8;
+  --blue-soft: rgba(29, 78, 216, 0.12);
+  --ambient-one: rgba(29, 78, 216, 0.12);
+  --ambient-two: rgba(14, 165, 165, 0.12);
+  --shadow-card: 0 2px 6px rgba(15, 23, 42, 0.08);
+  --shadow-brand: 0 12px 24px rgba(15, 23, 42, 0.12);
   color-scheme: light;
 }
 
@@ -124,10 +124,32 @@ body {
   transition: background 0.2s var(--ease), color 0.2s var(--ease);
 }
 
+/* Standalone views need the same light canvas as the embedded workbench.
+ * Without this explicit branch, the base dark space image wins whenever a
+ * direct helper window is opened with theme=light. */
+:root[data-theme="light"] body {
+  background:
+    radial-gradient(circle at 12% 10%, rgba(29, 78, 216, 0.12), transparent 45%),
+    radial-gradient(circle at 90% 5%, rgba(14, 165, 165, 0.12), transparent 40%),
+    linear-gradient(180deg, #f8f7f4 0%, #eef1f6 100%);
+  color-scheme: light;
+}
+
 :root[data-embedded="true"] body {
   background: transparent;
   font-size: 15px;
   line-height: 1.6;
+}
+
+/* The host owns the single page scrollbar. The embedded page reports its
+ * rendered height and must never introduce an independent viewport scroll. */
+:root[data-embedded="true"],
+:root[data-embedded="true"] body,
+:root[data-embedded="true"] #app {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
 }
 
 :root[data-embedded="true"] .shell,
@@ -463,3 +485,96 @@ input:focus:not(:focus-visible),
 textarea:focus:not(:focus-visible),
 select:focus:not(:focus-visible) { outline: none; }
 ::placeholder { color: var(--text-quaternary); }
+
+/* Embedded light workbench: restore the original solid light-token hierarchy. */
+:root[data-theme="light"][data-embedded="true"] {
+  color-scheme: light;
+}
+
+:root[data-theme="light"][data-embedded="true"] body,
+:root[data-theme="light"][data-embedded="true"] :is(.shell, .workspace, .main) {
+  color: var(--text-primary);
+  background: transparent !important;
+}
+
+:root[data-theme="light"][data-embedded="true"] :is(
+  .card,
+  .account-card,
+  .metric-card,
+  .tool-card,
+  .model-card,
+  .status-card,
+  .saved-account-card,
+  .saved-codex-account-card,
+  .image-card,
+  .section,
+  .configuration-section,
+  .desktop-control-section,
+  .form-section,
+  .lifecycle-section,
+  .history-section,
+  .backup-section,
+  .quota-panel,
+  .totp-panel,
+  .recovery-panel,
+  .account-directory-toolbar,
+  .account-bulk-toolbar
+) {
+  border-color: var(--separator) !important;
+  color: var(--text-primary);
+  background: var(--bg-card) !important;
+  box-shadow: var(--shadow-card) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:root[data-theme="light"][data-embedded="true"] button {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:root[data-theme="light"][data-embedded="true"] :is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+  textarea,
+  select
+) {
+  border-color: var(--separator-strong) !important;
+  color: var(--text-primary) !important;
+  background: var(--bg-elevated) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96), 0 8px 18px rgba(58, 75, 103, 0.08) !important;
+  color-scheme: light;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:root[data-theme="light"][data-embedded="true"] :is(.modal, .sheet, [role="dialog"]) {
+  border-color: var(--separator-strong) !important;
+  color: var(--text-primary);
+  background: var(--modal-bg) !important;
+  box-shadow: inset 0 1px 0 #fff, 0 24px 58px rgba(58, 75, 103, 0.18) !important;
+}
+
+:root[data-theme="light"][data-embedded="true"] :is(
+  .select-menu,
+  .model-picker-menu,
+  .dropdown-menu,
+  [role="listbox"]
+) {
+  border-color: var(--separator-strong) !important;
+  color: var(--text-primary);
+  background: var(--bg-elevated) !important;
+  box-shadow: 0 16px 34px rgba(58, 75, 103, 0.16) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:root[data-theme="light"][data-embedded="true"] :is(.terminal, .quota-panel) {
+  border-color: var(--separator-strong) !important;
+  color: var(--text-secondary) !important;
+  background: var(--bg-inset) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72) !important;
+}
+
+:root[data-theme="light"][data-embedded="true"] :is(.empty-state, .loading-state, .loading) {
+  color: var(--text-secondary);
+}

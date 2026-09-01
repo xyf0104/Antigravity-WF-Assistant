@@ -718,13 +718,37 @@ func addModelIndexes(parsed map[string]any, rootPath string, modelIDs, imageGene
 		if len(ids) == 0 {
 			continue
 		}
-		updated, changed := prependModelIDs(value, ids)
+		var updated any
+		var changed bool
+		if key == "imageGenerationModelIds" {
+			updated, changed = prependImageGenerationModelIDs(value, ids)
+		} else {
+			updated, changed = prependModelIDs(value, ids)
+		}
 		if changed {
 			parsed[key] = updated
 			paths = append(paths, modelPath(rootPath, key))
 		}
 	}
 	return paths
+}
+
+// prependImageGenerationModelIDs accepts only the known flat string-list
+// structure. Unlike ordinary picker indexes, this field is an execution
+// directory; recursively modifying a map or mixed proto value risks routing a
+// native Gemini image request through a custom chat model. Unknown variants
+// are intentionally left byte-for-byte intact.
+func prependImageGenerationModelIDs(value any, modelIDs []string) (any, bool) {
+	ids, ok := value.([]any)
+	if !ok {
+		return value, false
+	}
+	for _, item := range ids {
+		if _, ok := item.(string); !ok {
+			return value, false
+		}
+	}
+	return prependUniqueModelIDs(ids, modelIDs), true
 }
 
 func addModelSortIDs(raw any, modelIDs []string) (any, bool) {
@@ -875,6 +899,12 @@ func responseIndexesModel(roots []modelResponseRoot, slug, placeholder string) b
 	for _, root := range roots {
 		for key, value := range root.value {
 			lower := strings.ToLower(key)
+			// imageGenerationModelIds is an execution-model directory, not a
+			// visibility index for the agent picker. It must never make an
+			// otherwise unknown models response look compatible enough to inject.
+			if lower == "imagegenerationmodelids" {
+				continue
+			}
 			if strings.HasSuffix(lower, "modelids") || strings.HasSuffix(lower, "model_ids") ||
 				key == "agentModelSorts" || key == "battleModeModelSorts" {
 				if containsModelReference(value, wanted) {

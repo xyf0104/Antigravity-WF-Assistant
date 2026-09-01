@@ -1,4 +1,35 @@
 use serde::{Deserialize, Serialize};
+
+/// A versioned, checksum-protected recovery point for one Codex config.toml
+/// mutation. It deliberately carries no filesystem path or configuration text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexConfigBackupInfo {
+    pub version: u32,
+    pub id: String,
+    pub created_at: i64,
+    pub source: String,
+    pub original_existed: bool,
+    pub bytes: u64,
+    pub sha256: String,
+    pub valid: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexConfigBackupVerification {
+    pub id: String,
+    pub valid: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexConfigRestoreResult {
+    pub restored_backup_id: String,
+    pub safety_backup_id: String,
+    pub restored: bool,
+}
 use std::collections::HashMap;
 
 fn default_token_source_mode() -> String {

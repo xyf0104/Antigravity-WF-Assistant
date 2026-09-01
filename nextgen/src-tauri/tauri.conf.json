@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "XIASS Tools",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "identifier": "com.xiass.tools",
   "build": {
     "beforeDevCommand": "node scripts/prepare-tauri.cjs && node scripts/prepare-wf-bridge-frontend.cjs && npm run dev",
@@ -52,6 +52,10 @@
     "createUpdaterArtifacts": false,
     "publisher": "XIASS Tools",
     "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "./windows/nsis/installer-hooks.nsh"
@@ -76,7 +80,19 @@
       "icons/icon.ico"
     ],
     "resources": {
+      "../../LICENSE": "licenses/XIASS-Tools-MIT.txt",
+      "../CC-BY-NC-SA-4.0-LEGALCODE.txt": "licenses/CC-BY-NC-SA-4.0-LEGALCODE.txt",
+      "../LICENSE": "licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt",
+      "../ORIGIN_AND_LICENSE.md": "licenses/ORIGIN_AND_LICENSE.md",
+      "../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "../node_modules/@tauri-apps/api/LICENSE_APACHE-2.0": "licenses/Tauri-APACHE-2.0.txt",
+      "../node_modules/@tauri-apps/api/LICENSE_MIT": "licenses/Tauri-MIT.txt",
+      "../node_modules/jsqr/LICENSE": "licenses/jsQR-APACHE-2.0.txt",
+      "../node_modules/lucide-react/LICENSE": "licenses/Lucide-ISC-and-MIT.txt",
+      "../node_modules/protobufjs/LICENSE": "licenses/protobufjs-BSD-3-Clause.txt",
+      "../node_modules/react/LICENSE": "licenses/React-MIT.txt",
       "../scripts/claude-desktop-auth-helper.cjs": "scripts/claude-desktop-auth-helper.cjs",
+      "../sidecars/cockpit-cliproxy/third_party/CLIProxyAPI/LICENSE": "licenses/CLIProxyAPI-MIT.txt",
       "../src/assets/icons/antigravity-menu.png": "native-menu-icons/antigravity-menu.png",
       "../src/assets/icons/claude.png": "native-menu-icons/claude.png",
       "../src/assets/icons/codex.svg": "native-menu-icons/codex.svg",
@@ -89,7 +105,8 @@
     ],
     "macOS": {
       "bundleName": "XIASS Tools",
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "minimumSystemVersion": "12.0"
     }
   },
   "plugins": {

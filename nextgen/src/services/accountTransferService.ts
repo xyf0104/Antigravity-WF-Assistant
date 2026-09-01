@@ -14,6 +14,14 @@ import * as traeService from './traeService';
 import * as workbuddyService from './workbuddyService';
 import * as zedService from './zedService';
 import type { ClaudeAccount } from '../types/claude';
+import {
+  exportWfHelperTransfer,
+  restoreWfHelperTransfer,
+} from './wfBridgeService';
+import {
+  XIASS_ACCOUNT_TRANSFER_SCHEMA,
+  isSupportedAccountTransferSchema,
+} from '../utils/transferSchemas';
 
 type AccountWithId = { id: string };
 
@@ -130,8 +138,31 @@ const PLATFORM_ADAPTERS: Partial<Record<PlatformId, TransferAdapter>> = {
   },
 };
 
-export const ACCOUNT_TRANSFER_SCHEMA = 'cockpit-tools.account-transfer';
-export const ACCOUNT_TRANSFER_VERSION = 1;
+export const ACCOUNT_TRANSFER_SCHEMA = XIASS_ACCOUNT_TRANSFER_SCHEMA;
+export const ACCOUNT_TRANSFER_VERSION = 2;
+const LEGACY_ACCOUNT_TRANSFER_VERSION = 1;
+
+// Only the account stores owned by the five XIASS Agent workspaces belong in
+// a newly-created backup. The embedded WF helper owns a separate credential
+// store, and inherited Cockpit adapters remain available only for local
+// backwards-compatible reads; neither boundary is silently swept into a
+// scheduled or WebDAV backup.
+export const ACCOUNT_TRANSFER_PLATFORM_IDS = [
+  'antigravity',
+  'codex',
+  'claude_manager',
+  'windsurf',
+  'cursor',
+] as const satisfies readonly PlatformId[];
+
+export interface AccountTransferCoverage {
+  included_platforms: PlatformId[];
+  excluded_platforms: PlatformId[];
+  embedded_wf_accounts: 'included_as_explicit_section';
+  credential_export: 'plaintext_user_authorized';
+  external_codex_auth: 'never_read_or_included';
+  restore_scope: 'included_platforms_and_wf_helper';
+}
 
 export interface AccountTransferPlatformPayload {
   account_count: number;
@@ -146,13 +177,16 @@ export interface AccountTransferBundle {
     platform_count: number;
     account_count: number;
   };
-  platforms: Record<PlatformId, AccountTransferPlatformPayload>;
+  coverage: AccountTransferCoverage;
+  platforms: Partial<Record<PlatformId, AccountTransferPlatformPayload>>;
+  wf_helper: unknown;
 }
 
 export interface AccountTransferPlatformImportDetail {
   platform: PlatformId;
   imported_count: number;
   skipped: boolean;
+  reason?: 'excluded_from_xiass_product_scope';
   error?: string;
 }
 
@@ -161,6 +195,9 @@ export interface AccountTransferImportResult {
   platform_success_count: number;
   platform_failed_count: number;
   platform_skipped_count: number;
+  wf_helper_restored: boolean;
+  wf_helper_account_count: number;
+  wf_helper_model_count: number;
   details: AccountTransferPlatformImportDetail[];
 }
 
@@ -176,6 +213,7 @@ export interface AccountTransferImportProgressDetail {
   status: AccountTransferImportPlatformStatus;
   expected_count: number;
   imported_count: number;
+  reason?: 'excluded_from_xiass_product_scope';
   error?: string;
 }
 
@@ -293,30 +331,47 @@ async function exportPlatformPayload(platform: PlatformId): Promise<AccountTrans
 
 export async function buildAccountTransferBundle(): Promise<AccountTransferBundle> {
   const entries: Array<readonly [PlatformId, AccountTransferPlatformPayload]> = [];
-  for (const platform of ALL_PLATFORM_IDS) {
+  for (const platform of ACCOUNT_TRANSFER_PLATFORM_IDS) {
     const payload = await exportPlatformPayload(platform);
     entries.push([platform, payload] as const);
   }
 
-  const platforms = entries.reduce<Record<PlatformId, AccountTransferPlatformPayload>>(
+  const platforms = entries.reduce<Partial<Record<PlatformId, AccountTransferPlatformPayload>>>(
     (acc, [platform, payload]) => {
       acc[platform] = payload;
       return acc;
     },
-    {} as Record<PlatformId, AccountTransferPlatformPayload>,
+    {},
   );
 
   const accountCount = entries.reduce((sum, [, payload]) => sum + payload.account_count, 0);
+  // This call is deliberately part of account export rather than best-effort:
+  // a unified backup must fail visibly if the helper-owned account/model store
+  // cannot be included.
+  const wfHelper = await exportWfHelperTransfer();
 
   return {
     schema: ACCOUNT_TRANSFER_SCHEMA,
     version: ACCOUNT_TRANSFER_VERSION,
     exported_at: new Date().toISOString(),
     summary: {
-      platform_count: ALL_PLATFORM_IDS.length,
+      platform_count: ACCOUNT_TRANSFER_PLATFORM_IDS.length,
       account_count: accountCount,
     },
+    coverage: {
+      included_platforms: [...ACCOUNT_TRANSFER_PLATFORM_IDS],
+      excluded_platforms: ALL_PLATFORM_IDS.filter(
+        (platform) => !ACCOUNT_TRANSFER_PLATFORM_IDS.includes(
+          platform as (typeof ACCOUNT_TRANSFER_PLATFORM_IDS)[number],
+        ),
+      ),
+      embedded_wf_accounts: 'included_as_explicit_section',
+      credential_export: 'plaintext_user_authorized',
+      external_codex_auth: 'never_read_or_included',
+      restore_scope: 'included_platforms_and_wf_helper',
+    },
     platforms,
+    wf_helper: wfHelper,
   };
 }
 
@@ -325,17 +380,26 @@ export async function exportAllAccountsTransferJson(): Promise<string> {
   return JSON.stringify(bundle, null, 2);
 }
 
-function parseAccountTransferBundle(jsonContent: string): Record<PlatformId, AccountTransferPlatformPayload> {
+interface ParsedAccountTransferBundle {
+  platforms: Record<PlatformId, AccountTransferPlatformPayload>;
+  present_platforms: Set<PlatformId>;
+  wf_helper: unknown | null;
+}
+
+function parseAccountTransferBundle(jsonContent: string): ParsedAccountTransferBundle {
   const parsed = parseJsonOrThrow(jsonContent, 'invalid_json');
   if (!isRecord(parsed)) {
     throw new Error('invalid_bundle_root');
   }
 
-  if (parsed.schema !== ACCOUNT_TRANSFER_SCHEMA) {
+  if (!isSupportedAccountTransferSchema(parsed.schema)) {
     throw new Error('invalid_bundle_schema');
   }
 
-  if (parsed.version !== ACCOUNT_TRANSFER_VERSION) {
+  if (
+    parsed.version !== ACCOUNT_TRANSFER_VERSION
+    && parsed.version !== LEGACY_ACCOUNT_TRANSFER_VERSION
+  ) {
     throw new Error('invalid_bundle_version');
   }
 
@@ -344,13 +408,22 @@ function parseAccountTransferBundle(jsonContent: string): Record<PlatformId, Acc
     throw new Error('invalid_bundle_platforms');
   }
 
+  const wfHelper = parsed.wf_helper;
+  if (parsed.version === ACCOUNT_TRANSFER_VERSION && !isRecord(wfHelper)) {
+    throw new Error('invalid_bundle_wf_helper');
+  }
+
   const platforms: Record<PlatformId, AccountTransferPlatformPayload> = {} as Record<
     PlatformId,
     AccountTransferPlatformPayload
   >;
+  const presentPlatforms = new Set<PlatformId>();
 
   for (const platform of ALL_PLATFORM_IDS) {
     const resolved = resolvePlatformPayload(rawPlatforms[platform]);
+    if (resolved) {
+      presentPlatforms.add(platform);
+    }
     platforms[platform] =
       resolved ??
       ({
@@ -359,7 +432,11 @@ function parseAccountTransferBundle(jsonContent: string): Record<PlatformId, Acc
       } as AccountTransferPlatformPayload);
   }
 
-  return platforms;
+  return {
+    platforms,
+    present_platforms: presentPlatforms,
+    wf_helper: isRecord(wfHelper) ? wfHelper : null,
+  };
 }
 
 export async function importAllAccountsFromTransferJson(
@@ -367,9 +444,17 @@ export async function importAllAccountsFromTransferJson(
   options: AccountTransferImportOptions = {},
 ): Promise<AccountTransferImportResult> {
   const { onProgress } = options;
-  const platforms = parseAccountTransferBundle(jsonContent);
-  const progressDetails: AccountTransferImportProgressDetail[] = ALL_PLATFORM_IDS.map((platform) => {
-    const payload = platforms[platform];
+  const parsedBundle = parseAccountTransferBundle(jsonContent);
+  const wfRestore = parsedBundle.wf_helper
+    ? await restoreWfHelperTransfer(parsedBundle.wf_helper)
+    : null;
+  const platformsToProcess = ALL_PLATFORM_IDS.filter((platform) => (
+    ACCOUNT_TRANSFER_PLATFORM_IDS.includes(
+      platform as (typeof ACCOUNT_TRANSFER_PLATFORM_IDS)[number],
+    ) || parsedBundle.present_platforms.has(platform)
+  ));
+  const progressDetails: AccountTransferImportProgressDetail[] = platformsToProcess.map((platform) => {
+    const payload = parsedBundle.platforms[platform];
     return {
       platform,
       status: 'pending',
@@ -399,12 +484,25 @@ export async function importAllAccountsFromTransferJson(
 
   emitProgress(null);
 
-  for (const platform of ALL_PLATFORM_IDS) {
+  for (const platform of platformsToProcess) {
     const adapter = PLATFORM_ADAPTERS[platform];
-    const payload = platforms[platform];
+    const payload = parsedBundle.platforms[platform];
     const data = payload.exported_data;
     const detailIndex = progressDetails.findIndex((item) => item.platform === platform);
     const detail = progressDetails[detailIndex];
+
+    if (!ACCOUNT_TRANSFER_PLATFORM_IDS.includes(
+      platform as (typeof ACCOUNT_TRANSFER_PLATFORM_IDS)[number],
+    )) {
+      progressDetails[detailIndex] = {
+        ...detail,
+        status: 'skipped',
+        imported_count: 0,
+        reason: 'excluded_from_xiass_product_scope',
+      };
+      emitProgress(null);
+      continue;
+    }
 
     if (!adapter) {
       progressDetails[detailIndex] = {
@@ -460,10 +558,12 @@ export async function importAllAccountsFromTransferJson(
     platform: item.platform,
     imported_count: item.imported_count,
     skipped: item.status === 'skipped',
+    reason: item.reason,
     error: item.status === 'failed' ? item.error : undefined,
   }));
 
-  const importedCount = details.reduce((sum, item) => sum + item.imported_count, 0);
+  const importedCount = details.reduce((sum, item) => sum + item.imported_count, 0)
+    + (wfRestore?.accountCount ?? 0);
   const platformFailedCount = details.filter((item) => item.error).length;
   const platformSkippedCount = details.filter((item) => item.skipped).length;
   const platformSuccessCount = details.length - platformFailedCount - platformSkippedCount;
@@ -473,6 +573,9 @@ export async function importAllAccountsFromTransferJson(
     platform_success_count: platformSuccessCount,
     platform_failed_count: platformFailedCount,
     platform_skipped_count: platformSkippedCount,
+    wf_helper_restored: wfRestore?.ok === true,
+    wf_helper_account_count: wfRestore?.accountCount ?? 0,
+    wf_helper_model_count: wfRestore?.modelCount ?? 0,
     details,
   };
 }

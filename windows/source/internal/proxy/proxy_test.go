@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -260,6 +261,13 @@ func TestInjectCustomModelsAddsOnlyDirectImageModelsToImageGenerationIndex(t *te
 			Configured: true, SupportsImages: true, SupportsFiles: true, SupportsToolCalls: true,
 		},
 	}
+	incompatibleImageModel := storage.CustomModel{
+		Name: "models/foreign-image", DisplayName: "Foreign image model", ExternalModelName: "dall-e-3",
+		Provider: "anthropic", APIStyle: "messages",
+		Capabilities: storage.ModelCapabilities{
+			Configured: true, SupportsImages: true, SupportsImageGeneration: true,
+		},
+	}
 	parsed := map[string]any{
 		"models": map[string]any{
 			"native-image": map[string]any{"model": "MODEL_PLACEHOLDER_M1"},
@@ -270,20 +278,22 @@ func TestInjectCustomModelsAddsOnlyDirectImageModelsToImageGenerationIndex(t *te
 		"imageGenerationModelIds": []any{"native-image"},
 	}
 
-	summary := injectCustomModels(parsed, []storage.CustomModel{imageModel, textModel})
-	if err := validateModelInjection(parsed, []storage.CustomModel{imageModel, textModel}, summary); err != nil {
+	modelsToInject := []storage.CustomModel{imageModel, textModel, incompatibleImageModel}
+	summary := injectCustomModels(parsed, modelsToInject)
+	if err := validateModelInjection(parsed, modelsToInject, summary); err != nil {
 		t.Fatal(err)
 	}
 
 	imageSlug := summary.assignments.slugs[modelPlaceholderKey(imageModel)]
 	textSlug := summary.assignments.slugs[modelPlaceholderKey(textModel)]
+	incompatibleImageSlug := summary.assignments.slugs[modelPlaceholderKey(incompatibleImageModel)]
 	imageIDs := parsed["imageGenerationModelIds"].([]any)
 	if len(imageIDs) != 2 || imageIDs[0] != imageSlug || imageIDs[1] != "native-image" {
 		t.Fatalf("image-generation index = %#v, want only %q plus native model", imageIDs, imageSlug)
 	}
 	for _, id := range imageIDs {
-		if id == textSlug {
-			t.Fatalf("text-only model leaked into image-generation index: %#v", imageIDs)
+		if id == textSlug || id == incompatibleImageSlug {
+			t.Fatalf("non-direct-image model leaked into image-generation index: %#v", imageIDs)
 		}
 	}
 	if got := summary.assignments.nativeImageModelIDs; len(got) != 1 || got[0] != "native-image" {
@@ -309,6 +319,52 @@ func TestInjectCustomModelsAddsOnlyDirectImageModelsToImageGenerationIndex(t *te
 	}
 }
 
+func TestPrependImageGenerationModelIDsAcceptsOnlyFlatStringLists(t *testing.T) {
+	cases := []struct {
+		name       string
+		value      any
+		wantChange bool
+		want       any
+	}{
+		{
+			name:       "flat string list",
+			value:      []any{"native-image"},
+			wantChange: true,
+			want:       []any{"custom-image", "native-image"},
+		},
+		{
+			name:       "mixed list",
+			value:      []any{"native-image", map[string]any{"differentProto": true}},
+			wantChange: false,
+			want:       []any{"native-image", map[string]any{"differentProto": true}},
+		},
+		{
+			name:       "map value",
+			value:      map[string]any{"differentProto": []any{"native-image"}},
+			wantChange: false,
+			want:       map[string]any{"differentProto": []any{"native-image"}},
+		},
+		{
+			name:       "scalar value",
+			value:      "native-image",
+			wantChange: false,
+			want:       "native-image",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := prependImageGenerationModelIDs(tc.value, []string{"custom-image"})
+			if changed != tc.wantChange {
+				t.Fatalf("changed = %t, want %t", changed, tc.wantChange)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("value = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInjectCustomModelsDoesNotCreateUnknownImageGenerationIndex(t *testing.T) {
 	model := storage.CustomModel{
 		Name: "models/image", DisplayName: "Image model", ExternalModelName: "gpt-image-2",
@@ -319,6 +375,39 @@ func TestInjectCustomModelsDoesNotCreateUnknownImageGenerationIndex(t *testing.T
 	injectCustomModels(parsed, []storage.CustomModel{model})
 	if _, exists := parsed["imageGenerationModelIds"]; exists {
 		t.Fatalf("older model response unexpectedly gained an image-generation index: %#v", parsed)
+	}
+}
+
+func TestInjectCustomModelsLeavesUnknownImageGenerationIndexShapeUntouched(t *testing.T) {
+	imageModel := storage.CustomModel{
+		Name: "models/image", DisplayName: "Image model", ExternalModelName: "gpt-image-2",
+		Provider: "openai", APIStyle: "responses",
+		Capabilities: storage.ModelCapabilities{Configured: true, SupportsImageGeneration: true},
+	}
+	unknownIndex := map[string]any{"differentProto": []any{"native-image"}}
+	parsed := map[string]any{
+		"models": map[string]any{"native-image": map[string]any{"model": "MODEL_PLACEHOLDER_M1"}},
+		"agentModelSorts": []any{map[string]any{
+			"groups": []any{map[string]any{"modelIds": []any{"native-image"}}},
+		}},
+		"imageGenerationModelIds": unknownIndex,
+	}
+
+	summary := injectCustomModels(parsed, []storage.CustomModel{imageModel})
+	if err := validateModelInjection(parsed, []storage.CustomModel{imageModel}, summary); err != nil {
+		t.Fatal(err)
+	}
+	gotIndex, ok := parsed["imageGenerationModelIds"].(map[string]any)
+	if !ok {
+		t.Fatalf("unknown image-generation index was replaced: %#v", parsed["imageGenerationModelIds"])
+	}
+	if got := gotIndex["differentProto"].([]any); len(got) != 1 || got[0] != "native-image" {
+		t.Fatalf("unknown image-generation index was modified: %#v", gotIndex)
+	}
+	for _, path := range summary.indexPaths {
+		if path == "imageGenerationModelIds" {
+			t.Fatalf("unknown image-generation index was treated as a recognized schema: %#v", summary.indexPaths)
+		}
 	}
 }
 

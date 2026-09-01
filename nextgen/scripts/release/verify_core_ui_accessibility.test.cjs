@@ -32,15 +32,149 @@ test('Codex provider searches expose stable accessible names', () => {
   assert.doesNotMatch(source, /placeholder=\{t\("common\.search", "搜索\.\.\."\)\}/);
 });
 
+test('Codex provider toolbars and editor modal expose accessible controls', () => {
+  const source = read('src/components/codex/CodexModelProviderManagerView.tsx');
+  const toolbarStart = source.indexOf('<div className="toolbar">');
+  const toolbarEnd = source.indexOf('{error &&', toolbarStart);
+  const toolbar = source.slice(toolbarStart, toolbarEnd);
+
+  assert.ok(toolbarStart >= 0 && toolbarEnd > toolbarStart);
+  for (const label of [
+    'accounts.view.compact',
+    'common.shared.view.grid',
+    'common.shared.refreshQuota',
+    'codex.modelProviders.add',
+    'codex.modelProviders.quickConfig.title',
+  ]) {
+    assert.ok(
+      toolbar.includes(`aria-label={t("${label}"`),
+      `toolbar icon button must expose ${label}`,
+    );
+  }
+  assert.match(toolbar, /aria-label=\{`\$\{t\("common\.delete", "删除"\)\} \(\$\{selectedProviderIds\.size\}\)`\}/);
+  assert.match(source, /className="card-actions"[\s\S]*aria-label=\{enableProviderLabel\}/);
+  assert.match(source, /className="modal codex-provider-modal"[\s\S]*role="dialog"[\s\S]*aria-modal="true"[\s\S]*aria-labelledby="codex-provider-dialog-title"/);
+  assert.match(source, /<h2\s+id="codex-provider-dialog-title"\s+ref=\{providerDialogTitleRef\}\s+tabIndex=\{-1\}/);
+  assert.match(source, /if \(!showModal\) return;[\s\S]*providerDialogTitleRef\.current\?\.focus\(\);[\s\S]*\}, \[showModal\]\);/);
+});
+
+test('Codex provider discovery keeps fetched models as an explicit selectable catalog', () => {
+  const controller = read('src/components/codex/CodexModelProviderManager.tsx');
+  const view = read('src/components/codex/CodexModelProviderManagerView.tsx');
+  const styles = read('src/styles/pages/codex-account-dialogs.css');
+
+  assert.match(controller, /setDiscoveredModelCatalog\(models\)/);
+  assert.match(controller, /toggleDiscoveredModel/);
+  assert.match(controller, /toggleAllDiscoveredModels/);
+  assert.match(controller, /updateSelectedModelCatalog/);
+  assert.match(view, /type="checkbox"/);
+  assert.match(view, /codex-provider-model-catalog__list/);
+  assert.match(view, /手动编辑模型 ID/);
+  assert.match(styles, /\.codex-provider-modal \.codex-provider-model-catalog__list\s*\{/);
+  assert.match(styles, /grid-template-columns:\s*repeat\(auto-fit, minmax\(190px, 1fr\)\);/);
+  assert.match(styles, /\.codex-provider-modal \.codex-provider-model-catalog__item:has\(input:checked\)/);
+});
+
+test('Codex new-provider dialog exposes only XIASS product entry points', () => {
+  const source = read('src/components/codex/CodexModelProviderManagerView.tsx');
+  const presets = read('src/utils/codexProviderPresets.ts');
+  const visibleIds = presets.match(
+    /const XIASS_VISIBLE_CODEX_PROVIDER_IDS = new Set\(\[([\s\S]*?)\]\);/,
+  )?.[1] || '';
+
+  assert.match(source, /XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS\.map/);
+  assert.match(source, /CODEX_API_PROVIDER_CUSTOM_ID/);
+  assert.doesNotMatch(source, /sponsorProviderTemplates\.map/);
+  assert.doesNotMatch(source, /CODEX_API_PROVIDER_PRESETS\.filter/);
+  assert.match(visibleIds, /COCKPIT_API_PROVIDER_ID/);
+  assert.match(visibleIds, /"openai_official"/);
+  assert.match(visibleIds, /"azure_openai"/);
+  assert.equal((visibleIds.match(/,\s*(?:\n|$)/g) || []).length, 3);
+});
+
+test('Codex provider save preview follows XIASS-managed storage instead of legacy paths', () => {
+  const controller = read('src/components/codex/CodexModelProviderManager.tsx');
+  const view = read('src/components/codex/CodexModelProviderManagerView.tsx');
+  const changelog = read('CHANGELOG.md');
+  const changelogZhCn = read('CHANGELOG.zh-CN.md');
+  const fr = JSON.parse(read('src/locales/fr.json'));
+  const ptBr = JSON.parse(read('src/locales/pt-br.json'));
+
+  assert.match(
+    controller,
+    /providerStorePath:\s*"~\/\.xiass_tools\/codex_model_providers\.json"/,
+  );
+  assert.match(
+    controller,
+    /join\(home, "\.xiass_tools", "codex_model_providers\.json"\)/,
+  );
+  assert.doesNotMatch(controller, /\.antigravity_cockpit\/codex_model_providers\.json/);
+  assert.match(view, /previewPaths\.providerStorePath/);
+  assert.match(view, /"XIASS Tools 模型供应商数据"/);
+
+  assert.match(changelog, /from earlier supported releases/);
+  assert.doesNotMatch(changelog, /legacy Cockpit account data/);
+  assert.match(changelogZhCn, /历史版本的账号数据/);
+  assert.doesNotMatch(changelogZhCn, /旧 Cockpit 账号数据/);
+
+  assert.equal(fr.settings.network.apiTitle, 'API locale XIASS Tools');
+  assert.match(fr.codex.modelProviders.preview.providerStoreTitle, /XIASS Tools/);
+  assert.equal(ptBr.settings.network.apiTitle, 'API local do XIASS Tools');
+  assert.match(ptBr.codex.modelProviders.preview.providerStoreTitle, /XIASS Tools/);
+});
+
 test('dashboard stat cards separate navigation from the interactive icon', () => {
   const source = read('src/pages/DashboardPage.tsx');
   const styles = read('src/pages/DashboardPage.css');
 
   assert.match(source, /className=\{`stat-icon-bg \$\{iconClass\} stat-icon-trigger`\}/);
-  assert.match(source, /aria-label=\{t\('dashboard\.interactiveIcon', '互动图标'\)\}/);
+  assert.match(
+    source,
+    /aria-label=\{`\$\{label\} · \$\{t\('dashboard\.interactiveIcon', '互动图标'\)\}`\}/,
+  );
   assert.match(source, /className="stat-card-navigation"/);
   assert.doesNotMatch(source, /className=\{`stat-icon-bg[^]*?onClick=\{\(event\) =>/);
   assert.match(styles, /\.stat-card-navigation\s*\{[^}]*flex:\s*1 1 auto;/s);
+
+  const halfLabelRule = styles.match(/\.half-label\s*\{([\s\S]*?)\}/)?.[1] || '';
+  const emptySlotRule = styles.match(/\.empty-slot\s*\{([\s\S]*?)\}/)?.[1] || '';
+  const emptyTextRule = styles.match(/\.empty-slot-text, \.no-data-text\s*\{([\s\S]*?)\}/)?.[1] || '';
+  assert.match(halfLabelRule, /color:\s*var\(--text-secondary\);/);
+  assert.match(emptySlotRule, /color:\s*var\(--text-secondary\);/);
+  assert.match(emptyTextRule, /color:\s*var\(--text-secondary\);/);
+});
+
+test('theme preference is persisted before a quick Settings-page navigation can restore stale UI', () => {
+  const source = read('src/pages/SettingsPage.tsx');
+  const app = read('src/App.tsx');
+  const boot = read('index.html');
+  const preference = read('src/utils/themePreference.ts');
+
+  assert.match(source, /const pendingImmediateThemeRef = useRef<string \| null>\(null\);/);
+  assert.match(source, /const handleThemePreferenceChange = \(rawTheme: string\) => \{/);
+  assert.match(source, /generalStateRevisionRef\.current \+= 1;/);
+  assert.match(source, /if \(stateRevisionAtStart !== generalStateRevisionRef\.current\)/);
+  assert.match(source, /controllerDisposedRef\.current/);
+  assert.match(source, /await invoke\('patch_general_config', \{ updates: \{ theme: nextTheme \} \}\);/);
+  assert.match(source, /dispatchThemePreferenceIntent\(nextTheme\);/);
+  assert.match(source, /setTheme: handleThemePreferenceChange,/);
+  assert.match(
+    source,
+    /key === 'theme' && pendingImmediateThemeRef\.current === value/,
+  );
+  assert.match(app, /let visualConfigRequestVersion = 0;/);
+  assert.match(app, /requestVersion !== visualConfigRequestVersion/);
+  assert.match(app, /THEME_PREFERENCE_INTENT_EVENT/);
+  assert.match(app, /resolveThemePreference\(config\.theme\)/);
+  assert.match(source, /resolveThemePreference\(config\.theme\)/);
+  assert.match(preference, /export const readPersistedThemePreference/);
+  assert.match(preference, /return persistedPreference \?\? normalizedNativePreference;/);
+  assert.match(boot, /xiass\.tools\.theme-preference/);
+  assert.match(
+    boot,
+    /html\[data-theme="light"\][\s\S]*?radial-gradient\(circle at 12% 10%, rgba\(29, 78, 216, 0\.12\), transparent 45%\),[\s\S]*?linear-gradient\(180deg, #f8f7f4 0%, #eef1f6 100%\);/,
+  );
+  assert.match(boot, /document\.documentElement\.setAttribute\('data-theme', resolvedTheme\);/);
 });
 
 test('settings switches inherit their visible row title when the switch label has no text', () => {
@@ -97,6 +231,314 @@ test('WebDAV actions respond to the settings canvas width instead of the viewpor
   assert.match(source, /aria-expanded=\{isRemoteExpanded\}/);
   assert.match(source, /<ChevronRight size=\{16\} aria-hidden="true" \/>/);
   assert.doesNotMatch(source, /settings-webdav-remote-header"\s*\n\s*style=\{\{ cursor:/);
+});
+
+test('all settings controls respond to their remaining canvas width', () => {
+  const styles = read('src/pages/settings/Settings.css');
+
+  assert.match(styles, /@container\s+settings-surface\s*\(max-width:\s*720px\)/);
+  assert.match(styles, /@container\s+settings-surface[\s\S]*?\.settings-row,[\s\S]*?flex-direction:\s*column;/);
+  assert.match(styles, /@container\s+settings-surface[\s\S]*?\.row-control[\s\S]*?width:\s*100%;/);
+  assert.match(styles, /@container\s+settings-surface\s*\(min-width:\s*721px\)\s*and\s*\(max-width:\s*960px\)/);
+});
+
+test('Agent workspaces keep Cockpit page hierarchy and one continuous document scroll', () => {
+  const workspaceStyles = read('src/pages/XiassAgentWorkspace.css');
+  const layoutStyles = read('src/styles/layout.css');
+  const componentStyles = read('src/styles/components.css');
+  const workspaceRoot = workspaceStyles.match(/\.xiass-agent-workspace\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const tabsRow = workspaceStyles.match(/\.xiass-agent-workspace__tabs-row\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const canvas = workspaceStyles.match(/\.xiass-agent-workspace__canvas\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const native = workspaceStyles.match(/\.xiass-agent-workspace__native\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const panelRules = [...workspaceStyles.matchAll(/(?:^|\n)\.xiass-agent-workspace__panel\s*\{([\s\S]*?)\n\}/g)];
+  const panel = panelRules.at(-1)?.[1] || '';
+  const mainWrapper = componentStyles.match(/\.main-wrapper\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const workspaceWrapper = componentStyles.match(/\.main-wrapper:has\(\.xiass-agent-workspace\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+
+  assert.match(workspaceStyles, /container-name:\s*xiass-workspace;/);
+  assert.match(workspaceStyles, /@container\s+xiass-workspace\s*\(max-width:\s*900px\)/);
+  assert.match(workspaceRoot, /display:\s*flex;/);
+  assert.match(workspaceRoot, /flex-direction:\s*column;/);
+  assert.match(workspaceRoot, /--workspace-frame-fallback:\s*max\(520px, calc\(100dvh\s*-\s*144px\)\);/);
+  assert.match(workspaceRoot, /gap:\s*0;/);
+  assert.doesNotMatch(workspaceRoot, /(?:^|\n)\s*height:\s*/);
+  assert.match(tabsRow, /min-width:\s*0;/);
+  assert.match(tabsRow, /padding-bottom:\s*10px;/);
+  assert.match(canvas, /display:\s*block;/);
+  assert.match(canvas, /min-height:\s*0;/);
+  assert.match(canvas, /overflow:\s*visible;/);
+  assert.match(native, /height:\s*var\(--xiass-embedded-frame-height, var\(--workspace-frame-fallback\)\);/);
+  assert.match(panel, /height:\s*auto;/);
+  assert.match(panel, /min-height:\s*0;/);
+  assert.match(panel, /overflow:\s*visible;/);
+  assert.match(mainWrapper, /height:\s*100dvh;/);
+  assert.match(mainWrapper, /overflow-y:\s*auto;/);
+  assert.match(mainWrapper, /scrollbar-gutter:\s*stable;/);
+  assert.doesNotMatch(mainWrapper, /overflow-y:\s*overlay;/);
+  assert.match(workspaceWrapper, /padding-top:\s*8px;/);
+  assert.match(workspaceWrapper, /padding-bottom:\s*24px;/);
+  assert.match(workspaceWrapper, /scroll-padding-block:\s*8px\s+24px;/);
+  assert.match(layoutStyles, /--side-nav-classic-content-start:\s*calc\(/);
+  assert.match(layoutStyles, /max-width:\s*calc\(100%\s*-\s*var\(--side-nav-classic-content-start\)\);/);
+
+  const workspace = read('src/pages/XiassAgentWorkspace.tsx');
+  assert.match(workspace, /className="page-tabs-row page-tabs-center page-tabs-row-with-leading xiass-agent-workspace__tabs-row"/);
+  assert.match(workspace, /<PlatformGroupSwitcher/);
+  assert.match(workspace, /className="page-top-strip xiass-agent-workspace__top-strip"/);
+  assert.match(workspace, /<span className="page-top-strip-label xiass-agent-workspace__page-label">\s*账号\s*<\/span>/);
+  assert.doesNotMatch(workspace, /本机工作台/);
+  assert.doesNotMatch(workspace, /xiass-agent-workspace__masthead/);
+  assert.doesNotMatch(workspaceStyles, /grid-template-columns:\s*repeat\(auto-fill, minmax\(228px, 1fr\)\)/);
+});
+
+test('window drag affordance cannot cover compact Agent workspace controls', () => {
+  const app = read('src/App.tsx');
+  const layoutStyles = read('src/styles/layout.css');
+  const dragRegion = layoutStyles.match(/\.drag-region\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const dragHandle = layoutStyles.match(/\.drag-region__handle\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+
+  assert.match(app, /className="drag-region"\s+aria-hidden="true"/);
+  assert.match(app, /className="drag-region__handle"\s+data-tauri-drag-region/);
+  assert.match(dragRegion, /pointer-events:\s*none;/);
+  assert.doesNotMatch(dragRegion, /-webkit-app-region:\s*drag;/);
+  assert.match(dragHandle, /left:\s*112px;/);
+  assert.match(dragHandle, /width:\s*64px;/);
+  assert.match(dragHandle, /pointer-events:\s*auto;/);
+  assert.match(dragHandle, /-webkit-app-region:\s*drag;/);
+  assert.match(
+    layoutStyles,
+    /\.app-container-side-nav-classic \.drag-region__handle\s*\{[\s\S]*?left:\s*calc\(var\(--side-nav-classic-width-expanded\) \+ 8px\);/,
+  );
+});
+
+test('classic sidebar keeps its collapse control inside a full-width collapsed rail', () => {
+  const source = read('src/components/layout/SideNav.tsx');
+  const styles = read('src/styles/layout.css');
+  const handleRule = styles.match(/(?:^|\n)\.side-nav-classic-handle\s*\{([\s\S]*?)\}/)?.[1] || '';
+  const handleIndex = source.indexOf('className={`side-nav-classic-handle');
+  const closingNavIndex = source.lastIndexOf('</nav>');
+
+  assert.ok(handleIndex >= 0 && handleIndex < closingNavIndex);
+  assert.match(styles, /--side-nav-classic-width-collapsed:\s*112px;/);
+  assert.match(styles, /--side-nav-classic-collapsed-item-width-scaled:\s*clamp\(54px,/);
+  assert.match(handleRule, /position:\s*static;/);
+  assert.doesNotMatch(handleRule, /transform:\s*translate/);
+});
+
+test('embedded workspaces paint a theme-matched first frame on both platforms', () => {
+  const embeddedRoots = [
+    path.resolve(NEXTGEN_ROOT, '..', 'macos', 'source', 'frontend'),
+    path.resolve(NEXTGEN_ROOT, '..', 'windows', 'source', 'frontend'),
+  ];
+
+  for (const root of embeddedRoots) {
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+    const app = fs.readFileSync(path.join(root, 'src', 'App.vue'), 'utf8');
+    assert.match(html, /<meta name="theme-color" content="#071c27"\s*\/>/);
+    assert.match(html, /new URLSearchParams\(window\.location\.search\)\.get\('theme'\)/);
+    assert.match(html, /html\[data-theme="light"\][\s\S]*?background:\s*#f6f5f2;/);
+    assert.doesNotMatch(html, /background:\s*(?:white|#fff(?:fff)?)(?:;|\s)/i);
+    assert.match(app, /type:\s*"xiass-wf-ready"/);
+  }
+
+  const workspace = read('src/pages/XiassAgentWorkspace.tsx');
+  const twoFactor = read('src/pages/TwoFactorAuthPage.tsx');
+  const twoFactorStyles = read('src/pages/TwoFactorAuthPage.css');
+  assert.match(
+    workspace,
+    /if\s*\(event\.data\?\.type === 'xiass-wf-ready'\)\s*\{\s*setIframeReady\(true\);\s*return;/,
+  );
+  assert.match(workspace, /iframeReady \? ' is-ready' : ''/);
+  assert.match(twoFactor, /event\.data\?\.type !== 'xiass-wf-ready'/);
+  assert.match(twoFactor, /iframeReady \? ' is-ready' : ''/);
+  assert.match(
+    twoFactorStyles,
+    /\.two-factor-secure-page__iframe\s*\{[\s\S]*?--embedded-frame-background:\s*var\(--bg-primary\);/,
+  );
+});
+
+test('embedded WF workspaces hand their full document height to the main XIASS scroll surface', () => {
+  const workspace = read('src/pages/XiassAgentWorkspace.tsx');
+  const workspaceStyles = read('src/pages/XiassAgentWorkspace.css');
+
+  assert.match(workspace, /const EMBEDDED_WORKSPACE_MIN_HEIGHT = 520;/);
+  assert.match(workspace, /const EMBEDDED_WORKSPACE_MAX_HEIGHT = 32_000;/);
+  assert.match(workspace, /function normalizeEmbeddedWorkspaceHeight\(value: unknown\): number \| null/);
+  assert.match(workspace, /event\.data\?\.type === 'xiass-wf-content-height'/);
+  assert.match(workspace, /setIframeContentHeight\(\(current\)/);
+  assert.match(workspace, /--xiass-embedded-frame-height/);
+  assert.match(workspace, /activeTarget\?\.kind !== 'native' \|\| iframeContentHeight === null/);
+  assert.match(
+    workspaceStyles,
+    /height:\s*var\(--xiass-embedded-frame-height, var\(--workspace-frame-fallback\)\);/,
+  );
+
+  for (const platform of ['macos', 'windows']) {
+    const app = fs.readFileSync(
+      path.resolve(NEXTGEN_ROOT, '..', platform, 'source', 'frontend', 'src', 'App.vue'),
+      'utf8',
+    );
+    const styles = fs.readFileSync(
+      path.resolve(NEXTGEN_ROOT, '..', platform, 'source', 'frontend', 'src', 'style', 'global.css'),
+      'utf8',
+    );
+    assert.match(app, /type:\s*"xiass-wf-content-height"/);
+    assert.match(app, /new ResizeObserver\(scheduleEmbeddedContentHeight\)/);
+    assert.match(app, /const shell = document\.querySelector\("\.shell"\);/);
+    assert.doesNotMatch(app, /document\.documentElement\.scrollHeight/);
+    assert.match(app, /\[document\.body, document\.getElementById\("app"\), document\.querySelector\("\.shell"\)\]/);
+    assert.match(app, /\.shell\.embedded \{[\s\S]*?height:\s*auto;/);
+    assert.match(app, /\.shell\.embedded \.main \{[\s\S]*?overflow:\s*visible;/);
+    assert.match(
+      styles,
+      /:root\[data-embedded="true"\],\s*:root\[data-embedded="true"\] body,\s*:root\[data-embedded="true"\] #app\s*\{[\s\S]*?height:\s*auto;[\s\S]*?overflow:\s*visible;/,
+    );
+  }
+});
+
+test('embedded agent toolbars remove duplicate titles while preserving local actions', () => {
+  for (const platform of ['macos', 'windows']) {
+    const tools = fs.readFileSync(
+      path.resolve(NEXTGEN_ROOT, '..', platform, 'source', 'frontend', 'src', 'views', 'Tools.vue'),
+      'utf8',
+    );
+
+    assert.match(tools, /:global\(:root\[data-embedded="true"\] \.tools-view\)/);
+    assert.match(tools, /:global\(:root\[data-embedded="true"\] \.tools-heading\)\s*\{\s*display:\s*none;/);
+    assert.match(tools, /:global\(:root\[data-embedded="true"\] \.tools-header\)\s*\{[\s\S]*?min-height:\s*38px;[\s\S]*?justify-content:\s*flex-end;/);
+    assert.doesNotMatch(tools, /:global\(:root\[data-embedded="true"\]\) \./);
+    assert.match(tools, /grid-auto-flow:\s*column;/);
+    assert.match(tools, /overflow-x:\s*auto;/);
+  }
+});
+
+test('unified account workspaces start compact while keeping explanatory notices available', () => {
+  const sharedPageHook = read('src/hooks/useProviderAccountsPage.ts');
+  const claudePage = read('src/pages/ClaudeAccountsPage.tsx');
+  const glassStyles = read('src/styles/xiass-liquid-glass.css');
+
+  assert.match(sharedPageHook, /const flowNoticePreferenceKey = flowNoticeCollapsedKey\s*\? `\$\{flowNoticeCollapsedKey\}\.v2`/);
+  assert.match(sharedPageHook, /return persisted === null \? true : persisted === '1';/);
+  assert.match(claudePage, /CLAUDE_FLOW_NOTICE_COLLAPSED_KEY = 'agtools\.claude\.flow_notice_collapsed\.v2';/);
+  assert.match(claudePage, /return stored !== 'false';/);
+  assert.match(glassStyles, /\.xiass-agent-workspace__panel \.ghcp-flow-notice-toggle\s*\{[\s\S]*?min-height:\s*36px !important;/);
+  assert.match(glassStyles, /\.xiass-agent-workspace__panel :is\(\.ghcp-accounts-page, \.codex-accounts-page\)\s*\{[\s\S]*?gap:\s*10px;/);
+  assert.match(glassStyles, /\.xiass-agent-workspace__panel \.toolbar\s*\{[\s\S]*?padding:\s*7px 9px;/);
+  assert.match(glassStyles, /\.xiass-agent-workspace__panel \.toolbar :is\([\s\S]*?min-height:\s*44px !important;/);
+});
+
+test('light theme restores the original Cockpit canvas and avoids dark loading flashes', () => {
+  const styles = read('src/styles/xiass-liquid-glass.css');
+  const base = read('src/styles/base.css');
+  const workspace = read('src/pages/XiassAgentWorkspace.css');
+  const boot = read('index.html');
+  const lightBackground = styles.match(
+    /\[data-theme='light'\] body,\s*html\[data-theme='light'\] body\s*\{([\s\S]*?)\n\}/,
+  )?.[1] || '';
+  const lightTokens = styles.match(
+    /html\[data-theme='light'\]\s*\{([\s\S]*?)\n\}/,
+  )?.[1] || '';
+
+  assert.match(base, /--bg-card:\s*rgba\(255, 255, 255, 0\.75\);/);
+  assert.match(lightTokens, /--primary:\s*#1d4ed8;/);
+  assert.match(lightTokens, /--accent:\s*#0ea5a5;/);
+  assert.match(lightTokens, /--bg-primary:\s*#f6f5f2;/);
+  assert.match(lightTokens, /--bg-secondary:\s*#ffffff;/);
+  assert.match(lightTokens, /--bg-card:\s*rgba\(255, 255, 255, 0\.75\);/);
+  assert.match(lightTokens, /--text-primary:\s*#0f172a;/);
+  assert.match(lightBackground, /linear-gradient\(180deg, #f8f7f4 0%, #eef1f6 100%\)\s*!important;/);
+  assert.doesNotMatch(lightBackground, /xiass-api-space-bg/);
+  assert.match(lightBackground, /color:\s*var\(--text-primary\);/);
+  assert.match(lightBackground, /color-scheme:\s*light;/);
+  assert.match(styles, /html\[data-theme='light'\]\s*\{[\s\S]*?--xiass-glass-blur:\s*none;/);
+  assert.match(
+    styles,
+    /html\[data-theme='light'\] #app-boot-splash\s*\{[\s\S]*?radial-gradient\(circle at 12% 10%, rgba\(29, 78, 216, 0\.12\), transparent 45%\),[\s\S]*?linear-gradient\(180deg, #f8f7f4 0%, #eef1f6 100%\)\s*!important;[\s\S]*?color:\s*#0f172a;/,
+  );
+  assert.match(workspace, /--embedded-frame-background, var\(--bg-primary\)/);
+  assert.match(workspace, /--embedded-frame-background:\s*var\(--bg-primary\);/);
+  assert.match(
+    boot,
+    /html\[data-theme="light"\][\s\S]*?radial-gradient\(circle at 12% 10%, rgba\(29, 78, 216, 0\.12\), transparent 45%\),[\s\S]*?linear-gradient\(180deg, #f8f7f4 0%, #eef1f6 100%\);/,
+  );
+  assert.doesNotMatch(boot, /#06131f 0%, #082630 58%, #0a313b 100%/);
+  assert.match(styles, /Restore the original light presentation after the shared dark glass rules/);
+  assert.match(
+    styles,
+    /html\[data-theme='light'\] :is\([\s\S]*?\.modal-content,[\s\S]*?backdrop-filter:\s*none !important;/,
+  );
+  assert.match(
+    styles,
+    /html\[data-theme='light'\] \.settings-container \.group-title[\s\S]*?color:\s*var\(--text-primary\) !important;[\s\S]*?text-shadow:\s*none;/,
+  );
+  assert.doesNotMatch(styles, /\.settings-container \.group-title[\s\S]{0,180}color:\s*#effcff;/);
+  assert.match(
+    styles,
+    /html\[data-theme='light'\] \.side-nav\.side-nav-classic\s*\{[\s\S]*?background:\s*var\(--bg-secondary\) !important;/,
+  );
+  assert.match(
+    styles,
+    /html\[data-theme='light'\] \.side-nav\.side-nav-classic \.nav-item\.active\s*\{[\s\S]*?background:\s*var\(--primary-light\);[\s\S]*?color:\s*var\(--primary\);/,
+  );
+  assert.match(
+    styles,
+    /\.card,[\s\S]*?background:\s*linear-gradient\([\s\S]*?var\(--xiass-glass-surface\)\s*!important;/,
+  );
+
+  for (const platform of ['macos', 'windows']) {
+    const embeddedStyles = fs.readFileSync(
+      path.resolve(NEXTGEN_ROOT, '..', platform, 'source', 'frontend', 'src', 'style', 'global.css'),
+      'utf8',
+    );
+    const embeddedLightTokens = embeddedStyles.match(
+      /:root\[data-theme="light"\]\s*\{([\s\S]*?)\n\}/,
+    )?.[1] || '';
+    assert.match(embeddedLightTokens, /--bg-base:\s*#f6f5f2;/);
+    assert.match(embeddedLightTokens, /--bg-elevated:\s*#ffffff;/);
+    assert.match(embeddedLightTokens, /--bg-card:\s*rgba\(255, 255, 255, 0\.75\);/);
+    assert.match(embeddedLightTokens, /--text-primary:\s*#0f172a;/);
+    assert.match(embeddedLightTokens, /--accent:\s*#1d4ed8;/);
+  }
+});
+
+test('browser preview reads the app version from the release source of truth', () => {
+  const source = read('src/main.tsx');
+
+  assert.match(source, /import packageJson from "\.\.\/package\.json";/);
+  assert.match(source, /const BROWSER_PREVIEW_APP_VERSION = packageJson\.version;/);
+  assert.match(source, /if \(command === "plugin:app\|version"\)\s*\{\s*return BROWSER_PREVIEW_APP_VERSION;/);
+  assert.doesNotMatch(source, /return "1\.7\.0";/);
+});
+
+test('About keeps upstream attribution behind an accessible license-notice dialog', () => {
+  const source = read('src/pages/SettingsPageView.tsx');
+  const service = read('src/services/legalNoticesService.ts');
+  const styles = read('src/pages/settings/Settings.css');
+
+  assert.match(source, /const \[licenseNoticeOpen, setLicenseNoticeOpen\] = useState\(false\);/);
+  assert.match(source, /useEscClose\(licenseNoticeOpen, \(\) => setLicenseNoticeOpen\(false\)\);/);
+  assert.match(source, /aria-haspopup="dialog"/);
+  assert.match(source, /aria-expanded=\{licenseNoticeOpen\}/);
+  assert.match(source, /role="dialog"[\s\S]*aria-modal="true"[\s\S]*aria-labelledby="settings-license-title"/);
+  assert.match(source, /role="tablist"[\s\S]*settings-license-tab/);
+  assert.match(source, /settings-license-document[\s\S]*role="tabpanel"/);
+  assert.match(source, /onKeyDown=\{\(event\) => handleLegalNoticeTabKeyDown\(event, index\)\}/);
+  assert.match(source, /onKeyDown=\{handleLicenseDialogKeyDown\}/);
+  assert.match(source, /data-license-dialog-focusable/);
+  assert.match(source, /legalNoticesReloadVersion/);
+  assert.match(source, /role="alert"/);
+  assert.match(source, /retryLegalNoticeLoad/);
+  assert.match(source, /aria-busy=\{legalNoticesLoading\}/);
+  assert.match(source, /loadLegalNotices\(\)/);
+  assert.match(service, /invoke<unknown>\('load_legal_notices'\)/);
+  assert.match(service, /LEGAL_NOTICE_IDS/);
+  assert.match(service, /notices\.length !== LEGAL_NOTICE_IDS\.length/);
+  assert.match(service, /returnedIds\.size !== LEGAL_NOTICE_IDS\.length/);
+  assert.match(styles, /\.settings-license-body\s*\{[\s\S]*?overflow:\s*auto;/);
+  assert.match(styles, /\.settings-license-document:focus-visible/);
+  assert.match(styles, /@media \(max-width: 720px\)[\s\S]*?\.settings-license-layout\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/);
+  assert.doesNotMatch(source, /github\.com\/jlcodes99\/cockpit-tools|CC BY-NC-SA 4\.0/);
+  assert.doesNotMatch(source, /settings\.about\.upstreamAttribution/);
 });
 
 test('reachable workspaces avoid structural emoji and broad transitions', () => {
@@ -325,4 +767,92 @@ test('page titles use theme text while manual information blocks use vector icon
   assert.match(manualSource, /<ListChecks size=\{16\} aria-hidden="true" \/>/);
   assert.match(manualSource, /<TriangleAlert size=\{16\} aria-hidden="true" \/>/);
   assert.doesNotMatch(manualSource, /<h4>💡|<h4>🎯|<h4>⚠️/);
+});
+
+test('Codex config recovery service keeps the Tauri contract metadata-only', () => {
+  const service = read('src/services/codexService.ts');
+  const types = read('src/types/codex.ts');
+  const metadata = types.match(/export interface CodexConfigBackupInfo\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const verification = types.match(
+    /export interface CodexConfigBackupVerification\s*\{([\s\S]*?)\n\}/,
+  )?.[1] || '';
+  const restore = types.match(/export interface CodexConfigRestoreResult\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+
+  assert.match(service, /export async function listCodexConfigBackups\(\): Promise<CodexConfigBackupInfo\[\]>\s*\{[\s\S]{0,180}?invoke\('list_codex_config_backups'\)/);
+  assert.match(service, /export async function verifyCodexConfigBackup\([\s\S]{0,220}?invoke\('verify_codex_config_backup', \{ backupId \}\)/);
+  assert.match(service, /export async function restoreCodexConfigBackup\([\s\S]{0,220}?invoke\('restore_codex_config_backup', \{ backupId \}\)/);
+
+  assert.match(metadata, /\bcreatedAt:\s*number;/);
+  assert.match(metadata, /\bsource:\s*string;/);
+  assert.match(metadata, /\bbytes:\s*number;/);
+  assert.match(metadata, /\bvalid:\s*boolean;/);
+  assert.doesNotMatch(metadata, /\b(?:path|content|snapshot|backupDir|configPath)\b/i);
+  assert.match(verification, /\bid:\s*string;/);
+  assert.match(verification, /\bvalid:\s*boolean;/);
+  assert.match(restore, /\brestoredBackupId:\s*string;/);
+  assert.match(restore, /\bsafetyBackupId:\s*string;/);
+  assert.doesNotMatch(restore, /\b(?:path|content|snapshot|backupDir|configPath)\b/i);
+});
+
+test('Codex config recovery UI guards a verified restore without rendering secret config data', (t) => {
+  const componentDirectory = path.join(NEXTGEN_ROOT, 'src', 'components', 'codex');
+  const candidates = [
+    'CodexConfigRecoveryModal.tsx',
+    'CodexConfigBackupsModal.tsx',
+    'CodexConfigBackupRecoveryModal.tsx',
+  ];
+  let recoveryPath = candidates
+    .map((candidate) => path.join(componentDirectory, candidate))
+    .find((candidate) => fs.existsSync(candidate));
+
+  if (!recoveryPath && fs.existsSync(componentDirectory)) {
+    const stack = [componentDirectory];
+    while (stack.length > 0 && !recoveryPath) {
+      const directory = stack.pop();
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(entryPath);
+          continue;
+        }
+        if (!/\.(?:tsx|ts)$/.test(entry.name)) continue;
+        const source = fs.readFileSync(entryPath, 'utf8');
+        if (
+          source.includes('verifyCodexConfigBackup(') &&
+          source.includes('restoreCodexConfigBackup(')
+        ) {
+          recoveryPath = entryPath;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!recoveryPath) {
+    t.skip('Codex configuration recovery UI has not been added yet');
+    return;
+  }
+
+  const source = fs.readFileSync(recoveryPath, 'utf8');
+  const quickConfig = read('src/components/codex/CodexQuickConfigCard.tsx');
+
+  assert.match(source, /role="dialog"/);
+  assert.match(source, /aria-modal=(?:"true"|\{true\})/);
+  assert.match(source, /aria-labelledby=/);
+  assert.match(source, /verifyCodexConfigBackup\(/);
+  assert.match(source, /restoreCodexConfigBackup\(/);
+  assert.match(source, /useEscClose\(open && !interactionLocked, requestClose\)/);
+  assert.match(source, /disabled=\{interactionLocked\}/);
+  assert.match(
+    source,
+    /if\s*\([^)]*(?:verification|verified|canRestore|restoreReady)[^)]*\)[\s\S]{0,900}?restoreCodexConfigBackup\(/i,
+    'restoring must remain guarded by a current verification result',
+  );
+  assert.doesNotMatch(source, /\b(?:backup|selectedBackup)\.(?:content|path|configPath|snapshot|sha256)\b/i);
+  assert.doesNotMatch(source, /getCodexConfigTomlPath\(/);
+  assert.match(
+    quickConfig,
+    /(?:CodexConfigRecovery|CodexConfigBackup|showRecovery|恢复点)/,
+    'the quick-config dialog should expose the recovery entry point',
+  );
 });

@@ -64,21 +64,16 @@ const IMPORT_TARGET_PAGES: ReadonlySet<Page> = new Set<Page>([
   'overview',
   'codex',
   'claude',
-  'github-copilot',
   'windsurf',
-  'kiro',
   'cursor',
-  'grok',
-  'codebuddy',
-  'codebuddy-cn',
-  'qoder',
-  'zcode',
-  'trae',
-  'trae-solo',
-  'trae-cn',
-  'trae-solo-cn',
-  'workbuddy',
-  'zed',
+]);
+
+const PRODUCTION_EXTERNAL_IMPORT_PLATFORM_IDS: ReadonlySet<PlatformId> = new Set([
+  'antigravity',
+  'codex',
+  'claude_manager',
+  'windsurf',
+  'cursor',
 ]);
 
 const PROVIDER_ALIAS_MAP: Record<string, PlatformId> = {
@@ -168,7 +163,7 @@ export function normalizeExternalProviderImportPayload(
   const providerId = resolveProviderId(
     payload.providerId ?? payload.provider ?? payload.platform ?? payload.target,
   );
-  if (!providerId) return null;
+  if (!providerId || !PRODUCTION_EXTERNAL_IMPORT_PLATFORM_IDS.has(providerId)) return null;
 
   const token =
     readString(

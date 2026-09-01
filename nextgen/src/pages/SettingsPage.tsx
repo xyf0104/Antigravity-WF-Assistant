@@ -30,6 +30,13 @@ import {
 } from '../utils/updaterReleaseNotes';
 import { applyReducedMotion } from '../utils/reducedMotion';
 import {
+  applyDocumentTheme,
+  dispatchThemePreferenceIntent,
+  persistThemePreference,
+  normalizeThemePreference,
+  resolveThemePreference,
+} from '../utils/themePreference';
+import {
   setClaudeQuotaDisplayRemainingEnabled,
 } from '../utils/claudeQuotaDisplayPreference';
 import { getSubscriptionTier } from '../utils/account';
@@ -650,7 +657,6 @@ export function useSettingsPageController() {
   const [codexRestartSpecifiedAppOnSwitch, setCodexRestartSpecifiedAppOnSwitch] = useState(false);
   const [codexLocalAccessEntryVisible, setCodexLocalAccessEntryVisible] = useState(true);
   const [codexHideRelayQuota, setCodexHideRelayQuota] = useState(false);
-  const [topRightAdVisible, setTopRightAdVisible] = useState(true);
   const [antigravityDualSwitchNoRestartEnabled, setAntigravityDualSwitchNoRestartEnabled] = useState(false);
   const [autoSwitchEnabled, setAutoSwitchEnabled] = useState(false);
   const [autoSwitchThreshold, setAutoSwitchThreshold] = useState('20');
@@ -716,7 +722,11 @@ export function useSettingsPageController() {
   const generalConfigLoadVersionRef = useRef(0);
   const generalConfigLoadInFlightRef = useRef(false);
   const hasHydratedGeneralConfigRef = useRef(false);
+  const controllerDisposedRef = useRef(false);
   const persistedGeneralPayloadRef = useRef<Record<string, unknown> | null>(null);
+  // Theme is visible outside Settings immediately. Keep its optimistic value out
+  // of the generic debounce so a fast page change cannot reapply stale system UI.
+  const pendingImmediateThemeRef = useRef<string | null>(null);
   const currentAccountRefreshPersistReadyRef = useRef(false);
 
   const [appVersion, setAppVersion] = useState('');
@@ -938,6 +948,13 @@ export function useSettingsPageController() {
   const [needsRestart, setNeedsRestart] = useState(false);
   const [networkSaving, setNetworkSaving] = useState(false);
 
+  useEffect(() => {
+    controllerDisposedRef.current = false;
+    return () => {
+      controllerDisposedRef.current = true;
+    };
+  }, []);
+
   // 检测配额重置任务状态
   const [hasActiveResetTasks, setHasActiveResetTasks] = useState(false);
 
@@ -1135,7 +1152,6 @@ export function useSettingsPageController() {
       codex_restart_specified_app_on_switch: codexRestartSpecifiedAppOnSwitch,
       codex_local_access_entry_visible: codexLocalAccessEntryVisible,
       codex_hide_relay_quota: codexHideRelayQuota,
-      top_right_ad_visible: topRightAdVisible,
       antigravity_dual_switch_no_restart_enabled: antigravityDualSwitchNoRestartEnabled,
       auto_switch_enabled: autoSwitchEnabled,
       auto_switch_threshold: Number.isNaN(parsedAutoSwitchThreshold)
@@ -1238,7 +1254,8 @@ export function useSettingsPageController() {
     const updates = Object.fromEntries(
       Object.entries(payload).filter(
         ([key, value]) =>
-          !areGeneralConfigPayloadValuesEqual(value, persistedPayload[key]),
+          !areGeneralConfigPayloadValuesEqual(value, persistedPayload[key])
+          && !(key === 'theme' && pendingImmediateThemeRef.current === value),
       ),
     );
     if (Object.keys(updates).length === 0) {
@@ -1367,7 +1384,6 @@ export function useSettingsPageController() {
     codexRestartSpecifiedAppOnSwitch,
     codexLocalAccessEntryVisible,
     codexHideRelayQuota,
-    topRightAdVisible,
     antigravityDualSwitchNoRestartEnabled,
     autoSwitchEnabled,
     autoSwitchThreshold,
@@ -1572,12 +1588,7 @@ export function useSettingsPageController() {
   }, []);
 
   const applyTheme = (newTheme: string) => {
-    if (newTheme === 'system') {
-      const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
-    } else {
-      document.documentElement.setAttribute('data-theme', newTheme);
-    }
+    applyDocumentTheme(newTheme);
   };
 
   const applyUiScale = async (rawScale: string) => {
@@ -1614,6 +1625,9 @@ export function useSettingsPageController() {
   }, [theme]);
 
   const loadGeneralConfig = async () => {
+    if (controllerDisposedRef.current) {
+      return;
+    }
     const loadVersion = generalConfigLoadVersionRef.current + 1;
     generalConfigLoadVersionRef.current = loadVersion;
     const stateRevisionAtStart = generalStateRevisionRef.current;
@@ -1624,15 +1638,17 @@ export function useSettingsPageController() {
     }
     try {
       const config = await invoke<GeneralConfig>('get_general_config');
-      if (loadVersion !== generalConfigLoadVersionRef.current) {
+      if (
+        controllerDisposedRef.current
+        || loadVersion !== generalConfigLoadVersionRef.current
+      ) {
         return;
       }
-      if (
-        hasHydratedGeneralConfigRef.current &&
-        stateRevisionAtStart !== generalStateRevisionRef.current
-      ) {
+      if (stateRevisionAtStart !== generalStateRevisionRef.current) {
         pendingExternalConfigReloadRef.current = true;
-        setGeneralLoaded(true);
+        if (hasHydratedGeneralConfigRef.current) {
+          setGeneralLoaded(true);
+        }
         return;
       }
       skipNextGeneralSaveRef.current = true;
@@ -1644,7 +1660,11 @@ export function useSettingsPageController() {
           ? 'PowerShell'
           : configuredTerminal,
       );
-      setTheme(config.theme);
+      // Keep Settings aligned with the shell when an older native response
+      // races the user's most recent theme preference.
+      const persistedThemePreference = resolveThemePreference(config.theme);
+      setTheme(persistedThemePreference);
+      persistThemePreference(persistedThemePreference);
       setThemeColor((config.theme_color || 'default').trim() || 'default');
       setExternalNetworkEnabled(config.external_network_enabled ?? true);
       setWebdavAllowedDomains(config.webdav_allowed_domains || '');
@@ -1752,7 +1772,6 @@ export function useSettingsPageController() {
       );
       setCodexLocalAccessEntryVisible(config.codex_local_access_entry_visible ?? true);
       setCodexHideRelayQuota(config.codex_hide_relay_quota ?? false);
-      setTopRightAdVisible(config.top_right_ad_visible ?? true);
       setAntigravityDualSwitchNoRestartEnabled(
         config.antigravity_dual_switch_no_restart_enabled ?? false
       );
@@ -1824,12 +1843,15 @@ export function useSettingsPageController() {
       currentAccountRefreshPersistReadyRef.current = false;
       // 同步语言
       changeLanguage(config.language);
-      applyTheme(config.theme);
+      applyTheme(persistedThemePreference);
       hasHydratedGeneralConfigRef.current = true;
       setGeneralLoadFailed(false);
       setGeneralLoaded(true);
     } catch (err) {
-      if (loadVersion !== generalConfigLoadVersionRef.current) {
+      if (
+        controllerDisposedRef.current
+        || loadVersion !== generalConfigLoadVersionRef.current
+      ) {
         return;
       }
       console.error('加载通用配置失败:', err);
@@ -1851,6 +1873,60 @@ export function useSettingsPageController() {
         void loadGeneralConfig();
       }
     }
+  };
+
+  const handleThemePreferenceChange = (rawTheme: string) => {
+    const nextTheme = normalizeThemePreference(rawTheme);
+
+    if (nextTheme === theme) {
+      return;
+    }
+
+    // Apply the selection first, then enqueue a dedicated write. This guards
+    // the shell and embedded workbenches from an older persisted theme while
+    // Settings is being unmounted during a quick navigation.
+    pendingImmediateThemeRef.current = nextTheme;
+    generalStateRevisionRef.current += 1;
+    persistedGeneralPayloadRef.current = {
+      ...(persistedGeneralPayloadRef.current ?? {}),
+      theme: nextTheme,
+    };
+    setTheme(nextTheme);
+    applyTheme(nextTheme);
+    persistThemePreference(nextTheme);
+    dispatchThemePreferenceIntent(nextTheme);
+    generalSaveInFlightRef.current = true;
+
+    const operation = generalSaveQueueRef.current.then(async () => {
+      try {
+        await invoke('patch_general_config', { updates: { theme: nextTheme } });
+        persistedGeneralPayloadRef.current = {
+          ...(persistedGeneralPayloadRef.current ?? {}),
+          theme: nextTheme,
+        };
+        if (pendingImmediateThemeRef.current === nextTheme) {
+          pendingImmediateThemeRef.current = null;
+        }
+        dispatchSettingsConfigUpdated(configUpdateSource);
+      } catch (error) {
+        pendingImmediateThemeRef.current = null;
+        console.error('保存应用主题失败:', error);
+        void loadGeneralConfig();
+      } finally {
+        if (generalSaveQueueRef.current === operation) {
+          generalSaveInFlightRef.current = false;
+          if (
+            pendingExternalConfigReloadRef.current
+            && generalSaveTimerRef.current === null
+            && !generalConfigLoadInFlightRef.current
+          ) {
+            pendingExternalConfigReloadRef.current = false;
+            void loadGeneralConfig();
+          }
+        }
+      }
+    });
+    generalSaveQueueRef.current = operation;
   };
 
   const loadNetworkConfig = async () => {
@@ -3521,10 +3597,9 @@ export function useSettingsPageController() {
     setSideNavLayoutMode,
     setStartupMinimized,
     setStartupPage,
-    setTheme,
+    setTheme: handleThemePreferenceChange,
     setThemeColor,
     setTokenKeeperEnabled,
-    setTopRightAdVisible,
     setTraeAppPath,
     setTraeAutoRefresh,
     setTraeAutoRefreshCustomMode,
@@ -3585,7 +3660,6 @@ export function useSettingsPageController() {
     themeColor,
     THRESHOLD_PRESET_VALUES,
     tokenKeeperEnabled,
-    topRightAdVisible,
     traeAppPath,
     traeAutoRefresh,
     traeAutoRefreshCustomMode,

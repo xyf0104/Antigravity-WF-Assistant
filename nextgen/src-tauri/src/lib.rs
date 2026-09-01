@@ -26,7 +26,8 @@ pub fn get_app_handle() -> Option<&'static tauri::AppHandle> {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_hide_startup_minimized_window, should_preserve_main_window_for_menu_bar_refresh,
+        package_smoke_mode_from_env_value, should_hide_startup_minimized_window,
+        should_preserve_main_window_for_menu_bar_refresh,
     };
     use crate::modules::config::UserConfig;
 
@@ -81,6 +82,22 @@ mod tests {
         assert!(!should_preserve_main_window_for_menu_bar_refresh(
             false, true
         ));
+    }
+
+    #[test]
+    fn package_smoke_mode_requires_an_explicit_opt_in() {
+        for value in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("0"),
+            Some("true"),
+            Some("yes"),
+        ] {
+            assert!(!package_smoke_mode_from_env_value(value), "value={value:?}");
+        }
+        assert!(package_smoke_mode_from_env_value(Some("1")));
+        assert!(package_smoke_mode_from_env_value(Some(" 1 ")));
     }
 }
 
@@ -138,11 +155,26 @@ fn should_hide_startup_minimized_window(
     config.startup_minimized && is_macos && config.hide_dock_icon
 }
 
-fn should_preserve_main_window_for_menu_bar_refresh(
+pub(crate) fn should_preserve_main_window_for_menu_bar_refresh(
     is_macos: bool,
     menu_bar_quota_enabled: bool,
 ) -> bool {
     is_macos && menu_bar_quota_enabled
+}
+
+const PACKAGE_SMOKE_ENV: &str = "XIASS_TOOLS_PACKAGE_SMOKE";
+
+/// Package smoke checks launch a copied `.app` with isolated storage. They only
+/// need the normal Tauri/tray/frontend/WF-bridge startup path, not restoration
+/// work that discovers a real user's editors, accounts, OAuth sessions, or
+/// scheduled jobs. Keep this strictly opt-in so ordinary user launches retain
+/// every background task.
+fn package_smoke_mode_from_env_value(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("1"))
+}
+
+fn is_package_smoke_run() -> bool {
+    package_smoke_mode_from_env_value(std::env::var(PACKAGE_SMOKE_ENV).ok().as_deref())
 }
 
 fn apply_startup_minimized(app: &tauri::AppHandle) {
@@ -197,33 +229,8 @@ fn apply_macos_activation_policy(app: &tauri::AppHandle) {
     info!("[Window] 已应用 macOS Dock 图标策略: {}", policy_label);
 }
 
-fn handle_zcode_oauth_deep_links(args: &[String]) -> bool {
-    let callbacks: Vec<String> = args
-        .iter()
-        .filter(|value| value.trim().to_ascii_lowercase().starts_with("zcode://"))
-        .cloned()
-        .collect();
-    if callbacks.is_empty() {
-        return false;
-    }
-    for callback in callbacks {
-        tauri::async_runtime::spawn(async move {
-            modules::zcode_oauth::handle_deep_link(&callback).await;
-        });
-    }
-    true
-}
-
 fn summarize_deep_link_args(args: &[String]) -> Vec<String> {
-    args.iter()
-        .map(|value| {
-            if value.trim().to_ascii_lowercase().starts_with("zcode://") {
-                "zcode://<oauth-callback>".to_string()
-            } else {
-                value.clone()
-            }
-        })
-        .collect()
+    args.to_vec()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -243,24 +250,27 @@ pub fn run() {
         }
     }
 
-    let app = tauri::Builder::default()
+    let mut app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        .plugin(tauri_plugin_deep_link::init());
+
+    // A package smoke run launches a copied app with isolated storage. It must
+    // not hand control to a normal XIASS Tools process already running on the
+    // same machine, while ordinary launches retain the single-instance guard.
+    if !is_package_smoke_run() {
+        app = app.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             logger::log_info(&format!(
                 "[SingleInstance] 收到唤起请求: arg_count={}",
                 args.len()
             ));
-            let zcode_oauth_handled = handle_zcode_oauth_deep_links(&args);
-            let handled = zcode_oauth_handled
-                || modules::external_import::handle_external_import_args(
-                    app,
-                    &args,
-                    "single-instance",
-                );
+            let handled = modules::external_import::handle_external_import_args(
+                app,
+                &args,
+                "single-instance",
+            );
             logger::log_info(&format!(
                 "[SingleInstance] 外部导入处理结果: handled={}",
                 handled
@@ -271,9 +281,15 @@ pub fn run() {
             if let Err(err) = modules::floating_card_window::show_main_window(app) {
                 logger::log_warn(&format!("[Window] 单实例唤起恢复主窗口失败: {}", err));
             }
-        }))
+        }));
+    } else {
+        logger::log_info("[Startup] 安装包冒烟模式跳过单实例保护");
+    }
+
+    let app = app
         .setup(|app| {
             info!("XIASS Tools 启动...");
+            let package_smoke = is_package_smoke_run();
             let current_exe = std::env::current_exe()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|err| format!("unknown: {}", err));
@@ -288,6 +304,11 @@ pub fn run() {
                 build_mode,
                 current_exe
             ));
+            if package_smoke {
+                logger::log_info(
+                    "[Startup] 安装包冒烟模式已启用：跳过用户账户与编辑器恢复后台任务",
+                );
+            }
 
             // 存储全局 AppHandle
             let _ = APP_HANDLE.set(app.handle().clone());
@@ -296,25 +317,27 @@ pub fn run() {
                 logger::log_warn(&format!("[Lifecycle] 安装系统关机监听失败: {}", err));
             }
 
-            // 启动时清理 WebKit LocalStorage WAL，防止无限膨胀
-            std::thread::spawn(|| {
-                modules::webkit_cache_maintenance::checkpoint_webkit_localstorage();
-            });
+            if !package_smoke {
+                // 启动时清理 WebKit LocalStorage WAL，防止无限膨胀
+                std::thread::spawn(|| {
+                    modules::webkit_cache_maintenance::checkpoint_webkit_localstorage();
+                });
 
-            // 当前主线不再使用 platform-packages；启动时回收旧版本遗留的孤儿 adapter。
-            std::thread::spawn(|| {
-                match modules::process::close_orphaned_legacy_platform_adapter_processes(5) {
-                    Ok(0) => {}
-                    Ok(count) => logger::log_info(&format!(
-                        "[LegacyAdapterCleanup] 已清理旧平台 adapter 进程: count={}",
-                        count
-                    )),
-                    Err(err) => logger::log_warn(&format!(
-                        "[LegacyAdapterCleanup] 清理旧平台 adapter 进程失败: {}",
-                        err
-                    )),
-                }
-            });
+                // 当前主线不再使用 platform-packages；启动时回收旧版本遗留的孤儿 adapter。
+                std::thread::spawn(|| {
+                    match modules::process::close_orphaned_legacy_platform_adapter_processes(5) {
+                        Ok(0) => {}
+                        Ok(count) => logger::log_info(&format!(
+                            "[LegacyAdapterCleanup] 已清理旧平台 adapter 进程: count={}",
+                            count
+                        )),
+                        Err(err) => logger::log_warn(&format!(
+                            "[LegacyAdapterCleanup] 清理旧平台 adapter 进程失败: {}",
+                            err
+                        )),
+                    }
+                });
+            }
 
             // 初始化 Updater 插件
             #[cfg(desktop)]
@@ -360,53 +383,57 @@ pub fn run() {
                 modules::web_report::start_server().await;
             });
 
-            tauri::async_runtime::spawn(async {
-                modules::codex_local_access::restore_local_access_gateway().await;
-            });
-
-            commands::codex_instance::start_mixed_model_gateway_watchdog(app.handle().clone());
-
-            {
-                let app_handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    match modules::codex_app_injection::restore_running_profiles(app_handle) {
-                        Ok(0) => {}
-                        Ok(count) => logger::log_info(&format!(
-                            "[Codex App Injection] 启动恢复完成: count={}",
-                            count
-                        )),
-                        Err(err) => logger::log_warn(&format!(
-                            "[Codex App Injection] 启动恢复失败: {}",
-                            err
-                        )),
-                    }
+            if !package_smoke {
+                tauri::async_runtime::spawn(async {
+                    modules::codex_local_access::restore_local_access_gateway().await;
                 });
-            }
 
-            {
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    modules::codex_oauth::restore_pending_oauth_listener(app_handle);
-                    modules::windsurf_oauth::restore_pending_oauth_listener();
-                    modules::kiro_oauth::restore_pending_oauth_listener();
-                    modules::trae_oauth::restore_pending_oauth_listener();
-                    modules::zed_oauth::restore_pending_oauth_listener();
-                });
-            }
+                commands::codex_instance::start_mixed_model_gateway_watchdog(app.handle().clone());
 
-            modules::provider_token_keeper::ensure_started(app.handle().clone());
-            modules::auto_local_import::ensure_started(app.handle().clone());
+                {
+                    let app_handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        match modules::codex_app_injection::restore_running_profiles(app_handle) {
+                            Ok(0) => {}
+                            Ok(count) => logger::log_info(&format!(
+                                "[Codex App Injection] 启动恢复完成: count={}",
+                                count
+                            )),
+                            Err(err) => logger::log_warn(&format!(
+                                "[Codex App Injection] 启动恢复失败: {}",
+                                err
+                            )),
+                        }
+                    });
+                }
 
-            // Wakeup restore/start and Deep Link registration/read can hit disk or OS
-            // APIs — never block setup (window + skeleton tray first).
-            {
-                let app_handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    modules::wakeup_scheduler::restore_state_from_disk();
-                    modules::wakeup_scheduler::ensure_started(app_handle.clone());
-                    modules::codex_wakeup_scheduler::ensure_started(app_handle.clone());
-                    modules::codex_wakeup_scheduler::trigger_startup_tasks_if_needed(app_handle);
-                });
+                {
+                    let app_handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        modules::oauth_server::restore_pending_oauth_listener(app_handle.clone())
+                            .await;
+                        modules::codex_oauth::restore_pending_oauth_listener(app_handle);
+                        modules::windsurf_oauth::restore_pending_oauth_listener();
+                        modules::cursor_oauth::restore_pending_oauth_login();
+                    });
+                }
+
+                modules::provider_token_keeper::ensure_started(app.handle().clone());
+                modules::auto_local_import::ensure_started(app.handle().clone());
+
+                // Wakeup restore/start and Deep Link registration/read can hit disk or OS
+                // APIs — never block setup (window + skeleton tray first).
+                {
+                    let app_handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        modules::wakeup_scheduler::restore_state_from_disk();
+                        modules::wakeup_scheduler::ensure_started(app_handle.clone());
+                        modules::codex_wakeup_scheduler::ensure_started(app_handle.clone());
+                        modules::codex_wakeup_scheduler::trigger_startup_tasks_if_needed(
+                            app_handle,
+                        );
+                    });
+                }
             }
 
             #[cfg(target_os = "macos")]
@@ -434,13 +461,11 @@ pub fn run() {
                         args.len(),
                         summarize_deep_link_args(&args)
                     ));
-                    let zcode_oauth_handled = handle_zcode_oauth_deep_links(&args);
-                    let handled = zcode_oauth_handled
-                        || modules::external_import::handle_external_import_args(
-                            &app_handle,
-                            &args,
-                            "deep-link-open-url",
-                        );
+                    let handled = modules::external_import::handle_external_import_args(
+                        &app_handle,
+                        &args,
+                        "deep-link-open-url",
+                    );
                     logger::log_info(&format!(
                         "[DeepLink] on_open_url 外部导入处理结果: handled={}",
                         handled
@@ -458,13 +483,11 @@ pub fn run() {
                             args.len(),
                             summarize_deep_link_args(&args)
                         ));
-                        let zcode_oauth_handled = handle_zcode_oauth_deep_links(&args);
-                        let handled = zcode_oauth_handled
-                            || modules::external_import::handle_external_import_args(
-                                &app_handle,
-                                &args,
-                                "deep-link-current",
-                            );
+                        let handled = modules::external_import::handle_external_import_args(
+                            &app_handle,
+                            &args,
+                            "deep-link-current",
+                        );
                         logger::log_info(&format!(
                             "[DeepLink] get_current 外部导入处理结果: handled={}",
                             handled
@@ -531,8 +554,6 @@ pub fn run() {
             }
 
             apply_startup_minimized(&app.handle());
-            modules::workbuddy_auto_checkin::start_auto_checkin_scheduler(app.handle().clone());
-
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -678,6 +699,9 @@ pub fn run() {
             commands::claude::claude_execute_cli_launch_command,
             commands::claude::claude_launch_cli,
             commands::claude::switch_claude_account,
+            commands::claude_mcp::claude_mcp_get_managed_status,
+            commands::claude_mcp::claude_mcp_configure_managed_http,
+            commands::claude_mcp::claude_mcp_remove_managed,
             // Claude Instance Commands
             commands::claude_instance::claude_get_instance_defaults,
             commands::claude_instance::claude_list_instances,
@@ -736,12 +760,10 @@ pub fn run() {
             commands::system::codex_ssh_test_connection,
             commands::system::codex_ssh_sync_current,
             commands::system::codex_managed_lb_provider_id,
-            commands::system::codebuddy_list_local_session_files,
             commands::system::save_refresh_interval_config,
             commands::system::save_tray_platform_layout,
             commands::system::set_app_path,
             commands::system::set_claude_app_scan_roots,
-            commands::system::set_trae_app_scan_roots,
             commands::system::set_codex_launch_on_switch,
             commands::system::set_codex_local_access_entry_visible,
             commands::system::detect_app_path,
@@ -770,11 +792,17 @@ pub fn run() {
             commands::system::save_user_memory_list,
             commands::system::load_ui_preferences,
             commands::system::save_ui_preferences,
+            commands::system::load_legal_notices,
             // Logs Commands
             commands::logs::logs_get_snapshot,
             commands::logs::logs_open_log_directory,
+            commands::logs::logs_export_diagnostics,
             commands::wf_bridge::wf_bridge_get_session,
             commands::wf_bridge::wf_bridge_get_status,
+            commands::wf_bridge::wf_bridge_handle_host_action,
+            commands::wf_bridge::wf_bridge_export_helper_transfer,
+            commands::wf_bridge::wf_bridge_restore_helper_transfer,
+            commands::wf_bridge::wf_bridge_get_helper_diagnostics,
             commands::wf_bridge::wf_bridge_stop,
             // Wakeup Commands
             commands::wakeup::wakeup_ensure_runtime_ready,
@@ -832,6 +860,9 @@ pub fn run() {
             commands::codex::get_current_codex_account,
             commands::codex::get_codex_config_toml_path,
             commands::codex::open_codex_config_toml,
+            commands::codex::list_codex_config_backups,
+            commands::codex::verify_codex_config_backup,
+            commands::codex::restore_codex_config_backup,
             commands::codex::get_codex_quick_config,
             commands::codex::save_codex_quick_config,
             commands::codex::get_codex_app_speed_config,
@@ -951,32 +982,6 @@ pub fn run() {
             commands::codex::codex_local_access_test,
             commands::codex::codex_local_access_chat_test,
             commands::codex::codex_local_access_chat_test_stream,
-            // GitHub Copilot Commands
-            commands::github_copilot::list_github_copilot_accounts,
-            commands::github_copilot::delete_github_copilot_account,
-            commands::github_copilot::delete_github_copilot_accounts,
-            commands::github_copilot::import_github_copilot_from_json,
-            commands::github_copilot::import_github_copilot_from_local,
-            commands::github_copilot::export_github_copilot_accounts,
-            commands::github_copilot::refresh_github_copilot_token,
-            commands::github_copilot::refresh_all_github_copilot_tokens,
-            commands::github_copilot::github_copilot_oauth_login_start,
-            commands::github_copilot::github_copilot_oauth_login_complete,
-            commands::github_copilot::github_copilot_oauth_login_cancel,
-            commands::github_copilot::add_github_copilot_account_with_token,
-            commands::github_copilot::update_github_copilot_account_tags,
-            commands::github_copilot::get_github_copilot_accounts_index_path,
-            commands::github_copilot::inject_github_copilot_to_vscode,
-            // GitHub Copilot Instance Commands
-            commands::github_copilot_instance::github_copilot_get_instance_defaults,
-            commands::github_copilot_instance::github_copilot_list_instances,
-            commands::github_copilot_instance::github_copilot_create_instance,
-            commands::github_copilot_instance::github_copilot_update_instance,
-            commands::github_copilot_instance::github_copilot_delete_instance,
-            commands::github_copilot_instance::github_copilot_start_instance,
-            commands::github_copilot_instance::github_copilot_stop_instance,
-            commands::github_copilot_instance::github_copilot_open_instance_window,
-            commands::github_copilot_instance::github_copilot_close_all_instances,
             // Windsurf Commands
             commands::windsurf::list_windsurf_accounts,
             commands::windsurf::delete_windsurf_account,
@@ -996,230 +1001,12 @@ pub fn run() {
             commands::windsurf::update_windsurf_account_tags,
             commands::windsurf::get_windsurf_accounts_index_path,
             commands::windsurf::inject_windsurf_to_vscode,
-            // Kiro Commands
-            commands::kiro::list_kiro_accounts,
-            commands::kiro::delete_kiro_account,
-            commands::kiro::delete_kiro_accounts,
-            commands::kiro::import_kiro_from_json,
-            commands::kiro::import_kiro_from_local,
-            commands::kiro::export_kiro_accounts,
-            commands::kiro::refresh_kiro_token,
-            commands::kiro::refresh_all_kiro_tokens,
-            commands::kiro::kiro_oauth_login_start,
-            commands::kiro::kiro_oauth_login_complete,
-            commands::kiro::kiro_oauth_submit_callback_url,
-            commands::kiro::kiro_oauth_login_cancel,
-            commands::kiro::add_kiro_account_with_token,
-            commands::kiro::update_kiro_account_tags,
-            commands::kiro::get_kiro_accounts_index_path,
-            commands::kiro::inject_kiro_to_vscode,
-            // CodeBuddy Commands
-            commands::codebuddy::list_codebuddy_accounts,
-            commands::codebuddy::delete_codebuddy_account,
-            commands::codebuddy::delete_codebuddy_accounts,
-            commands::codebuddy::import_codebuddy_from_json,
-            commands::codebuddy::import_codebuddy_from_local,
-            commands::codebuddy::export_codebuddy_accounts,
-            commands::codebuddy::refresh_codebuddy_token,
-            commands::codebuddy::refresh_all_codebuddy_tokens,
-            commands::codebuddy::codebuddy_oauth_login_start,
-            commands::codebuddy::codebuddy_oauth_login_complete,
-            commands::codebuddy::codebuddy_oauth_login_cancel,
-            commands::codebuddy::add_codebuddy_account_with_token,
-            commands::codebuddy::update_codebuddy_account_tags,
-            commands::codebuddy::get_codebuddy_accounts_index_path,
-            commands::codebuddy::inject_codebuddy_to_vscode,
-            commands::codebuddy_session::codebuddy_list_sessions,
             commands::ssh_server::list_ssh_servers,
             commands::ssh_server::upsert_ssh_server,
             commands::ssh_server::delete_ssh_server,
             commands::ssh_server::select_ssh_server,
             commands::ssh_server::test_ssh_server_connection,
             commands::ssh_server::sync_current_codex_account_to_ssh_server,
-            // CodeBuddy CN Commands
-            commands::codebuddy_cn::list_codebuddy_cn_accounts,
-            commands::codebuddy_cn::delete_codebuddy_cn_account,
-            commands::codebuddy_cn::delete_codebuddy_cn_accounts,
-            commands::codebuddy_cn::import_codebuddy_cn_from_json,
-            commands::codebuddy_cn::import_codebuddy_cn_from_local,
-            commands::codebuddy_cn::export_codebuddy_cn_accounts,
-            commands::codebuddy_cn::refresh_codebuddy_cn_token,
-            commands::codebuddy_cn::refresh_all_codebuddy_cn_tokens,
-            commands::codebuddy_cn::codebuddy_cn_oauth_login_start,
-            commands::codebuddy_cn::codebuddy_cn_oauth_login_complete,
-            commands::codebuddy_cn::codebuddy_cn_oauth_login_cancel,
-            commands::codebuddy_cn::add_codebuddy_cn_account_with_token,
-            commands::codebuddy_cn::update_codebuddy_cn_account_tags,
-            commands::codebuddy_cn::get_codebuddy_cn_accounts_index_path,
-            commands::codebuddy_cn::inject_codebuddy_cn_to_vscode,
-            commands::codebuddy_cn::sync_codebuddy_cn_to_workbuddy,
-            // WorkBuddy Commands
-            commands::workbuddy::list_workbuddy_accounts,
-            commands::workbuddy::delete_workbuddy_account,
-            commands::workbuddy::delete_workbuddy_accounts,
-            commands::workbuddy::import_workbuddy_from_json,
-            commands::workbuddy::import_workbuddy_from_local,
-            commands::workbuddy::export_workbuddy_accounts,
-            commands::workbuddy::refresh_workbuddy_token,
-            commands::workbuddy::refresh_all_workbuddy_tokens,
-            commands::workbuddy::workbuddy_oauth_login_start,
-            commands::workbuddy::workbuddy_oauth_login_complete,
-            commands::workbuddy::workbuddy_oauth_login_cancel,
-            commands::workbuddy::add_workbuddy_account_with_token,
-            commands::workbuddy::update_workbuddy_account_tags,
-            commands::workbuddy::get_workbuddy_accounts_index_path,
-            commands::workbuddy::inject_workbuddy_to_vscode,
-            commands::workbuddy::sync_workbuddy_to_codebuddy_cn,
-            commands::workbuddy::get_checkin_status_workbuddy,
-            commands::workbuddy::checkin_workbuddy,
-            // WorkBuddy WebView (网页会话) Commands
-            modules::workbuddy_webview::is_workbuddy_webview_supported,
-            modules::workbuddy_webview::open_workbuddy_webview,
-            modules::workbuddy_webview::close_workbuddy_webview,
-            modules::workbuddy_webview::list_workbuddy_webview_sessions,
-            commands::workbuddy::get_workbuddy_auto_checkin_config,
-            commands::workbuddy::migrate_workbuddy_auto_checkin_config,
-            commands::workbuddy::save_workbuddy_auto_checkin_config,
-            commands::workbuddy::get_workbuddy_auto_checkin_logs,
-            commands::workbuddy::clear_workbuddy_auto_checkin_logs,
-            commands::workbuddy::run_workbuddy_auto_checkin_now,
-            // WorkBuddy Instance Commands
-            commands::workbuddy_instance::workbuddy_get_instance_defaults,
-            commands::workbuddy_instance::workbuddy_list_instances,
-            commands::workbuddy_instance::workbuddy_create_instance,
-            commands::workbuddy_instance::workbuddy_update_instance,
-            commands::workbuddy_instance::workbuddy_delete_instance,
-            commands::workbuddy_instance::workbuddy_start_instance,
-            commands::workbuddy_instance::workbuddy_stop_instance,
-            commands::workbuddy_instance::workbuddy_open_instance_window,
-            commands::workbuddy_instance::workbuddy_close_all_instances,
-            // CodeBuddy Instance Commands
-            commands::codebuddy_instance::codebuddy_get_instance_defaults,
-            commands::codebuddy_instance::codebuddy_list_instances,
-            commands::codebuddy_instance::codebuddy_create_instance,
-            commands::codebuddy_instance::codebuddy_update_instance,
-            commands::codebuddy_instance::codebuddy_delete_instance,
-            commands::codebuddy_instance::codebuddy_start_instance,
-            commands::codebuddy_instance::codebuddy_stop_instance,
-            commands::codebuddy_instance::codebuddy_open_instance_window,
-            commands::codebuddy_instance::codebuddy_close_all_instances,
-            // CodeBuddy CN Instance Commands
-            commands::codebuddy_cn_instance::codebuddy_cn_get_instance_defaults,
-            commands::codebuddy_cn_instance::codebuddy_cn_list_instances,
-            commands::codebuddy_cn_instance::codebuddy_cn_create_instance,
-            commands::codebuddy_cn_instance::codebuddy_cn_update_instance,
-            commands::codebuddy_cn_instance::codebuddy_cn_delete_instance,
-            commands::codebuddy_cn_instance::codebuddy_cn_start_instance,
-            commands::codebuddy_cn_instance::codebuddy_cn_stop_instance,
-            commands::codebuddy_cn_instance::codebuddy_cn_open_instance_window,
-            commands::codebuddy_cn_instance::codebuddy_cn_close_all_instances,
-            // Qoder Commands
-            commands::qoder::list_qoder_accounts,
-            commands::qoder::delete_qoder_account,
-            commands::qoder::delete_qoder_accounts,
-            commands::qoder::import_qoder_from_json,
-            commands::qoder::import_qoder_from_local,
-            commands::qoder::qoder_oauth_login_start,
-            commands::qoder::qoder_oauth_login_peek,
-            commands::qoder::qoder_oauth_login_complete,
-            commands::qoder::qoder_oauth_login_cancel,
-            commands::qoder::export_qoder_accounts,
-            commands::qoder::refresh_qoder_token,
-            commands::qoder::refresh_all_qoder_tokens,
-            commands::qoder::inject_qoder_account,
-            commands::qoder::update_qoder_account_tags,
-            commands::qoder::get_qoder_accounts_index_path,
-            // Zed Commands
-            commands::zed::list_zed_accounts,
-            commands::zed::delete_zed_account,
-            commands::zed::delete_zed_accounts,
-            commands::zed::import_zed_from_json,
-            commands::zed::import_zed_from_local,
-            commands::zed::export_zed_accounts,
-            commands::zed::refresh_zed_token,
-            commands::zed::refresh_all_zed_tokens,
-            commands::zed::update_zed_account_tags,
-            commands::zed::zed_oauth_login_start,
-            commands::zed::zed_oauth_login_peek,
-            commands::zed::zed_oauth_login_complete,
-            commands::zed::zed_oauth_login_cancel,
-            commands::zed::zed_oauth_submit_callback_url,
-            commands::zed::inject_zed_account,
-            commands::zed::zed_logout_current_account,
-            commands::zed::zed_get_runtime_status,
-            commands::zed::zed_start_default_session,
-            commands::zed::zed_stop_default_session,
-            commands::zed::zed_restart_default_session,
-            commands::zed::zed_focus_default_session,
-            // ZCode Commands
-            commands::zcode::list_zcode_accounts,
-            commands::zcode::delete_zcode_account,
-            commands::zcode::delete_zcode_accounts,
-            commands::zcode::import_zcode_from_json,
-            commands::zcode::import_zcode_from_local,
-            commands::zcode::import_zcode_api_key,
-            commands::zcode::export_zcode_accounts,
-            commands::zcode::zcode_oauth_login_start,
-            commands::zcode::zcode_oauth_login_complete,
-            commands::zcode::zcode_oauth_submit_callback_url,
-            commands::zcode::zcode_oauth_open_window,
-            commands::zcode::zcode_oauth_login_cancel,
-            commands::zcode::refresh_zcode_account,
-            commands::zcode::refresh_all_zcode_accounts,
-            commands::zcode::inject_zcode_account,
-            commands::zcode::update_zcode_account_tags,
-            commands::zcode::get_zcode_current_account_id,
-            commands::zcode::get_zcode_accounts_index_path,
-            // ZCode Instance Commands
-            commands::zcode_instance::zcode_get_instance_defaults,
-            commands::zcode_instance::zcode_list_instances,
-            commands::zcode_instance::zcode_create_instance,
-            commands::zcode_instance::zcode_update_instance,
-            commands::zcode_instance::zcode_delete_instance,
-            commands::zcode_instance::zcode_start_instance,
-            commands::zcode_instance::zcode_stop_instance,
-            commands::zcode_instance::zcode_open_instance_window,
-            commands::zcode_instance::zcode_close_all_instances,
-            // Qoder Instance Commands
-            commands::qoder_instance::qoder_get_instance_defaults,
-            commands::qoder_instance::qoder_list_instances,
-            commands::qoder_instance::qoder_create_instance,
-            commands::qoder_instance::qoder_update_instance,
-            commands::qoder_instance::qoder_delete_instance,
-            commands::qoder_instance::qoder_start_instance,
-            commands::qoder_instance::qoder_stop_instance,
-            commands::qoder_instance::qoder_open_instance_window,
-            commands::qoder_instance::qoder_close_all_instances,
-            // Trae Commands
-            commands::trae::list_trae_accounts,
-            commands::trae::delete_trae_account,
-            commands::trae::delete_trae_accounts,
-            commands::trae::import_trae_from_json,
-            commands::trae::import_trae_from_local,
-            commands::trae::trae_oauth_login_start,
-            commands::trae::trae_oauth_login_complete,
-            commands::trae::trae_oauth_submit_callback_url,
-            commands::trae::trae_oauth_login_cancel,
-            commands::trae::export_trae_accounts,
-            commands::trae::refresh_trae_token,
-            commands::trae::refresh_all_trae_tokens,
-            commands::trae::refresh_trae_tokens_for_platform,
-            commands::trae::add_trae_account_with_token,
-            commands::trae::update_trae_account_tags,
-            commands::trae::get_trae_accounts_index_path,
-            commands::trae::inject_trae_account,
-            commands::trae::get_trae_checkin_status,
-            commands::trae::claim_trae_checkin,
-            // Trae Instance Commands
-            commands::trae_instance::trae_get_instance_defaults,
-            commands::trae_instance::trae_list_instances,
-            commands::trae_instance::trae_create_instance,
-            commands::trae_instance::trae_update_instance,
-            commands::trae_instance::trae_delete_instance,
-            commands::trae_instance::trae_start_instance,
-            commands::trae_instance::trae_stop_instance,
-            commands::trae_instance::trae_open_instance_window,
-            commands::trae_instance::trae_close_all_instances,
             // Cursor Commands
             commands::cursor::list_cursor_accounts,
             commands::cursor::delete_cursor_account,
@@ -1233,43 +1020,10 @@ pub fn run() {
             commands::cursor::update_cursor_account_tags,
             commands::cursor::get_cursor_accounts_index_path,
             commands::cursor::cursor_oauth_login_start,
+            commands::cursor::cursor_oauth_login_peek,
             commands::cursor::cursor_oauth_login_complete,
             commands::cursor::cursor_oauth_login_cancel,
             commands::cursor::inject_cursor_account,
-            // Grok Commands
-            commands::grok::grok_get_cli_status,
-            commands::grok::grok_execute_cli_install_command,
-            commands::grok::grok_update_cli_runtime_config,
-            commands::grok::list_grok_accounts,
-            commands::grok::delete_grok_account,
-            commands::grok::delete_grok_accounts,
-            commands::grok::import_grok_from_json,
-            commands::grok::add_grok_account_with_api_key,
-            commands::grok::import_grok_from_local,
-            commands::grok::export_grok_accounts,
-            commands::grok::grok_oauth_login_start,
-            commands::grok::grok_oauth_login_complete,
-            commands::grok::grok_oauth_login_cancel,
-            commands::grok::refresh_grok_account,
-            commands::grok::force_refresh_grok_account,
-            commands::grok::refresh_all_grok_accounts,
-            commands::grok::switch_grok_account,
-            commands::grok::update_grok_account_tags,
-            commands::grok::update_grok_account_working_dir,
-            commands::grok::get_grok_current_account_id,
-            commands::grok::get_grok_accounts_index_path,
-            // Grok Instance Commands
-            commands::grok_instance::grok_get_instance_defaults,
-            commands::grok_instance::grok_list_instances,
-            commands::grok_instance::grok_create_instance,
-            commands::grok_instance::grok_update_instance,
-            commands::grok_instance::grok_delete_instance,
-            commands::grok_instance::grok_start_instance,
-            commands::grok_instance::grok_stop_instance,
-            commands::grok_instance::grok_close_all_instances,
-            commands::grok_instance::grok_open_instance_window,
-            commands::grok_instance::grok_get_instance_launch_command,
-            commands::grok_instance::grok_execute_instance_launch_command,
             // Cursor Instance Commands
             commands::cursor_instance::cursor_get_instance_defaults,
             commands::cursor_instance::cursor_list_instances,
@@ -1290,16 +1044,6 @@ pub fn run() {
             commands::windsurf_instance::windsurf_stop_instance,
             commands::windsurf_instance::windsurf_open_instance_window,
             commands::windsurf_instance::windsurf_close_all_instances,
-            // Kiro Instance Commands
-            commands::kiro_instance::kiro_get_instance_defaults,
-            commands::kiro_instance::kiro_list_instances,
-            commands::kiro_instance::kiro_create_instance,
-            commands::kiro_instance::kiro_update_instance,
-            commands::kiro_instance::kiro_delete_instance,
-            commands::kiro_instance::kiro_start_instance,
-            commands::kiro_instance::kiro_stop_instance,
-            commands::kiro_instance::kiro_open_instance_window,
-            commands::kiro_instance::kiro_close_all_instances,
             // Codex Instance Commands
             commands::codex_instance::codex_get_instance_defaults,
             commands::codex_instance::codex_list_instances,
@@ -1412,13 +1156,11 @@ pub fn run() {
                         args.len(),
                         summarize_deep_link_args(&args)
                     ));
-                    let zcode_oauth_handled = handle_zcode_oauth_deep_links(&args);
-                    let handled = zcode_oauth_handled
-                        || modules::external_import::handle_external_import_args(
-                            app_handle,
-                            &args,
-                            "run-event-opened",
-                        );
+                    let handled = modules::external_import::handle_external_import_args(
+                        app_handle,
+                        &args,
+                        "run-event-opened",
+                    );
                     logger::log_info(&format!(
                         "[RunEvent] Opened 外部导入处理结果: handled={}",
                         handled

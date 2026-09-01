@@ -78,7 +78,13 @@ import {
 import { useWindsurfInstanceStore } from '../stores/useWindsurfInstanceStore';
 import { useWorkbuddyInstanceStore } from '../stores/useWorkbuddyInstanceStore';
 import { useZcodeInstanceStore } from '../stores/useZcodeInstanceStore';
-import { ALL_PLATFORM_IDS, isAccountPlatform, PLATFORM_PAGE_MAP, PlatformId } from '../types/platform';
+import {
+  ALL_PLATFORM_IDS,
+  isAccountPlatform,
+  isMenuVisiblePlatform,
+  PLATFORM_PAGE_MAP,
+  PlatformId,
+} from '../types/platform';
 import type { InstanceProfile } from '../types/instance';
 import { isPrivacyModeEnabledByDefault, maskSensitiveValue } from '../utils/privacy';
 import { getPlatformLabel, renderPlatformIcon } from '../utils/platformMeta';
@@ -164,7 +170,11 @@ function isTraeSuitePlatform(platformId: PlatformId): platformId is TraePlatform
 function loadInitialPlatform(): PlatformId {
   try {
     const saved = localStorage.getItem(FLOATING_CARD_PLATFORM_STORAGE_KEY);
-    if (saved && ALL_PLATFORM_IDS.includes(saved as PlatformId)) {
+    if (
+      saved
+      && ALL_PLATFORM_IDS.includes(saved as PlatformId)
+      && isMenuVisiblePlatform(saved as PlatformId)
+    ) {
       return saved as PlatformId;
     }
   } catch {

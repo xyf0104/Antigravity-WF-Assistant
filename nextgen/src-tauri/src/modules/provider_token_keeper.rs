@@ -28,6 +28,7 @@ const REFRESH_FAILURE_BACKOFF_SECONDS: i64 = 15 * 60;
 const TRAE_SESSION_EXPIRED_BACKOFF_SECONDS: i64 = 60 * 60;
 const TRAE_STRICT_CHECK_INTERVAL_SECONDS: i64 = 10 * 60;
 const TOKEN_KEEPER_LIST_TIMEOUT: Duration = Duration::from_secs(15);
+const PRODUCTION_TOKEN_KEEPER_PLATFORMS: [&str; 2] = ["codex", "cursor"];
 
 static TOKEN_KEEPER_STARTED: AtomicBool = AtomicBool::new(false);
 static TOKEN_KEEPER_CONFIG_CHANGED: LazyLock<Notify> = LazyLock::new(Notify::new);
@@ -122,18 +123,19 @@ async fn run_refresh_cycle(app_handle: &AppHandle) {
 
     refreshed_any |= refresh_platform_if_due("codex", refresh_due_codex_accounts).await;
     refreshed_any |= refresh_platform_if_due("cursor", refresh_due_cursor_accounts).await;
-    refreshed_any |= refresh_platform_if_due("grok", refresh_due_grok_accounts).await;
-    refreshed_any |=
-        refresh_platform_if_due("github_copilot", refresh_due_github_copilot_accounts).await;
-    refreshed_any |= refresh_platform_if_due("kiro", refresh_due_kiro_accounts).await;
-    refreshed_any |= refresh_platform_if_due("codebuddy", refresh_due_codebuddy_accounts).await;
-    refreshed_any |=
-        refresh_platform_if_due("codebuddy_cn", refresh_due_codebuddy_cn_accounts).await;
-    refreshed_any |= refresh_platform_if_due("workbuddy", refresh_due_workbuddy_accounts).await;
-    refreshed_any |= refresh_platform_if_due("trae", refresh_due_trae_accounts).await;
 
     if refreshed_any {
         let _ = crate::modules::tray::update_tray_menu(app_handle);
+    }
+}
+
+#[cfg(test)]
+mod production_scope_tests {
+    use super::PRODUCTION_TOKEN_KEEPER_PLATFORMS;
+
+    #[test]
+    fn token_keeper_runs_only_for_supported_production_agents() {
+        assert_eq!(PRODUCTION_TOKEN_KEEPER_PLATFORMS, ["codex", "cursor"]);
     }
 }
 

@@ -3,6 +3,8 @@ import { reactive, computed } from "vue";
 // ─── Wails bindings ─────────────────────────────────────────────────────────
 const go = () => window.go?.main?.App;
 export const agentPreviewRuntimeMessage = "本地预览未连接原生运行时；安装版会在启动后检查本机工具。";
+const embeddedUpdatesDisabledMessage = "嵌入 XIASS Tools 时，更新由主应用统一管理。";
+let embeddedRuntimeMode = false;
 
 async function call(method, ...args) {
   const fn = go()?.[method];
@@ -1359,7 +1361,19 @@ export function importTOTPEncrypted(password) {
 
 let updateCheckGeneration = 0;
 
+export function setEmbeddedRuntimeMode(embedded) {
+  embeddedRuntimeMode = Boolean(embedded);
+  if (!embeddedRuntimeMode) return;
+  updateCheckGeneration += 1;
+  state.update.checking = false;
+  state.update.installing = false;
+  state.update.message = embeddedUpdatesDisabledMessage;
+}
+
 export async function checkForUpdates() {
+	if (embeddedRuntimeMode) {
+		return { ok: false, disabled: true, message: embeddedUpdatesDisabledMessage };
+	}
 	if (state.update.checking) {
 		return { ok: false, message: "正在检查更新，请稍候或取消后重试。" };
 	}
@@ -1385,6 +1399,9 @@ export async function checkForUpdates() {
 // local request first, then ask the native short-lived context to cancel; the
 // interface becomes responsive even if an old bridge result arrives later.
 export async function cancelUpdateCheck() {
+	if (embeddedRuntimeMode) {
+		return { ok: false, disabled: true, message: embeddedUpdatesDisabledMessage };
+	}
 	if (!state.update.checking) return { ok: true, message: "当前没有正在进行的更新检查" };
 	updateCheckGeneration += 1;
 	state.update.checking = false;
@@ -1400,6 +1417,9 @@ export async function cancelUpdateCheck() {
 }
 
 export async function skipUpdateVersion(version) {
+	if (embeddedRuntimeMode) {
+		return { ok: false, disabled: true, message: embeddedUpdatesDisabledMessage };
+	}
   const res = await call("SkipUpdateVersion", version);
   if (res?.ok) {
     state.update.info.skipped = true;
@@ -1409,6 +1429,9 @@ export async function skipUpdateVersion(version) {
 }
 
 export async function installLatestUpdate() {
+	if (embeddedRuntimeMode) {
+		return { ok: false, disabled: true, message: embeddedUpdatesDisabledMessage };
+	}
   state.update.installing = true;
   state.update.progress = { phase: "checking", downloaded: 0, total: 0, percent: 0, message: "正在验证更新信息" };
   try {
@@ -1438,6 +1461,7 @@ export function bindPatchEvents() {
 }
 
 function bindUpdateEvents() {
+	if (embeddedRuntimeMode) return;
   if (updateEventsBound) return;
   const runtime = window.runtime;
   if (typeof runtime?.EventsOn !== "function") return;
@@ -1474,7 +1498,9 @@ export async function bootstrap() {
 	const [, , , , , , settings] = await Promise.all([
 		loadPatchStatus({ quick: true }), loadStats(), loadModels(), loadAccounts(), loadAutoApproval(), waitForStartupHistorySync(), loadSettings(),
 	]);
-	bindUpdateEvents();
-	if (settings?.updates?.autoCheck) void checkForUpdates();
+	if (!embeddedRuntimeMode) {
+		bindUpdateEvents();
+		if (settings?.updates?.autoCheck) void checkForUpdates();
+	}
 	void loadAgentStatuses();
 }

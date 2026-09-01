@@ -102,7 +102,7 @@ func (a *App) ChooseCursorProjectMCPConfiguration() CursorProjectMCPStatus {
 	if a == nil || a.ctx == nil {
 		return CursorProjectMCPStatus{Message: "助手尚未完成启动，请稍后再选择 Cursor 项目目录。", Snapshot: cursorProjectMCPSnapshot()}
 	}
-	projectRoot, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+	projectRoot, err := a.openDirectoryDialog(runtime.OpenDialogOptions{
 		Title: "选择 Cursor 项目目录",
 	})
 	if err != nil {

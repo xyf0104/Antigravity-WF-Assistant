@@ -13,22 +13,48 @@
       media="print"
       onload="this.media='all'"
     />
+    <script>
+      (function () {
+        var preference = null;
+        try {
+          preference = window.localStorage.getItem('xiass.tools.theme-preference');
+        } catch (_) {}
+        var isSystemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var resolvedTheme = preference === 'light' || preference === 'dark'
+          ? preference
+          : (isSystemDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', resolvedTheme);
+      })();
+    </script>
     <style>
       html,
       body {
         margin: 0;
         width: 100%;
         height: 100%;
-        background: #0b1220;
-        color: #e2e8f0;
+        background:
+          radial-gradient(circle at 12% 10%, rgba(29, 78, 216, 0.12), transparent 45%),
+          radial-gradient(circle at 90% 5%, rgba(14, 165, 165, 0.12), transparent 40%),
+          linear-gradient(180deg, #f8f7f4 0%, #eef1f6 100%);
+        color: #0f172a;
+        color-scheme: light;
       }
 
-      @media (prefers-color-scheme: light) {
-        html,
-        body {
-          background: #f4f7fb;
-          color: #0f172a;
-        }
+      html[data-theme="light"],
+      html[data-theme="light"] body {
+        background:
+          radial-gradient(circle at 12% 10%, rgba(29, 78, 216, 0.12), transparent 45%),
+          radial-gradient(circle at 90% 5%, rgba(14, 165, 165, 0.12), transparent 40%),
+          linear-gradient(180deg, #f8f7f4 0%, #eef1f6 100%);
+        color: #0f172a;
+        color-scheme: light;
+      }
+
+      html[data-theme="dark"],
+      html[data-theme="dark"] body {
+        background: #0b1220;
+        color: #e2e8f0;
+        color-scheme: dark;
       }
 
       #app-boot-splash {

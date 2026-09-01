@@ -87,6 +87,33 @@ type archiveSummary struct {
 	Snapshot     any    `json:"snapshot,omitempty"`
 }
 
+type CollectedLog struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+func CollectLocalLogs(storageDir, home string) ([]CollectedLog, error) {
+	result := make([]CollectedLog, 0, 6)
+	for _, name := range []string{
+		preUpgradeApplicationLogName + ".1",
+		preUpgradeApplicationLogName,
+		applicationLogName + ".1",
+		applicationLogName,
+		"proxy-trace.jsonl",
+		"proxy_runtime.json",
+	} {
+		data, err := readTail(filepath.Join(storageDir, name), maxExportedFileBytes)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("无法收集 WF 诊断日志")
+		}
+		result = append(result, CollectedLog{Name: filepath.ToSlash(filepath.Join("wf-helper", name)), Content: string(boundTail(redact(data, home), maxExportedFileBytes))})
+	}
+	return result, nil
+}
+
 func Init(storageDir string) error {
 	logMu.Lock()
 	defer logMu.Unlock()

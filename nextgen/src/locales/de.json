@@ -82,7 +82,8 @@
         "sharedCreditPackage": "Geteiltes Credit-Paket",
         "account": "Konto",
         "createdAt": "Erstellt am",
-        "userId": "Benutzer-ID"
+        "userId": "Benutzer-ID",
+        "teamName": "Teamname"
       },
       "empty": {
         "title": "Keine Konten"
@@ -742,8 +743,6 @@
       "floatingCardShowNowAction": "Schwebende Karte anzeigen",
       "dataDir": "Datenverzeichnis",
       "dataDirDesc": "Speicherort für Konten und Konfigurationsdateien.",
-      "topRightAdVisible": "Top-Promo anzeigen",
-      "topRightAdVisibleDesc": "Blendet den oberen Promo-Bereich in der App aus. Die Sponsorenseite bleibt unverändert.",
       "opencodeTitle": "OpenCode-Integration",
       "opencodeRestart": "OpenCode beim Codex-Wechsel neu starten",
       "opencodeRestartDesc": "Codex-Kontoinformationen in OpenCode synchronisieren",
@@ -1196,7 +1195,7 @@
       "importModalDesc": "Wählen Sie aus, was importiert werden soll. Legacy-Kontosicherungen werden als reiner Kontodaten-Import behandelt.",
       "selectionTitle": "Datenumfang",
       "accountsOptionTitle": "Kontodaten",
-      "accountsOptionDesc": "Enthält wiederherstellbare Sicherungen der Plattformkonten und bleibt mit Legacy-Konto-JSON kompatibel. Grok-CLI-Anmeldedaten sind ausgeschlossen; importiere die offizielle auth.json separat.",
+      "accountsOptionDesc": "Enthält XIASS-Plattformkonten sowie Antigravity-WF-Konten, Modellanbieter und Einstellungen. Dieses JSON enthält Anmeldedaten und wird nur bei ausgewählter Kontosicherung erstellt; Codex auth.json wird nie gelesen oder einbezogen.",
       "configOptionTitle": "Konfigurationsdaten",
       "configOptionDesc": "Enthält App-Einstellungen, Gruppen, Instanzen, Wakeup-Aufgaben und die Konfiguration der Modellanbieter.",
       "exportConfirm": "Daten exportieren",
@@ -4806,7 +4805,11 @@
     "subscription": "Abonnement",
     "injectToCursor": "Zu Cursor wechseln",
     "quota": {
-      "onDemand": "On-Demand​"
+      "onDemand": "On-Demand​",
+      "totalUsage": "Gesamtnutzung",
+      "autoComposer": "Automatisch + Composer",
+      "apiUsage": "API-Nutzung",
+      "usageDetails": "Nutzungsdetails"
     },
     "title": "Cursor-Kontoverwaltung",
     "instances": {
@@ -4844,7 +4847,8 @@
       "quotaFailed": "Kontingentabfrage fehlgeschlagen ({{count}})",
       "cleanQuotaFailedAction": "Kontingentabfrage-fehlgeschlagene Konten löschen ({{count}})",
       "cleanQuotaFailedConfirm": "Alle {{count}} Konto/Konten mit fehlgeschlagener Kontingentabfrage löschen?"
-    }
+    },
+    "authId": "Autorisierungs-ID"
   },
   "breakout": {
     "gameOver": "Spiel vorbei",
@@ -5838,16 +5842,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "Vermittler",
-    "title": "APIKEY.FUN Relay",
+    "title": "XIASS API Relay",
     "description": "Der offizielle XIASS-Partner-Relay bietet stabilen, offenen und kosteneffizienten API-Zugriff auf Large Models. Unterstützt werden führende Modelle wie Claude, OpenAI und Gemini; die Nutzung eignet sich für eine einheitliche Konfiguration in Codex, Gemini CLI, Claude Code und weiteren Entwicklerwerkzeugen. Über den exklusiven XIASS-Link registriert erhalten Sie dauerhaft bis zu 5% Rabatt auf Aufladungen.",
     "register": "Exklusiver Link",
     "docs": "Offizielle Doku",
     "viewNow": "Jetzt ansehen",
     "queryTitle": "Schlüsselkontingent",
-    "queryDesc": "Geben Sie einen APIKEY.FUN API Key ein, um das Kontingent automatisch zu prüfen.",
+    "queryDesc": "Geben Sie einen XIASS API API Key ein, um das Kontingent automatisch zu prüfen.",
     "keyNotSet": "Kein Key",
     "apiKeyLabel": "API-Schlüssel",
-    "apiKeyPlaceholder": "API Key aus der APIKEY.FUN-Konsole einfügen",
+    "apiKeyPlaceholder": "API Key aus der XIASS API-Konsole einfügen",
     "hideKey": "Ausblenden",
     "showKey": "Anzeigen",
     "endpointLabel": "Zielpunkt",
@@ -5858,7 +5862,7 @@
     "saving": "Schreibe",
     "saveSuccess": "In Codex Provider geschrieben: {{name}}",
     "toolsTitle": "Client-Konfig schreiben",
-    "toolsDesc": "Schreibt lokale Client-Konfigurationsdateien direkt nach APIKEY.FUN-Doku und CC-Switch-Dateistruktur.",
+    "toolsDesc": "Schreibt lokale Client-Konfigurationsdateien direkt nach XIASS API-Doku und XIASS Tools-Dateistruktur.",
     "endpoint": {
       "global": "Weltweit",
       "globalDesc": "Offizielle Standard-API-Base für die meisten Netzwerke.",
@@ -5954,7 +5958,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "APIKEY.FUN-Daten sind eingetragen. Bitte für Claude bestätigen."
+      "claudeDesktopReady": "XIASS API-Daten sind eingetragen. Bitte für Claude bestätigen."
     },
     "copyKey": "Copy Key​",
     "clearKey": "Clear input​"
@@ -6130,7 +6134,7 @@
     "apiKey": {
       "desc": "Claude CLI API Key als eigene Zugangsdaten speichern. Beim Wechseln oder Starten der CLI werden Anbieter-env-Werte in Claude Code settings.json geschrieben, nicht in den Claude-Anmeldestatus.",
       "nameLabel": "Kontoname",
-      "namePlaceholder": "Optional, z. B. APIKEY.FUN",
+      "namePlaceholder": "Optional, z. B. XIASS API",
       "keyLabel": "API-Schlüssel",
       "placeholder": "Provider-API-Key einfügen",
       "hide": "API Key verbergen",

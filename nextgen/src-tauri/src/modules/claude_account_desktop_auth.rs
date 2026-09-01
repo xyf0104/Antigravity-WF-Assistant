@@ -2996,6 +2996,34 @@ fn inject_oauth_account_to_claude_code(
     Ok(())
 }
 
+// A successful Claude Code credential/config write is the durable boundary of
+// an account switch. Updating `last_used` only affects XIASS Tools ordering and
+// must never make that committed switch look failed to an embedded helper: the
+// helper would restore its model backup even though the credential is already
+// active. Keep this best-effort and leave a native diagnostic instead.
+fn record_claude_account_usage_after_injection<Persist>(
+    account: &ClaudeAccount,
+    persist: Persist,
+) -> bool
+where
+    Persist: FnOnce(ClaudeAccount) -> Result<ClaudeAccount, String>,
+{
+    let mut updated = account.clone();
+    updated.last_used = now_ts_ms();
+    if persist(updated).is_ok() {
+        true
+    } else {
+        logger::log_warn(
+            "[Claude Code] 凭据已应用，但无法更新账户最近使用时间；不会回滚已提交的配置。",
+        );
+        false
+    }
+}
+
+fn note_claude_account_used_after_injection(account: &ClaudeAccount) {
+    let _ = record_claude_account_usage_after_injection(account, save_account_and_index);
+}
+
 pub fn inject_to_claude_config(account_id: &str, config_dir: Option<&Path>) -> Result<(), String> {
     let account = load_account(account_id).ok_or_else(|| "Claude 账号不存在".to_string())?;
     if account.auth_mode == ClaudeAuthMode::DesktopGateway {
@@ -3008,9 +3036,7 @@ pub fn inject_to_claude_config(account_id: &str, config_dir: Option<&Path>) -> R
         crate::modules::claude_instance::ensure_claude_launch_path_configured()?;
         launch_default_claude_desktop()?;
 
-        let mut updated = account.clone();
-        updated.last_used = now_ts_ms();
-        save_account_and_index(updated)?;
+        note_claude_account_used_after_injection(&account);
         return Ok(());
     }
     if account.auth_mode == ClaudeAuthMode::DesktopOAuth {
@@ -3030,26 +3056,19 @@ pub fn inject_to_claude_config(account_id: &str, config_dir: Option<&Path>) -> R
         restore_desktop_profile_snapshot(&snapshot_dir, &target_dir)?;
         restore_default_desktop_gateway_official_config()?;
 
-        let mut updated = account.clone();
-        updated.last_used = now_ts_ms();
-        save_account_and_index(updated)?;
+        note_claude_account_used_after_injection(&account);
         launch_default_claude_desktop()?;
         return Ok(());
     }
     if account.auth_mode == ClaudeAuthMode::ApiKey {
         inject_api_key_to_claude_code_settings(&account, config_dir)?;
-        let mut updated = account.clone();
-        updated.last_used = now_ts_ms();
-        save_account_and_index(updated)?;
+        note_claude_account_used_after_injection(&account);
         return Ok(());
     }
     let config_dir_path = get_effective_claude_code_config_dir(config_dir)?;
     clear_api_key_env_from_claude_code_settings(&config_dir_path)?;
     inject_oauth_account_to_claude_code(&account, config_dir)?;
-
-    let mut updated = account.clone();
-    updated.last_used = now_ts_ms();
-    save_account_and_index(updated)?;
+    note_claude_account_used_after_injection(&account);
     Ok(())
 }
 
@@ -3307,10 +3326,7 @@ async fn request_usage(access_token: &str) -> Result<Value, String> {
         "anthropic-beta",
         HeaderValue::from_static(CLAUDE_OAUTH_BETA_HEADER),
     );
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static("xiass-tools"),
-    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("xiass-tools"));
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))

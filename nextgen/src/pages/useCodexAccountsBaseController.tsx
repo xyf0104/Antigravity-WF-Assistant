@@ -31,7 +31,6 @@ import type { CodexLocalAccessAddressKind, CodexLocalAccessState } from "../type
 import { CODEX_API_SERVICE_BIND_ID, type InstanceDefaults } from "../types/instance";
 import { emitAccountsChanged } from "../utils/accountSyncEvents";
 import { readCodexCustomSortActive } from "../utils/codexAccountOverview";
-import { useSponsorStore } from "../stores/useSponsorStore";
 import { buildCodexExportContent, buildCodexExportFileNameBase, hasCodexExportAgentIdentity, hasCodexExportSensitiveNotes, type CodexExportFormat } from "../utils/codexExportFormats";
 import { readAccountsOverviewFilterField, readAccountsOverviewFilterPersistenceEnabled, readAccountsOverviewFilterStringArray, removeAccountsOverviewFilterField, writeAccountsOverviewFilterField } from "../utils/accountsOverviewFilterPersistence";
 import { isCodexLocalAccessRiskNoticeDismissed, setCodexLocalAccessRiskNoticeDismissed, type CodexLocalAccessRiskNoticeAction } from "../utils/codexLocalAccessRiskNotice";
@@ -60,8 +59,6 @@ export function useCodexAccountsBaseController() {
   const isMacOS = usePlatformRuntimeSupport("macos-only");
     const isWindows = usePlatformRuntimeSupport("windows-only");
     const isCliLaunchSupported = isMacOS || isWindows;
-    const sponsorModule = useSponsorStore((state) => state.state.sponsorModule);
-    const fetchSponsorState = useSponsorStore((state) => state.fetchState);
     const [activeTab, setActiveTab] = useState<CodexTab>("overview");
     const [sessionWindowStats, setSessionWindowStats] = useState<{
       ready: boolean;
@@ -2862,7 +2859,6 @@ export function useCodexAccountsBaseController() {
     externalImportSyncError,
     fetchAccounts,
     fetchCurrentAccount,
-    fetchSponsorState,
     filterTypes,
     formatDate,
     formatResetCreditAbsoluteTime,
@@ -3090,7 +3086,6 @@ export function useCodexAccountsBaseController() {
     showTagModal,
     sortBy,
     sortDirection,
-    sponsorModule,
     store,
     switchAccount,
     syncImportedAccountsToApiService,

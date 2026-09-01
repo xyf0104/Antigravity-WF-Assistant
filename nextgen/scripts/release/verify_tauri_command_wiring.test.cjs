@@ -6,6 +6,21 @@ const test = require('node:test');
 const NEXTGEN_ROOT = path.resolve(__dirname, '../..');
 const FRONTEND_ROOT = path.join(NEXTGEN_ROOT, 'src');
 const TAURI_LIB = path.join(NEXTGEN_ROOT, 'src-tauri', 'src', 'lib.rs');
+const RETIRED_COMMAND_MARKERS = [
+  'github_copilot',
+  'kiro',
+  'grok',
+  'codebuddy',
+  'qoder',
+  'zcode',
+  'trae',
+  'workbuddy',
+  'zed',
+];
+
+function isRetiredProviderCommand(command) {
+  return RETIRED_COMMAND_MARKERS.some((marker) => command.includes(marker));
+}
 
 function walkSourceFiles(root, result = []) {
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -62,17 +77,8 @@ function expectedDynamicCommands() {
     'antigravity_legacy',
     'codex',
     'claude',
-    'github_copilot',
     'windsurf',
-    'kiro',
     'cursor',
-    'grok',
-    'codebuddy',
-    'codebuddy_cn',
-    'qoder',
-    'trae',
-    'workbuddy',
-    'zcode',
   ];
   const instanceCommands = [
     'get_instance_defaults',
@@ -94,11 +100,15 @@ function expectedDynamicCommands() {
   return commands;
 }
 
-test('every literal frontend Tauri invoke is registered by the native host', () => {
+test('every production frontend Tauri invoke is registered by the native host', () => {
   const invokes = collectLiteralInvokes();
   const registered = collectRegisteredCommands();
   const missing = [...invokes.entries()]
-    .filter(([command]) => !command.startsWith('plugin:') && !registered.has(command))
+    .filter(([command]) => (
+      !command.startsWith('plugin:')
+      && !isRetiredProviderCommand(command)
+      && !registered.has(command)
+    ))
     .map(([command, locations]) => `${command} (${[...new Set(locations)].join(', ')})`)
     .sort();
 
@@ -118,4 +128,10 @@ test('every finite dynamic Tauri invoke target is registered by the native host'
     [],
     `Dynamic frontend invoke targets are not registered:\n${missing.join('\n')}`,
   );
+});
+
+test('retired provider commands stay unregistered', () => {
+  const registered = collectRegisteredCommands();
+  const exposed = [...registered].filter(isRetiredProviderCommand).sort();
+  assert.deepEqual(exposed, [], `Retired provider commands are registered:\n${exposed.join('\n')}`);
 });

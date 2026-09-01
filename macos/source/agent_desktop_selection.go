@@ -32,7 +32,9 @@ func (a *App) SelectAgentDesktopInstallation(agentID string) AgentDesktopSelecti
 	if !ok {
 		return AgentDesktopSelectionStatus{Message: "该工具不支持从 XIASS Tools 选择桌面应用。"}
 	}
-	return a.selectAgentDesktopInstallationWithPicker(identifier, selectAgentDesktopNativeTarget)
+	return a.selectAgentDesktopInstallationWithPicker(identifier, func(ctx context.Context, id agent.ID) (string, bool, error) {
+		return selectAgentDesktopNativeTarget(a, ctx, id)
+	})
 }
 
 // GetAgentDesktopSelectionStatus exposes only whether this running XIASS

@@ -192,27 +192,21 @@ pub(crate) enum PlatformId {
 }
 
 impl PlatformId {
-    pub(crate) fn default_order() -> [Self; 18] {
+    pub(crate) fn default_order() -> [Self; 5] {
         [
             Self::Claude,
             Self::Codex,
             Self::Antigravity,
-            Self::Zed,
-            Self::GitHubCopilot,
             Self::Windsurf,
-            Self::Kiro,
             Self::Cursor,
-            Self::Grok,
-            Self::Codebuddy,
-            Self::CodebuddyCn,
-            Self::Qoder,
-            Self::Zcode,
-            Self::Trae,
-            Self::TraeSolo,
-            Self::TraeCn,
-            Self::TraeSoloCn,
-            Self::Workbuddy,
         ]
+    }
+
+    pub(crate) fn is_production_agent(self) -> bool {
+        matches!(
+            self,
+            Self::Antigravity | Self::Codex | Self::Claude | Self::Windsurf | Self::Cursor
+        )
     }
 
     pub(crate) fn from_str(value: &str) -> Option<Self> {
@@ -723,7 +717,7 @@ fn sanitize_platform_list(ids: &[String]) -> Vec<PlatformId> {
         let Some(platform) = PlatformId::from_str(raw.trim()) else {
             continue;
         };
-        if seen.insert(platform) {
+        if platform.is_production_agent() && seen.insert(platform) {
             result.push(platform);
         }
     }
@@ -748,7 +742,7 @@ fn normalize_platform_order(ids: &[String]) -> Vec<PlatformId> {
 #[cfg(not(target_os = "macos"))]
 fn parse_platform_entry_id(raw: &str) -> Option<PlatformId> {
     let value = raw.strip_prefix("platform:")?;
-    PlatformId::from_str(value.trim())
+    PlatformId::from_str(value.trim()).filter(|platform| platform.is_production_agent())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -3549,7 +3543,33 @@ fn parse_platform_from_menu_id(id: &str) -> Option<PlatformId> {
     if parts.next()? != "platform" {
         return None;
     }
-    PlatformId::from_str(parts.next()?)
+    PlatformId::from_str(parts.next()?).filter(|platform| platform.is_production_agent())
+}
+
+#[cfg(test)]
+mod production_scope_tests {
+    use super::PlatformId;
+
+    #[test]
+    fn production_tray_order_is_exactly_the_five_agents() {
+        assert_eq!(
+            PlatformId::default_order(),
+            [
+                PlatformId::Claude,
+                PlatformId::Codex,
+                PlatformId::Antigravity,
+                PlatformId::Windsurf,
+                PlatformId::Cursor,
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_platform_ids_parse_but_are_not_production_agents() {
+        assert_eq!(PlatformId::from_str("zed"), Some(PlatformId::Zed));
+        assert!(!PlatformId::Zed.is_production_agent());
+        assert!(PlatformId::Codex.is_production_agent());
+    }
 }
 
 /// 处理托盘图标事件

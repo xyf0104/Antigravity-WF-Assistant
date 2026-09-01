@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { DataTransferSelection, exportDataTransferJson } from './dataTransferService';
-import { ALL_PLATFORM_IDS, PlatformId } from '../types/platform';
+import {
+  isProductionAgentAccountPlatform,
+  PRODUCTION_AGENT_ACCOUNT_PLATFORM_IDS,
+  PlatformId,
+} from '../types/platform';
 import { getWebdavSyncSettings, uploadAutoBackupToWebdav } from './webdavSyncService';
 
 export type AutoBackupMode = 'full' | 'accounts' | 'config';
@@ -310,6 +314,9 @@ function resolveBackupPlatformPayload(jsonContent: string, platform: PlatformId)
 }
 
 export function extractAutoBackupPlatformJson(jsonContent: string, platform: PlatformId): string {
+  if (!isProductionAgentAccountPlatform(platform)) {
+    throw new Error('backup_platform_not_available');
+  }
   const payload = resolveBackupPlatformPayload(jsonContent, platform);
   return JSON.stringify(payload, null, 2);
 }
@@ -319,14 +326,14 @@ export function normalizeAutoBackupPlatforms(
 ): AutoBackupPlatformEntry[] {
   const countByPlatform = new Map<PlatformId, number>();
   for (const item of platforms ?? []) {
-    if (!ALL_PLATFORM_IDS.includes(item.platform)) continue;
+    if (!isProductionAgentAccountPlatform(item.platform)) continue;
     const count = Number.isFinite(item.account_count)
       ? Math.max(0, Math.floor(item.account_count))
       : 0;
     if (count <= 0) continue;
     countByPlatform.set(item.platform, (countByPlatform.get(item.platform) ?? 0) + count);
   }
-  return ALL_PLATFORM_IDS
+  return PRODUCTION_AGENT_ACCOUNT_PLATFORM_IDS
     .filter((platform) => countByPlatform.has(platform))
     .map((platform) => ({
       platform,

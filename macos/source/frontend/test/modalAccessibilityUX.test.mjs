@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("../src/components/ui/Modal.vue", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
 const buttonSource = readFileSync(new URL("../src/components/ui/Button.vue", import.meta.url), "utf8");
 const totpSource = readFileSync(new URL("../src/components/TOTPSettingsCard.vue", import.meta.url), "utf8");
 const codexSource = readFileSync(new URL("../src/components/CodexConfigurationModal.vue", import.meta.url), "utf8");
@@ -22,6 +23,26 @@ test("shared modal traps keyboard focus and restores the previous control", () =
 test("persistent editors ignore backdrop clicks while ordinary dialogs remain dismissible", () => {
   assert.match(source, /if \(!props\.persistent && props\.closable\) emit\("close"\)/);
   assert.match(source, /@click\.self="handleBackdropClick"/);
+});
+
+test("inline workbench sheets do not fade through the parent canvas", () => {
+  assert.match(source, /<Transition name="mask" :css="!inline">/);
+  assert.match(source, /<Transition name="sheet" appear :css="!inline">/);
+});
+
+test("inline workbench sheets participate in the host page scroll instead of creating a nested viewport", () => {
+  assert.match(source, /\.mask\.inline \{[\s\S]*?position: static;[\s\S]*?height: auto;[\s\S]*?min-height: 0;/);
+  assert.match(source, /\.sheet\.inline \{[\s\S]*?height: auto;[\s\S]*?overflow: visible;[\s\S]*?display: block;/);
+  assert.match(source, /\.sheet\.inline > \.body \{[\s\S]*?overflow: visible;/);
+});
+
+test("inline workbenches relay wheel input to the host unless a local control can consume it", () => {
+  assert.match(appSource, /function embeddedScrollableAncestorCanConsumeWheel\(target, deltaY\)/);
+  assert.match(appSource, /function relayEmbeddedWheel\(event\)/);
+  assert.match(appSource, /if \(embeddedScrollableAncestorCanConsumeWheel\(event\.target, deltaY\)\) return;/);
+  assert.match(appSource, /type: "xiass-wf-scroll"/);
+  assert.match(appSource, /window\.addEventListener\("wheel", relayEmbeddedWheel, \{ capture: true, passive: false \}\)/);
+  assert.match(appSource, /window\.removeEventListener\("wheel", relayEmbeddedWheel, true\)/);
 });
 
 test("2FA page exposes one element root so page transitions do not drop animations", () => {

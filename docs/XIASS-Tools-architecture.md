@@ -1,97 +1,67 @@
-# XIASS Tools Architecture
+# XIASS Tools 架构与数据边界
 
-## Product boundary
+## 产品边界
 
-XIASS Tools is a local, installable configuration companion for the user's
-own AI developer tools. It keeps the already-supported Antigravity workflow
-and exposes Codex, Claude Code, Cursor, and Windsurf actions only when their
-local capability contracts have been verified on macOS and Windows.
+XIASS Tools 是面向用户自有 AI 开发工具的本机可安装配置助手。它保留已验证的 Antigravity WF 工作流，并为 Codex、Claude Code、Cursor 和 Windsurf 提供独立的检测、账号、配置、恢复与启动能力。各 Agent 的操作仅在 macOS 和 Windows 对应本机能力契约可验证时开放。
 
-The product works locally. A platform adapter may contact an upstream service
-only after the user starts a documented action such as OAuth, quota refresh,
-or model discovery. It must never upload local credentials, conversations, or
-application databases to a XIASS service merely to manage them.
+产品以本机处理为主。OAuth、额度刷新、模型发现、账号测试、本机导入和账号切换都必须由用户发起；本机导入或注入时会按该 Agent 的已知存储规则处理必要的授权资料。只有用户在设置中明确启用“本机账号自动导入”后，应用才会在本机监听五个已支持 Agent 的登录变更；默认不会为了“自动管理”而后台扫描未选择客户端。无论是否启用该功能，都不会把本机凭据、会话、聊天记录或应用数据库原文上传到 XIASS 服务。
 
-## Source and licensing rule
+## 来源与许可证
 
-The Codex configuration helper under the XIASS API repository is first-party
-source and can be integrated after it has been adapted to the Wails host.
+XIASS API 仓库中的 Codex 配置助手属于第一方来源，已通过当前 Tauri 原生层集成。`nextgen/` 中的派生部分及其来源、许可证和第三方声明以 [ORIGIN_AND_LICENSE.md](../nextgen/ORIGIN_AND_LICENSE.md)、[THIRD_PARTY_NOTICES.md](../nextgen/THIRD_PARTY_NOTICES.md) 为准；它们必须随源码和分发产物保留。
 
-Cockpit Tools is an external functional reference only. Its current public
-licensing and README restrictions do not permit its source code, branding,
-layouts, OAuth parameters, icons, or copy to be moved into a commercial
-XIASS Tools release. The implementation below is independently written.
+XIASS Tools 的可见品牌、产品文案、应用图标和广告/推广内容必须保持 XIASS 自有呈现。任何后续发布都不得移除来源或许可证声明，也不得以本文替代原许可证文本。
 
-## Product layers
+## 产品层次
 
 ```text
-Wails UI
+Tauri UI
   └── Agent registry
-        ├── Antigravity adapter: existing verified patch and proxy workflow
-        ├── Codex adapter: explicit config.toml management and guarded Desktop lifecycle
-        ├── Claude Code adapter: explicit settings.json management
-        ├── Cursor adapter: documented global MCP and explicitly selected project MCP configuration
-        └── Windsurf adapter: documented global MCP configuration only
-              ├── local installation discovery
-              ├── version-gated configuration inspection
-              ├── explicit, transactional configuration mutation
-              ├── verified backup / restore where implemented
-              └── credential-free local diagnostics
+        ├── Antigravity WF：已验证的本地代理、补丁和模型工作流
+        ├── Codex：Provider 配置、账号、实例与受保护的 Desktop 生命周期
+        ├── Claude Code：Claude / Claude Code 账号、设置与实例工作流
+        ├── Cursor：账号、实例及全局或用户明确选择的项目 MCP 配置
+        └── Windsurf：账号、实例及全局 MCP 配置
+              ├── 本机安装发现与版本/结构验证
+              ├── 用户发起的本机导入、OAuth、额度刷新和账号切换
+              ├── 显式、事务性的配置或凭据写入
+              ├── 已实现操作的校验备份与恢复
+              └── 脱敏本机诊断
 
-Platform secret handling
-  ├── request-local API keys and tokens for explicitly initiated writes
-  ├── user-pasted, account-level API/OAuth transport credentials only through a strict field allow-list
-  ├── platform secure storage only for the implemented local TOTP feature
-  └── no external app account-store, client_secret, session, database, Cookie or browser-storage import
+授权资料处理
+  ├── 用户直接输入或粘贴的 API Key、Token、JSON 和 OAuth 回调
+  ├── 用户点击“从本机导入”时才读取所选 Agent 的必要本机授权资料
+  ├── 用户点击“切换/注入/启动”时才向所选客户端或隔离实例写入所需数据
+  ├── 已启用的刷新、唤醒或实例任务仅使用该用户已保存并启用的账号
+  └── 默认不后台扫描未选择客户端；仅在用户启用本机账号自动导入后监听五个已支持 Agent 的登录变更；不将本机认证文件、Cookie、会话或数据库原文上传到 XIASS 服务
 
-Common safety services
-  ├── private application state
-  ├── operation locks
-  ├── atomic writes and SHA-256 manifests
-  ├── reversible backups
-  ├── diagnostics with secret redaction
-  └── update verification
+通用安全服务
+  ├── 私有应用状态与操作锁
+  ├── 原子写入、SHA-256 清单与可恢复备份
+  ├── 诊断脱敏与账户/认证资料排除
+  └── 更新校验
 ```
 
-## Required platform behaviour
+## 当前 Agent 能力边界
 
-| Platform | Detect and diagnose | Supported configuration surface | Account/OAuth/quota | Apply / restore | Launch |
-| --- | --- | --- | --- | --- | --- |
-| Antigravity | yes | existing verified local proxy and patch workflow | existing product-specific workflow only | existing verified patch backup and restore | existing launcher |
-| Codex | yes | independent `xiass_tools` provider in `config.toml`; optional guarded history/workspace repair | may reuse an enabled static OpenAI Responses account without exposing its credential to the renderer; native OAuth/session/quota are not imported | atomic config backup / restore and explicit repairs | only for a structure-verified Codex / ChatGPT Desktop installation, after explicit user confirmation; graceful stop/start/restart only, never force-kill |
-| Claude Code | yes | only `settings.json`: API root, authorization token and model | may reuse an enabled static Anthropic Messages account without exposing its credential to the renderer; OAuth/refresh/session/quota are not imported | atomic settings backup / restore | terminal lifecycle is intentionally not managed |
-| Cursor | yes | documented global `~/.cursor/mcp.json`, plus `<explicitly selected project>/.cursor/mcp.json` | not read or claimed | reserved XIASS MCP entry only, with atomic write, verified recovery points, explicit restore and explicit deletion | may open a freshly re-verified installation; no account or process-session management |
-| Windsurf | yes | documented global `~/.codeium/windsurf/mcp_config.json` only | not read or claimed | reserved XIASS MCP entry only, with atomic write, verified recovery points, explicit restore and explicit deletion | may open a freshly re-verified installation; no account or process-session management |
+| Agent | 检测与配置 | 用户主动账号流程 | 应用、恢复与启动边界 |
+| --- | --- | --- | --- |
+| Antigravity WF | 本地代理、补丁、模型、图片、权限、历史与诊断 | 上游 API / JSON / OAuth 账户、测试、额度与账户池 | 只对已识别结构连接或恢复；未知结构不盲写 |
+| Codex | `config.toml` 中独立 `xiass_tools` Provider、模型、历史/工作区修复 | OAuth、API Key / Token / JSON、本机 Codex 或 ChatGPT Desktop 导入、额度刷新、账号与实例切换 | 导入/切换时才读写相应授权资料；Provider 和恢复点使用事务写入；受保护的 Desktop 操作需明确确认 |
+| Claude Code | Claude / Claude Code 设置、Gateway、模型和恢复 | OAuth、API Key、JSON、本机 Claude 或 Claude Code 登录态导入、额度、账号与实例切换 | 仅在所选操作时读写对应 Claude 数据或 Claude Code 配置；API Key 写入范围在界面中明确提示 |
+| Cursor | 账号、实例、全局 MCP 与用户明确选择项目的 `.cursor/mcp.json` | OAuth、Token / JSON / 本机导入、额度刷新与账号注入 | 认证存储只在导入或切换时处理；MCP 仅管理 XIASS 条目并保留可校验恢复点 |
+| Windsurf | 账号、实例和全局 MCP 配置 | OAuth、密码 / Token / JSON / 本机导入、额度刷新与账号注入 | 认证存储与系统凭据能力仅在所选导入或切换时使用；MCP 写入和恢复按已识别结构执行 |
 
-No adapter may claim an account is connected, a quota is available, or a
-client version is supported unless the adapter has read and validated the
-actual local structure or a documented upstream response.
+适配器不得把页面状态当作账号、额度或客户端兼容性的证明。账号状态必须来自该用户触发的本机验证或相应上游响应；无法验证的结构应显示为不可处理，而不是强制写入。
 
-## Delivery sequence
+## 当前交付规则
 
-1. Keep the visible product identity as XIASS Tools and migrate existing
-   legacy local state without deleting user data.
-2. Add the shared agent registry, discovery contract, transaction contract,
-   vault interface, and diagnostics model.
-3. Integrate the first-party Codex helper through Wails bindings, including
-   config backup, model discovery, history safety repair, workspace repair,
-   installation discovery, and explicit restore.
-4. Add Claude Code actions only through the three documented user-setting
-   fields, with testable backup and restore behavior.
-5. Add Cursor only through its documented global MCP JSON or an explicitly
-   user-selected project `.cursor/mcp.json`; add Windsurf only through its
-   documented global MCP JSON. Do not inspect or mutate private account storage.
-6. Keep the local TOTP vault isolated from third-party account credentials,
-   support only user-initiated encrypted export/import with password, integrity
-   validation and rollback, and omit it entirely from logs and diagnostic exports.
-7. Finish the XIASS design system, native tray behavior, Windows NSIS installer,
-   macOS universal installer, update flow, and per-platform smoke tests.
+1. 保持可见产品身份为 XIASS Tools，并以可验证迁移兼容旧本机状态，不擅自删除用户数据。
+2. 五个 Agent 工作台独立展示各自可用的账户、配置、诊断、恢复和实例能力，不共享或伪造其他客户端的登录态。
+3. 所有导入、OAuth、注入、切换、导出和恢复都必须有明确的用户入口与可理解的操作范围；敏感导出只在用户明确选择时生成。
+4. 本地验证器保持与第三方账号资料隔离，支持用户主动的加密导入/导出、完整性校验和失败回滚，并从日志和诊断导出中排除。
+5. 发布前必须完成双平台安装包、更新、托盘/退出、嵌入式 WF 桥接与代表性客户端的真实验证；不能以浏览器预览替代原生运行验证。
 
-## Verification gate
+## 验证门槛
 
-Every adapter change requires unit coverage for path discovery, malformed
-inputs, backup/restore, interrupted mutation recovery, secret redaction, and
-unsupported-client rejection. A release also requires native Windows and macOS
-builds plus a smoke test against a representative installed client version for
-each supported platform. Unsupported structures are shown as unsupported;
-they are never force-written.
+每次适配器变更都需要覆盖路径发现、异常输入、导入/写入、备份/恢复、中断恢复、敏感数据脱敏与未知客户端拒绝。正式发布还需要 macOS 与 Windows 原生构建、标准安装包和每个受支持 Agent 的代表性实机冒烟验证。未知结构显示为不支持，不可强制覆盖。

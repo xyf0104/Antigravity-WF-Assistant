@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import Dashboard from "@/views/Dashboard.vue";
 import Tools from "@/views/Tools.vue";
 import Models from "@/views/Models.vue";
@@ -17,6 +17,7 @@ import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import {
 	state,
 	bootstrap,
+	setEmbeddedRuntimeMode,
 	requestQuit,
 	checkForUpdates,
 	installLatestUpdate,
@@ -30,6 +31,9 @@ import {
 
 const embeddedParams = new URLSearchParams(window.location.search);
 const embeddedMode = embeddedParams.get("embedded") === "1";
+const embeddedVersionPillLabel = "由宿主更新";
+const versionPillLabel = computed(() => embeddedMode ? embeddedVersionPillLabel : "v1.7.2");
+setEmbeddedRuntimeMode(embeddedMode);
 if (embeddedMode) document.documentElement.dataset.embedded = "true";
 const embeddedModuleID = embeddedParams.get("module") || "antigravity";
 const supportedEmbeddedModules = new Set(["antigravity", "codex", "claude-code", "cursor", "windsurf"]);
@@ -136,6 +140,7 @@ function dismissUpdateDialog() {
 }
 
 async function handleInstallUpdate() {
+	if (embeddedMode) return;
 	updateDialogError.value = "";
 	const res = await installLatestUpdate();
 	if (!res?.ok) updateDialogError.value = res?.message || "下载更新失败";
@@ -159,7 +164,7 @@ function dismissRepatchDialog() {
 
 function handleMainWindowShown() {
 	void loadPatchStatus();
-	if (state.settings?.updates?.autoCheck !== false) void checkForUpdates();
+	if (!embeddedMode && state.settings?.updates?.autoCheck !== false) void checkForUpdates();
 }
 
 async function handleAgentRefresh() {
@@ -264,6 +269,10 @@ watch(themeMode, (value) => {
 watch(
 	() => [state.update.info?.available, state.update.info?.skipped, state.update.info?.latestVersion],
 	([available, skipped, version]) => {
+		if (embeddedMode) {
+			updateDialogOpen.value = false;
+			return;
+		}
 		if (available && !skipped && version && version !== dismissedUpdateVersion.value && !repatchDialogOpen.value) {
 			updateDialogOpen.value = true;
 		}
@@ -285,9 +294,115 @@ watch(
 	},
 );
 
+function notifyEmbeddedReady() {
+  if (!embeddedMode || window.parent === window) return;
+  window.parent.postMessage(
+    { type: "xiass-wf-ready", module: activeModuleID.value },
+    "*",
+  );
+}
+
+let embeddedHeightObserver = null;
+let embeddedHeightFrame = 0;
+
+function measureEmbeddedContentHeight() {
+  const app = document.getElementById("app");
+  const shell = document.querySelector(".shell");
+  // The iframe viewport is set from the last height we reported. Reading the
+  // root scroll height feeds that old viewport size back to the host and can
+  // leave a large empty area after an inline sheet closes. Measure only real
+  // document content so the host can shrink again.
+  const heights = [
+    document.body?.scrollHeight || 0,
+    app?.scrollHeight || 0,
+    app?.getBoundingClientRect().height || 0,
+    shell?.scrollHeight || 0,
+    shell?.getBoundingClientRect().height || 0,
+  ];
+  return Math.ceil(Math.max(520, ...heights));
+}
+
+function notifyEmbeddedContentHeight() {
+  if (!embeddedMode || window.parent === window) return;
+  window.parent.postMessage(
+    {
+      type: "xiass-wf-content-height",
+      module: activeModuleID.value,
+      height: Math.min(32000, measureEmbeddedContentHeight()),
+    },
+    "*",
+  );
+}
+
+function scheduleEmbeddedContentHeight() {
+  if (!embeddedMode || embeddedHeightFrame) return;
+  embeddedHeightFrame = window.requestAnimationFrame(() => {
+    embeddedHeightFrame = 0;
+    notifyEmbeddedContentHeight();
+  });
+}
+
+function startEmbeddedContentHeightReporter() {
+  if (!embeddedMode || typeof ResizeObserver === "undefined") {
+    scheduleEmbeddedContentHeight();
+    return;
+  }
+  embeddedHeightObserver = new ResizeObserver(scheduleEmbeddedContentHeight);
+  [document.body, document.getElementById("app"), document.querySelector(".shell")]
+    .filter(Boolean)
+    .forEach((element) => embeddedHeightObserver.observe(element));
+  window.addEventListener("resize", scheduleEmbeddedContentHeight);
+  scheduleEmbeddedContentHeight();
+}
+
+function stopEmbeddedContentHeightReporter() {
+  window.removeEventListener("resize", scheduleEmbeddedContentHeight);
+  embeddedHeightObserver?.disconnect();
+  embeddedHeightObserver = null;
+  if (embeddedHeightFrame) window.cancelAnimationFrame(embeddedHeightFrame);
+  embeddedHeightFrame = 0;
+}
+
+function embeddedScrollableAncestorCanConsumeWheel(target, deltaY) {
+  let current = target instanceof Element ? target : null;
+  while (current && current !== document.documentElement) {
+    const style = window.getComputedStyle(current);
+    if (["auto", "scroll", "overlay"].includes(style.overflowY)) {
+      const maxScrollTop = current.scrollHeight - current.clientHeight;
+      if (maxScrollTop > 1) {
+        if (deltaY < 0 && current.scrollTop > 1) return true;
+        if (deltaY > 0 && current.scrollTop < maxScrollTop - 1) return true;
+      }
+    }
+    current = current.parentElement;
+  }
+  return false;
+}
+
+function relayEmbeddedWheel(event) {
+  if (!embeddedMode || window.parent === window || event.defaultPrevented || event.ctrlKey) return;
+  const deltaX = Number(event.deltaX) || 0;
+  const deltaY = Number(event.deltaY) || 0;
+  if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+  if (embeddedScrollableAncestorCanConsumeWheel(event.target, deltaY)) return;
+
+  // Cross-origin iframe wheel events do not bubble to the host. The host
+  // validates origin/source before moving its single document scrollbar.
+  event.preventDefault();
+  window.parent.postMessage(
+    {
+      type: "xiass-wf-scroll",
+      deltaX: Math.max(-1200, Math.min(1200, deltaX)),
+      deltaY: Math.max(-1200, Math.min(1200, deltaY)),
+    },
+    "*",
+  );
+}
+
 onMounted(() => {
   systemTheme.addEventListener?.("change", handleSystemThemeChange);
-  bootstrap().then(() => {
+  if (embeddedMode) window.addEventListener("wheel", relayEmbeddedWheel, { capture: true, passive: false });
+  bootstrap().then(async () => {
     if (!embeddedMode) return;
     if (activeModuleID.value === "codex") codexConfigurationOpen.value = true;
     if (activeModuleID.value === "claude-code") claudeCodeConfigurationOpen.value = true;
@@ -295,6 +410,12 @@ onMounted(() => {
       mcpConfigurationTarget.value = activeModuleID.value;
       mcpConfigurationOpen.value = true;
     }
+    await nextTick();
+    startEmbeddedContentHeightReporter();
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      notifyEmbeddedContentHeight();
+      notifyEmbeddedReady();
+    }));
   }).catch(console.error);
 	const runtime = window.runtime;
 	if (typeof runtime?.EventsOn === "function") {
@@ -308,6 +429,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   systemTheme.removeEventListener?.("change", handleSystemThemeChange);
+	window.removeEventListener("wheel", relayEmbeddedWheel, true);
+	stopEmbeddedContentHeightReporter();
 	removeMainWindowShownListener?.();
 });
 </script>
@@ -363,7 +486,7 @@ onUnmounted(() => {
             <path d="M12 3v9m5.66-5.66A8 8 0 1 1 6.34 6.34" />
           </svg>
         </button>
-        <span class="version-pill">v1.6.8</span>
+        <span class="version-pill" :title="embeddedMode ? '版本与更新由宿主 XIASS Tools 管理' : 'XIASS Tools v1.7.2'">{{ versionPillLabel }}</span>
       </div>
     </aside>
 
@@ -479,7 +602,7 @@ onUnmounted(() => {
 		@changed="handleMCPConfigurationChanged"
 	/>
 
-	<Modal :open="updateDialogOpen" title="发现新版本" @close="dismissUpdateDialog">
+	<Modal :open="!embeddedMode && updateDialogOpen" title="发现新版本" @close="dismissUpdateDialog">
 	  <div class="global-dialog-copy">
 		<strong>XIASS Tools v{{ state.update.info.latestVersion }}</strong>
 		<span>当前为 v{{ state.update.info.currentVersion || '—' }}，可以直接下载、校验并启动新版安装程序。</span>
@@ -522,6 +645,8 @@ onUnmounted(() => {
 
 .shell.embedded {
   grid-template-columns: minmax(0, 1fr);
+  height: auto;
+  min-height: 0;
   min-width: 0;
   background: transparent;
 }
@@ -533,7 +658,8 @@ onUnmounted(() => {
 
 .shell.embedded .workspace {
   min-width: 0;
-  height: 100vh;
+  height: auto;
+  min-height: 0;
 }
 
 .shell.embedded .agent-subnav {
@@ -541,8 +667,10 @@ onUnmounted(() => {
 }
 
 .shell.embedded .main {
+  flex: 0 0 auto;
   min-height: 0;
-  padding-top: 14px;
+  overflow: visible;
+  padding: 8px 0 16px;
 }
 
 .agent-detail-copy {

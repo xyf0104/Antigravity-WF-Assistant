@@ -179,30 +179,34 @@
   padding: 40px 32px 32px 0;
   padding-inline-start: 0;
   padding-inline-end: 32px;
+  /* One scroll surface for every agent workspace. `overlay` is non-standard
+     and caused different wheel/scrollbar behavior between macOS and Windows. */
   height: 100vh;
-  overflow-y: overlay;
+  height: 100dvh;
+  overflow-x: clip;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-padding-block: 16px 32px;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 
-.app-global-promo-layer {
-  position: absolute;
-  top: 70px;
-  left: 0;
-  right: 32px;
-  height: 0;
-  z-index: 6;
-  pointer-events: none;
-}
-
-.app-global-promo-layer .global-promo-center {
-  top: 0;
+/* Agent workspaces are operational screens, not landing pages. Keep their
+   first actionable content close to the window edge while preserving an
+   intentional gutter around the compact workspace strip. */
+.main-wrapper:has(.xiass-agent-workspace) {
+  gap: 8px;
+  padding-top: 8px;
+  padding-bottom: 24px;
+  scroll-padding-block: 8px 24px;
 }
 
 .main-content {
-  flex: 1;
+  flex: 0 0 auto;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -214,7 +218,7 @@
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  animation: fadeUp 0.5s ease both;
+  animation: fadeUp 0.24s var(--motion-ease, ease) both;
 }
 
 .page-heading h1 {
@@ -315,7 +319,7 @@
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(10px);
-  animation: fadeUp 0.55s ease both;
+  animation: fadeUp 0.24s var(--motion-ease, ease) both;
   position: relative;
   z-index: 5;
 }

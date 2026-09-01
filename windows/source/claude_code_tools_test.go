@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,19 @@ import (
 	"antigravity-wf-assistant/internal/claudeconfig"
 	"antigravity-wf-assistant/internal/storage"
 )
+
+type embeddedClaudeCodeActionStub struct {
+	requests []nativeActionRequest
+	result   nativeActionResult
+	err      error
+}
+
+func (stub *embeddedClaudeCodeActionStub) Execute(_ context.Context, request nativeActionRequest) (nativeActionResult, error) {
+	stub.requests = append(stub.requests, request)
+	return stub.result, stub.err
+}
+
+func (stub *embeddedClaudeCodeActionStub) Close() {}
 
 func TestClaudeCodeBridgeWritesOnlySettingsAndNeverSerializesToken(t *testing.T) {
 	home := t.TempDir()
@@ -279,6 +293,156 @@ func TestClaudeCodeReusesCompatibleSavedAccountWithoutRenderingCredential(t *tes
 	}
 	if got, err := os.ReadFile(foreignCredentials); err != nil || string(got) != string(foreignData) {
 		t.Fatalf("foreign Claude credential file changed: %q, %v", got, err)
+	}
+}
+
+func TestEmbeddedClaudeCodeCandidatesUseOnlyHostProjection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	storage.Init(filepath.Join(home, "legacy-helper-state"))
+	if err := storage.SaveUpstreamAccount(storage.UpstreamAccount{
+		ID: "legacy-helper-account", Name: "legacy helper must not be used", Provider: "anthropic", Type: "api_key",
+		APIURL: "https://legacy.example.test", EndpointMode: "auto", APIStyle: "messages", MessagePathMode: "auto",
+		AuthMode: "x_api_key", APIKey: "legacy-helper-secret", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hostProjection := ClaudeCodeAccountCandidatesStatus{
+		OK: true,
+		Candidates: []ClaudeCodeAccountCandidate{
+			{
+				ID: "tauri_claude_account", Label: "XIASS Claude", CredentialMode: "OAuth",
+				Models: []ClaudeCodeAccountCandidateModel{
+					{ID: "claude-host-model", DisplayName: "Claude Host Model"},
+					{ID: "not valid whitespace", DisplayName: "must be removed"},
+				},
+			},
+		},
+	}
+	payload, err := json.Marshal(hostProjection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &embeddedClaudeCodeActionStub{result: nativeActionResult{OK: true, Value: string(payload)}}
+	app := &App{embeddedMode: true, ctx: context.Background(), nativeActions: stub}
+
+	status := app.GetClaudeCodeAccountCandidates()
+	if !status.OK || len(status.Candidates) != 1 {
+		t.Fatalf("embedded candidates = %#v", status)
+	}
+	if got := status.Candidates[0]; got.ID != "tauri_claude_account" || got.Label != "XIASS Claude" || len(got.Models) != 1 || got.Models[0].ID != "claude-host-model" {
+		t.Fatalf("embedded host projection = %#v", got)
+	}
+	if len(stub.requests) != 1 || stub.requests[0].Kind != nativeActionClaudeCodeCandidates || stub.requests[0].AccountID != "" || stub.requests[0].Model != "" {
+		t.Fatalf("unexpected embedded host request: %#v", stub.requests)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"legacy-helper-account", "legacy-helper-secret", "legacy.example.test"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("embedded candidate response leaked legacy helper state %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestEmbeddedClaudeCodeAccountApplyPreservesHostCredentialAndWritesOnlyModel(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, "claude")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const hostCredential = "host-owned-credential-must-not-render"
+	original := []byte(`{"model":"old-model","env":{"ANTHROPIC_AUTH_TOKEN":"` + hostCredential + `","KEEP_ME":"preserved"},"other":{"value":true}}`)
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stub := &embeddedClaudeCodeActionStub{result: nativeActionResult{OK: true, Value: embeddedClaudeCodeCurrentMarkerWarning}}
+	app := &App{embeddedMode: true, ctx: context.Background(), nativeActions: stub}
+
+	status := app.ApplyClaudeCodeConfigurationFromAccount(ClaudeCodeApplyAccountInput{
+		AccountID: "tauri_claude_account", Model: "claude-host-model",
+	})
+	if !status.OK || status.Snapshot.Model != "claude-host-model" || !status.Snapshot.AuthTokenConfigured {
+		t.Fatalf("embedded account apply = %#v", status)
+	}
+	if status.Message != embeddedClaudeCodeCurrentMarkerWarning {
+		t.Fatalf("committed host warning was not preserved: %#v", status)
+	}
+	if len(stub.requests) != 1 {
+		t.Fatalf("embedded host requests = %#v", stub.requests)
+	}
+	request := stub.requests[0]
+	if request.Kind != nativeActionClaudeCodeApply || request.AccountID != "tauri_claude_account" || request.Model != "claude-host-model" || request.URL != "" {
+		t.Fatalf("embedded account apply request = %#v", request)
+	}
+	written, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(written), `"ANTHROPIC_AUTH_TOKEN": "`+hostCredential+`"`) || !strings.Contains(string(written), `"KEEP_ME": "preserved"`) || !strings.Contains(string(written), `"model": "claude-host-model"`) {
+		t.Fatalf("embedded account model selection altered host-owned settings: %s", written)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), hostCredential) || strings.Contains(string(encoded), configDir) {
+		t.Fatalf("embedded account status leaked host material: %s", encoded)
+	}
+}
+
+func TestEmbeddedClaudeCodeAccountApplyRollsBackModelWhenHostRejects(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, "claude")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`{"model":"old-model","env":{"KEEP_ME":"preserved"}}`)
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stub := &embeddedClaudeCodeActionStub{result: nativeActionResult{OK: false}}
+	app := &App{embeddedMode: true, ctx: context.Background(), nativeActions: stub}
+
+	status := app.ApplyClaudeCodeConfigurationFromAccount(ClaudeCodeApplyAccountInput{
+		AccountID: "tauri_claude_account", Model: "claude-host-model",
+	})
+	if status.OK || !strings.Contains(status.Message, "已恢复") {
+		t.Fatalf("host rejection should restore staged model: %#v", status)
+	}
+	after, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+	if err != nil || string(after) != string(original) {
+		t.Fatalf("host rejection did not restore the original model settings: %q / %v", after, err)
+	}
+	if len(stub.requests) != 1 || stub.requests[0].Kind != nativeActionClaudeCodeApply {
+		t.Fatalf("unexpected host action sequence: %#v", stub.requests)
+	}
+}
+
+func TestEmbeddedClaudeCodeApplyHostMessageWhitelist(t *testing.T) {
+	if got := embeddedClaudeCodeApplyHostMessage(embeddedClaudeCodeAppliedMessage); got != embeddedClaudeCodeFallbackApplyMessage {
+		t.Fatalf("normal host completion message = %q", got)
+	}
+	if got := embeddedClaudeCodeApplyHostMessage(embeddedClaudeCodeCurrentMarkerWarning); got != embeddedClaudeCodeCurrentMarkerWarning {
+		t.Fatalf("marker warning was not preserved: %q", got)
+	}
+	if got := embeddedClaudeCodeApplyHostMessage("credential=must-not-render"); got != embeddedClaudeCodeFallbackApplyMessage {
+		t.Fatalf("untrusted host message crossed the boundary: %q", got)
 	}
 }
 

@@ -147,6 +147,45 @@ func TestHandleFetchAvailableModelsFailsClosedWithoutKnownPickerIndex(t *testing
 	}
 }
 
+// imageGenerationModelIds is an execution directory rather than a model-picker
+// index. A newer/unknown response that exposes only this field is not enough
+// evidence to inject a model, even when it has the expected flat string-list
+// type. The original response and already-proven route assignments must win.
+func TestHandleFetchAvailableModelsFailsClosedWhenOnlyImageGenerationIndexExists(t *testing.T) {
+	restore := replaceModelRouteAssignmentsForTest(modelRouteAssignments{
+		placeholders: map[string]string{"models/previous": "MODEL_PLACEHOLDER_M9"},
+		slugs:        map[string]string{"models/previous": "custom-previous"},
+	})
+	t.Cleanup(restore)
+
+	stateDir := t.TempDir()
+	storage.Init(stateDir)
+	InitTrace(stateDir)
+	if err := storage.SaveModels([]storage.CustomModel{{
+		Name: "models/custom-image", DisplayName: "Custom image", Provider: "openai", ExternalModelName: "gpt-image-2",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"models":{"native":{"model":"MODEL_GEMINI_NATIVE"}},"imageGenerationModelIds":["native-image"]}`)
+	recorder := httptest.NewRecorder()
+	handleFetchAvailableModelsWithClient(
+		recorder,
+		httptest.NewRequest(http.MethodPost, "/v1internal:fetchAvailableModels", nil),
+		&http.Client{Transport: unknownModelShapeRoundTripper(payload)},
+	)
+	if recorder.Code != http.StatusOK || !bytes.Equal(recorder.Body.Bytes(), payload) {
+		t.Fatalf("image-directory-only injection changed native response: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if diagnostics := GetDiagnostics(); !strings.Contains(diagnostics.LastError, "模型选择索引") {
+		t.Fatalf("image directory was incorrectly accepted as a picker index: %+v", diagnostics)
+	}
+	assignments := snapshotModelRouteAssignments()
+	if len(assignments.placeholders) != 1 || assignments.placeholders["models/previous"] != "MODEL_PLACEHOLDER_M9" ||
+		len(assignments.slugs) != 1 || assignments.slugs["models/previous"] != "custom-previous" {
+		t.Fatalf("image-directory-only response replaced active assignments: %+v", assignments)
+	}
+}
+
 // A familiar key with an unknown value type is also an unknown picker
 // protocol. In particular, do not overwrite a map-valued field with a guessed
 // legacy sorter array just because it happens to be named agentModelSorts.

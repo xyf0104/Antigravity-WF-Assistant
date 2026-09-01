@@ -1,7 +1,7 @@
 import {
   APIKEY_FUN_DEFAULT_MODEL_CATALOG,
+  APIKEY_FUN_DIRECT_ENDPOINT,
   APIKEY_FUN_GLOBAL_ENDPOINT,
-  APIKEY_FUN_REGISTER_URL,
   APIKEY_FUN_SOURCE_TAG,
 } from './apikeyFunLinks';
 
@@ -85,9 +85,9 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'DouBaoSeed',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/compatible',
     website:
-      'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey?apikey=%7B%7D&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch',
+      'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
     apiKeyUrl:
-      'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey?apikey=%7B%7D&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch',
+      'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
     isPartner: true,
     extraEnv: modelEnv('doubao-seed-2-0-code-preview-latest', {}, { API_TIMEOUT_MS: '3000000' }),
   }),
@@ -96,7 +96,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'CCSub',
     baseUrl: 'https://www.ccsub.net',
     website: 'https://www.ccsub.net',
-    apiKeyUrl: 'https://www.ccsub.net/register?ref=Y6Z8DXEA',
+    apiKeyUrl: 'https://www.ccsub.net/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -104,7 +104,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'Unity2.ai',
     baseUrl: 'https://api.unity2.ai',
     website: 'https://unity2.ai',
-    apiKeyUrl: 'https://unity2.ai/register?source=ccs',
+    apiKeyUrl: 'https://unity2.ai/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -112,7 +112,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'Zhipu GLM',
     baseUrl: 'https://open.bigmodel.cn/api/anthropic',
     website: 'https://open.bigmodel.cn',
-    apiKeyUrl: 'https://www.bigmodel.cn/claude-code?ic=RRVJPB5SII',
+    apiKeyUrl: 'https://www.bigmodel.cn/claude-code',
     extraEnv: modelEnv('glm-5.1'),
   }),
   createClaudeApiProviderPreset({
@@ -120,7 +120,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'Zhipu GLM en',
     baseUrl: 'https://api.z.ai/api/anthropic',
     website: 'https://z.ai',
-    apiKeyUrl: 'https://z.ai/subscribe?ic=8JVLJQFSKB',
+    apiKeyUrl: 'https://z.ai/subscribe',
     extraEnv: modelEnv('glm-5.1'),
   }),
   createClaudeApiProviderPreset({
@@ -147,14 +147,14 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     id: 'kimi',
     name: 'Kimi',
     baseUrl: 'https://api.moonshot.cn/anthropic',
-    website: 'https://platform.moonshot.cn/console?aff=cc-switch',
+    website: 'https://platform.moonshot.cn/console',
     extraEnv: modelEnv('kimi-k2.7-code'),
   }),
   createClaudeApiProviderPreset({
     id: 'kimi_coding',
     name: 'Kimi For Coding',
     baseUrl: 'https://api.kimi.com/coding/',
-    website: 'https://www.kimi.com/code/docs/?aff=cc-switch',
+    website: 'https://www.kimi.com/code/docs/',
   }),
   createClaudeApiProviderPreset({
     id: 'stepfun',
@@ -289,7 +289,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'PackyCode',
     baseUrls: ['https://www.packyapi.com', 'https://api-slb.packyapi.com'],
     website: 'https://www.packyapi.com',
-    apiKeyUrl: 'https://www.packyapi.com/register?aff=cc-switch',
+    apiKeyUrl: 'https://www.packyapi.com/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -329,7 +329,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'ClaudeAPI',
     baseUrl: 'https://gw.claudeapi.com',
     website: 'https://claudeapi.com',
-    apiKeyUrl: 'https://console.claudeapi.com/register?aff=pCLD',
+    apiKeyUrl: 'https://console.claudeapi.com/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -337,7 +337,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'ClaudeCN',
     baseUrl: 'https://claudecn.top',
     website: 'https://claudecn.top',
-    apiKeyUrl: 'https://claudecn.top/register?aff=ccswitch',
+    apiKeyUrl: 'https://claudecn.top/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -365,7 +365,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
       'https://api-bwg.cubence.com',
     ],
     website: 'https://cubence.com',
-    apiKeyUrl: 'https://cubence.com/signup?code=CCSWITCH&source=ccs',
+    apiKeyUrl: 'https://cubence.com/signup',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -373,7 +373,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'AIGoCode',
     baseUrl: 'https://api.aigocode.com',
     website: 'https://aigocode.com',
-    apiKeyUrl: 'https://aigocode.com/invite/CC-SWITCH',
+    apiKeyUrl: 'https://aigocode.com',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -381,7 +381,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'RightCode',
     baseUrl: 'https://www.right.codes/claude',
     website: 'https://www.right.codes',
-    apiKeyUrl: 'https://www.right.codes/register?aff=CCSWITCH',
+    apiKeyUrl: 'https://www.right.codes/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -392,7 +392,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
       'https://api.claudecode.net.cn/api/claudecode',
     ],
     website: 'https://www.aicodemirror.com',
-    apiKeyUrl: 'https://www.aicodemirror.com/register?invitecode=9915W3',
+    apiKeyUrl: 'https://www.aicodemirror.com/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -400,7 +400,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'CrazyRouter',
     baseUrl: 'https://cn.crazyrouter.com',
     website: 'https://www.crazyrouter.com',
-    apiKeyUrl: 'https://www.crazyrouter.com/register?aff=OZcm&ref=cc-switch',
+    apiKeyUrl: 'https://www.crazyrouter.com/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -412,7 +412,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
       'https://node-cf.sssaicodeapi.com/api',
     ],
     website: 'https://sssaicodeapi.com',
-    apiKeyUrl: 'https://sssaicodeapi.com/register?ref=DCP0SM',
+    apiKeyUrl: 'https://sssaicodeapi.com/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -420,7 +420,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'Compshare',
     baseUrl: 'https://api.modelverse.cn',
     website: 'https://www.compshare.cn',
-    apiKeyUrl: 'https://www.compshare.cn/coding-plan?ytag=GPU_YY_YX_git_cc-switch',
+    apiKeyUrl: 'https://www.compshare.cn/coding-plan',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -428,7 +428,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'Compshare Coding Plan',
     baseUrl: 'https://cp.compshare.cn',
     website: 'https://www.compshare.cn',
-    apiKeyUrl: 'https://www.compshare.cn/coding-plan?ytag=GPU_YY_YX_git_cc-switch',
+    apiKeyUrl: 'https://www.compshare.cn/coding-plan',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -436,7 +436,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'Micu',
     baseUrl: 'https://www.micuapi.ai',
     website: 'https://www.micuapi.ai',
-    apiKeyUrl: 'https://www.micuapi.ai/register?aff=aOYQ',
+    apiKeyUrl: 'https://www.micuapi.ai/register',
     isPartner: true,
   }),
   createClaudeApiProviderPreset({
@@ -490,7 +490,7 @@ const CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset
     name: 'PIPELLM',
     baseUrl: 'https://cc-api.pipellm.ai',
     website: 'https://code.pipellm.ai',
-    apiKeyUrl: 'https://code.pipellm.ai/login?ref=uvw650za',
+    apiKeyUrl: 'https://code.pipellm.ai/login',
     extraEnv: modelEnv('claude-opus-4-8', {
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5-20251001',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
@@ -561,11 +561,9 @@ export const CLAUDE_API_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset[] = [
   },
   {
     id: CLAUDE_APIKEY_FUN_PROVIDER_ID,
-    name: 'APIKEY.FUN',
-    baseUrls: [CLAUDE_APIKEY_FUN_BASE_URL, 'https://slb.apikey.fun'],
+    name: 'XIASS API (legacy import)',
+    baseUrls: [CLAUDE_APIKEY_FUN_BASE_URL, APIKEY_FUN_DIRECT_ENDPOINT],
     apiKeyField: 'ANTHROPIC_AUTH_TOKEN',
-    website: 'https://apikey.fun',
-    apiKeyUrl: APIKEY_FUN_REGISTER_URL,
     isPartner: true,
     sourceTag: APIKEY_FUN_SOURCE_TAG,
     modelCatalog: [...APIKEY_FUN_DEFAULT_MODEL_CATALOG],
@@ -587,8 +585,8 @@ export const CLAUDE_API_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset[] = [
     name: 'Shengsuanyun',
     baseUrls: ['https://router.shengsuanyun.com/api'],
     apiKeyField: 'ANTHROPIC_AUTH_TOKEN',
-    website: 'https://www.shengsuanyun.com/?from=CH_4HHXMRYF',
-    apiKeyUrl: 'https://www.shengsuanyun.com/?from=CH_4HHXMRYF',
+    website: 'https://www.shengsuanyun.com/',
+    apiKeyUrl: 'https://www.shengsuanyun.com/',
     isPartner: true,
     modelCatalog: [
       'anthropic/claude-sonnet-4.6',
@@ -608,7 +606,7 @@ export const CLAUDE_API_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset[] = [
     baseUrls: ['https://api.pateway.ai'],
     apiKeyField: 'ANTHROPIC_API_KEY',
     website: 'https://pateway.ai',
-    apiKeyUrl: 'https://pateway.ai/?ch=etzpm8&aff=WB6M6F67#/',
+    apiKeyUrl: 'https://pateway.ai/',
     isPartner: true,
   },
   {

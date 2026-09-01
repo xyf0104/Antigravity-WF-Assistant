@@ -151,6 +151,8 @@ textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-s
 .result-box { padding:9px 11px; border-radius:var(--r-sm); white-space:pre-wrap; font-size:12px; }
 .result-box.error { color:var(--red); background:rgba(255,69,58,.1); }
 .result-box.success { color:var(--green); background:rgba(48,209,88,.1); }
+:global(:root[data-theme="light"]) .danger-box, :global(:root[data-theme="light"]) .result-box.error { color:#b91c1c; background:rgba(239,68,68,.08); border-color:rgba(239,68,68,.28); }
+:global(:root[data-theme="light"]) .result-box.success { color:#15803d; background:rgba(22,163,74,.1); }
 .path-row { display:flex; align-items:center; gap:10px; min-width:0; padding:6px 0; }
 .path-row + .path-row { border-top:.5px solid var(--separator); }
 .path-row .t-footnote { width:64px; flex:none; }

@@ -2440,6 +2440,126 @@
   text-decoration: none;
 }
 
+.codex-provider-modal .codex-provider-model-catalog {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--primary) 4%, var(--bg-tertiary));
+}
+
+.codex-provider-modal .codex-provider-model-catalog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__toggle-all {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--primary);
+  background: var(--bg-card);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__toggle-all:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  background: var(--primary-light);
+}
+
+.codex-provider-modal .codex-provider-model-catalog__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 7px;
+  max-height: min(280px, 32vh);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  cursor: pointer;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__item:has(input:checked) {
+  border-color: color-mix(in srgb, var(--primary) 48%, var(--border));
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--primary) 8%, var(--bg-card));
+}
+
+.codex-provider-modal .codex-provider-model-catalog__item:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.66;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__item input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--primary);
+}
+
+.codex-provider-modal .codex-provider-model-catalog__item-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__item-copy strong,
+.codex-provider-modal .codex-provider-model-catalog__item-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__item-copy strong {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__item-copy small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__manual {
+  margin-top: 8px;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__manual summary {
+  min-height: 36px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.codex-provider-modal .codex-provider-model-catalog__manual textarea {
+  margin-top: 8px;
+}
+
 .codex-provider-modal .provider-save-preview {
   display: flex;
   flex-direction: column;

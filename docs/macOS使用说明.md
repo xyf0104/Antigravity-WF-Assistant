@@ -5,7 +5,7 @@
 1. 推荐双击 `XIASS-Tools-macOS-universal-v<version>-Installer.pkg`，按向导安装到 `Applications`；如需桌面图标，勾选“在桌面创建快捷方式”。
 2. 当前发布包未使用 Apple Developer ID 签名或公证。若 macOS 阻止打开安装包，请在 Finder 中按住 Control 点按该 `.pkg` 后选择“打开”，或在“系统设置 → 隐私与安全性”中确认继续；安装完成后首次打开 App 遇到相同提示时也按此方式处理。安装前请先用发布页的 `SHA256SUMS.txt` 核验下载文件。
 
-App 为 Universal 版本，同时支持 Apple Silicon 和 Intel Mac。运行时不需要 Python、Node.js 或外置补丁脚本。
+App 为 Universal 版本，支持 macOS 12 或更高版本的 Apple Silicon 和 Intel Mac。运行时不需要 Python、Node.js 或外置补丁脚本。
 
 ## 首次使用
 

@@ -12,8 +12,8 @@ import (
 // selectCodexDesktopNativeTarget keeps a chooser path on the Go side. The
 // native panel selects an application package rather than allowing the Vue
 // renderer to enumerate or retain local filesystem locations.
-func selectCodexDesktopNativeTarget(ctx context.Context) (string, bool, error) {
-	selected, err := runtime.OpenFileDialog(ctx, runtime.OpenDialogOptions{
+func selectCodexDesktopNativeTarget(app *App, ctx context.Context) (string, bool, error) {
+	selected, err := app.openFileDialog(runtime.OpenDialogOptions{
 		Title:                      "选择 Codex 或 ChatGPT Desktop 应用",
 		DefaultDirectory:           "/Applications",
 		ResolvesAliases:            true,

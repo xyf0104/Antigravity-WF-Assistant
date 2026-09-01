@@ -1,4 +1,5 @@
-import { ArrowDownWideNarrow, ArrowDown, ArrowUp, Check, CircleAlert, ChevronDown, Copy, Clock, Database, ExternalLink, GripVertical, HelpCircle, KeyRound, Link2, LayoutGrid, Pencil, Plus, Rows3, Star, Trash2, X, Search, Settings, Activity, RefreshCw, RotateCw, Play } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { ArrowDownWideNarrow, ArrowDown, ArrowUp, Check, CircleAlert, ChevronDown, Copy, Clock, Database, ExternalLink, GripVertical, HelpCircle, KeyRound, Link2, LayoutGrid, Pencil, Plus, Rows3, Trash2, X, Search, Settings, Activity, RefreshCw, RotateCw, Play } from "lucide-react";
 import { MultiSelectFilterDropdown } from "../MultiSelectFilterDropdown";
 import { SingleSelectFilterDropdown } from "../SingleSelectFilterDropdown";
 import { SingleSelectDropdown } from "../SingleSelectDropdown";
@@ -6,7 +7,7 @@ import { AccountTagFilterDropdown } from "../AccountTagFilterDropdown";
 import { PaginationControls } from "../PaginationControls";
 import { CodexModelContextWindowTable } from "./CodexModelContextWindowTable";
 import { resolveNewApiQuotaSnapshot } from "../../services/modelProviderUsageService";
-import { CODEX_API_PROVIDER_CUSTOM_ID, CODEX_API_PROVIDER_PRESETS, DEEPSEEK_API_PROVIDER_ID, resolveCodexApiProviderPresetId } from "../../utils/codexProviderPresets";
+import { CODEX_API_PROVIDER_CUSTOM_ID, DEEPSEEK_API_PROVIDER_ID, XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS, resolveCodexApiProviderPresetId } from "../../utils/codexProviderPresets";
 import { normalizeApiKeyFunOfficialUrl } from "../../utils/apikeyFunLinks";
 import { getCodexSubscriptionPresentation } from "../../types/codex";
 import { resolveCodexProviderCapabilityProfile } from "../../utils/codexProviderGateway";
@@ -79,9 +80,12 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
     handleRenameApiKey,
     handleSaveApiKeyEdit,
     handleSaveProvider,
+    handleDiscoverProviderModels,
+    toggleAllDiscoveredModels,
+    toggleDiscoveredModel,
+    updateSelectedModelCatalog,
     handleSelectPresetEndpoint,
     handleSelectProviderPreset,
-    handleSelectSponsorTemplate,
     handleStartBatchProviderTest,
     handleTestProvider,
     instancePickerProviderId,
@@ -90,7 +94,6 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
     isCurrentProviderActive,
     isInstanceReady,
     isProviderCustomSortActive,
-    isSponsorProvider,
     loading,
     maskAccountText,
     maskApiKey,
@@ -149,11 +152,12 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
     searchQuery,
     selectedPreset,
     selectedPresetId,
+    selectedModelCatalogKeys,
+    availableModelCatalog,
+    isAllAvailableModelCatalogSelected,
     selectedProviderApiKeyMap,
     selectedProviderIds,
     selectedProviderOauthAccount,
-    selectedSponsorTemplate,
-    selectedSponsorTemplateId,
     selectFailedBatchTestResults,
     setApiKeyPickerProviderId,
     setBatchTestFilter,
@@ -184,10 +188,10 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
     showModal,
     showProviderCustomSortModal,
     showQuickConfigModal,
-    sponsorProviderTemplates,
     stopProviderCustomSortDragging,
     t,
     testingProviderId,
+    discoveringModels,
     toggleAllVisibleBatchTestProviders,
     toggleAllVisibleBatchTestResults,
     toggleBatchTestProvider,
@@ -197,6 +201,18 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
     toggleProviderSelected,
     toggleSelectAllProviders,
   } = props;
+  const providerDialogTitleRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    if (!showModal) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      providerDialogTitleRef.current?.focus();
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [showModal]);
+
   return (
     <div className="codex-provider-manager-page">
       {notice && (
@@ -234,6 +250,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
               className={`view-btn ${providerViewMode === "compact" ? "active" : ""}`}
               onClick={() => setProviderViewMode("compact")}
               title={t("accounts.view.compact", "紧凑视图")}
+              aria-label={t("accounts.view.compact", "紧凑视图")}
             >
               <Rows3 size={16} />
             </button>
@@ -241,6 +258,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
               className={`view-btn ${providerViewMode === "grid" ? "active" : ""}`}
               onClick={() => setProviderViewMode("grid")}
               title={t("common.shared.view.grid", "卡片视图")}
+              aria-label={t("common.shared.view.grid", "卡片视图")}
             >
               <LayoutGrid size={16} />
             </button>
@@ -313,6 +331,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
               providers.every((provider) => !getSelectedProviderApiKey(provider))
             }
             title={t("common.shared.refreshQuota", "刷新配额")}
+            aria-label={t("common.shared.refreshQuota", "刷新配额")}
           >
             <RefreshCw
               size={14}
@@ -323,6 +342,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
             className="btn btn-primary icon-only"
             onClick={openCreateModal}
             title={t("codex.modelProviders.add", "新增供应商")}
+            aria-label={t("codex.modelProviders.add", "新增供应商")}
           >
             <Plus size={14} />
           </button>
@@ -330,6 +350,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
             className="btn btn-secondary icon-only"
             onClick={() => setShowQuickConfigModal(true)}
             title={t("codex.modelProviders.quickConfig.title", "当前 Codex 配置")}
+            aria-label={t("codex.modelProviders.quickConfig.title", "当前 Codex 配置")}
           >
             <Settings size={14} />
           </button>
@@ -338,6 +359,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
               className="btn btn-danger icon-only"
               onClick={() => void handleBatchDeleteProviders()}
               title={`${t("common.delete", "删除")} (${selectedProviderIds.size})`}
+              aria-label={`${t("common.delete", "删除")} (${selectedProviderIds.size})`}
             >
               <Trash2 size={14} />
             </button>
@@ -437,11 +459,13 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
             const targetInstance = resolveInstanceById(targetInstanceId);
             const targetInstanceName = getInstanceName(targetInstance);
             const targetInstanceReady = isInstanceReady(targetInstance);
+            const enableProviderLabel = targetInstanceReady
+              ? t("codex.modelProviders.enableAndStart", "启用并启动")
+              : t(
+                  "codex.modelProviders.instance.uninitializedHint",
+                  "目标实例尚未初始化，请先到应用多开页启动一次。",
+                );
             const active = isCurrentProviderActive(provider, targetInstance);
-            const sponsorProvider = isSponsorProvider(
-              provider,
-              sponsorProviderTemplates,
-            );
             const selectedApiKeyLine = primaryApiKey
               ? `${t("codex.addModal.token", "API Key")}：${maskApiKey(
                   primaryApiKey.apiKey,
@@ -511,7 +535,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                   : 0;
             return (
               <div
-                className={`codex-account-card codex-provider-card ${active ? "current" : ""} ${sponsorProvider ? "sponsor-api-account" : ""}`}
+                className={`codex-account-card codex-provider-card ${active ? "current" : ""}`}
                 key={provider.id}
               >
                 <div className="card-top">
@@ -550,6 +574,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                             });
                           }}
                           title={t("common.copy", "复制")}
+                          aria-label={t("common.copy", "复制")}
                         >
                           <Copy size={12} />
                         </button>
@@ -562,6 +587,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                               setApiKeyPickerProviderId(provider.id);
                             }}
                             title={t("codex.modelProviders.existingApiKeys", "已有 API Key")}
+                            aria-label={t("codex.modelProviders.existingApiKeys", "已有 API Key")}
                           >
                             <ChevronDown size={12} />
                           </button>
@@ -761,6 +787,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                         className="card-action-btn"
                         onClick={() => setProviderDetailId(provider.id)}
                         title={t("codex.modelProviders.usage.detailTitle", "服务面板")}
+                        aria-label={t("codex.modelProviders.usage.detailTitle", "服务面板")}
                       >
                         <Database size={14} />
                       </button>
@@ -772,6 +799,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                           void refreshProviderUsage(provider, primaryApiKey)
                         }
                         title={t("common.shared.refreshQuota", "刷新配额")}
+                        aria-label={t("common.shared.refreshQuota", "刷新配额")}
                       >
                         <RefreshCw
                           size={14}
@@ -781,14 +809,8 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                       <button
                         className="card-action-btn success"
                         disabled={!primaryApiKey || enabling || !targetInstanceReady}
-                        title={
-                          targetInstanceReady
-                            ? t("codex.modelProviders.enableAndStart", "启用并启动")
-                            : t(
-                                "codex.modelProviders.instance.uninitializedHint",
-                                "目标实例尚未初始化，请先到应用多开页启动一次。",
-                              )
-                        }
+                        title={enableProviderLabel}
+                        aria-label={enableProviderLabel}
                         onClick={() =>
                           primaryApiKey &&
                           void handleEnableProvider(
@@ -818,6 +840,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                             )
                           }
                           title={t("codex.localAccess.testAction", "测试")}
+                          aria-label={t("codex.localAccess.testAction", "测试")}
                         >
                           <Activity size={14} />
                         </button>
@@ -826,6 +849,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                         className="card-action-btn"
                         onClick={() => openEditModal(provider)}
                         title={t("instances.actions.edit", "编辑")}
+                        aria-label={t("instances.actions.edit", "编辑")}
                       >
                         <Pencil size={14} />
                       </button>
@@ -841,6 +865,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                           window.open(targetUrl, "_blank", "noopener,noreferrer");
                         }}
                         title={t("codex.modelProviders.website", "官网")}
+                        aria-label={t("codex.modelProviders.website", "官网")}
                         disabled={!(provider.website || provider.apiKeyUrl || provider.baseUrl)}
                       >
                         <ExternalLink size={14} />
@@ -849,6 +874,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                         className="card-action-btn danger"
                         onClick={() => void handleDeleteProvider(provider)}
                         title={t("common.delete", "删除")}
+                        aria-label={t("common.delete", "删除")}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -1583,9 +1609,16 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
           <div
             className="modal codex-provider-modal"
             onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="codex-provider-dialog-title"
           >
             <div className="modal-header">
-              <h2>
+              <h2
+                id="codex-provider-dialog-title"
+                ref={providerDialogTitleRef}
+                tabIndex={-1}
+              >
                 {form.providerId
                   ? t("codex.modelProviders.editTitle", "编辑模型供应商")
                   : t("codex.modelProviders.createTitle", "新增模型供应商")}
@@ -1604,7 +1637,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                 <label>{t("codex.api.provider.label", "供应商")}</label>
                 <div className="api-provider-chip-list">
                   <button
-                    className={`api-provider-chip ${selectedPresetId === CODEX_API_PROVIDER_CUSTOM_ID && !selectedSponsorTemplateId ? "active" : ""}`}
+                    className={`api-provider-chip ${selectedPresetId === CODEX_API_PROVIDER_CUSTOM_ID ? "active" : ""}`}
                     onClick={() =>
                       handleSelectProviderPreset(CODEX_API_PROVIDER_CUSTOM_ID)
                     }
@@ -1613,21 +1646,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                   >
                     <span>{t("codex.api.provider.custom", "自定义")}</span>
                   </button>
-                  {sponsorProviderTemplates.map((template) => (
-                    <button
-                      key={template.id}
-                      className={`api-provider-chip sponsor ${selectedSponsorTemplateId === template.id ? "active" : ""}`}
-                      onClick={() => handleSelectSponsorTemplate(template)}
-                      type="button"
-                      disabled={saving}
-                    >
-                      <span>{template.name}</span>
-                      <Star size={12} className="api-provider-chip-badge" />
-                    </button>
-                  ))}
-                  {CODEX_API_PROVIDER_PRESETS.filter(
-                    (preset) => !preset.isService,
-                  ).map((preset) => (
+                  {XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS.map((preset) => (
                     <button
                       key={preset.id}
                       className={`api-provider-chip ${selectedPresetId === preset.id ? "active" : ""}`}
@@ -1641,9 +1660,6 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                           preset.name,
                         )}
                       </span>
-                      {preset.isPartner && (
-                        <Star size={12} className="api-provider-chip-badge" />
-                      )}
                     </button>
                   ))}
                 </div>
@@ -1692,40 +1708,6 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                       <a
                         className="btn btn-secondary"
                         href={selectedPreset.apiKeyUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <KeyRound size={14} />
-                        {t("codex.api.provider.apiKeyPage", "API Key 页面")}
-                      </a>
-                    )}
-                  </div>
-                </div>
-              )}
-              {selectedSponsorTemplate && (
-                <div className="api-provider-hint-block sponsor">
-                  <p className="api-provider-hint">
-                    {t(
-                      "codex.modelProviders.sponsorHint",
-                      "已按专属中转站配置自动填写兼容服务地址。输入 API Key 后，卡片会自动查询余额和用量。",
-                    )}
-                  </p>
-                  <div className="api-provider-links">
-                    {selectedSponsorTemplate.website && (
-                      <a
-                        className="btn btn-secondary"
-                        href={selectedSponsorTemplate.website}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <ExternalLink size={14} />
-                        {t("codex.api.provider.website", "官网")}
-                      </a>
-                    )}
-                    {selectedSponsorTemplate.apiKeyUrl && (
-                      <a
-                        className="btn btn-secondary"
-                        href={selectedSponsorTemplate.apiKeyUrl}
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -1878,36 +1860,163 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                   </label>
                 </div>
               )}
+              <div className="form-group">
+                <label>
+                  {t("codex.modelProviders.fields.modelCatalog", "模型目录")}
+                </label>
+                <div className="api-provider-links">
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={handleDiscoverProviderModels}
+                    disabled={saving || discoveringModels}
+                  >
+                    <RefreshCw
+                      size={14}
+                      className={discoveringModels ? "loading-spinner" : undefined}
+                    />
+                    {discoveringModels
+                      ? t("codex.modelProviders.discovery.loading", "正在获取模型…")
+                      : t("codex.modelProviders.discovery.action", "获取上游模型")}
+                  </button>
+                </div>
+                <div className="codex-provider-model-catalog" aria-live="polite">
+                  <div className="codex-provider-model-catalog__header">
+                    <span>
+                      {availableModelCatalog.length > 0
+                        ? t(
+                            "codex.modelProviders.discovery.selectionSummary",
+                            "已选择 {{selected}} / {{total}} 个模型",
+                            {
+                              selected: selectedModelCatalogKeys.size,
+                              total: availableModelCatalog.length,
+                            },
+                          )
+                        : t(
+                            "codex.modelProviders.discovery.selectionEmpty",
+                            "先获取上游模型，或手动添加模型 ID。",
+                          )}
+                    </span>
+                    {availableModelCatalog.length > 0 && (
+                      <button
+                        className="codex-provider-model-catalog__toggle-all"
+                        type="button"
+                        onClick={toggleAllDiscoveredModels}
+                        disabled={saving || discoveringModels}
+                      >
+                        {isAllAvailableModelCatalogSelected
+                          ? t("common.deselectAll", "取消全选")
+                          : t("common.selectAll", "全选")}
+                      </button>
+                    )}
+                  </div>
+                  {availableModelCatalog.length > 0 && (
+                    <div
+                      className="codex-provider-model-catalog__list"
+                      role="group"
+                      aria-label={t(
+                        "codex.modelProviders.discovery.selectionLabel",
+                        "可用上游模型",
+                      )}
+                    >
+                      {availableModelCatalog.map((model) => {
+                        const isSelected = selectedModelCatalogKeys.has(model.toLowerCase());
+                        return (
+                          <label
+                            key={model}
+                            className={`codex-provider-model-catalog__item${isSelected ? " is-selected" : ""}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleDiscoveredModel(model)}
+                              disabled={saving || discoveringModels}
+                            />
+                            <span className="codex-provider-model-catalog__item-copy">
+                              <strong>{model}</strong>
+                              <small>
+                                {isSelected
+                                  ? t("codex.modelProviders.discovery.included", "将添加至模型目录")
+                                  : t("codex.modelProviders.discovery.excluded", "不添加")}
+                              </small>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                <details className="codex-provider-model-catalog__manual" open={availableModelCatalog.length === 0}>
+                  <summary>{t("codex.modelProviders.discovery.manual", "手动编辑模型 ID")}</summary>
+                  <textarea
+                    className="form-input"
+                    rows={4}
+                    value={form.modelCatalogText}
+                    aria-label={t(
+                      "codex.modelProviders.discovery.manualLabel",
+                      "手动模型 ID，每行一个",
+                    )}
+                    onChange={(event) =>
+                      updateSelectedModelCatalog(parseModelCatalogText(event.target.value))
+                    }
+                    placeholder={"gpt-5.4\ngpt-5.4-mini"}
+                    disabled={saving || discoveringModels}
+                  />
+                </details>
+                <div className="form-grid">
+                  <label className="form-group">
+                    <span>{t("codex.modelProviders.defaultModel", "默认会话模型")}</span>
+                    <select
+                      className="form-input"
+                      value={form.defaultModel}
+                      onChange={(event) =>
+                        mutateForm({ defaultModel: event.target.value })
+                      }
+                      disabled={saving || discoveringModels}
+                    >
+                      <option value="">
+                        {t("codex.modelProviders.selectModel", "选择模型")}
+                      </option>
+                      {parseModelCatalogText(form.modelCatalogText).map((model) => (
+                        <option key={model} value={model}>{model}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-group">
+                    <span>{t("codex.modelProviders.reviewModel", "Review 模型")}</span>
+                    <select
+                      className="form-input"
+                      value={form.reviewModel}
+                      onChange={(event) =>
+                        mutateForm({ reviewModel: event.target.value })
+                      }
+                      disabled={saving || discoveringModels}
+                    >
+                      <option value="">
+                        {t("codex.modelProviders.followDefaultModel", "跟随默认会话模型")}
+                      </option>
+                      {parseModelCatalogText(form.modelCatalogText).map((model) => (
+                        <option key={model} value={model}>{model}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <CodexModelContextWindowTable
+                  models={parseModelCatalogText(form.modelCatalogText)}
+                  drafts={form.modelContextWindowsDraft}
+                  onChange={(model, value) =>
+                    mutateForm({
+                      modelContextWindowsDraft: {
+                        ...form.modelContextWindowsDraft,
+                        [model]: value,
+                      },
+                    })
+                  }
+                  disabled={saving || discoveringModels}
+                />
+              </div>
               {form.wireApi === "chat_completions" && (
                 <>
-                  <div className="form-group">
-                    <label>
-                      {t("codex.modelProviders.fields.modelCatalog", "模型目录")}
-                    </label>
-                    <textarea
-                      className="form-input"
-                      rows={4}
-                      value={form.modelCatalogText}
-                      onChange={(event) =>
-                        mutateForm({ modelCatalogText: event.target.value })
-                      }
-                      placeholder={"deepseek-v4-flash\ndeepseek-v4-pro"}
-                      disabled={saving}
-                    />
-                    <CodexModelContextWindowTable
-                      models={parseModelCatalogText(form.modelCatalogText)}
-                      drafts={form.modelContextWindowsDraft}
-                      onChange={(model, value) =>
-                        mutateForm({
-                          modelContextWindowsDraft: {
-                            ...form.modelContextWindowsDraft,
-                            [model]: value,
-                          },
-                        })
-                      }
-                      disabled={saving}
-                    />
-                  </div>
                   <div className="form-group">
                     <label>
                       {t(
@@ -2130,6 +2239,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                                     onClick={() => void handleSaveApiKeyEdit()}
                                     disabled={saving}
                                     title={t("common.save", "Save")}
+                                    aria-label={t("common.save", "Save")}
                                   >
                                     <Check size={12} />
                                   </button>
@@ -2139,6 +2249,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                                     onClick={() => setEditingApiKey(null)}
                                     disabled={saving}
                                     title={t("common.cancel", "Cancel")}
+                                    aria-label={t("common.cancel", "Cancel")}
                                   >
                                     <X size={12} />
                                   </button>
@@ -2175,6 +2286,10 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                               "codex.modelProviders.editApiKey",
                               "Edit API Key",
                             )}
+                            aria-label={t(
+                              "codex.modelProviders.editApiKey",
+                              "Edit API Key",
+                            )}
                           >
                             <KeyRound size={12} />
                           </button>
@@ -2189,6 +2304,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                             }
                             disabled={saving}
                             title={t("common.rename", "重命名")}
+                            aria-label={t("common.rename", "重命名")}
                           >
                             <Pencil size={12} />
                           </button>
@@ -2203,6 +2319,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                             }
                             disabled={saving}
                             title={t("common.delete", "删除")}
+                            aria-label={t("common.delete", "删除")}
                           >
                             <Trash2 size={12} />
                           </button>
@@ -2266,7 +2383,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                       <span className="provider-save-preview-item-title">
                         {t(
                           "codex.modelProviders.preview.providerStoreTitle",
-                          "模型供应商仓库",
+                          "XIASS Tools 模型供应商数据",
                         )}
                       </span>
                       <span className="provider-save-preview-chip primary">

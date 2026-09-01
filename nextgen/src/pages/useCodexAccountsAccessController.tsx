@@ -2071,8 +2071,7 @@ export function useCodexAccountsAccessController(context: CodexAccountsAccessCon
             .toLowerCase();
           return (
             normalizedTemplateBaseUrl === normalizedRequestBaseUrl ||
-            searchable.includes("apikey.fun") ||
-            searchable.includes("api.apikey.fun")
+            searchable.includes(normalizedRequestBaseUrl)
           );
         }) ?? null;
 
@@ -2086,7 +2085,7 @@ export function useCodexAccountsAccessController(context: CodexAccountsAccessCon
       setManagedProviderApiKeyId("");
       setApiProviderPresetId(sponsorTemplate?.id ?? CODEX_API_PROVIDER_CUSTOM_ID);
       setNewManagedProviderNameInput(
-        sponsorTemplate?.name ?? request.providerName?.trim() ?? "APIKEY.FUN",
+        sponsorTemplate?.name ?? request.providerName?.trim() ?? "XIASS API",
       );
       setApiModelCatalogInput((request.modelCatalog ?? []).join("\n"));
       setApiModelContextWindowsInput({});
@@ -2095,7 +2094,7 @@ export function useCodexAccountsAccessController(context: CodexAccountsAccessCon
       setAddMessage(
         t(
           "apiKeyFun.prefill.codexReady",
-          "已带入 APIKEY.FUN 配置，请确认后添加到 Codex。",
+          "已带入 XIASS API 配置，请确认后添加到 Codex。",
         ),
       );
     }, [

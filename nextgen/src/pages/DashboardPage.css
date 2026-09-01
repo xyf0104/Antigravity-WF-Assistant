@@ -402,7 +402,7 @@
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   letter-spacing: 0.5px;
   display: flex;
   align-items: center;
@@ -427,7 +427,7 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   background: var(--bg-tertiary);
   border-radius: 12px;
   border: 1px dashed var(--border);
@@ -851,7 +851,7 @@
 
 .empty-slot-text, .no-data-text {
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   text-align: center;
   padding: 20px 0;
   margin: auto 0;

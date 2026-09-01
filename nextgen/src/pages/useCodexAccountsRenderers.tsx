@@ -836,7 +836,7 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
                     className="codex-login-subline"
                     title={meta.accountContextText}
                   >
-                    Team Name：{meta.accountContextText}
+                    {t('common.shared.columns.teamName', 'Team Name')}：{meta.accountContextText}
                   </span>
                 )}
                 {isInLocalAccess && (
@@ -2206,7 +2206,7 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
                         className="codex-login-subline"
                         title={meta.accountContextText}
                       >
-                        Team Name：{meta.accountContextText}
+                        {t('common.shared.columns.teamName', 'Team Name')}：{meta.accountContextText}
                       </span>
                     )}
                     {isInLocalAccess && (

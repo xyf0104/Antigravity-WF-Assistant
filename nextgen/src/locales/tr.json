@@ -77,7 +77,8 @@
         "sharedCreditPackage": "Paylaşılan kredi paketi",
         "account": "Hesap",
         "createdAt": "Oluşturulma zamanı",
-        "userId": "Kullanıcı Kimliği"
+        "userId": "Kullanıcı Kimliği",
+        "teamName": "Ekip adı"
       },
       "empty": {
         "title": "Hesap yok"
@@ -742,8 +743,6 @@
       "floatingCardShowNowAction": "Yüzen kartı göster",
       "dataDir": "Veri dizini",
       "dataDirDesc": "Hesaplar ve yapılandırma dosyaları için depolama konumu.",
-      "topRightAdVisible": "Üst tanıtımı göster",
-      "topRightAdVisibleDesc": "Uygulamadaki üst tanıtım alanını gizler. Sponsorlar sayfası etkilenmez.",
       "opencodeTitle": "OpenCode Entegrasyonu",
       "opencodeRestart": "Codex değiştirildiğinde OpenCode'u yeniden başlat",
       "opencodeRestartDesc": "OpenCode içinde Codex hesap bilgisini senkronize et",
@@ -1196,7 +1195,7 @@
       "importModalDesc": "Neyi içe aktaracağınızı seçin. Eski hesap yedekleri yalnızca hesap verisi olarak işlenir.",
       "selectionTitle": "Veri kapsamı",
       "accountsOptionTitle": "Hesap verileri",
-      "accountsOptionDesc": "Geri yüklenebilir platform hesap yedeklerini içerir ve eski hesap JSON biçimiyle uyumluluğu korur. Grok CLI kimlik bilgileri dahil değildir; resmi auth.json dosyasını ayrıca içe aktarın.",
+      "accountsOptionDesc": "XIASS platform hesaplarıyla birlikte Antigravity WF hesaplarını, model sağlayıcılarını ve ayarlarını içerir. Kimlik bilgisi içeren JSON yalnızca hesap yedekleme seçildiğinde oluşturulur; Codex auth.json asla okunmaz veya eklenmez.",
       "configOptionTitle": "Yapılandırma verileri",
       "configOptionDesc": "Uygulama ayarları, gruplar, örnekler, wakeup görevleri ve model sağlayıcı yapılandırmasını içerir.",
       "exportConfirm": "Verileri dışa aktar",
@@ -4806,7 +4805,11 @@
     "subscription": "Abonelik",
     "injectToCursor": "Cursor'a geç",
     "quota": {
-      "onDemand": "İsteğe bağlı"
+      "onDemand": "İsteğe bağlı",
+      "totalUsage": "Toplam kullanım",
+      "autoComposer": "Otomatik + Composer",
+      "apiUsage": "API kullanımı",
+      "usageDetails": "Kullanım ayrıntıları"
     },
     "title": "Cursor Hesap Yönetimi",
     "instances": {
@@ -4844,7 +4847,8 @@
       "quotaFailed": "Kota sorgusu başarısız ({{count}})",
       "cleanQuotaFailedAction": "Kota sorgusu başarısız olan hesapları sil ({{count}})",
       "cleanQuotaFailedConfirm": "Kota sorgusu başarısız olan {{count}} hesabın tümü silinsin mi?"
-    }
+    },
+    "authId": "Yetkilendirme kimliği"
   },
   "breakout": {
     "gameOver": "Oyun bitti",
@@ -5838,16 +5842,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "Ara geçiş",
-    "title": "APIKEY.FUN relay",
+    "title": "XIASS API relay",
     "description": "XIASS resmi iş ortağı ara geçiş hizmeti, büyük model API erişimi için kararlı, açık ve yüksek fiyat-performanslı bir çözüm sunar. Claude, OpenAI, Gemini gibi ana akım modelleri destekler; Codex, Gemini CLI, Claude Code ve diğer geliştirici araçlarında tek tip yapılandırma için uygundur. XIASS özel bağlantısıyla kaydolarak yüklemelerde kalıcı olarak %5’e varan indirim alabilirsiniz.",
     "register": "Özel kayıt linki",
     "docs": "Resmi doküman",
     "viewNow": "Hemen bak",
     "queryTitle": "Anahtar kotası",
-    "queryDesc": "Kotayı otomatik sorgulamak için APIKEY.FUN API Key girin.",
+    "queryDesc": "Kotayı otomatik sorgulamak için XIASS API API Key girin.",
     "keyNotSet": "Anahtar yok",
     "apiKeyLabel": "API anahtarı",
-    "apiKeyPlaceholder": "APIKEY.FUN konsolunda oluşturulan API Key’i yapıştırın",
+    "apiKeyPlaceholder": "XIASS API konsolunda oluşturulan API Key’i yapıştırın",
     "hideKey": "Gizle",
     "showKey": "Göster",
     "endpointLabel": "Bağlantı noktası",
@@ -5858,7 +5862,7 @@
     "saving": "Yazılıyor",
     "saveSuccess": "Codex Provider’a yazıldı: {{name}}",
     "toolsTitle": "İstemci config yaz",
-    "toolsDesc": "APIKEY.FUN dokümanına ve CC Switch dosya yapısına göre yerel istemci yapılandırma dosyalarını doğrudan yazar.",
+    "toolsDesc": "XIASS API dokümanına ve XIASS Tools dosya yapısına göre yerel istemci yapılandırma dosyalarını doğrudan yazar.",
     "endpoint": {
       "global": "Küresel hat",
       "globalDesc": "Çoğu ağ ortamı için resmi varsayılan API Base.",
@@ -5954,7 +5958,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "APIKEY.FUN ayarları dolduruldu. Claude’a eklemek için onaylayın."
+      "claudeDesktopReady": "XIASS API ayarları dolduruldu. Claude’a eklemek için onaylayın."
     },
     "copyKey": "Copy Key​",
     "clearKey": "Clear input​"
@@ -6130,7 +6134,7 @@
     "apiKey": {
       "desc": "Claude CLI API Key değerini ayrı kimlik bilgisi olarak kaydeder. Geçiş veya CLI başlatma sırasında sağlayıcı env değerlerini Claude Code settings.json içine yazar, Claude oturum durumuna yazmaz.",
       "nameLabel": "Hesap adı",
-      "namePlaceholder": "İsteğe bağlı, ör. APIKEY.FUN",
+      "namePlaceholder": "İsteğe bağlı, ör. XIASS API",
       "keyLabel": "API anahtarı",
       "placeholder": "Sağlayıcı API Key yapıştırın",
       "hide": "API Key gizle",

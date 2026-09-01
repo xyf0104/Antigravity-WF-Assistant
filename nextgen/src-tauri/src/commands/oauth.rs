@@ -226,6 +226,5 @@ pub async fn submit_oauth_callback_url(
 
 #[tauri::command]
 pub async fn cancel_oauth_login() -> Result<(), String> {
-    modules::oauth_server::cancel_oauth_flow();
-    Ok(())
+    modules::oauth_server::cancel_oauth_flow()
 }

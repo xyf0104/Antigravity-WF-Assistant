@@ -28,17 +28,8 @@ fn load_instance_store_by_platform(platform: &str) -> Result<InstanceStore, Stri
     match platform {
         "antigravity" => modules::instance::load_instance_store(),
         "codex" => modules::codex_instance::load_instance_store(),
-        "github-copilot" => modules::github_copilot_instance::load_instance_store(),
         "windsurf" => modules::windsurf_instance::load_instance_store(),
-        "kiro" => modules::kiro_instance::load_instance_store(),
         "cursor" => modules::cursor_instance::load_instance_store(),
-        "grok" => modules::grok_instance::load_instance_store(),
-        "codebuddy" => modules::codebuddy_instance::load_instance_store(),
-        "codebuddy_cn" => modules::codebuddy_cn_instance::load_instance_store(),
-        "qoder" => modules::qoder_instance::load_instance_store(),
-        "zcode" => modules::zcode_instance::load_instance_store(),
-        "trae" => modules::trae_instance::load_instance_store(),
-        "workbuddy" => modules::workbuddy_instance::load_instance_store(),
         _ => Err("不支持的实例平台".to_string()),
     }
 }
@@ -47,17 +38,8 @@ fn save_instance_store_by_platform(platform: &str, store: &InstanceStore) -> Res
     match platform {
         "antigravity" => modules::instance::save_instance_store(store),
         "codex" => modules::codex_instance::save_instance_store(store),
-        "github-copilot" => modules::github_copilot_instance::save_instance_store(store),
         "windsurf" => modules::windsurf_instance::save_instance_store(store),
-        "kiro" => modules::kiro_instance::save_instance_store(store),
         "cursor" => modules::cursor_instance::save_instance_store(store),
-        "grok" => modules::grok_instance::save_instance_store(store),
-        "codebuddy" => modules::codebuddy_instance::save_instance_store(store),
-        "codebuddy_cn" => modules::codebuddy_cn_instance::save_instance_store(store),
-        "qoder" => modules::qoder_instance::save_instance_store(store),
-        "zcode" => modules::zcode_instance::save_instance_store(store),
-        "trae" => modules::trae_instance::save_instance_store(store),
-        "workbuddy" => modules::workbuddy_instance::save_instance_store(store),
         _ => Err("不支持的实例平台".to_string()),
     }
 }
@@ -188,4 +170,16 @@ pub fn data_transfer_replace_instance_store(
 ) -> Result<(), String> {
     let sanitized = sanitize_instance_store(&store);
     save_instance_store_by_platform(platform.trim(), &sanitized)
+}
+
+#[cfg(test)]
+mod production_scope_tests {
+    use super::load_instance_store_by_platform;
+
+    #[test]
+    fn data_transfer_rejects_hidden_instance_platforms() {
+        for platform in ["github-copilot", "kiro", "grok", "codebuddy", "trae", "zed"] {
+            assert!(load_instance_store_by_platform(platform).is_err());
+        }
+    }
 }

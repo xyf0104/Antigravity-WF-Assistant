@@ -692,6 +692,51 @@ function capabilityLabel(name) {
   font-size: 13px;
 }
 
+/* In XIASS Tools this view lives inside the host workspace. Keep its commands
+ * available without duplicating the host title area or creating a second
+ * vertical navigation layer. The host owns the single document scrollbar. */
+:global(:root[data-embedded="true"] .tools-view) {
+  gap: 12px;
+  min-height: 0;
+}
+
+:global(:root[data-embedded="true"] .tools-header) {
+  min-height: 38px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 2px;
+}
+
+:global(:root[data-embedded="true"] .tools-heading) {
+  display: none;
+}
+
+:global(:root[data-embedded="true"] .agent-function-bar) {
+  grid-auto-columns: minmax(124px, max-content);
+  grid-auto-flow: column;
+  grid-template-columns: none;
+  min-height: 50px;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 3px;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: inline proximity;
+}
+
+:global(:root[data-embedded="true"] .agent-function-action) {
+  scroll-snap-align: start;
+}
+
+:global(:root[data-embedded="true"] .tools-preview) {
+  min-height: 0;
+  padding: 11px 13px;
+}
+
+:global(:root[data-embedded="true"] .tools-footer) {
+  padding-top: 10px;
+}
+
 @media (max-width: 940px) {
   .tools-header { align-items: flex-start; flex-direction: column; }
   .tools-summary { justify-content: flex-start; }

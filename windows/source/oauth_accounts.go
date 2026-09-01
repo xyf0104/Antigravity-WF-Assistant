@@ -12,8 +12,6 @@ import (
 	"antigravity-wf-assistant/internal/stats"
 	"antigravity-wf-assistant/internal/storage"
 	"antigravity-wf-assistant/internal/upstream"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // pendingOAuthSession binds a short-lived PKCE session to the account draft
@@ -107,12 +105,14 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 		flow: flow, account: draft, state: authorization.State, expires: authorization.ExpiresAt,
 	}
 	a.oauthMu.Unlock()
-	if a.ctx != nil {
-		runtime.BrowserOpenURL(a.ctx, authorization.URL)
+	openError := a.openExternalURL(authorization.URL)
+	message := "已在浏览器打开授权页；授权后请粘贴完整回调 URL 或授权码。"
+	if openError != nil {
+		message = "无法自动打开授权页，请复制授权链接到浏览器后继续。"
 	}
 	return OAuthAuthorizationResult{
 		OK:                       true,
-		Message:                  "已在浏览器打开授权页；授权后请粘贴完整回调 URL 或授权码。",
+		Message:                  message,
 		SessionID:                authorization.SessionID,
 		AuthorizationURL:         authorization.URL,
 		RedirectURI:              draft.OAuth.RedirectURI,

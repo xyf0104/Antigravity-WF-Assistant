@@ -728,6 +728,40 @@ pub fn open_codex_config_toml(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn list_codex_config_backups() -> Result<Vec<CodexConfigBackupInfo>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let path = codex_account::get_codex_home().join("config.toml");
+        crate::modules::codex_config_transaction::list_codex_config_backups(&path)
+    })
+    .await
+    .map_err(|error| format!("读取 Codex 配置备份后台任务失败: {}", error))?
+}
+
+#[tauri::command]
+pub async fn verify_codex_config_backup(
+    backup_id: String,
+) -> Result<CodexConfigBackupVerification, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = codex_account::get_codex_home().join("config.toml");
+        crate::modules::codex_config_transaction::verify_codex_config_backup(&path, &backup_id)
+    })
+    .await
+    .map_err(|error| format!("校验 Codex 配置备份后台任务失败: {}", error))?
+}
+
+#[tauri::command]
+pub async fn restore_codex_config_backup(
+    backup_id: String,
+) -> Result<CodexConfigRestoreResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = codex_account::get_codex_home().join("config.toml");
+        crate::modules::codex_config_transaction::restore_codex_config_backup(&path, &backup_id)
+    })
+    .await
+    .map_err(|error| format!("恢复 Codex 配置备份后台任务失败: {}", error))?
+}
+
+#[tauri::command]
 pub async fn get_codex_quick_config() -> Result<CodexQuickConfig, String> {
     tauri::async_runtime::spawn_blocking(codex_account::load_current_quick_config)
         .await

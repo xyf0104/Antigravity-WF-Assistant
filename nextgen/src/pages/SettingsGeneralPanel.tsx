@@ -1,4 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
+import { useState } from 'react';
+import { save } from '@tauri-apps/plugin-dialog';
 import { normalizeLanguage } from '../i18n';
 import * as accountService from '../services/accountService';
 import { showFloatingCardWindow } from '../services/floatingCardService';
@@ -8,13 +10,15 @@ import { setClaudeQuotaDisplayRemainingEnabled } from '../utils/claudeQuotaDispl
 import { SettingsAccountTransferSection } from '../components/SettingsAccountTransferSection';
 import type { SideNavLayoutMode } from '../stores/useSideNavLayoutStore';
 import './settings/Settings.css';
-import { Save, FolderOpen, AlertCircle, RefreshCw } from 'lucide-react';
+import { Save, FolderOpen, AlertCircle, RefreshCw, Download } from 'lucide-react';
 import type { SettingsPageViewProps } from "./SettingsPageView";
 import { SettingsCodexPlatformPanel } from "./SettingsCodexPlatformPanel";
+import { exportDiagnostics } from '../services/logService';
 
 
 /** 渲染 SettingsPageView 的 activeTab === 'general' 业务面板。 */
 export function SettingsGeneralPanel(props: SettingsPageViewProps) {
+  const [diagnosticExporting, setDiagnosticExporting] = useState(false);
   const {
     antigravityAccountGroups,
     antigravityAppPath,
@@ -247,7 +251,6 @@ export function SettingsGeneralPanel(props: SettingsPageViewProps) {
     setTheme,
     setThemeColor,
     setTokenKeeperEnabled,
-    setTopRightAdVisible,
     setTraeAppPath,
     setTraeAutoRefresh,
     setTraeAutoRefreshCustomMode,
@@ -305,7 +308,6 @@ export function SettingsGeneralPanel(props: SettingsPageViewProps) {
     themeColor,
     THRESHOLD_PRESET_VALUES,
     tokenKeeperEnabled,
-    topRightAdVisible,
     traeAppPath,
     traeAutoRefresh,
     traeAutoRefreshCustomMode,
@@ -375,6 +377,27 @@ export function SettingsGeneralPanel(props: SettingsPageViewProps) {
     zedQuotaAlertThresholdCustomMode,
     zedQuotaAlertThresholdIsPreset,
   } = props;
+
+  const handleExportDiagnostics = async () => {
+    const date = new Date().toISOString().slice(0, 10);
+    const destination = await save({
+      defaultPath: `xiass-diagnostics-${date}.zip`,
+      filters: [{ name: 'ZIP', extensions: ['zip'] }],
+    });
+    if (!destination) return;
+    setDiagnosticExporting(true);
+    try {
+      await exportDiagnostics(destination);
+      alert(t('settings.general.diagnosticExportSuccess', '诊断日志已导出'));
+    } catch (error) {
+      alert(t('settings.general.diagnosticExportFailed', {
+        error: String(error),
+        defaultValue: '诊断日志导出失败：{{error}}',
+      }));
+    } finally {
+      setDiagnosticExporting(false);
+    }
+  };
   return (
           <>
           {(generalLoadFailed || updateSettingsLoadFailed) && (
@@ -954,6 +977,33 @@ export function SettingsGeneralPanel(props: SettingsPageViewProps) {
 
               <div className="settings-row">
                 <div className="row-label">
+                  <div className="row-title">
+                    {t('settings.general.diagnosticExport', '诊断与日志')}
+                  </div>
+                  <div className="row-desc">
+                    {t(
+                      'settings.general.diagnosticExportDesc',
+                      '导出主应用与 Antigravity WF 的脱敏日志；不包含账号、模型配置、Codex auth.json 或会话历史。',
+                    )}
+                  </div>
+                </div>
+                <div className="row-control">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => void handleExportDiagnostics()}
+                    disabled={diagnosticExporting}
+                  >
+                    <Download size={16} aria-hidden="true" />
+                    {diagnosticExporting
+                      ? t('common.loading', '处理中')
+                      : t('settings.general.diagnosticExportAction', '导出诊断日志')}
+                  </button>
+                </div>
+              </div>
+
+              <div className="settings-row">
+                <div className="row-label">
                   <div className="row-title">{t('settings.general.floatingCardShowNow', '立即显示悬浮卡片')}</div>
                   <div className="row-desc">{t('settings.general.floatingCardShowNowDesc', '关闭后可在这里或托盘菜单中重新打开')}</div>
                 </div>
@@ -973,30 +1023,6 @@ export function SettingsGeneralPanel(props: SettingsPageViewProps) {
                   <button className="btn btn-secondary" onClick={() => accountService.openDataFolder()}>
                     <FolderOpen size={16} />{t('common.open')}
                   </button>
-                </div>
-              </div>
-
-              <div className="settings-row" hidden>
-                <div className="row-label">
-                  <div className="row-title">
-                    {t('settings.general.topRightAdVisible', '显示顶部推广')}
-                  </div>
-                  <div className="row-desc">
-                    {t(
-                      'settings.general.topRightAdVisibleDesc',
-                      '关闭后隐藏应用顶部推广位。'
-                    )}
-                  </div>
-                </div>
-                <div className="row-control">
-                  <label className="switch">
-                    <input
-                      type="checkbox"
-                      checked={topRightAdVisible}
-                      onChange={(e) => setTopRightAdVisible(e.target.checked)}
-                    />
-                    <span className="slider"></span>
-                  </label>
                 </div>
               </div>
 

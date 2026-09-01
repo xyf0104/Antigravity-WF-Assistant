@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"antigravity-wf-assistant/internal/claudeconfig"
 	"antigravity-wf-assistant/internal/storage"
@@ -74,6 +76,17 @@ type ClaudeCodeApplyAccountInput struct {
 	Model                       string `json:"model"`
 	EnableGatewayModelDiscovery bool   `json:"enableGatewayModelDiscovery"`
 }
+
+const (
+	embeddedClaudeCodeCandidateLimit       = 24
+	embeddedClaudeCodeCandidateModelLimit  = 24
+	embeddedClaudeCodeAccountIDLimit       = 128
+	embeddedClaudeCodeModelIDLimit         = 256
+	embeddedClaudeCodeLabelLimit           = 160
+	embeddedClaudeCodeAppliedMessage       = "已由 XIASS Tools 应用所选 Claude Code 账户。"
+	embeddedClaudeCodeCurrentMarkerWarning = "已应用所选 Claude Code 账户；当前账户标记未保存，不影响 Claude Code 使用。"
+	embeddedClaudeCodeFallbackApplyMessage = "已将所选 XIASS Tools Claude 账户和模型安全应用到 Claude Code。"
+)
 
 // ClaudeCodeConfigurationStatus contains only the manager's redacted
 // projection. In particular, it never serializes ANTHROPIC_AUTH_TOKEN or any
@@ -210,6 +223,9 @@ func (a *App) ApplyClaudeCodeConfiguration(input ClaudeCodeApplyInput) ClaudeCod
 // those settings could produce a different request from the one the user
 // configured in the account pool.
 func (a *App) GetClaudeCodeAccountCandidates() ClaudeCodeAccountCandidatesStatus {
+	if a != nil && a.embeddedMode {
+		return a.getEmbeddedClaudeCodeAccountCandidates()
+	}
 	accounts, err := storage.LoadUpstreamAccounts()
 	if err != nil {
 		return ClaudeCodeAccountCandidatesStatus{Candidates: emptyClaudeCodeAccountCandidates(), Message: "无法读取本机账户池。"}
@@ -245,11 +261,41 @@ func (a *App) GetClaudeCodeAccountCandidates() ClaudeCodeAccountCandidatesStatus
 	return ClaudeCodeAccountCandidatesStatus{OK: true, Candidates: candidates, Message: message}
 }
 
+// getEmbeddedClaudeCodeAccountCandidates intentionally does not inspect the
+// legacy helper account store. The parent Tauri process owns the active Claude
+// vault, returns a small redacted projection through the authenticated bridge,
+// and the helper validates that projection again before Vue receives it.
+func (a *App) getEmbeddedClaudeCodeAccountCandidates() ClaudeCodeAccountCandidatesStatus {
+	result, err := a.executeNativeAction(nativeActionRequest{Kind: nativeActionClaudeCodeCandidates})
+	if err != nil || !result.OK || result.Canceled || strings.TrimSpace(result.Value) == "" {
+		return ClaudeCodeAccountCandidatesStatus{
+			Candidates: emptyClaudeCodeAccountCandidates(),
+			Message:    "无法读取 XIASS Tools Claude 账户。请确认主应用仍在运行后重试。",
+		}
+	}
+	var payload ClaudeCodeAccountCandidatesStatus
+	if err := json.Unmarshal([]byte(result.Value), &payload); err != nil || !payload.OK {
+		return ClaudeCodeAccountCandidatesStatus{
+			Candidates: emptyClaudeCodeAccountCandidates(),
+			Message:    "XIASS Tools Claude 账户响应无效。",
+		}
+	}
+	candidates := sanitizeEmbeddedClaudeCodeCandidates(payload.Candidates)
+	message := "已读取 XIASS Tools 中可用于 Claude Code 的账户。"
+	if len(candidates) == 0 {
+		message = "没有可直接用于 Claude Code 的 XIASS Tools 账户。"
+	}
+	return ClaudeCodeAccountCandidatesStatus{OK: true, Candidates: candidates, Message: message}
+}
+
 // ApplyClaudeCodeConfigurationFromAccount is an explicit transfer of one
 // user-selected, compatible XIASS Tools upstream account into the narrowly
 // documented Claude Code settings surface. It never reads a third-party
 // account/session file and never returns the source credential to Vue.
 func (a *App) ApplyClaudeCodeConfigurationFromAccount(input ClaudeCodeApplyAccountInput) ClaudeCodeConfigurationStatus {
+	if a != nil && a.embeddedMode {
+		return a.applyEmbeddedClaudeCodeConfigurationFromAccount(input)
+	}
 	manager, err := a.claudeCodeManager()
 	if err != nil {
 		return ClaudeCodeConfigurationUnavailable()
@@ -268,6 +314,49 @@ func (a *App) ApplyClaudeCodeConfigurationFromAccount(input ClaudeCodeApplyAccou
 	return a.applyClaudeCodeConfiguration(manager, config)
 }
 
+// applyEmbeddedClaudeCodeConfigurationFromAccount keeps credentials inside the
+// Tauri Claude vault. The helper receives only the already-selected opaque ID
+// and model, transactionally stages the user-visible model field, then asks
+// the host to inject the account. If the host rejects the account selection,
+// the staged model write is restored from its verified backup.
+func (a *App) applyEmbeddedClaudeCodeConfigurationFromAccount(input ClaudeCodeApplyAccountInput) ClaudeCodeConfigurationStatus {
+	manager, err := a.claudeCodeManager()
+	if err != nil {
+		return ClaudeCodeConfigurationUnavailable()
+	}
+	accountID := embeddedClaudeCodeSafeAccountID(input.AccountID)
+	model := embeddedClaudeCodeSafeModelID(input.Model)
+	defer func() {
+		input.AccountID = ""
+		input.Model = ""
+	}()
+	if accountID == "" || model == "" {
+		return claudeCodeConfigurationAfterError(manager, "请选择有效的 XIASS Tools Claude 账户及模型。")
+	}
+	modelWrite, err := manager.ApplyModel(model)
+	if err != nil {
+		return claudeCodeConfigurationAfterError(manager, "未能安全保存所选 Claude Code 模型。")
+	}
+	result, err := a.executeNativeAction(nativeActionRequest{
+		Kind:      nativeActionClaudeCodeApply,
+		AccountID: accountID,
+		Model:     model,
+	})
+	if err != nil || !result.OK || result.Canceled {
+		if _, rollbackErr := manager.Restore(modelWrite.BackupID); rollbackErr != nil {
+			return claudeCodeConfigurationAfterError(manager, "未将所选 XIASS Tools Claude 账户应用到 Claude Code，且模型设置恢复失败。")
+		}
+		return claudeCodeConfigurationAfterError(manager, "未将所选 XIASS Tools Claude 账户应用到 Claude Code；模型设置已恢复。")
+	}
+	status := a.GetClaudeCodeConfiguration()
+	if !status.OK {
+		status.Message = "所选 XIASS Tools Claude 账户已应用，模型设置已保存，但无法刷新可见状态。"
+		return status
+	}
+	status.Message = embeddedClaudeCodeApplyHostMessage(result.Value)
+	return status
+}
+
 func (a *App) applyClaudeCodeConfiguration(manager *claudeconfig.Manager, config claudeconfig.ApplyConfig) ClaudeCodeConfigurationStatus {
 	result, err := manager.Apply(config)
 	if err != nil {
@@ -284,6 +373,129 @@ func (a *App) applyClaudeCodeConfiguration(manager *claudeconfig.Manager, config
 
 func emptyClaudeCodeAccountCandidates() []ClaudeCodeAccountCandidate {
 	return []ClaudeCodeAccountCandidate{}
+}
+
+func sanitizeEmbeddedClaudeCodeCandidates(values []ClaudeCodeAccountCandidate) []ClaudeCodeAccountCandidate {
+	if len(values) == 0 {
+		return emptyClaudeCodeAccountCandidates()
+	}
+	seenAccounts := make(map[string]struct{})
+	result := make([]ClaudeCodeAccountCandidate, 0, len(values))
+	for _, value := range values {
+		id := embeddedClaudeCodeSafeAccountID(value.ID)
+		label := embeddedClaudeCodeSafeLabel(value.Label)
+		if id == "" || label == "" || !embeddedClaudeCodeCredentialMode(value.CredentialMode) {
+			continue
+		}
+		if _, exists := seenAccounts[id]; exists {
+			continue
+		}
+		models := sanitizeEmbeddedClaudeCodeCandidateModels(value.Models)
+		if len(models) == 0 {
+			continue
+		}
+		seenAccounts[id] = struct{}{}
+		result = append(result, ClaudeCodeAccountCandidate{
+			ID:             id,
+			Label:          label,
+			CredentialMode: value.CredentialMode,
+			Models:         models,
+		})
+		if len(result) == embeddedClaudeCodeCandidateLimit {
+			break
+		}
+	}
+	sort.Slice(result, func(left, right int) bool {
+		return strings.ToLower(result[left].Label+"\x00"+result[left].ID) < strings.ToLower(result[right].Label+"\x00"+result[right].ID)
+	})
+	return result
+}
+
+func sanitizeEmbeddedClaudeCodeCandidateModels(values []ClaudeCodeAccountCandidateModel) []ClaudeCodeAccountCandidateModel {
+	seen := make(map[string]struct{})
+	result := make([]ClaudeCodeAccountCandidateModel, 0, len(values))
+	for _, value := range values {
+		id := embeddedClaudeCodeSafeModelID(value.ID)
+		label := embeddedClaudeCodeSafeLabel(value.DisplayName)
+		if id == "" || label == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, ClaudeCodeAccountCandidateModel{ID: id, DisplayName: label})
+		if len(result) == embeddedClaudeCodeCandidateModelLimit {
+			break
+		}
+	}
+	sort.Slice(result, func(left, right int) bool {
+		return strings.ToLower(result[left].DisplayName+"\x00"+result[left].ID) < strings.ToLower(result[right].DisplayName+"\x00"+result[right].ID)
+	})
+	return result
+}
+
+func embeddedClaudeCodeSafeAccountID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > embeddedClaudeCodeAccountIDLimit {
+		return ""
+	}
+	for _, character := range value {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '_' || character == '-') {
+			return ""
+		}
+	}
+	return value
+}
+
+func embeddedClaudeCodeSafeModelID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > embeddedClaudeCodeModelIDLimit {
+		return ""
+	}
+	for _, character := range value {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || strings.ContainsRune("._:/@+-[]", character)) {
+			return ""
+		}
+	}
+	return value
+}
+
+func embeddedClaudeCodeSafeLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]rune(value)) > embeddedClaudeCodeLabelLimit {
+		return ""
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return ""
+		}
+	}
+	return value
+}
+
+func embeddedClaudeCodeCredentialMode(value string) bool {
+	switch value {
+	case "OAuth", "Setup Token", "API Key":
+		return true
+	default:
+		return false
+	}
+}
+
+// Only these fixed, credential-free host messages may cross the embedded
+// native-action boundary into the renderer. A malformed or future message is
+// deliberately reduced to the established generic success text.
+func embeddedClaudeCodeApplyHostMessage(value string) string {
+	switch strings.TrimSpace(value) {
+	case embeddedClaudeCodeAppliedMessage:
+		return embeddedClaudeCodeFallbackApplyMessage
+	case embeddedClaudeCodeCurrentMarkerWarning:
+		return embeddedClaudeCodeCurrentMarkerWarning
+	default:
+		return embeddedClaudeCodeFallbackApplyMessage
+	}
 }
 
 func claudeCodeAccountReusable(account storage.UpstreamAccount) bool {

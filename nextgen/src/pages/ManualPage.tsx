@@ -267,7 +267,7 @@ export function ManualPage({ onNavigate, onOpenPlatformLayout }: ManualPageProps
         steps: [
           t('manual.settings.steps.0', '先在“通用”页完成语言/主题/路径的基础设置。'),
           t('manual.settings.steps.1', '再按平台调自动刷新与告警阈值。'),
-          t('manual.settings.steps.2', '网络服务改端口后按提示重启生效。'),
+          t('manual.settings.steps.2', '本地服务配置变更后按提示重启即可生效。'),
         ],
         cautions: [
           t('manual.settings.cautions.0', '路径探测失败时，手动选择可执行文件路径最稳妥。'),

@@ -82,7 +82,8 @@
         "sharedCreditPackage": "공유 Credits 패키지",
         "account": "계정",
         "createdAt": "생성 시간",
-        "userId": "사용자 ID"
+        "userId": "사용자 ID",
+        "teamName": "팀 이름"
       },
       "empty": {
         "title": "계정 없음"
@@ -742,8 +743,6 @@
       "floatingCardShowNowAction": "플로팅 카드 표시",
       "dataDir": "데이터 디렉터리",
       "dataDirDesc": "계정 및 구성 파일 저장 위치.",
-      "topRightAdVisible": "상단 프로모션 표시",
-      "topRightAdVisibleDesc": "앱 상단 프로모션 영역을 숨깁니다. 스폰서 페이지에는 영향을 주지 않습니다.",
       "opencodeTitle": "OpenCode 연동",
       "opencodeRestart": "Codex 전환 시 OpenCode 재시작",
       "opencodeRestartDesc": "OpenCode에서 Codex 계정 정보를 동기화하여 전환",
@@ -1196,7 +1195,7 @@
       "importModalDesc": "가져올 항목을 선택하세요. 구버전 계정 백업은 계정 데이터만 가져오는 방식으로 처리됩니다.",
       "selectionTitle": "데이터 범위",
       "accountsOptionTitle": "계정 데이터",
-      "accountsOptionDesc": "복원 가능한 플랫폼 계정 백업을 포함하며 기존 계정 JSON과의 호환성도 유지합니다. Grok CLI 인증 정보는 제외되므로 공식 auth.json을 별도로 가져오세요.",
+      "accountsOptionDesc": "XIASS 플랫폼 계정과 Antigravity WF 계정, 모델 공급자 및 설정을 포함합니다. 자격 증명이 포함된 JSON은 계정 백업을 선택한 경우에만 생성되며 Codex auth.json은 읽거나 포함하지 않습니다.",
       "configOptionTitle": "설정 데이터",
       "configOptionDesc": "앱 설정, 그룹, 인스턴스, 깨우기 작업, 모델 제공자 구성을 포함합니다.",
       "exportConfirm": "데이터 내보내기",
@@ -4806,7 +4805,11 @@
     "subscription": "구독",
     "injectToCursor": "Cursor로 전환",
     "quota": {
-      "onDemand": "온디맨드"
+      "onDemand": "온디맨드",
+      "totalUsage": "총 사용량",
+      "autoComposer": "자동 + Composer",
+      "apiUsage": "API 사용량",
+      "usageDetails": "사용량 상세"
     },
     "title": "Cursor 계정 관리",
     "instances": {
@@ -4844,7 +4847,8 @@
       "quotaFailed": "할당량 조회 실패 ({{count}})",
       "cleanQuotaFailedAction": "할당량 조회 실패 계정 삭제 ({{count}})",
       "cleanQuotaFailedConfirm": "할당량 조회에 실패한 계정 {{count}}개를 모두 삭제하시겠습니까?"
-    }
+    },
+    "authId": "인증 ID"
   },
   "breakout": {
     "gameOver": "게임 종료",
@@ -5838,16 +5842,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "중계 서비스",
-    "title": "APIKEY.FUN 릴레이",
+    "title": "XIASS API 릴레이",
     "description": "XIASS 공식 파트너 중계 서비스로, 안정적이고 개방적이며 비용 효율적인 대형 모델 API 접속을 제공합니다. Claude, OpenAI, Gemini 등 주요 모델을 지원하며 Codex, Gemini CLI, Claude Code 및 기타 개발 도구에서 통합 구성하기에 적합합니다. XIASS 전용 링크로 가입하면 충전 금액에 대해 영구적으로 최대 5% 할인을 받을 수 있습니다.",
     "register": "전용 가입 링크",
     "docs": "공식 문서",
     "viewNow": "바로 보기",
     "queryTitle": "키 잔액 조회",
-    "queryDesc": "APIKEY.FUN API Key를 입력하면 잔액을 자동으로 조회합니다.",
+    "queryDesc": "XIASS API API Key를 입력하면 잔액을 자동으로 조회합니다.",
     "keyNotSet": "키 없음",
     "apiKeyLabel": "API 키",
-    "apiKeyPlaceholder": "APIKEY.FUN 콘솔에서 만든 API Key 붙여넣기",
+    "apiKeyPlaceholder": "XIASS API 콘솔에서 만든 API Key 붙여넣기",
     "hideKey": "숨기기",
     "showKey": "표시",
     "endpointLabel": "연결 대상",
@@ -5858,7 +5862,7 @@
     "saving": "쓰는 중",
     "saveSuccess": "Codex Provider에 기록됨: {{name}}",
     "toolsTitle": "클라이언트 설정 쓰기",
-    "toolsDesc": "APIKEY.FUN 문서와 CC Switch 파일 구조에 맞춰 로컬 클라이언트 설정 파일에 직접 씁니다.",
+    "toolsDesc": "XIASS API 문서와 XIASS Tools 파일 구조에 맞춰 로컬 클라이언트 설정 파일에 직접 씁니다.",
     "endpoint": {
       "global": "글로벌 회선",
       "globalDesc": "대부분의 네트워크 환경에 적합한 공식 기본 API Base입니다.",
@@ -5954,7 +5958,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "APIKEY.FUN 설정을 채웠습니다. Claude에 추가하려면 확인하세요."
+      "claudeDesktopReady": "XIASS API 설정을 채웠습니다. Claude에 추가하려면 확인하세요."
     },
     "copyKey": "Copy Key​",
     "clearKey": "Clear input​"
@@ -6130,7 +6134,7 @@
     "apiKey": {
       "desc": "Claude CLI API Key를 독립 자격 증명으로 저장합니다. 전환 또는 CLI 실행 시 공급자 env를 Claude Code settings.json에 기록하며 Claude 로그인 상태에는 기록하지 않습니다.",
       "nameLabel": "계정 이름",
-      "namePlaceholder": "선택, 예: APIKEY.FUN",
+      "namePlaceholder": "선택, 예: XIASS API",
       "keyLabel": "API 키",
       "placeholder": "공급자 API Key 붙여넣기",
       "hide": "API Key 숨기기",

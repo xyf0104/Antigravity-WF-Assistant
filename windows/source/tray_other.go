@@ -11,5 +11,8 @@ func (a *App) showMainWindow() {}
 func (a *App) hideMainWindow() {}
 
 func (a *App) quitNativeApplication() {
+	if a.embeddedMode {
+		return
+	}
 	runtime.Quit(a.ctx)
 }

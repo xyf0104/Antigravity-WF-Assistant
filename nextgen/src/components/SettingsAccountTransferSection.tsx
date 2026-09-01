@@ -58,7 +58,7 @@ import {
   saveAutoBackupSettings,
   selectionToAutoBackupMode,
 } from '../services/scheduledBackupService';
-import { ALL_PLATFORM_IDS, PlatformId } from '../types/platform';
+import { PRODUCTION_AGENT_ACCOUNT_PLATFORM_IDS, PlatformId } from '../types/platform';
 import { getPlatformLabel } from '../utils/platformMeta';
 import { presentWindowsOperationError } from '../utils/windowsOperationDialog';
 
@@ -80,11 +80,11 @@ const BACKUP_FILE_NAME_REGEX =
 
 const BACKUP_USAGE_SOURCE_ORDER = [
   'scheduled',
+  'antigravity',
   'claude',
   'codex',
-  'workbuddy',
-  'codebuddy',
-  'trae',
+  'windsurf',
+  'cursor',
 ] as const;
 
 function normalizeError(error: unknown): string {
@@ -380,6 +380,16 @@ export function SettingsAccountTransferSection({
         );
       }
 
+      if (result.account_result?.wf_helper_restored) {
+        parts.push(
+          t('settings.transfer.feedback.wfHelperRestored', {
+            accounts: result.account_result.wf_helper_account_count,
+            models: result.account_result.wf_helper_model_count,
+            defaultValue: 'Antigravity WF 已恢复 {{accounts}} 个账户和 {{models}} 个模型配置',
+          }),
+        );
+      }
+
       if (result.config_result?.applied) {
         parts.push(t('settings.transfer.feedback.configImported'));
       }
@@ -390,6 +400,15 @@ export function SettingsAccountTransferSection({
 
       if (result.warnings.includes('config_section_missing')) {
         parts.push(t('settings.transfer.feedback.configSectionMissing'));
+      }
+
+      if (result.warnings.includes('wf_helper_section_missing')) {
+        parts.push(
+          t(
+            'settings.transfer.feedback.wfHelperSectionMissing',
+            '此旧版备份不包含 Antigravity WF 的账户、模型与设置；其余已选数据仍按兼容模式恢复。',
+          ),
+        );
       }
 
       if ((result.config_result?.unresolved_account_ref_count ?? 0) > 0) {
@@ -569,7 +588,10 @@ export function SettingsAccountTransferSection({
               {t('settings.transfer.accountsOptionTitle')}
             </div>
             <div className="settings-transfer-selection-desc">
-              {t('settings.transfer.accountsOptionDesc')}
+              {t(
+                'settings.transfer.accountsOptionDesc',
+                '包含 XIASS 平台账号及 Antigravity WF 的账户、模型供应商和设置。该 JSON 含凭据，仅在你选择账号备份时生成；不会读取或包含 Codex auth.json。',
+              )}
             </div>
           </div>
         </label>
@@ -1187,7 +1209,9 @@ export function SettingsAccountTransferSection({
         present.add(item.platform);
       }
     }
-    return ALL_PLATFORM_IDS.filter((platform) => present.has(platform));
+    return PRODUCTION_AGENT_ACCOUNT_PLATFORM_IDS.filter(
+      (platform) => present.has(platform),
+    ) as PlatformId[];
   }, [backupFiles]);
   const visibleBackupFiles = useMemo(() => {
     if (backupPlatformFilter === 'all') {
@@ -1224,7 +1248,7 @@ export function SettingsAccountTransferSection({
 
   useEffect(() => {
     if (backupPlatformFilter === 'all') return;
-    if (backupPlatformOptions.includes(backupPlatformFilter)) return;
+    if (backupPlatformOptions.some((platform) => platform === backupPlatformFilter)) return;
     setBackupPlatformFilter('all');
   }, [backupPlatformFilter, backupPlatformOptions]);
 

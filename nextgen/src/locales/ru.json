@@ -82,7 +82,8 @@
         "sharedCreditPackage": "Общий пакет кредитов",
         "account": "Аккаунт",
         "createdAt": "Время создания",
-        "userId": "ID пользователя"
+        "userId": "ID пользователя",
+        "teamName": "Название команды"
       },
       "empty": {
         "title": "Нет аккаунтов"
@@ -742,8 +743,6 @@
       "floatingCardShowNowAction": "Показать плавающую карточку",
       "dataDir": "Каталог данных",
       "dataDirDesc": "Место хранения аккаунтов и конфигурационных файлов.",
-      "topRightAdVisible": "Показывать верхнее промо",
-      "topRightAdVisibleDesc": "Скрывает верхний промо-блок в приложении. Страница спонсоров не меняется.",
       "opencodeTitle": "Интеграция OpenCode",
       "opencodeRestart": "Перезапускать OpenCode при переключении Codex",
       "opencodeRestartDesc": "Синхронизировать данные аккаунта Codex в OpenCode",
@@ -1196,7 +1195,7 @@
       "importModalDesc": "Выберите, что импортировать. Старые резервные копии аккаунтов будут обработаны как импорт только данных аккаунтов.",
       "selectionTitle": "Объём данных",
       "accountsOptionTitle": "Данные аккаунтов",
-      "accountsOptionDesc": "Включает восстанавливаемые резервные копии аккаунтов и сохраняет совместимость со старым JSON. Учётные данные Grok CLI исключены; импортируйте официальный auth.json отдельно.",
+      "accountsOptionDesc": "Включает аккаунты XIASS, а также аккаунты, провайдеры моделей и настройки Antigravity WF. JSON содержит учётные данные и создаётся только при выборе резервной копии аккаунтов; Codex auth.json никогда не читается и не включается.",
       "configOptionTitle": "Данные конфигурации",
       "configOptionDesc": "Включает настройки приложения, группы, экземпляры, задачи wakeup и конфигурацию провайдеров моделей.",
       "exportConfirm": "Экспортировать данные",
@@ -4806,7 +4805,11 @@
     "subscription": "Подписка",
     "injectToCursor": "Переключиться на Cursor",
     "quota": {
-      "onDemand": "По запросу"
+      "onDemand": "По запросу",
+      "totalUsage": "Общее использование",
+      "autoComposer": "Авто + Composer",
+      "apiUsage": "Использование API",
+      "usageDetails": "Сведения об использовании"
     },
     "title": "Управление аккаунтами Cursor",
     "instances": {
@@ -4844,7 +4847,8 @@
       "quotaFailed": "Ошибка запроса квоты ({{count}})",
       "cleanQuotaFailedAction": "Удалить аккаунты с ошибкой запроса квоты ({{count}})",
       "cleanQuotaFailedConfirm": "Удалить все аккаунты ({{count}}), для которых запрос квоты завершился ошибкой?"
-    }
+    },
+    "authId": "ID авторизации"
   },
   "breakout": {
     "gameOver": "Игра окончена",
@@ -5838,16 +5842,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "Шлюз",
-    "title": "Relay APIKEY.FUN",
+    "title": "Relay XIASS API",
     "description": "Официальный партнерский relay XIASS предоставляет стабильный, открытый и выгодный API-доступ к большим моделям. Поддерживаются Claude, OpenAI, Gemini и другие основные модели; сервис подходит для единой настройки в Codex, Gemini CLI, Claude Code и других инструментах разработки. При регистрации по эксклюзивной ссылке XIASS можно получить постоянную скидку до 5% на пополнения.",
     "register": "Эксклюзивная ссылка",
     "docs": "Официальная документация",
     "viewNow": "Смотреть",
     "queryTitle": "Лимит ключа",
-    "queryDesc": "Введите API Key APIKEY.FUN, чтобы автоматически проверить лимит.",
+    "queryDesc": "Введите API Key XIASS API, чтобы автоматически проверить лимит.",
     "keyNotSet": "Ключ не введён",
     "apiKeyLabel": "API-ключ",
-    "apiKeyPlaceholder": "Вставьте API Key из консоли APIKEY.FUN",
+    "apiKeyPlaceholder": "Вставьте API Key из консоли XIASS API",
     "hideKey": "Скрыть",
     "showKey": "Показать",
     "endpointLabel": "Точка доступа",
@@ -5858,7 +5862,7 @@
     "saving": "Запись",
     "saveSuccess": "Записано в Codex Provider: {{name}}",
     "toolsTitle": "Записать конфиг клиента",
-    "toolsDesc": "Напрямую записывает локальные файлы конфигурации по документации APIKEY.FUN и структуре CC Switch.",
+    "toolsDesc": "Напрямую записывает локальные файлы конфигурации по документации XIASS API и структуре XIASS Tools.",
     "endpoint": {
       "global": "Глобальная сеть",
       "globalDesc": "Официальный API Base по умолчанию для большинства сетей.",
@@ -5954,7 +5958,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "Настройки APIKEY.FUN заполнены. Подтвердите добавление в Claude."
+      "claudeDesktopReady": "Настройки XIASS API заполнены. Подтвердите добавление в Claude."
     },
     "copyKey": "Copy Key​",
     "clearKey": "Clear input​"
@@ -6130,7 +6134,7 @@
     "apiKey": {
       "desc": "Сохраняет API Key Claude CLI как отдельные учетные данные. При переключении или запуске CLI env провайдера записывается в Claude Code settings.json, без записи состояния входа Claude.",
       "nameLabel": "Имя аккаунта",
-      "namePlaceholder": "Необязательно, напр. APIKEY.FUN",
+      "namePlaceholder": "Необязательно, напр. XIASS API",
       "keyLabel": "Ключ API",
       "placeholder": "Вставьте API Key провайдера",
       "hide": "Скрыть API Key",

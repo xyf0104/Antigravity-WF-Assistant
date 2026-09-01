@@ -3,7 +3,6 @@ import {
   lazy,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -23,14 +22,12 @@ import { WindowsOperationDialog } from './components/WindowsOperationDialog';
 import { CodexSwitchProgressModal } from './components/CodexSwitchProgressModal';
 import { CodexInstanceLaunchProgressModal } from './components/CodexInstanceLaunchProgressModal';
 import { AnnouncementHost } from './components/AnnouncementCenter';
-import { TopCenterPromoBanner } from './components/TopCenterPromoBanner';
 import type { QuickSettingsType } from './components/QuickSettingsPopover';
 import {
   isMainWindowNavigablePage,
   isXiassVisiblePage,
   type Page,
 } from './types/navigation';
-import type { TopRightAd } from './types/topRightAd';
 import { useAutoRefresh } from './hooks/useAutoRefresh';
 import { useEasterEggTrigger } from './hooks/useEasterEggTrigger';
 import { useGlobalModal } from './hooks/useGlobalModal';
@@ -38,21 +35,10 @@ import { changeLanguage, getCurrentLanguage, normalizeLanguage, syncLanguage } f
 import { useAccountStore } from './stores/useAccountStore';
 import { useCodexAccountStore } from './stores/useCodexAccountStore';
 import { useClaudeAccountStore } from './stores/useClaudeAccountStore';
-import { useGitHubCopilotAccountStore } from './stores/useGitHubCopilotAccountStore';
 import { useWindsurfAccountStore } from './stores/useWindsurfAccountStore';
-import { useKiroAccountStore } from './stores/useKiroAccountStore';
 import { useCursorAccountStore } from './stores/useCursorAccountStore';
-import { useGrokAccountStore } from './stores/useGrokAccountStore';
-import { useCodebuddyAccountStore } from './stores/useCodebuddyAccountStore';
-import { useCodebuddyCnAccountStore } from './stores/useCodebuddyCnAccountStore';
-import { useQoderAccountStore } from './stores/useQoderAccountStore';
-import { useTraeAccountStore } from './stores/useTraeAccountStore';
-import { useWorkbuddyAccountStore } from './stores/useWorkbuddyAccountStore';
-import { useZedAccountStore } from './stores/useZedAccountStore';
 import { useSideNavLayoutStore } from './stores/useSideNavLayoutStore';
 import { usePlatformLayoutStore } from './stores/usePlatformLayoutStore';
-import { useTopRightAdStore } from './stores/useTopRightAdStore';
-import { useSponsorStore } from './stores/useSponsorStore';
 import { useRemoteConfigStore } from './stores/useRemoteConfigStore';
 import type { UpdateCheckResult, UpdateInfo } from './components/UpdateNotification';
 import type { RemoteUpdatePromptMode } from './types/remoteConfig';
@@ -90,6 +76,13 @@ import {
 } from './services/workbuddyAutoCheckinService';
 import { prepareCodexLocalAccessForRestart } from './services/codexLocalAccessService';
 import { applyReducedMotion } from './utils/reducedMotion';
+import {
+  applyDocumentTheme,
+  isThemePreference,
+  persistThemePreference,
+  resolveThemePreference,
+  THEME_PREFERENCE_INTENT_EVENT,
+} from './utils/themePreference';
 import { isCodexInstanceAccountConflict } from './utils/codexInstanceLaunchConflict';
 import {
   applyWebviewUiScale,
@@ -199,103 +192,6 @@ const XIASS_WORKSPACE_PAGE_REDIRECTS: Partial<Record<Page, Page>> = {
   verification: 'overview',
 };
 
-const TOP_PROMO_DEFAULT_EXCLUDED_PAGES: readonly Page[] = ['api-relay', 'settings'];
-const TOP_PROMO_PAGE_PLATFORM_TARGETS: Partial<Record<Page, readonly string[]>> = {
-  overview: ['antigravity', 'antigravity-ide'],
-  instances: ['antigravity', 'antigravity-ide'],
-  wakeup: ['antigravity', 'antigravity-ide'],
-  verification: ['antigravity', 'antigravity-ide'],
-  codex: ['codex'],
-  'codex-api-service': ['codex_api_service', 'codex'],
-  'codex-instances': ['codex'],
-  claude: ['claude', 'claude-manager'],
-  'claude-cli': ['claude', 'claude-manager'],
-  zed: ['zed'],
-  'github-copilot': ['github-copilot'],
-  windsurf: ['windsurf'],
-  kiro: ['kiro'],
-  cursor: ['cursor'],
-  grok: ['grok'],
-  codebuddy: ['codebuddy'],
-  'codebuddy-cn': ['codebuddy-cn'],
-  qoder: ['qoder'],
-  zcode: ['zcode'],
-  trae: ['trae', 'trae-suite'],
-  'trae-solo': ['trae-solo', 'trae-suite'],
-  'trae-cn': ['trae-cn', 'trae-suite'],
-  'trae-solo-cn': ['trae-solo-cn', 'trae-suite'],
-  workbuddy: ['workbuddy'],
-};
-
-function normalizePromoTarget(value: string): string {
-  return value.trim().toLowerCase().replace(/_/g, '-');
-}
-
-function normalizePromoTargets(values?: string[] | null): string[] {
-  if (!Array.isArray(values)) {
-    return [];
-  }
-  return values
-    .map((value) => normalizePromoTarget(value))
-    .filter(Boolean);
-}
-
-function promoTargetsMatch(configuredTargets: string[], activeTargets: Set<string>): boolean {
-  return configuredTargets.some((target) => target === '*' || activeTargets.has(target));
-}
-
-function resolveTopPromoDisplayMode(ad: TopRightAd): string {
-  const mode = ad.displayMode ? normalizePromoTarget(ad.displayMode).replace(/[^a-z0-9]/g, '') : '';
-  if (!mode) {
-    return ad.displayPages?.length || ad.displayPlatforms?.length ? 'targets' : 'all';
-  }
-  return mode;
-}
-
-function isTopPromoAdVisibleOnPage(ad: TopRightAd, page: Page): boolean {
-  const pageTargets = new Set([normalizePromoTarget(page)]);
-  const platformTargets = new Set(
-    (TOP_PROMO_PAGE_PLATFORM_TARGETS[page] ?? []).map((value) => normalizePromoTarget(value)),
-  );
-  const displayPages = normalizePromoTargets(ad.displayPages);
-  const displayPlatforms = normalizePromoTargets(ad.displayPlatforms);
-  const pageMatches = promoTargetsMatch(displayPages, pageTargets);
-  const platformMatches = promoTargetsMatch(displayPlatforms, platformTargets);
-
-  if (
-    TOP_PROMO_DEFAULT_EXCLUDED_PAGES.includes(page)
-    && !pageMatches
-    && !displayPages.includes('*')
-  ) {
-    return false;
-  }
-
-  if (promoTargetsMatch(normalizePromoTargets(ad.excludePages), pageTargets)) {
-    return false;
-  }
-  if (promoTargetsMatch(normalizePromoTargets(ad.excludePlatforms), platformTargets)) {
-    return false;
-  }
-
-  switch (resolveTopPromoDisplayMode(ad)) {
-    case 'dashboard':
-      return page === 'dashboard';
-    case 'platforms':
-      return platformMatches;
-    case 'dashboardandplatforms':
-      return page === 'dashboard' || platformMatches;
-    case 'pages':
-      return pageMatches;
-    case 'dashboardandpages':
-      return page === 'dashboard' || pageMatches;
-    case 'targets':
-      return pageMatches || platformMatches;
-    case 'all':
-    default:
-      return true;
-  }
-}
-
 function normalizeStoredActivePage(value: string | null): Page | null {
   const normalized = value?.trim();
   if (!normalized) {
@@ -364,19 +260,8 @@ type AppPathMissingDetail = {
     | 'antigravity'
     | 'codex'
     | 'claude'
-    | 'vscode'
     | 'windsurf'
-    | 'kiro'
-    | 'cursor'
-    | 'codebuddy'
-    | 'codebuddy_cn'
-    | 'qoder'
-    | 'trae'
-    | 'trae_solo'
-    | 'trae_cn'
-    | 'trae_solo_cn'
-    | 'workbuddy'
-    | 'zed';
+    | 'cursor';
   retry?:
     | { kind: 'default'; runtimeTarget?: string }
     | { kind: 'instance'; instanceId?: string; runtimeTarget?: string }
@@ -400,27 +285,6 @@ const WAKEUP_ENABLED_KEY = 'agtools.wakeup.enabled';
 const TASKS_STORAGE_KEY = 'agtools.wakeup.tasks';
 const WAKEUP_FORCE_DISABLE_MIGRATION_KEY = 'agtools.wakeup.migration.force_disable_0_8_14';
 
-function isTraePlatformApp(app: string): app is 'trae' | 'trae_solo' | 'trae_cn' | 'trae_solo_cn' {
-  return app === 'trae' || app === 'trae_solo' || app === 'trae_cn' || app === 'trae_solo_cn';
-}
-
-type TraePlatformApp = 'trae' | 'trae_solo' | 'trae_cn' | 'trae_solo_cn';
-
-function getTraeAppPath(config: GeneralConfig, app: TraePlatformApp): string {
-  switch (app) {
-    case 'trae_solo':
-      return config.trae_solo_app_path;
-    case 'trae_cn':
-      return config.trae_cn_app_path;
-    case 'trae_solo_cn':
-      return config.trae_solo_cn_app_path;
-    case 'trae':
-    default:
-      return config.trae_app_path;
-  }
-}
-
-const TOP_RIGHT_AD_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const REMOTE_CONFIG_FALLBACK_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const EXTERNAL_IMPORT_DEDUPE_WINDOW_MS = 30 * 1000;
 
@@ -461,17 +325,8 @@ type QuotaAlertPlatform =
   | 'antigravity'
   | 'codex'
   | 'claude'
-  | 'github_copilot'
   | 'windsurf'
-  | 'kiro'
-  | 'cursor'
-  | 'grok'
-  | 'codebuddy'
-  | 'codebuddy_cn'
-  | 'qoder'
-  | 'trae'
-  | 'workbuddy'
-  | 'zed';
+  | 'cursor';
 type UpdateCheckSource = 'auto' | 'manual';
 type UpdateActionState = 'hidden' | 'available' | 'downloading' | 'installing' | 'ready';
 
@@ -550,41 +405,21 @@ function isVersionLowerThan(currentVersion: string, minimumVersion: string): boo
   return false;
 }
 
-function normalizeQuotaAlertPlatform(platform: string | undefined): QuotaAlertPlatform {
+function normalizeQuotaAlertPlatform(platform: string | undefined): QuotaAlertPlatform | null {
   switch (platform) {
+    case 'antigravity':
+      return 'antigravity';
     case 'codex':
       return 'codex';
     case 'claude':
     case 'claude-cli':
       return 'claude';
-    case 'github_copilot':
-      return 'github_copilot';
     case 'windsurf':
       return 'windsurf';
-    case 'kiro':
-      return 'kiro';
     case 'cursor':
       return 'cursor';
-    case 'grok':
-      return 'grok';
-    case 'codebuddy':
-      return 'codebuddy';
-    case 'codebuddy_cn':
-      return 'codebuddy_cn';
-    case 'qoder':
-      return 'qoder';
-    case 'trae':
-    case 'trae-solo':
-    case 'trae_solo':
-    case 'trae-cn':
-    case 'trae_cn':
-    case 'trae-solo-cn':
-    case 'trae_solo_cn':
-      return 'trae';
-    case 'zed':
-      return 'zed';
     default:
-      return 'antigravity';
+      return null;
   }
 }
 
@@ -597,26 +432,10 @@ function getQuotaAlertPlatformLabel(
       return t('nav.codex', 'Codex');
     case 'claude':
       return t('nav.claude', 'Claude');
-    case 'github_copilot':
-      return t('nav.githubCopilot', 'GitHub Copilot');
     case 'windsurf':
       return 'Windsurf';
-    case 'kiro':
-      return 'Kiro';
     case 'cursor':
       return 'Cursor';
-    case 'grok':
-      return 'Grok CLI';
-    case 'codebuddy':
-      return 'CodeBuddy';
-    case 'codebuddy_cn':
-      return t('nav.codebuddyCn', 'CodeBuddy CN');
-    case 'qoder':
-      return t('nav.qoder', 'Qoder');
-    case 'trae':
-      return t('nav.trae', 'Trae');
-    case 'zed':
-      return t('nav.zed', 'Zed');
     default:
       return t('nav.overview', 'Antigravity IDE');
   }
@@ -628,28 +447,10 @@ function getQuotaAlertTargetPage(platform: QuotaAlertPlatform): Page {
       return 'codex';
     case 'claude':
       return 'claude';
-    case 'github_copilot':
-      return 'github-copilot';
     case 'windsurf':
       return 'windsurf';
-    case 'kiro':
-      return 'kiro';
     case 'cursor':
       return 'cursor';
-    case 'grok':
-      return 'grok';
-    case 'codebuddy':
-      return 'codebuddy';
-    case 'codebuddy_cn':
-      return 'codebuddy-cn';
-    case 'qoder':
-      return 'qoder';
-    case 'trae':
-      return 'trae';
-    case 'workbuddy':
-      return 'workbuddy';
-    case 'zed':
-      return 'zed';
     default:
       return 'overview';
   }
@@ -661,28 +462,10 @@ function getQuotaAlertQuickSettingsType(platform: QuotaAlertPlatform): QuickSett
       return 'codex';
     case 'claude':
       return 'claude';
-    case 'github_copilot':
-      return 'github_copilot';
     case 'windsurf':
       return 'windsurf';
-    case 'kiro':
-      return 'kiro';
     case 'cursor':
       return 'cursor';
-    case 'grok':
-      return 'grok';
-    case 'codebuddy':
-      return 'codebuddy';
-    case 'codebuddy_cn':
-      return 'codebuddy_cn';
-    case 'qoder':
-      return 'qoder';
-    case 'trae':
-      return 'trae';
-    case 'workbuddy':
-      return 'workbuddy';
-    case 'zed':
-      return 'zed';
     default:
       return 'antigravity';
   }
@@ -880,20 +663,7 @@ function MainApp() {
   const autoPromptedUpdateVersionsRef = useRef<Set<string>>(new Set());
   const externalImportHandledAtRef = useRef<Map<string, number>>(new Map());
   const { showModal, closeModal } = useGlobalModal();
-  const topRightAdState = useTopRightAdStore((state) => state.state);
-  const fetchTopRightAdState = useTopRightAdStore((state) => state.fetchState);
-  const forceRefreshTopRightAdState = useTopRightAdStore((state) => state.forceRefreshState);
-  const sponsorModuleState = useSponsorStore((state) => state.state);
-  const fetchSponsorModuleState = useSponsorStore((state) => state.fetchState);
-  const sponsorModuleInitialized = useSponsorStore((state) => state.initialized);
   const fetchRemoteConfigState = useRemoteConfigStore((state) => state.fetchState);
-  const sponsorEntryVisible = Boolean(sponsorModuleState.sponsorModule);
-  const [topRightAdVisible, setTopRightAdVisible] = useState(true);
-  const topRightAdVisibleRef = useRef<boolean | null>(null);
-  const visibleTopCenterPromoAds = useMemo(
-    () => topRightAdState.ads.filter((ad) => isTopPromoAdVisibleOnPage(ad, page)),
-    [page, topRightAdState.ads],
-  );
   const trayRefreshInFlightRef = useRef(false);
   const openPlatformLayoutModal = useCallback(() => {
     setPlatformLayoutRequestedGroupId(null);
@@ -1170,48 +940,6 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
-    void fetchTopRightAdState();
-  }, [fetchTopRightAdState]);
-
-  useEffect(() => {
-    let disposed = false;
-
-    const loadTopRightAdVisible = async () => {
-      try {
-        const config = await invoke<GeneralConfig>('get_general_config');
-        if (disposed) {
-          return;
-        }
-        const nextVisible = config.top_right_ad_visible ?? true;
-        const previousVisible = topRightAdVisibleRef.current;
-        topRightAdVisibleRef.current = nextVisible;
-        setTopRightAdVisible(nextVisible);
-        if (previousVisible === false && nextVisible) {
-          void forceRefreshTopRightAdState();
-        }
-      } catch (error) {
-        if (disposed) {
-          return;
-        }
-        console.error('Failed to load top-right ad visibility config:', error);
-        topRightAdVisibleRef.current = true;
-        setTopRightAdVisible(true);
-      }
-    };
-
-    void loadTopRightAdVisible();
-    window.addEventListener('config-updated', loadTopRightAdVisible);
-    return () => {
-      disposed = true;
-      window.removeEventListener('config-updated', loadTopRightAdVisible);
-    };
-  }, [forceRefreshTopRightAdState]);
-
-  useEffect(() => {
-    void fetchSponsorModuleState();
-  }, [fetchSponsorModuleState]);
-
-  useEffect(() => {
     let disposed = false;
     let timer: number | null = null;
 
@@ -1243,33 +971,6 @@ function MainApp() {
       }
     };
   }, [fetchRemoteConfigState]);
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      void fetchTopRightAdState();
-      void fetchSponsorModuleState();
-    }, TOP_RIGHT_AD_REFRESH_INTERVAL_MS);
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [fetchSponsorModuleState, fetchTopRightAdState]);
-
-  useEffect(() => {
-    const handleLanguageChanged = () => {
-      void fetchTopRightAdState();
-      void fetchSponsorModuleState();
-    };
-    window.addEventListener('general-language-updated', handleLanguageChanged);
-    return () => {
-      window.removeEventListener('general-language-updated', handleLanguageChanged);
-    };
-  }, [fetchSponsorModuleState, fetchTopRightAdState]);
-
-  useEffect(() => {
-    if (sponsorModuleInitialized && page === 'api-relay' && !sponsorEntryVisible) {
-      setPage('dashboard');
-    }
-  }, [page, sponsorEntryVisible, sponsorModuleInitialized]);
 
   useEffect(() => {
     if (sideNavLayoutMode !== 'classic' || sideNavClassicFirstSyncDone) {
@@ -2124,14 +1825,10 @@ function MainApp() {
   useEffect(() => {
     let cleanup: (() => void) | null = null;
     let disposed = false;
+    let visualConfigRequestVersion = 0;
 
     const applyTheme = (newTheme: string) => {
-      if (newTheme === 'system') {
-        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
-      } else {
-        document.documentElement.setAttribute('data-theme', newTheme);
-      }
+      applyDocumentTheme(newTheme);
     };
 
     const applyUiScale = async (rawScale?: number) => {
@@ -2162,12 +1859,18 @@ function MainApp() {
     };
 
     const syncVisualConfig = async () => {
+      const requestVersion = visualConfigRequestVersion + 1;
+      visualConfigRequestVersion = requestVersion;
       try {
         const config = await invoke<GeneralConfigTheme>('get_general_config');
-        if (disposed) {
+        if (disposed || requestVersion !== visualConfigRequestVersion) {
           return;
         }
-        applyTheme(config.theme);
+        // A prior user theme selection should not be reverted by an older
+        // native config response during startup or a quick page transition.
+        const themePreference = resolveThemePreference(config.theme);
+        applyTheme(themePreference);
+        persistThemePreference(themePreference);
         try {
           document.documentElement.setAttribute(
             'data-theme-color',
@@ -2180,7 +1883,7 @@ function MainApp() {
         void applyUiScale(config.ui_scale);
         cleanup?.();
         cleanup = null;
-        if (config.theme === 'system') {
+        if (themePreference === 'system') {
           cleanup = watchSystemTheme();
         }
       } catch (error) {
@@ -2188,12 +1891,29 @@ function MainApp() {
       }
     };
 
+    const handleThemePreferenceIntent = (event: Event) => {
+      const preference = (event as CustomEvent<{ theme?: unknown }>).detail?.theme;
+      if (!isThemePreference(preference)) {
+        return;
+      }
+      // A local selection always wins over a previously-started config read.
+      visualConfigRequestVersion += 1;
+      cleanup?.();
+      cleanup = null;
+      applyTheme(preference);
+      if (preference === 'system') {
+        cleanup = watchSystemTheme();
+      }
+    };
+
     void syncVisualConfig();
     window.addEventListener('config-updated', syncVisualConfig);
+    window.addEventListener(THEME_PREFERENCE_INTENT_EVENT, handleThemePreferenceIntent);
 
     return () => {
       disposed = true;
       window.removeEventListener('config-updated', syncVisualConfig);
+      window.removeEventListener(THEME_PREFERENCE_INTENT_EVENT, handleThemePreferenceIntent);
       cleanup?.();
     };
   }, []);
@@ -2791,13 +2511,14 @@ function MainApp() {
       }
 
       const platform = normalizeQuotaAlertPlatform(payload.platform);
+      if (!platform) {
+        return;
+      }
       const platformLabel = getQuotaAlertPlatformLabel(platform, t);
       const hasRecommendation = Boolean(payload.recommended_account_id && payload.recommended_email);
       const lowQuotaItemsText = payload.low_models.length > 0
         ? payload.low_models.join(', ')
-        : platform === 'grok'
-          ? t('grok.quotaAlert.unknownItem', '未知配额项')
-          : t('quotaAlert.modal.unknownModel', '未知模型');
+        : t('quotaAlert.modal.unknownModel', '未知模型');
 
       showModal({
         title: t('quotaAlert.modal.title', '配额预警'),
@@ -2825,11 +2546,7 @@ function MainApp() {
               <strong>{payload.lowest_percentage}%</strong>
             </div>
             <div className="quota-alert-modal-row quota-alert-modal-row--stack">
-              <span>
-                {platform === 'grok'
-                  ? t('grok.quotaAlert.items', '触发配额项')
-                  : t('quotaAlert.modal.models', '触发模型')}
-              </span>
+              <span>{t('quotaAlert.modal.models', '触发模型')}</span>
               <strong>{lowQuotaItemsText}</strong>
             </div>
             <div className="quota-alert-modal-row">
@@ -2872,39 +2589,12 @@ function MainApp() {
                     } else if (platform === 'claude') {
                       await useClaudeAccountStore.getState().switchAccount(targetAccountId);
                       setPage('claude');
-                    } else if (platform === 'github_copilot') {
-                      await useGitHubCopilotAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('github-copilot');
                     } else if (platform === 'windsurf') {
                       await useWindsurfAccountStore.getState().switchAccount(targetAccountId);
                       setPage('windsurf');
-                    } else if (platform === 'kiro') {
-                      await useKiroAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('kiro');
                     } else if (platform === 'cursor') {
                       await useCursorAccountStore.getState().switchAccount(targetAccountId);
                       setPage('cursor');
-                    } else if (platform === 'grok') {
-                      await useGrokAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('grok');
-                    } else if (platform === 'codebuddy') {
-                      await useCodebuddyAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('codebuddy');
-                    } else if (platform === 'codebuddy_cn') {
-                      await useCodebuddyCnAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('codebuddy-cn');
-                    } else if (platform === 'qoder') {
-                      await useQoderAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('qoder');
-                    } else if (platform === 'trae') {
-                      await useTraeAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('trae');
-                    } else if (platform === 'workbuddy') {
-                      await useWorkbuddyAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('workbuddy');
-                    } else if (platform === 'zed') {
-                      await useZedAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('zed');
                     } else {
                       await useAccountStore.getState().switchAccount(targetAccountId);
                       setPage('overview');
@@ -3183,27 +2873,11 @@ function MainApp() {
             ? config.codex_app_path
             : appPathMissing.app === 'claude'
               ? config.claude_app_path
-            : appPathMissing.app === 'vscode'
-              ? config.vscode_app_path
               : appPathMissing.app === 'windsurf'
                 ? config.windsurf_app_path
-              : appPathMissing.app === 'kiro'
-                ? config.kiro_app_path
-              : appPathMissing.app === 'cursor'
-                ? config.cursor_app_path
-              : appPathMissing.app === 'codebuddy'
-                ? config.codebuddy_app_path
-              : appPathMissing.app === 'codebuddy_cn'
-                ? config.codebuddy_cn_app_path
-              : appPathMissing.app === 'qoder'
-                ? config.qoder_app_path
-              : isTraePlatformApp(appPathMissing.app)
-                ? getTraeAppPath(config, appPathMissing.app)
-              : appPathMissing.app === 'workbuddy'
-                ? config.workbuddy_app_path
-              : appPathMissing.app === 'zed'
-                ? config.zed_app_path
-              : config.antigravity_app_path;
+                : appPathMissing.app === 'cursor'
+                  ? config.cursor_app_path
+                  : config.antigravity_app_path;
         if (active) {
           const normalizedPath = currentPath || '';
           const shouldClearClaudeDefaultTarget =
@@ -3272,10 +2946,7 @@ function MainApp() {
           ? 'antigravity_legacy_start_instance'
           : 'start_instance';
       await invoke('set_app_path', { app, path });
-      if (retry?.kind === 'switchAccount' && retry.accountId && app === 'zed') {
-        await useZedAccountStore.getState().switchAccount(retry.accountId);
-        setPage('zed');
-      } else if (retry?.kind === 'switchAccount' && retry.accountId && app === 'claude') {
+      if (retry?.kind === 'switchAccount' && retry.accountId && app === 'claude') {
         await useClaudeAccountStore.getState().switchAccount(retry.accountId);
         await useClaudeAccountStore.getState().fetchCurrentAccountId();
         setPage('claude');
@@ -3293,26 +2964,10 @@ function MainApp() {
           await invoke('codex_start_instance', { instanceId: retry.instanceId });
         } else if (app === 'claude') {
           await invoke('claude_start_instance', { instanceId: retry.instanceId });
-        } else if (app === 'vscode') {
-          await invoke('github_copilot_start_instance', { instanceId: retry.instanceId });
         } else if (app === 'windsurf') {
           await invoke('windsurf_start_instance', { instanceId: retry.instanceId });
-        } else if (app === 'kiro') {
-          await invoke('kiro_start_instance', { instanceId: retry.instanceId });
         } else if (app === 'cursor') {
           await invoke('cursor_start_instance', { instanceId: retry.instanceId });
-        } else if (app === 'codebuddy') {
-          await invoke('codebuddy_start_instance', { instanceId: retry.instanceId });
-        } else if (app === 'codebuddy_cn') {
-          await invoke('codebuddy_cn_start_instance', { instanceId: retry.instanceId });
-        } else if (app === 'qoder') {
-          await invoke('qoder_start_instance', { instanceId: retry.instanceId });
-        } else if (isTraePlatformApp(app)) {
-          await invoke('trae_start_instance', { platformId: app, instanceId: retry.instanceId });
-        } else if (app === 'workbuddy') {
-          await invoke('workbuddy_start_instance', { instanceId: retry.instanceId });
-        } else if (app === 'zed') {
-          await invoke('zed_start_default_session');
         } else {
           await invoke(antigravityInstanceStartCommand, { instanceId: retry.instanceId });
         }
@@ -3321,26 +2976,10 @@ function MainApp() {
           await invoke('codex_start_instance', { instanceId: '__default__' });
         } else if (app === 'claude') {
           await invoke('claude_start_instance', { instanceId: '__default__' });
-        } else if (app === 'vscode') {
-          await invoke('github_copilot_start_instance', { instanceId: '__default__' });
         } else if (app === 'windsurf') {
           await invoke('windsurf_start_instance', { instanceId: '__default__' });
-        } else if (app === 'kiro') {
-          await invoke('kiro_start_instance', { instanceId: '__default__' });
         } else if (app === 'cursor') {
           await invoke('cursor_start_instance', { instanceId: '__default__' });
-        } else if (app === 'codebuddy') {
-          await invoke('codebuddy_start_instance', { instanceId: '__default__' });
-        } else if (app === 'codebuddy_cn') {
-          await invoke('codebuddy_cn_start_instance', { instanceId: '__default__' });
-        } else if (app === 'qoder') {
-          await invoke('qoder_start_instance', { instanceId: '__default__' });
-        } else if (isTraePlatformApp(app)) {
-          await invoke('trae_start_instance', { platformId: app, instanceId: '__default__' });
-        } else if (app === 'workbuddy') {
-          await invoke('workbuddy_start_instance', { instanceId: '__default__' });
-        } else if (app === 'zed') {
-          await invoke('zed_start_default_session');
         } else {
           await invoke(antigravityInstanceStartCommand, { instanceId: '__default__' });
         }
@@ -3570,27 +3209,13 @@ function MainApp() {
       ? 'Codex'
       : appPathMissing.app === 'claude'
         ? 'Claude Desktop'
-      : appPathMissing.app === 'vscode'
-        ? 'VS Code'
         : appPathMissing.app === 'windsurf'
           ? 'Windsurf'
-          : appPathMissing.app === 'kiro'
-            ? 'Kiro'
-            : appPathMissing.app === 'cursor'
+          : appPathMissing.app === 'cursor'
             ? 'Cursor'
-            : appPathMissing.app === 'codebuddy'
-              ? 'CodeBuddy'
-              : appPathMissing.app === 'codebuddy_cn'
-                ? 'CodeBuddy CN'
-              : appPathMissing.app === 'qoder'
-                ? 'Qoder'
-              : isTraePlatformApp(appPathMissing.app)
-                ? 'Trae'
-              : appPathMissing.app === 'workbuddy'
-                ? 'WorkBuddy'
-              : appPathMissing.app === 'antigravity' && appPathMissingRuntimeTarget === 'antigravity_ide'
-                ? 'Antigravity IDE'
-                : 'Antigravity'
+            : appPathMissingRuntimeTarget === 'antigravity_ide'
+              ? 'Antigravity IDE'
+              : 'Antigravity'
     : '';
 
   const appPathMissingPathLabel = appPathMissing
@@ -3598,23 +3223,11 @@ function MainApp() {
       ? t('quickSettings.codex.appPath', '启动路径')
       : appPathMissing.app === 'claude'
         ? t('quickSettings.claude.appPath', 'Claude Desktop 启动目标')
-      : appPathMissing.app === 'vscode'
-        ? t('quickSettings.githubCopilot.appPath', 'VS Code 路径')
         : appPathMissing.app === 'windsurf'
           ? t('quickSettings.windsurf.appPath', 'Windsurf 路径')
-          : appPathMissing.app === 'kiro'
-            ? t('quickSettings.kiro.appPath', 'Kiro 路径')
-            : appPathMissing.app === 'cursor'
+          : appPathMissing.app === 'cursor'
             ? t('quickSettings.cursor.appPath', 'Cursor 路径')
-            : appPathMissing.app === 'codebuddy'
-              ? t('quickSettings.codebuddy.appPath', 'CodeBuddy 路径')
-              : appPathMissing.app === 'codebuddy_cn'
-                ? t('quickSettings.codebuddyCn.appPath', 'CodeBuddy CN 路径')
-              : appPathMissing.app === 'qoder'
-                ? t('quickSettings.qoder.appPath', 'Qoder 路径')
-              : isTraePlatformApp(appPathMissing.app)
-                ? t('quickSettings.trae.appPath', 'Trae 路径')
-              : t('quickSettings.antigravity.appPath', '启动路径')
+            : t('quickSettings.antigravity.appPath', '启动路径')
     : t('quickSettings.antigravity.appPath', '启动路径');
   const appPathMissingBusy = appPathSetting || appPathDetecting;
   const claudeMultiInstanceNeedsExe =
@@ -3770,22 +3383,10 @@ function MainApp() {
                           : isWindowsPlatform()
                             ? t('appPath.missing.scanApps', '检测运行中应用')
                             : (
-                            appPathMissing.app === 'vscode'
-                              ? t('settings.general.vscodePathReset', '重置默认')
-                              : appPathMissing.app === 'windsurf'
+                            appPathMissing.app === 'windsurf'
                                 ? t('settings.general.windsurfPathReset', '重置默认')
-                                : appPathMissing.app === 'kiro'
-                                  ? t('settings.general.kiroPathReset', '重置默认')
-                                  : appPathMissing.app === 'cursor'
+                                : appPathMissing.app === 'cursor'
                                   ? t('settings.general.cursorPathReset', '重置默认')
-                                    : appPathMissing.app === 'codebuddy'
-                                      ? t('settings.general.codebuddyPathReset', '重置默认')
-                                    : appPathMissing.app === 'codebuddy_cn'
-                                      ? t('settings.general.codebuddyPathReset', '重置默认')
-                                    : appPathMissing.app === 'qoder'
-                                      ? t('settings.general.qoderPathReset', '重置默认')
-                                    : isTraePlatformApp(appPathMissing.app)
-                                      ? t('settings.general.traePathReset', '重置默认')
                                     : t('settings.general.codexPathReset', '重置默认')
                           )
                       }
@@ -3868,12 +3469,17 @@ function MainApp() {
         </div>
       )}
 
-      {/* 顶部固定拖拽区域 */}
-      <div
-        className="drag-region"
-        data-tauri-drag-region
-        onMouseDown={handleDragStart}
-      />
+      {/*
+        Keep the OS drag target away from interactive workspace controls. The
+        full-width title-bar layer used to sit above the compact Agent tabs.
+      */}
+      <div className="drag-region" aria-hidden="true">
+        <div
+          className="drag-region__handle"
+          data-tauri-drag-region
+          onMouseDown={handleDragStart}
+        />
+      </div>
 
       {/* 左侧悬浮导航 */}
       <SideNav
@@ -3887,7 +3493,6 @@ function MainApp() {
         updateProgress={updateAction.progress}
         onUpdateActionClick={handleQuickUpdateActionClick}
         updateRemindersEnabled={updateRemindersEnabled}
-        sponsorEntryVisible={sponsorEntryVisible}
         onOpenLogViewer={() => setShowLogViewer(true)}
       />
 
@@ -3920,11 +3525,6 @@ function MainApp() {
       </Suspense>
 
       <div className="main-wrapper" ref={mainWrapperRef}>
-        {topRightAdVisible && visibleTopCenterPromoAds.length > 0 ? (
-          <div className="app-global-promo-layer" aria-hidden={false}>
-            <TopCenterPromoBanner ads={visibleTopCenterPromoAds} reserveWhenEmpty={false} />
-          </div>
-        ) : null}
         {/* overview 现在是合并后的账号总览页面 */}
         <Suspense fallback={suspenseFallback}>
           <VisibleBootPage when={page === 'dashboard'}>

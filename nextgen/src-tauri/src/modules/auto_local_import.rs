@@ -579,61 +579,6 @@ fn platform_watchers() -> Vec<PlatformWatcher> {
             import_account: import_windsurf,
         },
         PlatformWatcher {
-            platform: "github_copilot",
-            peek_identity: peek_github_copilot_identity,
-            import_account: import_github_copilot,
-        },
-        PlatformWatcher {
-            platform: "kiro",
-            peek_identity: peek_kiro_identity,
-            import_account: import_kiro,
-        },
-        PlatformWatcher {
-            platform: "codebuddy",
-            peek_identity: peek_codebuddy_identity,
-            import_account: import_codebuddy,
-        },
-        PlatformWatcher {
-            platform: "codebuddy_cn",
-            peek_identity: peek_codebuddy_cn_identity,
-            import_account: import_codebuddy_cn,
-        },
-        PlatformWatcher {
-            platform: "workbuddy",
-            peek_identity: peek_workbuddy_identity,
-            import_account: import_workbuddy,
-        },
-        PlatformWatcher {
-            platform: "qoder",
-            peek_identity: peek_qoder_identity,
-            import_account: import_qoder,
-        },
-        PlatformWatcher {
-            platform: "trae",
-            peek_identity: || peek_trae_identity(trae_account::TraePlatformKind::Trae),
-            import_account: || import_trae(trae_account::TraePlatformKind::Trae),
-        },
-        PlatformWatcher {
-            platform: "trae_solo",
-            peek_identity: || peek_trae_identity(trae_account::TraePlatformKind::TraeSolo),
-            import_account: || import_trae(trae_account::TraePlatformKind::TraeSolo),
-        },
-        PlatformWatcher {
-            platform: "trae_cn",
-            peek_identity: || peek_trae_identity(trae_account::TraePlatformKind::TraeCn),
-            import_account: || import_trae(trae_account::TraePlatformKind::TraeCn),
-        },
-        PlatformWatcher {
-            platform: "trae_solo_cn",
-            peek_identity: || peek_trae_identity(trae_account::TraePlatformKind::TraeSoloCn),
-            import_account: || import_trae(trae_account::TraePlatformKind::TraeSoloCn),
-        },
-        PlatformWatcher {
-            platform: "zed",
-            peek_identity: peek_zed_identity,
-            import_account: import_zed,
-        },
-        PlatformWatcher {
             platform: "claude",
             peek_identity: peek_claude_identity,
             import_account: import_claude,
@@ -796,7 +741,20 @@ async fn run_watch_cycle_with_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::identity_key;
+    use super::{identity_key, platform_watchers};
+
+    #[test]
+    fn production_watchers_are_exactly_the_five_agents() {
+        let platforms = platform_watchers()
+            .into_iter()
+            .map(|watcher| watcher.platform)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            platforms,
+            vec!["antigravity", "codex", "cursor", "windsurf", "claude"]
+        );
+    }
 
     #[test]
     fn identity_key_joins_non_empty_parts() {

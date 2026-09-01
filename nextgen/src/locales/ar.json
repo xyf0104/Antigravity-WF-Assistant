@@ -77,7 +77,8 @@
         "sharedCreditPackage": "حزمة الرصيد المشتركة",
         "account": "الحساب",
         "createdAt": "وقت الإنشاء",
-        "userId": "معرف المستخدم"
+        "userId": "معرف المستخدم",
+        "teamName": "اسم الفريق"
       },
       "empty": {
         "title": "لا توجد حسابات"
@@ -785,8 +786,6 @@
       "floatingCardShowNowAction": "إظهار البطاقة العائمة",
       "dataDir": "مجلد البيانات",
       "dataDirDesc": "موقع تخزين الحسابات وملفات التكوين.",
-      "topRightAdVisible": "إظهار الترويج العلوي",
-      "topRightAdVisibleDesc": "إخفاء موضع الترويج العلوي داخل التطبيق. لا تتأثر صفحة الرعاة.",
       "opencodeTitle": "تكامل OpenCode",
       "opencodeRestart": "إعادة تشغيل OpenCode عند تبديل Codex",
       "opencodeRestartDesc": "مزامنة معلومات حساب Codex في OpenCode",
@@ -1243,7 +1242,7 @@
       "importModalDesc": "اختر ما تريد استيراده. ستُعامل نسخ الحسابات الاحتياطية القديمة كاستيراد للحسابات فقط.",
       "selectionTitle": "نطاق البيانات",
       "accountsOptionTitle": "بيانات الحسابات",
-      "accountsOptionDesc": "تتضمن نسخًا احتياطية قابلة للاستعادة لحسابات المنصات وتحافظ على توافق JSON القديم للحسابات. لا تتضمن بيانات اعتماد Grok CLI؛ استورد ملف auth.json الرسمي بشكل منفصل.",
+      "accountsOptionDesc": "يتضمن حسابات XIASS وحسابات Antigravity WF وموفري النماذج والإعدادات. لا يُنشأ ملف JSON المحتوي على بيانات الاعتماد إلا عند اختيار نسخ الحسابات احتياطيا، ولا تتم قراءة Codex auth.json أو تضمينه مطلقا.",
       "configOptionTitle": "بيانات الإعدادات",
       "configOptionDesc": "تتضمن إعدادات التطبيق والمجموعات والمثيلات ومهام الإيقاظ وإعدادات مزوّدي النماذج.",
       "exportConfirm": "تصدير البيانات",
@@ -4853,7 +4852,11 @@
     "subscription": "الاشتراك",
     "injectToCursor": "التبديل إلى Cursor",
     "quota": {
-      "onDemand": "حسب الطلب"
+      "onDemand": "حسب الطلب",
+      "totalUsage": "إجمالي الاستخدام",
+      "autoComposer": "التلقائي و Composer",
+      "apiUsage": "استخدام API",
+      "usageDetails": "تفاصيل الاستخدام"
     },
     "title": "إدارة حسابات Cursor",
     "instances": {
@@ -4891,7 +4894,8 @@
       "quotaFailed": "فشل الاستعلام عن الحصة ({{count}})",
       "cleanQuotaFailedAction": "حذف الحسابات التي فشل الاستعلام عن حصتها ({{count}})",
       "cleanQuotaFailedConfirm": "هل تريد حذف جميع الحسابات {{count}} التي فشل الاستعلام عن حصتها؟"
-    }
+    },
+    "authId": "معرّف التفويض"
   },
   "breakout": {
     "gameOver": "انتهت اللعبة",
@@ -5838,16 +5842,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "وسيط",
-    "title": "ترحيل APIKEY.FUN",
+    "title": "ترحيل XIASS API",
     "description": "وسيط XIASS الشريك الرسمي يوفر وصولًا مستقرًا ومفتوحًا وعالي الكفاءة من حيث التكلفة إلى واجهات API للنماذج الكبيرة. يدعم نماذج رئيسية مثل Claude وOpenAI وGemini، وهو مناسب للتكوين الموحد في Codex وGemini CLI وClaude Code وأدوات التطوير الأخرى. عند التسجيل عبر رابط XIASS الحصري، يمكنك الحصول على خصم دائم يصل إلى 5% على عمليات الشحن.",
     "register": "رابط تسجيل حصري",
     "docs": "الوثائق الرسمية",
     "viewNow": "اعرض الآن",
     "queryTitle": "حصة المفتاح",
-    "queryDesc": "أدخل API Key من APIKEY.FUN لفحص الحصة تلقائيًا.",
+    "queryDesc": "أدخل API Key من XIASS API لفحص الحصة تلقائيًا.",
     "keyNotSet": "لم يتم إدخال مفتاح",
     "apiKeyLabel": "مفتاح API",
-    "apiKeyPlaceholder": "الصق API Key الذي أنشأته في لوحة APIKEY.FUN",
+    "apiKeyPlaceholder": "الصق API Key الذي أنشأته في لوحة XIASS API",
     "hideKey": "إخفاء",
     "showKey": "إظهار",
     "endpointLabel": "نقطة الوصول",
@@ -5858,7 +5862,7 @@
     "saving": "جارٍ الكتابة",
     "saveSuccess": "تمت الكتابة إلى Codex Provider: {{name}}",
     "toolsTitle": "كتابة إعدادات العميل",
-    "toolsDesc": "يكتب ملفات إعدادات العميل المحلية مباشرة وفق وثائق APIKEY.FUN وبنية ملفات CC Switch.",
+    "toolsDesc": "يكتب ملفات إعدادات العميل المحلية مباشرة وفق وثائق XIASS API وبنية ملفات XIASS Tools.",
     "endpoint": {
       "global": "مسار عالمي",
       "globalDesc": "API Base الرسمي الافتراضي لمعظم بيئات الشبكة.",
@@ -5954,7 +5958,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "تمت تعبئة إعدادات APIKEY.FUN. أكّد الإضافة إلى Claude."
+      "claudeDesktopReady": "تمت تعبئة إعدادات XIASS API. أكّد الإضافة إلى Claude."
     },
     "copyKey": "Copy Key​",
     "clearKey": "Clear input​"
@@ -6130,7 +6134,7 @@
     "apiKey": {
       "desc": "احفظ API Key الخاص بـ Claude CLI كبيانات اعتماد مستقلة. عند التبديل أو تشغيل CLI تُكتب قيم env الخاصة بالمزود في Claude Code settings.json ولا تُكتب حالة تسجيل دخول Claude.",
       "nameLabel": "اسم الحساب",
-      "namePlaceholder": "اختياري، مثل APIKEY.FUN",
+      "namePlaceholder": "اختياري، مثل XIASS API",
       "keyLabel": "مفتاح API",
       "placeholder": "الصق API Key للمزوّد",
       "hide": "إخفاء API Key",

@@ -228,6 +228,23 @@ func TestDiagnosticLogPathsRejectUnsafeEntries(t *testing.T) {
 	}
 }
 
+func TestCollectLocalLogsReturnsOnlyBoundedRedactedHelperFiles(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "Users", "private-user")
+	writeDiagnosticFixture(t, filepath.Join(dir, applicationLogName), "Authorization: Bearer private-token\nhome="+home)
+	writeDiagnosticFixture(t, filepath.Join(dir, "upstream_accounts.json"), `{"apiKey":"must-not-appear"}`)
+	logs, err := CollectLocalLogs(dir, home)
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("collect local logs: %#v %v", logs, err)
+	}
+	combined := logs[0].Name + logs[0].Content
+	for _, forbidden := range []string{"private-token", "must-not-appear", home, "upstream_accounts"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("collected helper log leaked %q", forbidden)
+		}
+	}
+}
+
 func TestOpenApplicationLogCreatesOnlyARegularNewFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, applicationLogName)

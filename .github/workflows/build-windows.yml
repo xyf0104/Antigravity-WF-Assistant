@@ -75,6 +75,42 @@ jobs:
           $nsis = @(Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle -Recurse -Filter '*-setup.exe')
           if ($msi.Count -ne 1) { throw "Expected one MSI, found $($msi.Count)" }
           if ($nsis.Count -ne 1) { throw "Expected one NSIS installer, found $($nsis.Count)" }
+          $licenseNames = @(
+            'CC-BY-NC-SA-4.0-LEGALCODE.txt',
+            'XIASS-Tools-MIT.txt',
+            'XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt',
+            'ORIGIN_AND_LICENSE.md',
+            'THIRD_PARTY_NOTICES.md',
+            'Tauri-APACHE-2.0.txt',
+            'Tauri-MIT.txt',
+            'jsQR-APACHE-2.0.txt',
+            'Lucide-ISC-and-MIT.txt',
+            'protobufjs-BSD-3-Clause.txt',
+            'React-MIT.txt',
+            'CLIProxyAPI-MIT.txt'
+          )
+          $inspectionRoot = Join-Path $env:RUNNER_TEMP ("xiass-tools-package-inspection-" + [guid]::NewGuid().ToString('N'))
+          $msiRoot = Join-Path $inspectionRoot 'msi'
+          $nsisRoot = Join-Path $inspectionRoot 'nsis'
+          New-Item -ItemType Directory -Path $msiRoot, $nsisRoot | Out-Null
+          try {
+            $msiExtract = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', $msi[0].FullName, '/qn', "TARGETDIR=$msiRoot") -Wait -PassThru
+            if ($msiExtract.ExitCode -ne 0) { throw "MSI administrative extraction failed with code $($msiExtract.ExitCode)" }
+            $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+            & $sevenZip x -y "-o$nsisRoot" $nsis[0].FullName | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed with code $LASTEXITCODE" }
+            foreach ($packageRoot in @($msiRoot, $nsisRoot)) {
+              foreach ($licenseName in $licenseNames) {
+                $matches = @(Get-ChildItem $packageRoot -Recurse -File -Filter $licenseName -ErrorAction SilentlyContinue)
+                if ($matches.Count -ne 1 -or $matches[0].Length -le 0) {
+                  throw "Packaged license resource missing or empty: package=$packageRoot file=$licenseName"
+                }
+              }
+            }
+          }
+          finally {
+            Remove-Item -LiteralPath $inspectionRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Smoke-test packaged Windows app startup
         shell: pwsh
@@ -123,9 +159,23 @@ jobs:
           finally {
             $env:XIASS_TOOLS_DATA_DIR = $previousDataDir
             if ($process -and -not $process.HasExited) {
-              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
               $process.WaitForExit()
             }
+            Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Smoke-test MSI and Setup installation lifecycle
+        shell: pwsh
+        run: |
+          $smokeRoot = Join-Path $env:RUNNER_TEMP ("xiass-tools-installer-smoke-" + [guid]::NewGuid().ToString('N'))
+          try {
+            & ../.github/scripts/smoke-windows-installers.ps1 `
+              -BundleRoot target/x86_64-pc-windows-msvc/release/bundle `
+              -SmokeRoot $smokeRoot `
+              -BridgeSmokeScript (Resolve-Path 'scripts/release/smoke_wf_bridge_sidecar.mjs').Path
+          }
+          finally {
             Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
           }
 

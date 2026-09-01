@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import packageJson from "../package.json";
 import { initI18n } from "./i18n";
 import { AppRuntimeGuard } from "./components/AppRuntimeGuard";
 import {
@@ -10,6 +11,8 @@ import {
 } from "./utils/errorReporter";
 import { setBootSplashStage } from "./utils/bootSplash";
 import { hydrateUiPreferences } from "./utils/uiPreferences";
+
+const BROWSER_PREVIEW_APP_VERSION = packageJson.version;
 
 function FrontendReadyMarker() {
   React.useEffect(() => {
@@ -99,7 +102,33 @@ async function installBrowserPreviewRuntime(): Promise<void> {
   mockWindows("main");
   mockIPC((command, payload) => {
     if (command === "plugin:app|version") {
-      return "1.7.0";
+      return BROWSER_PREVIEW_APP_VERSION;
+    }
+    if (command === "load_legal_notices") {
+      return {
+        notices: [
+          {
+            id: "origin_and_license",
+            title: "来源与许可说明",
+            content: "浏览器预览不会读取安装包资源。已安装的 XIASS Tools 会在此离线显示完整来源与许可说明。",
+          },
+          {
+            id: "third_party_notices",
+            title: "第三方声明",
+            content: "已安装的 XIASS Tools 会在此离线显示完整第三方组件声明。",
+          },
+          {
+            id: "cc_by_nc_sa_4_0",
+            title: "CC BY-NC-SA 4.0 法律文本",
+            content: "已安装的 XIASS Tools 会在此离线显示完整法律文本。",
+          },
+          {
+            id: "xiass_nextgen_license",
+            title: "XIASS Tools Nextgen 许可",
+            content: "已安装的 XIASS Tools 会在此离线显示完整许可文本。",
+          },
+        ],
+      };
     }
     if (command === "get_available_terminals") {
       return ["system", "Terminal", "iTerm2", "Warp"];
@@ -192,12 +221,6 @@ async function installBrowserPreviewRuntime(): Promise<void> {
     }
     if (command === "list_ssh_servers") {
       return { selected_server_id: null, servers: [] };
-    }
-    if (command === "announcement_get_sponsor_module" || command === "announcement_force_refresh_sponsor_module") {
-      return { sponsorModule: null };
-    }
-    if (command === "announcement_get_top_right_ad" || command === "announcement_force_refresh_top_right_ad") {
-      return { ad: null, ads: [] };
     }
     if (command === "announcement_get_state" || command === "announcement_force_refresh") {
       return { announcements: [], unreadIds: [], popupAnnouncement: null };

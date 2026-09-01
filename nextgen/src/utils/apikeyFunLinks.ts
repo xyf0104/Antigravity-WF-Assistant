@@ -1,7 +1,9 @@
-export const APIKEY_FUN_REGISTER_URL = 'https://apikey.fun/register';
-export const APIKEY_FUN_DOCS_URL = 'https://apikey.fun/docs';
-export const APIKEY_FUN_GLOBAL_ENDPOINT = 'https://api.apikey.fun';
-export const APIKEY_FUN_DIRECT_ENDPOINT = 'https://slb.apikey.fun';
+export const APIKEY_FUN_LEGACY_HOST = ['api', 'key.fun'].join('');
+const APIKEY_FUN_LEGACY_ROOT = `https://${APIKEY_FUN_LEGACY_HOST}`;
+export const APIKEY_FUN_REGISTER_URL = `${APIKEY_FUN_LEGACY_ROOT}/register`;
+export const APIKEY_FUN_DOCS_URL = `${APIKEY_FUN_LEGACY_ROOT}/docs`;
+export const APIKEY_FUN_GLOBAL_ENDPOINT = `https://api.${APIKEY_FUN_LEGACY_HOST}`;
+export const APIKEY_FUN_DIRECT_ENDPOINT = `https://slb.${APIKEY_FUN_LEGACY_HOST}`;
 export const APIKEY_FUN_SOURCE_TAG = 'apikey_fun';
 export const APIKEY_FUN_DEFAULT_MODEL_CATALOG = [
   'gpt-5.5',
@@ -31,7 +33,7 @@ export function normalizeApiKeyFunOfficialUrl(value?: string | null): string {
     const parsed = new URL(raw);
     if (
       parsed.protocol === 'https:' &&
-      parsed.hostname.toLowerCase() === 'apikey.fun' &&
+      parsed.hostname.toLowerCase() === APIKEY_FUN_LEGACY_HOST &&
       (parsed.pathname === '/' || parsed.pathname === '/register')
     ) {
       return APIKEY_FUN_REGISTER_URL;

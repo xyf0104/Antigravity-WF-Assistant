@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.7.2] - 2026-09-01
+
+### Added
+
+- Added resilient TOTP QR migration for standard and Google Authenticator migration payloads on macOS and Windows, including staged multi-image import and deduplication.
+- Added a recoverable Antigravity OAuth flow with loopback callback, PKCE, restart recovery and manual callback URL fallback.
+
+### Changed
+
+- Kept the original Cockpit sidebar, account header, platform switcher, tab strip and full-page scroll hierarchy as the common shell for every Agent; XIASS capabilities are integrated within the corresponding Agent page.
+- Synchronized the embedded macOS and Windows assistant version sources with the desktop release version.
+
+### Fixed
+
+- Packaged the macOS app and both local sidecars as Universal binaries and added a DMG installation/startup smoke check.
+- Kept the embedded workspace first frame aligned with the selected theme and preserved a single main XIASS scroll surface.
+
 ## [1.7.1] - 2026-08-31
 
 ### Added
@@ -34,7 +51,7 @@
 ### Changed
 
 - Rebranded the desktop application, data directories and public service defaults as XIASS Tools.
-- Preserved read-only compatibility with legacy Cockpit account data, shortcuts, extension storage and protocol identifiers.
+- Preserved read-only compatibility with account data, shortcuts, extension storage and protocol identifiers from earlier supported releases.
 
 ### Fixed
 

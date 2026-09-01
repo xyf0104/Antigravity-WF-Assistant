@@ -5,6 +5,7 @@ include!("claude_account_core_storage.rs");
 include!("claude_account_oauth_provider.rs");
 include!("claude_account_desktop_profile.rs");
 include!("claude_account_desktop_auth.rs");
+include!("claude_account_embedded_projection.rs");
 
 #[cfg(test)]
 mod tests {

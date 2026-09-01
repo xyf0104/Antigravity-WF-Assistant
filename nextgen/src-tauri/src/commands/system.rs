@@ -18,6 +18,15 @@ pub fn save_ui_preferences(
     modules::ui_preferences::save_ui_preferences(values)
 }
 
+/// Returns the fixed, offline legal-notice catalog bundled with XIASS Tools.
+/// This command deliberately accepts no file name or path from the frontend.
+#[tauri::command]
+pub fn load_legal_notices(
+    app: tauri::AppHandle,
+) -> Result<modules::legal_notices::LegalNoticeCollection, String> {
+    modules::legal_notices::load_bundled_legal_notices(&app)
+}
+
 #[cfg(test)]
 mod tests {
     include!("system_tests.rs");

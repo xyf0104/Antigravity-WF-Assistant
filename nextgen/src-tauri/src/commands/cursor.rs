@@ -148,14 +148,20 @@ pub fn cursor_oauth_login_start() -> Result<cursor_oauth::CursorOAuthStartRespon
 }
 
 #[tauri::command]
+pub fn cursor_oauth_login_peek() -> Option<cursor_oauth::CursorOAuthStartResponse> {
+    let pending = cursor_oauth::peek_pending_login();
+    if pending.is_some() {
+        logger::log_info("[Cursor Command] OAuth 恢复会话可用");
+    }
+    pending
+}
+
+#[tauri::command]
 pub async fn cursor_oauth_login_complete(
     app: AppHandle,
     login_id: String,
 ) -> Result<CursorAccount, String> {
-    logger::log_info(&format!(
-        "[Cursor Command] OAuth 等待完成: login_id={}",
-        login_id
-    ));
+    logger::log_info("[Cursor Command] OAuth 等待完成");
     let payload = cursor_oauth::complete_login(&login_id).await?;
     let mut account = cursor_account::upsert_account(payload)?;
 
@@ -167,19 +173,13 @@ pub async fn cursor_oauth_login_complete(
     }
 
     let _ = crate::modules::tray::update_tray_menu(&app);
-    logger::log_info(&format!(
-        "[Cursor Command] OAuth 登录完成: account_id={}, email={}",
-        account.id, account.email
-    ));
+    logger::log_info("[Cursor Command] OAuth 登录完成");
     Ok(account)
 }
 
 #[tauri::command]
 pub fn cursor_oauth_login_cancel(login_id: Option<String>) -> Result<(), String> {
-    logger::log_info(&format!(
-        "[Cursor Command] OAuth 取消: login_id={}",
-        login_id.as_deref().unwrap_or("<none>")
-    ));
+    logger::log_info("[Cursor Command] OAuth 取消");
     cursor_oauth::cancel_login(login_id.as_deref())
 }
 

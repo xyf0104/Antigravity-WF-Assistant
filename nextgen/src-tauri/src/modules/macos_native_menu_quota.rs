@@ -138,6 +138,7 @@
         }
 
         let platform = PlatformId::from_str(config.menu_bar_quota_platform.trim())
+            .filter(|platform| platform.is_production_agent())
             .unwrap_or(PlatformId::Codex);
         let show_prefix = config.menu_bar_show_account_prefix;
 
@@ -306,6 +307,9 @@
                 let Some(platform) = PlatformId::from_str(raw_platform.trim()) else {
                     continue;
                 };
+                if !platform.is_production_agent() {
+                    continue;
+                }
                 if visible_set.contains(&platform) && used_platforms.insert(platform) {
                     ordered.push(platform);
                 }
@@ -329,7 +333,7 @@
             let Some(platform) = PlatformId::from_str(raw.trim()) else {
                 continue;
             };
-            if seen.insert(platform) {
+            if platform.is_production_agent() && seen.insert(platform) {
                 result.push(platform);
             }
         }
@@ -352,7 +356,7 @@
 
     fn parse_platform_entry_id(raw: &str) -> Option<PlatformId> {
         let value = raw.strip_prefix("platform:")?;
-        PlatformId::from_str(value.trim())
+        PlatformId::from_str(value.trim()).filter(|platform| platform.is_production_agent())
     }
 
     fn parse_group_entry_id(raw: &str) -> Option<String> {
@@ -375,6 +379,7 @@
         // 开启菜单栏额度时：右键默认选中配置的平台，并展示该平台当前账号/额度。
         let preferred_platform = if config.menu_bar_quota_enabled {
             PlatformId::from_str(config.menu_bar_quota_platform.trim())
+                .filter(|platform| platform.is_production_agent())
         } else {
             None
         };
@@ -511,7 +516,10 @@
             return;
         };
         let raw_platform_id = read_optional_c_string(platform_id);
-        let platform = raw_platform_id.as_deref().and_then(PlatformId::from_str);
+        let platform = raw_platform_id
+            .as_deref()
+            .and_then(PlatformId::from_str)
+            .filter(|platform| platform.is_production_agent());
         let account_id = read_optional_c_string(account_id);
 
         match action.as_str() {

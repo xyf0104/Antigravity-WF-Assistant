@@ -73,17 +73,11 @@ import {
 } from '../types/codex';
 import { isDeepSeekAccount } from '../utils/codexDeepSeekAccess';
 import './DashboardPage.css';
-import apiKeyFunIcon from '../assets/icons/apikey-fun.png';
 import { RobotIcon } from '../components/icons/RobotIcon';
 import { CodexIcon } from '../components/icons/CodexIcon';
 import { WindsurfIcon } from '../components/icons/WindsurfIcon';
-import { KiroIcon } from '../components/icons/KiroIcon';
 import { CursorIcon } from '../components/icons/CursorIcon';
 import { ClaudeIcon } from '../components/icons/ClaudeIcon';
-import { CodebuddyIcon } from '../components/icons/CodebuddyIcon';
-import { QoderIcon } from '../components/icons/QoderIcon';
-import { ZcodeIcon } from '../components/icons/ZcodeIcon';
-import { WorkbuddyIcon } from '../components/icons/WorkbuddyIcon';
 import {
   isAccountPlatform,
   isMenuVisiblePlatform,
@@ -3046,7 +3040,7 @@ export function DashboardPage({
         <div className="main-card windsurf-card" key={platformId}>
           <div className="main-card-header">
             <div className="header-title">
-              <KiroIcon style={{ width: 18, height: 18 }} />
+              {renderPlatformIcon(platformId, 18)}
               <h3>Kiro</h3>
             </div>
             <div className="header-action-group">
@@ -3185,7 +3179,7 @@ export function DashboardPage({
         <div className="main-card windsurf-card" key={platformId}>
           <div className="main-card-header">
             <div className="header-title">
-              <CodebuddyIcon style={{ width: 18, height: 18 }} />
+              {renderPlatformIcon(platformId, 18)}
               <h3>{getPlatformLabel(platformId, t)}</h3>
             </div>
             <div className="header-action-group">
@@ -3232,7 +3226,7 @@ export function DashboardPage({
         <div className="main-card windsurf-card" key={platformId}>
           <div className="main-card-header">
             <div className="header-title">
-              <CodebuddyIcon style={{ width: 18, height: 18 }} />
+              {renderPlatformIcon(platformId, 18)}
               <h3>{getPlatformLabel(platformId, t)}</h3>
             </div>
             <div className="header-action-group">
@@ -3279,7 +3273,7 @@ export function DashboardPage({
         <div className="main-card windsurf-card" key={platformId}>
           <div className="main-card-header">
             <div className="header-title">
-              <QoderIcon style={{ width: 18, height: 18 }} />
+              {renderPlatformIcon(platformId, 18)}
               <h3>{getPlatformLabel(platformId, t)}</h3>
             </div>
             <div className="header-action-group">
@@ -3326,7 +3320,7 @@ export function DashboardPage({
         <div className="main-card windsurf-card" key={platformId}>
           <div className="main-card-header">
             <div className="header-title">
-              <ZcodeIcon size={18} />
+              {renderPlatformIcon(platformId, 18)}
               <h3>{getPlatformLabel(platformId, t)}</h3>
             </div>
             <div className="header-action-group">
@@ -3428,7 +3422,7 @@ export function DashboardPage({
         >
           <div className="main-card-header">
             <div className="header-title">
-              <WorkbuddyIcon style={{ width: 18, height: 18 }} />
+              {renderPlatformIcon(platformId, 18)}
               <h3>{getPlatformLabel(platformId, t)}</h3>
             </div>
             <div className="header-action-group">
@@ -3553,22 +3547,7 @@ export function DashboardPage({
 
         {visibleDashboardEntryOrder.map((entryId) => {
           if (entryId === API_RELAY_LAYOUT_ENTRY_ID) {
-            return (
-              <button
-                className="stat-card stat-card-button"
-                key="api-relay"
-                onClick={() => onNavigate('api-relay')}
-                title={t('dashboard.apiRelay.openLocalConfig', '打开本地配置页')}
-              >
-                <div className="stat-icon-bg info">
-                  <img src={apiKeyFunIcon} alt="" className="dashboard-api-relay-stat-icon" />
-                </div>
-                <div className="stat-info">
-                  <span className="stat-label">{t('nav.apiRelay', '中转站')}</span>
-                  <span className="stat-value">1</span>
-                </div>
-              </button>
-            );
+            return null;
           }
 
           const entryPlatformIds = resolveEntryPlatformIds(entryId, platformGroups).filter(
@@ -3629,8 +3608,8 @@ export function DashboardPage({
               <button
                 type="button"
                 className={`stat-icon-bg ${iconClass} stat-icon-trigger`}
-                aria-label={t('dashboard.interactiveIcon', '互动图标')}
-                title={t('dashboard.interactiveIcon', '互动图标')}
+                aria-label={`${label} · ${t('dashboard.interactiveIcon', '互动图标')}`}
+                title={`${label} · ${t('dashboard.interactiveIcon', '互动图标')}`}
                 onClick={onEasterEggTriggerClick}
               >
                 {group?.iconKind === 'custom' && group.iconCustomDataUrl ? (

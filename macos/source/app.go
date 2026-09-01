@@ -33,9 +33,25 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+const (
+	embeddedUpdatesDisabledMessage = "嵌入 XIASS Tools 时，更新由主应用统一管理。"
+	embeddedHostManagedVersion     = "由宿主 XIASS Tools 管理"
+)
+
+// reportedVersion is intentionally presentation-only. The bridge is shipped
+// inside XIASS Tools, so its embedded mode must never advertise a separately
+// updatable helper version.
+func (a *App) reportedVersion() string {
+	if a != nil && a.embeddedMode {
+		return embeddedHostManagedVersion
+	}
+	return updater.CurrentVersion
+}
+
 // App holds all Wails-exposed methods.
 type App struct {
 	ctx                            context.Context
+	embeddedMode                   bool
 	storageDir                     string
 	permissions                    *permissions.Manager
 	totpVault                      *totp.Vault
@@ -69,6 +85,7 @@ type App struct {
 	codexDesktopControl            codexDesktopControlService
 	codexDesktopOperation          sync.Mutex
 	eventSink                      func(string, any)
+	nativeActions                  nativeActionExecutor
 	exitRequested                  atomic.Bool
 }
 
@@ -208,6 +225,9 @@ func (a *App) emitRuntimeEvent(name string, payload any) {
 		a.eventSink(name, payload)
 		return
 	}
+	if a.embeddedMode {
+		return
+	}
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, name, payload)
 	}
@@ -268,6 +288,9 @@ func (a *App) requestQuit() {
 // OnShutdown hook; keeping this cleanup here therefore makes explicit quits
 // safe on that fallback path as well.
 func (a *App) releaseExitResources() {
+	if a.nativeActions != nil {
+		a.nativeActions.Close()
+	}
 	a.stopOAuthLoopbacks()
 	a.clearCursorProjectMCPSelections()
 	a.closeCodexKeySelections()
@@ -289,7 +312,7 @@ func (a *App) ExportDiagnosticLogs() Result {
 		return Result{OK: false, Message: "助手尚未完成启动，请稍后再试。"}
 	}
 	filename := "XIASS-Tools-Diagnostics-" + time.Now().Format("20060102-150405") + ".zip"
-	destination, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+	destination, err := a.saveFileDialog(runtime.SaveDialogOptions{
 		Title:           "导出诊断日志",
 		DefaultFilename: filename,
 		Filters: []runtime.FileFilter{{
@@ -312,7 +335,7 @@ func (a *App) ExportDiagnosticLogs() Result {
 		"historySync": a.GetHistorySyncStatus(),
 	}
 	if err := diagnostics.Export(destination, a.storageDir, diagnostics.Options{
-		Version: updater.CurrentVersion, Snapshot: snapshot, HomeDir: home,
+		Version: a.reportedVersion(), Snapshot: snapshot, HomeDir: home,
 	}); err != nil {
 		return Result{OK: false, Message: "导出诊断日志失败: " + err.Error()}
 	}
@@ -461,6 +484,12 @@ func (a *App) SaveAppSettings(settings storage.AppSettings) Result {
 }
 
 func (a *App) CheckForUpdates() UpdateCheckResult {
+	if a.embeddedMode {
+		return UpdateCheckResult{
+			Message: embeddedUpdatesDisabledMessage,
+			Info:    updater.Info{CurrentVersion: embeddedHostManagedVersion},
+		}
+	}
 	settings, err := storage.LoadAppSettings()
 	if err != nil {
 		settings = storage.DefaultAppSettings()
@@ -488,6 +517,9 @@ func (a *App) CheckForUpdates() UpdateCheckResult {
 // promise, so closing Settings or losing the network never leaves a forever
 // loading state behind.
 func (a *App) CancelUpdateCheck() Result {
+	if a.embeddedMode {
+		return Result{OK: false, Message: embeddedUpdatesDisabledMessage}
+	}
 	a.updateCheckMu.Lock()
 	cancel := a.updateCheckCancel
 	a.updateCheckMu.Unlock()
@@ -559,6 +591,9 @@ func cachedUpdateCheckMessage(info updater.Info) string {
 }
 
 func (a *App) SkipUpdateVersion(version string) Result {
+	if a.embeddedMode {
+		return Result{OK: false, Message: embeddedUpdatesDisabledMessage}
+	}
 	settings, err := storage.LoadAppSettings()
 	if err != nil {
 		settings = storage.DefaultAppSettings()
@@ -574,6 +609,9 @@ func (a *App) SkipUpdateVersion(version string) Result {
 // updater package, validates its SHA256 manifest, then opens the native
 // installer. Elevated installation remains a visible OS-owned action.
 func (a *App) InstallLatestUpdate() Result {
+	if a.embeddedMode {
+		return Result{OK: false, Message: embeddedUpdatesDisabledMessage}
+	}
 	if a.ctx == nil {
 		return Result{OK: false, Message: "助手尚未完成启动，请稍后再试。"}
 	}
@@ -1138,12 +1176,14 @@ func (a *App) StartOAuthAuthorization(draft storage.UpstreamAccount) OAuthAuthor
 		flow: flow, account: draft, state: authorization.State, expires: authorization.ExpiresAt,
 	}
 	a.oauthMu.Unlock()
-	if a.ctx != nil {
-		runtime.BrowserOpenURL(a.ctx, authorization.URL)
+	openError := a.openExternalURL(authorization.URL)
+	message := "已在浏览器打开授权页；授权后请粘贴完整回调 URL 或授权码。"
+	if openError != nil {
+		message = "无法自动打开授权页，请复制授权链接到浏览器后继续。"
 	}
 	return OAuthAuthorizationResult{
 		OK:                       true,
-		Message:                  "已在浏览器打开授权页；授权后请粘贴完整回调 URL 或授权码。",
+		Message:                  message,
 		SessionID:                authorization.SessionID,
 		AuthorizationURL:         authorization.URL,
 		RedirectURI:              draft.OAuth.RedirectURI,

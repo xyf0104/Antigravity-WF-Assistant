@@ -27,6 +27,10 @@ var modelIDIndexKeys = map[string]bool{
 	"availableModelIds":   true,
 	"allowedModelIds":     true,
 	"allowlistedModelIds": true,
+	// Present in newer FetchAvailableModels responses. This is not a generic
+	// picker index: only models that are direct image backends belong here.
+	// Older Antigravity versions omit this field and continue unchanged.
+	"imageGenerationModelIds": true,
 }
 
 type modelResponseRoot struct {
@@ -273,6 +277,7 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 		nativeImageModelIDs: collectNativeImageGenerationModelIDs(roots),
 	}
 	slugs := make([]string, 0, len(models))
+	imageGenerationSlugs := make([]string, 0, len(models))
 	for _, model := range models {
 		key := modelPlaceholderKey(model)
 		if assignments[key] == "" || slugAssignments[key] == "" {
@@ -280,6 +285,14 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 		}
 		slug := slugAssignments[key]
 		slugs = append(slugs, slug)
+		// A custom chat model can advertise image generation because the
+		// trajectory router selects a configured direct image model for its
+		// turn. imageGenerationModelIds is different: Antigravity treats it as
+		// an execution-model directory, so putting a chat model there can make
+		// the IDE invoke the chat endpoint as an image backend.
+		if isOpenAICompatibleImageProvider(model.Provider) && isDirectImageModelName(model.ExternalModelName) {
+			imageGenerationSlugs = append(imageGenerationSlugs, slug)
+		}
 		summary.customNames = append(summary.customNames, modelDisplayName(model))
 		summary.customSlugs = append(summary.customSlugs, slug)
 	}
@@ -357,11 +370,7 @@ func injectCustomModels(parsed map[string]any, models []storage.CustomModel) mod
 		return summary
 	}
 	for _, root := range indexedRoots {
-		// imageGenerationModelIds is a global execution-model directory, not a
-		// general picker visibility index. Keep Google's native list byte-for-byte
-		// intact; custom chat models advertise image capability on their own entry
-		// and the trajectory router selects gpt-image-2 only for custom turns.
-		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs)...)
+		summary.indexPaths = append(summary.indexPaths, addModelIndexes(root.value, root.path, slugs, imageGenerationSlugs)...)
 	}
 	summary.indexPaths = uniqueStrings(summary.indexPaths)
 	return summary
@@ -380,7 +389,7 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-func addModelIndexes(parsed map[string]any, rootPath string, modelIDs []string) []string {
+func addModelIndexes(parsed map[string]any, rootPath string, modelIDs, imageGenerationModelIDs []string) []string {
 	if len(modelIDs) == 0 {
 		return nil
 	}
@@ -412,12 +421,44 @@ func addModelIndexes(parsed map[string]any, rootPath string, modelIDs []string) 
 		if !exists {
 			continue
 		}
-		if updated, changed := prependModelIDs(value, modelIDs); changed {
+		ids := modelIDs
+		if key == "imageGenerationModelIds" {
+			ids = imageGenerationModelIDs
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		var updated any
+		var changed bool
+		if key == "imageGenerationModelIds" {
+			updated, changed = prependImageGenerationModelIDs(value, ids)
+		} else {
+			updated, changed = prependModelIDs(value, ids)
+		}
+		if changed {
 			parsed[key] = updated
 			paths = append(paths, modelPath(rootPath, key))
 		}
 	}
 	return paths
+}
+
+// prependImageGenerationModelIDs accepts only the known flat string-list
+// structure. Unlike ordinary picker indexes, this field is an execution
+// directory; recursively modifying a map or mixed proto value risks routing a
+// native Gemini image request through a custom chat model. Unknown variants
+// are intentionally left byte-for-byte intact.
+func prependImageGenerationModelIDs(value any, modelIDs []string) (any, bool) {
+	ids, ok := value.([]any)
+	if !ok {
+		return value, false
+	}
+	for _, item := range ids {
+		if _, ok := item.(string); !ok {
+			return value, false
+		}
+	}
+	return prependUniqueModelIDs(ids, modelIDs), true
 }
 
 func addModelSortIDs(raw any, modelIDs []string) (any, bool) {
@@ -566,6 +607,12 @@ func responseIndexesModel(roots []modelResponseRoot, slug, placeholder string) b
 	for _, root := range roots {
 		for key, value := range root.value {
 			lower := strings.ToLower(key)
+			// imageGenerationModelIds is an execution-model directory, not a
+			// visibility index for the agent picker. It must never make an
+			// otherwise unknown models response look compatible enough to inject.
+			if lower == "imagegenerationmodelids" {
+				continue
+			}
 			if strings.HasSuffix(lower, "modelids") || strings.HasSuffix(lower, "model_ids") || key == "agentModelSorts" || key == "battleModeModelSorts" {
 				if containsModelReference(value, wanted) {
 					return true

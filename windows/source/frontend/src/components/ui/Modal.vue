@@ -86,7 +86,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <Transition name="mask">
+    <Transition name="mask" :css="!inline">
       <div
         v-if="open"
         class="mask"
@@ -95,7 +95,7 @@ onBeforeUnmount(() => {
         @mousedown.self.prevent
         @click.self="handleBackdropClick"
       >
-        <Transition name="sheet" appear>
+        <Transition name="sheet" appear :css="!inline">
           <div ref="sheetRef" class="sheet" :class="{ wide, inline }" role="dialog" :aria-modal="inline ? undefined : 'true'" :aria-label="title" tabindex="-1" @click.stop>
             <header class="head">
               <div class="t-headline">{{ title }}</div>
@@ -159,29 +159,35 @@ onBeforeUnmount(() => {
 }
 
 .mask.inline {
-  position: fixed;
-  inset: 0;
+  /* An inline sheet is embedded in the XIASS desktop workspace. Keep it in
+     document flow so the host owns one continuous scrollbar for the page. */
+  position: static;
+  inset: auto;
   display: block;
   width: 100%;
-  height: 100%;
-  min-height: 100vh;
+  height: auto;
+  min-height: 0;
   padding: 0;
-  background: var(--embedded-workspace-backdrop, #03161d);
+  background: transparent;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+  isolation: auto;
 }
 
 .sheet.inline {
   width: 100%;
   max-width: none;
-  height: 100vh;
+  height: auto;
+  min-height: 0;
   max-height: none;
   border: 0;
   border-radius: 0;
-  background: var(--embedded-workspace-surface, #03161d);
+  background: transparent;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  box-shadow: inset 0 1px 0 rgba(236, 255, 255, 0.16);
+  box-shadow: none;
+  overflow: visible;
+  display: block;
 }
 
 .sheet.inline > .head {
@@ -190,9 +196,9 @@ onBeforeUnmount(() => {
 
 .sheet.inline > .body {
   padding: 24px clamp(18px, 2.4vw, 30px) 32px;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  overflow: visible;
+  overscroll-behavior: auto;
+  scrollbar-gutter: auto;
 }
 
 .head {

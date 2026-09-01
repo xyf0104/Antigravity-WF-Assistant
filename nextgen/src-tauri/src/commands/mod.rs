@@ -3,6 +3,7 @@ pub mod announcement;
 pub mod antigravity_legacy_instance;
 pub mod claude;
 pub mod claude_instance;
+pub mod claude_mcp;
 pub mod codebuddy;
 pub mod codebuddy_cn;
 pub mod codebuddy_cn_instance;

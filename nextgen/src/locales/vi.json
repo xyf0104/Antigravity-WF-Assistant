@@ -77,7 +77,8 @@
         "sharedCreditPackage": "Gói credit dùng chung",
         "account": "Tài khoản",
         "createdAt": "Thời gian tạo",
-        "userId": "ID người dùng"
+        "userId": "ID người dùng",
+        "teamName": "Tên nhóm"
       },
       "empty": {
         "title": "Chưa có tài khoản"
@@ -742,8 +743,6 @@
       "floatingCardShowNowAction": "Hiển thị thẻ nổi",
       "dataDir": "Thư mục dữ liệu",
       "dataDirDesc": "Vị trí lưu trữ tài khoản và cấu hình.",
-      "topRightAdVisible": "Hiện quảng bá trên cùng",
-      "topRightAdVisibleDesc": "Ẩn vị trí quảng bá trên cùng trong ứng dụng. Trang Nhà tài trợ không bị ảnh hưởng.",
       "opencodeTitle": "Tích hợp OpenCode",
       "opencodeRestart": "Khởi động lại OpenCode khi chuyển Codex",
       "opencodeRestartDesc": "Đồng bộ thông tin tài khoản Codex trong OpenCode",
@@ -1196,7 +1195,7 @@
       "importModalDesc": "Chọn nội dung cần nhập. Bản sao lưu tài khoản kiểu cũ sẽ được xử lý như chỉ nhập dữ liệu tài khoản.",
       "selectionTitle": "Phạm vi dữ liệu",
       "accountsOptionTitle": "Dữ liệu tài khoản",
-      "accountsOptionDesc": "Bao gồm bản sao lưu tài khoản nền tảng có thể khôi phục và vẫn tương thích với JSON cũ. Thông tin đăng nhập Grok CLI không được bao gồm; hãy nhập riêng tệp auth.json chính thức.",
+      "accountsOptionDesc": "Bao gồm tài khoản XIASS cùng tài khoản, nhà cung cấp mô hình và cài đặt Antigravity WF. JSON chứa thông tin xác thực chỉ được tạo khi chọn sao lưu tài khoản; Codex auth.json không bao giờ được đọc hoặc đưa vào.",
       "configOptionTitle": "Dữ liệu cấu hình",
       "configOptionDesc": "Bao gồm cài đặt ứng dụng, nhóm, instance, tác vụ wakeup và cấu hình nhà cung cấp mô hình.",
       "exportConfirm": "Xuất dữ liệu",
@@ -4806,7 +4805,11 @@
     "subscription": "Gói đăng ký",
     "injectToCursor": "Chuyển sang Cursor",
     "quota": {
-      "onDemand": "Theo yêu cầu"
+      "onDemand": "Theo yêu cầu",
+      "totalUsage": "Tổng mức sử dụng",
+      "autoComposer": "Tự động + Composer",
+      "apiUsage": "Mức sử dụng API",
+      "usageDetails": "Chi tiết sử dụng"
     },
     "title": "Quản lý tài khoản Cursor",
     "instances": {
@@ -4844,7 +4847,8 @@
       "quotaFailed": "Truy vấn hạn ngạch thất bại ({{count}})",
       "cleanQuotaFailedAction": "Xóa tài khoản có truy vấn hạn ngạch thất bại ({{count}})",
       "cleanQuotaFailedConfirm": "Xóa tất cả {{count}} tài khoản có truy vấn hạn ngạch thất bại?"
-    }
+    },
+    "authId": "ID ủy quyền"
   },
   "breakout": {
     "gameOver": "Kết thúc game",
@@ -5838,16 +5842,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "Trung chuyển",
-    "title": "Relay APIKEY.FUN",
+    "title": "Relay XIASS API",
     "description": "Relay đối tác chính thức của XIASS cung cấp quyền truy cập API mô hình lớn ổn định, mở và có hiệu quả chi phí cao. Nền tảng hỗ trợ các mô hình phổ biến như Claude, OpenAI và Gemini, phù hợp để cấu hình thống nhất trong Codex, Gemini CLI, Claude Code và các công cụ phát triển khác. Đăng ký qua liên kết độc quyền của XIASS để nhận ưu đãi nạp tiền vĩnh viễn lên tới 5%.",
     "register": "Liên kết độc quyền",
     "docs": "Tài liệu chính thức",
     "viewNow": "Xem ngay",
     "queryTitle": "Hạn mức khóa",
-    "queryDesc": "Nhập API Key APIKEY.FUN để tự động kiểm tra hạn mức.",
+    "queryDesc": "Nhập API Key XIASS API để tự động kiểm tra hạn mức.",
     "keyNotSet": "Chưa nhập khóa",
     "apiKeyLabel": "Khóa API",
-    "apiKeyPlaceholder": "Dán API Key được tạo trong console APIKEY.FUN",
+    "apiKeyPlaceholder": "Dán API Key được tạo trong console XIASS API",
     "hideKey": "Ẩn",
     "showKey": "Hiện",
     "endpointLabel": "Điểm kết nối",
@@ -5858,7 +5862,7 @@
     "saving": "Đang ghi",
     "saveSuccess": "Đã ghi vào Codex Provider: {{name}}",
     "toolsTitle": "Ghi cấu hình client",
-    "toolsDesc": "Ghi trực tiếp các tệp cấu hình cục bộ theo tài liệu APIKEY.FUN và bố cục tệp của CC Switch.",
+    "toolsDesc": "Ghi trực tiếp các tệp cấu hình cục bộ theo tài liệu XIASS API và bố cục tệp của XIASS Tools.",
     "endpoint": {
       "global": "Tuyến toàn cầu",
       "globalDesc": "API Base mặc định chính thức, phù hợp hầu hết môi trường mạng.",
@@ -5954,7 +5958,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "Đã điền cấu hình APIKEY.FUN. Hãy xác nhận để thêm vào Claude."
+      "claudeDesktopReady": "Đã điền cấu hình XIASS API. Hãy xác nhận để thêm vào Claude."
     },
     "copyKey": "Copy Key​",
     "clearKey": "Clear input​"
@@ -6130,7 +6134,7 @@
     "apiKey": {
       "desc": "Lưu Claude CLI API Key như một thông tin xác thực riêng. Khi chuyển hoặc chạy CLI, các giá trị env của nhà cung cấp được ghi vào Claude Code settings.json, không ghi trạng thái đăng nhập Claude.",
       "nameLabel": "Tên tài khoản",
-      "namePlaceholder": "Tùy chọn, ví dụ APIKEY.FUN",
+      "namePlaceholder": "Tùy chọn, ví dụ XIASS API",
       "keyLabel": "Khóa API",
       "placeholder": "Dán API Key của nhà cung cấp",
       "hide": "Ẩn API Key",

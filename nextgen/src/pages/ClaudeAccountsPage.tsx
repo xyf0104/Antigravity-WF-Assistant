@@ -26,6 +26,7 @@ import {
   Pencil,
   Play,
   Plus,
+  PlugZap,
   RefreshCw,
   RotateCw,
   Search,
@@ -49,6 +50,7 @@ import { QuickSettingsPopover } from '../components/QuickSettingsPopover';
 import { SingleSelectDropdown } from '../components/SingleSelectDropdown';
 import { TagEditModal } from '../components/TagEditModal';
 import { ClaudeIcon } from '../components/icons/ClaudeIcon';
+import { ClaudeManagedMcpPanel } from '../components/claude/ClaudeManagedMcpPanel';
 import { ModelProviderUsagePanel } from '../components/model-provider/ModelProviderUsagePanel';
 import { PlatformGroupSwitcher } from '../components/platform/PlatformGroupSwitcher';
 import { useEscClose } from '../hooks/useEscClose';
@@ -121,6 +123,7 @@ import {
   consumeApiKeyFunPrefill,
   type ApiKeyFunPrefillPayload,
 } from '../utils/apiKeyFunPrefill';
+import { APIKEY_FUN_LEGACY_HOST } from '../utils/apikeyFunLinks';
 import { getPlatformLabel } from '../utils/platformMeta';
 import {
   applyClaudeApiProviderTemplateValue,
@@ -139,7 +142,10 @@ import {
   type XiassWorkspacePanelNavigateDetail,
 } from '../utils/xiassWorkspaceNavigation';
 
-const CLAUDE_FLOW_NOTICE_COLLAPSED_KEY = 'agtools.claude.flow_notice_collapsed';
+// v2 intentionally starts compact after the unified workspace layout update.
+// The older key stored the previous tall-banner preference and must not keep
+// consuming the first screen after this navigation redesign.
+const CLAUDE_FLOW_NOTICE_COLLAPSED_KEY = 'agtools.claude.flow_notice_collapsed.v2';
 const CLAUDE_ACCOUNTS_VIEW_MODE_KEY = 'agtools.claude.accounts_view_mode';
 const CLAUDE_API_KEY_USAGE_CACHE_KEY = 'agtools.claude.apiKeyUsage.cache.v1';
 const CLAUDE_API_KEY_USAGE_REFRESH_THROTTLE_MS = 10 * 1000;
@@ -237,7 +243,7 @@ function getClaudeDesktopLoginProgressDetail(
 type ViewMode = 'grid' | 'list';
 type AddTab = 'desktop' | 'desktopGateway' | 'oauth' | 'apikey' | 'import';
 type ClaudeSubPlatform = 'desktop' | 'cli';
-type ClaudePageSection = ClaudeSubPlatform | 'instances';
+type ClaudePageSection = ClaudeSubPlatform | 'instances' | 'mcp';
 const DEFAULT_CLAUDE_API_PROVIDER_ID = getDefaultClaudeApiProviderPresetId();
 const DEFAULT_CLAUDE_API_PROVIDER = findClaudeApiProviderPresetById(DEFAULT_CLAUDE_API_PROVIDER_ID);
 const DEFAULT_CLAUDE_DESKTOP_GATEWAY_PROVIDER_ID = getDefaultClaudeDesktopGatewayProviderPresetId();
@@ -301,6 +307,17 @@ function readInitialViewMode(): ViewMode {
     // ignore storage failures
   }
   return 'grid';
+}
+
+function readInitialFlowNoticeCollapsed(): boolean {
+  try {
+    const stored = localStorage.getItem(CLAUDE_FLOW_NOTICE_COLLAPSED_KEY);
+    // New installations start with the account list in view. Existing users who
+    // deliberately expanded the notice keep that preference.
+    return stored !== 'false';
+  } catch {
+    return true;
+  }
 }
 
 function readClaudeApiKeyUsageCache(): Record<string, ClaudeApiKeyUsageState> {
@@ -656,11 +673,20 @@ function isClaudeApiKeyFunAccount(account: ClaudeAccount): boolean {
   const sourceTag = account.api_provider_source_tag?.trim().toLowerCase();
   const providerName = account.api_provider_name?.trim().toLowerCase();
   const baseUrl = account.api_base_url?.trim().toLowerCase();
+  let baseUrlHost = '';
+  if (baseUrl) {
+    try {
+      baseUrlHost = new URL(/^https?:\/\//i.test(baseUrl) ? baseUrl : `https://${baseUrl}`).hostname;
+    } catch {
+      baseUrlHost = '';
+    }
+  }
   return (
     providerId === CLAUDE_APIKEY_FUN_PROVIDER_ID ||
     sourceTag === 'apikey_fun' ||
-    providerName === 'apikey.fun' ||
-    Boolean(baseUrl && /(^https?:\/\/)?([^/]+\.)?apikey\.fun(\/|$)/i.test(baseUrl))
+    providerName === APIKEY_FUN_LEGACY_HOST ||
+    baseUrlHost === APIKEY_FUN_LEGACY_HOST ||
+    baseUrlHost.endsWith(`.${APIKEY_FUN_LEGACY_HOST}`)
   );
 }
 
@@ -773,13 +799,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
   const [searchQuery, setSearchQuery] = useState('');
   const [privacyModeEnabled, setPrivacyModeEnabled] = useState(isPrivacyModeEnabledByDefault);
   const [message, setMessage] = useState<{ text: string; tone?: 'error' | 'success' } | null>(null);
-  const [isFlowNoticeCollapsed, setIsFlowNoticeCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(CLAUDE_FLOW_NOTICE_COLLAPSED_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
+  const [isFlowNoticeCollapsed, setIsFlowNoticeCollapsed] = useState(readInitialFlowNoticeCollapsed);
   const [showAddModal, setShowAddModal] = useState(false);
   const [addTab, setAddTab] = useState<AddTab>('desktop');
   const [jsonInput, setJsonInput] = useState('');
@@ -1402,7 +1422,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
         setApiBaseUrlInput(baseUrl);
         setApiProviderTemplateValues({});
         setApiKeyModelCatalogOverride(null);
-        setApiKeyNameInput(request.apiKeyName?.trim() || request.providerName?.trim() || 'APIKEY.FUN');
+        setApiKeyNameInput(request.apiKeyName?.trim() || request.providerName?.trim() || 'XIASS API');
         setApiKeyInput(key);
         setApiKeyInputVisible(false);
         setDesktopGatewayAuthScheme('bearer');
@@ -1424,7 +1444,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
         setDesktopGatewayModelsError(null);
         setDesktopGatewayModelsMessage(t(
           'apiKeyFun.prefill.claudeDesktopReady',
-          '已带入 APIKEY.FUN 配置，请确认后添加到 Claude。',
+          '已带入 XIASS API 配置，请确认后添加到 Claude。',
         ));
         desktopGatewayModelsFetchSignatureRef.current = normalizedBaseUrl
           ? `${key}\n${normalizedBaseUrl}\nbearer`
@@ -1442,7 +1462,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
         setApiBaseUrlInput(request.baseUrl?.trim() || CLAUDE_APIKEY_FUN_BASE_URL);
         setApiProviderTemplateValues({});
         setApiKeyModelCatalogOverride(request.modelCatalog ?? null);
-        setApiKeyNameInput(request.apiKeyName?.trim() || request.providerName?.trim() || 'APIKEY.FUN');
+        setApiKeyNameInput(request.apiKeyName?.trim() || request.providerName?.trim() || 'XIASS API');
         setApiKeyInput(key);
         setApiKeyInputVisible(false);
         setAddModalError(null);
@@ -2775,6 +2795,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
 
   const isDesktopSubPlatform = activeSubPlatform === 'desktop';
   const isInstancesSection = activeSection === 'instances';
+  const isMcpSection = activeSection === 'mcp';
   const shouldShowDesktopGatewayRouting =
     addTab === 'desktopGateway' &&
     Boolean(apiKeyInput.trim()) &&
@@ -2858,6 +2879,8 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
 
       {isInstancesSection ? (
         <ClaudeInstancesContent accountsForSelect={accountsForInstances} />
+      ) : isMcpSection ? (
+        <ClaudeManagedMcpPanel onBack={() => setActiveSection('cli')} />
       ) : (
         <>
           <div className={`ghcp-flow-notice ${isFlowNoticeCollapsed ? 'collapsed' : ''}`} role="note">
@@ -2956,6 +2979,16 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
               </div>
             </div>
             <div className="toolbar-right">
+              {!isDesktopSubPlatform && (
+                <button
+                  className="btn btn-secondary icon-only"
+                  onClick={() => setActiveSection('mcp')}
+                  title="打开 Claude Code MCP"
+                  aria-label="打开 Claude Code MCP"
+                >
+                  <PlugZap size={14} />
+                </button>
+              )}
               <button className="btn btn-primary icon-only" onClick={openAddModal} title={t('common.shared.addAccount', '添加账号')} aria-label={t('common.shared.addAccount', '添加账号')}>
                 <Plus size={14} />
               </button>

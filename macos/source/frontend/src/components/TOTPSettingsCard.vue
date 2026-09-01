@@ -5,6 +5,12 @@ import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import Modal from "@/components/ui/Modal.vue";
 import {
+  decodeTOTPQrImage,
+  mergeTOTPQrMigrationBatch,
+  migrationBatchCredentials,
+  parseTOTPQrPayload,
+} from "@/utils/totpQrImport";
+import {
   addTOTPEntry,
   deleteTOTPEntry,
   exportTOTPEncrypted,
@@ -28,6 +34,10 @@ const editorError = ref("");
 const exportError = ref("");
 const importBackupError = ref("");
 const codes = ref({});
+const qrFileInput = ref(null);
+const decodingQRCode = ref(false);
+const migrationBatches = ref({});
+const activeMigrationBatchID = ref("");
 const now = ref(Date.now());
 let clock = null;
 
@@ -37,6 +47,9 @@ let clock = null;
 const draft = ref(newDraft());
 const exportDraft = ref({ password: "", confirmation: "" });
 const importBackupDraft = ref({ password: "" });
+const activeMigrationBatch = computed(() => migrationBatches.value[activeMigrationBatchID.value] || null);
+const activeMigrationPartCount = computed(() => activeMigrationBatch.value?.parts?.length || 0);
+const activeMigrationCredentials = computed(() => migrationBatchCredentials(activeMigrationBatch.value));
 
 const statusLabel = computed(() => {
   if (loading.value) return "正在读取";
@@ -63,6 +76,8 @@ function resetFeedback() {
 
 function clearEditorDraft() {
   draft.value = newDraft();
+  migrationBatches.value = {};
+  activeMigrationBatchID.value = "";
   editorError.value = "";
 }
 
@@ -110,7 +125,120 @@ function inputForDraft() {
   };
 }
 
+function selectQRCode() {
+  qrFileInput.value?.click();
+}
+
+function applyQRCodePayload(value) {
+  const parsed = parseTOTPQrPayload(value);
+  if (!parsed) {
+    editorError.value = "未识别到受支持的验证器二维码。请使用标准 otpauth://totp/ 或 Google Authenticator 迁移二维码。";
+    return;
+  }
+  if (parsed.kind === "uri") {
+    draft.value.uri = parsed.uri;
+    importMode.value = "uri";
+    notice.value = "已识别验证器链接。确认信息后保存到系统凭据库。";
+    editorError.value = "";
+    return;
+  }
+
+  const id = String(parsed.batch.batchId);
+  migrationBatches.value = {
+    ...migrationBatches.value,
+    [id]: mergeTOTPQrMigrationBatch(migrationBatches.value[id], parsed.batch),
+  };
+  activeMigrationBatchID.value = id;
+  importMode.value = "migration";
+  editorError.value = "";
+  notice.value = parsed.batch.batchSize > 1
+    ? `已识别 Google Authenticator 迁移二维码第 ${parsed.batch.batchIndex + 1} / ${parsed.batch.batchSize} 张，请继续导入剩余二维码。`
+    : `已识别 ${parsed.batch.credentials.length} 个 Google Authenticator 验证器，确认后即可保存。`;
+}
+
+async function decodeQRCode(file) {
+  if (!file || decodingQRCode.value) return;
+  decodingQRCode.value = true;
+  editorError.value = "";
+  try {
+    const value = await decodeTOTPQrImage(file);
+    if (!value) {
+      editorError.value = "未能从图片中识别二维码。请使用清晰的原始二维码截图后重试。";
+      return;
+    }
+    applyQRCodePayload(value);
+  } catch (cause) {
+    editorError.value = cause?.message || "二维码识别失败。";
+  } finally {
+    decodingQRCode.value = false;
+  }
+}
+
+async function handleQRCodeFileChange(event) {
+  const file = event.target?.files?.[0] || null;
+  event.target.value = "";
+  await decodeQRCode(file);
+}
+
+async function handleEditorPaste(event) {
+  const imageItem = Array.from(event.clipboardData?.items || []).find((item) => item.type.startsWith("image/"));
+  const file = imageItem?.getAsFile?.();
+  if (!file) return;
+  event.preventDefault();
+  await decodeQRCode(file);
+}
+
+async function handleEditorDrop(event) {
+  const file = Array.from(event.dataTransfer?.files || []).find((item) => item.type.startsWith("image/"));
+  if (!file) return;
+  event.preventDefault();
+  await decodeQRCode(file);
+}
+
+async function saveMigrationEntries() {
+  const batch = activeMigrationBatch.value;
+  const credentials = activeMigrationCredentials.value;
+  if (!batch || !credentials.length) {
+    editorError.value = "请先识别 Google Authenticator 迁移二维码。";
+    return;
+  }
+  if (activeMigrationPartCount.value < batch.batchSize) {
+    editorError.value = `迁移二维码尚未收齐：当前 ${activeMigrationPartCount.value} / ${batch.batchSize} 张。`;
+    return;
+  }
+
+  adding.value = true;
+  editorError.value = "";
+  const failures = [];
+  let latestEntries = entries.value;
+  try {
+    for (const credential of credentials) {
+      const result = await addTOTPEntry(credential);
+      if (!result?.ok) {
+        failures.push(credential.label || "未命名验证器");
+        continue;
+      }
+      if (Array.isArray(result.entries)) latestEntries = result.entries;
+    }
+    entries.value = latestEntries;
+    if (failures.length) {
+      editorError.value = `已保存 ${credentials.length - failures.length} 个验证器；以下条目未保存：${failures.join("、")}。`;
+      return;
+    }
+    notice.value = `已将 ${credentials.length} 个验证器保存到系统凭据库。`;
+    closeEditor();
+  } catch (cause) {
+    editorError.value = cause?.message || "保存迁移验证器失败。";
+  } finally {
+    adding.value = false;
+  }
+}
+
 async function saveEntry() {
+  if (importMode.value === "migration") {
+    await saveMigrationEntries();
+    return;
+  }
   editorError.value = "";
   if (importMode.value === "uri" && !draft.value.uri.trim()) {
     editorError.value = "请粘贴验证器提供的 otpauth://totp/ 链接。";
@@ -375,10 +503,11 @@ onUnmounted(() => {
   </Card>
 
   <Modal :open="editorOpen" title="添加本地验证器" wide persistent :closable="!adding" @close="closeEditor">
-    <div class="editor">
+    <div class="editor" @paste="handleEditorPaste" @dragover.prevent @drop.prevent="handleEditorDrop">
       <p>选择一种导入方式。密钥仅用于本次保存，随后写入系统凭据库并立即从界面清除。</p>
       <div class="mode-switch" role="radiogroup" aria-label="验证器导入方式">
         <button type="button" :class="{ active: importMode === 'uri' }" :aria-checked="importMode === 'uri'" role="radio" @click="importMode = 'uri'">粘贴验证器链接</button>
+        <button type="button" :class="{ active: importMode === 'migration' }" :aria-checked="importMode === 'migration'" role="radio" @click="importMode = 'migration'">二维码导入</button>
         <button type="button" :class="{ active: importMode === 'manual' }" :aria-checked="importMode === 'manual'" role="radio" @click="importMode = 'manual'">手动输入密钥</button>
       </div>
 
@@ -387,6 +516,17 @@ onUnmounted(() => {
         <textarea v-model="draft.uri" rows="4" autocomplete="off" spellcheck="false" placeholder="otpauth://totp/服务名:账号?secret=…" />
         <small>从服务的“手动设置验证器”或二维码对应链接中复制。仅支持标准 TOTP 链接。</small>
       </label>
+
+      <div v-else-if="importMode === 'migration'" class="qr-import">
+        <input ref="qrFileInput" class="qr-file-input" type="file" accept="image/*" aria-label="选择验证器二维码图片" @change="handleQRCodeFileChange" />
+        <p>选择二维码图片、将图片拖到此窗口，或直接粘贴截图。识别只在本机完成；图片和密钥不会写入日志或诊断包。</p>
+        <Button variant="tinted" :loading="decodingQRCode" :disabled="decodingQRCode || adding" @click="selectQRCode">选择二维码图片</Button>
+        <div v-if="activeMigrationBatch" class="migration-summary" role="status" aria-live="polite">
+          <strong>Google Authenticator 迁移进度</strong>
+          <span>已识别 {{ activeMigrationPartCount }} / {{ activeMigrationBatch.batchSize }} 张二维码，包含 {{ activeMigrationCredentials.length }} 个验证器。</span>
+          <small v-if="activeMigrationPartCount < activeMigrationBatch.batchSize">请继续导入剩余二维码后再保存，避免迁移不完整。</small>
+        </div>
+      </div>
 
       <template v-else>
         <div class="two-fields">
@@ -468,7 +608,7 @@ onUnmounted(() => {
 .entry-actions, .totp-actions { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
 .totp-actions { justify-content:flex-end; }
 .editor { display:flex; flex-direction:column; gap:12px; }
-.mode-switch { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; padding:4px; border-radius:var(--r-md); background:var(--bg-inset); border:1px solid var(--separator); }
+.mode-switch { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; padding:4px; border-radius:var(--r-md); background:var(--bg-inset); border:1px solid var(--separator); }
 .mode-switch button { min-height:34px; padding:7px 9px; border-radius:calc(var(--r-md) - 4px); color:var(--text-secondary); font:600 12px var(--font-ui); transition:background .16s var(--ease), color .16s var(--ease), box-shadow .16s var(--ease); }
 .mode-switch button.active { color:var(--text-primary); background:var(--bg-elevated); box-shadow:0 2px 7px rgba(0,0,0,.11); }
 .mode-switch button:focus-visible, .field input:focus, .field textarea:focus, .field select:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
@@ -478,5 +618,6 @@ onUnmounted(() => {
 .field textarea { min-height:90px; padding:9px 10px; resize:vertical; font-family:var(--font-num); font-size:12px; }
 .field small { color:var(--text-tertiary); font-size:11px; font-weight:430; line-height:1.45; }
 .two-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
-@media (max-width:620px) { .entry-row { grid-template-columns:1fr; gap:8px; }.entry-code { align-items:flex-start; }.entry-actions { justify-content:flex-start; }.two-fields { grid-template-columns:1fr; }.totp-actions { justify-content:stretch; }.totp-actions :deep(.btn) { flex:1; justify-content:center; } }
+.qr-import { display:grid; gap:10px; padding:12px; border:1px dashed var(--separator-strong); border-radius:var(--r-md); background:var(--bg-inset); }.qr-import > p { margin:0; color:var(--text-secondary); font-size:12px; line-height:1.55; }.qr-file-input { position:absolute; width:1px; height:1px; overflow:hidden; opacity:0; pointer-events:none; }.migration-summary { display:grid; gap:4px; padding:10px; border:1px solid var(--accent-border); border-radius:var(--r-sm); background:var(--accent-soft); color:var(--text-primary); font-size:12px; }.migration-summary span, .migration-summary small { color:var(--text-secondary); line-height:1.45; }.migration-summary small { color:var(--orange); }
+@media (max-width:620px) { .entry-row { grid-template-columns:1fr; gap:8px; }.entry-code { align-items:flex-start; }.entry-actions { justify-content:flex-start; }.two-fields { grid-template-columns:1fr; }.mode-switch { grid-template-columns:1fr; }.totp-actions { justify-content:stretch; }.totp-actions :deep(.btn) { flex:1; justify-content:center; } }
 </style>

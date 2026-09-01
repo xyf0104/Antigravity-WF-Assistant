@@ -95,6 +95,18 @@ pub fn codex_config_doc_to_string(doc: &mut Document) -> String {
 
 pub fn write_codex_config_toml_atomic(path: &Path, content: &str) -> Result<(), String> {
     prepare_codex_config_file_for_write(path)?;
+    let is_primary_config = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("config.toml"));
+    if is_primary_config {
+        crate::modules::codex_config_transaction::write_codex_config_transactional(
+            path,
+            content,
+            "nextgen-codex-config-format",
+        )?;
+        return Ok(());
+    }
     crate::modules::atomic_write::write_string_atomic(path, content)
 }
 

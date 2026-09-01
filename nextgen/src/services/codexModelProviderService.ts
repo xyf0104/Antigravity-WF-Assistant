@@ -21,6 +21,10 @@ import {
   type ModelProviderUsageSummary,
 } from './modelProviderUsageService';
 import { moveCodexProviderApiKey } from '../utils/codexModelProviderApiKeyMove';
+import {
+  normalizeCodexModelProviderCatalog,
+  normalizeCodexModelProviderCatalogSelection,
+} from '../utils/codexModelProviderCatalog';
 
 export interface CodexModelProviderApiKey {
   id: string;
@@ -37,6 +41,8 @@ export interface CodexModelProvider {
   sourceTag?: string;
   integrationType?: 'sub2api' | 'new_api';
   modelCatalog?: string[];
+  defaultModel?: string;
+  reviewModel?: string;
   modelContextWindows?: Record<string, number>;
   supportsVision?: boolean;
   modelCapabilities?: Record<string, { supportsVision?: boolean }>;
@@ -64,6 +70,8 @@ interface UpsertFromCredentialInput {
   apiKeyName?: string | null;
   sourceTag?: string | null;
   modelCatalog?: string[];
+  defaultModel?: string;
+  reviewModel?: string;
   modelContextWindows?: Record<string, number>;
   supportsVision?: boolean;
   modelCapabilities?: Record<string, { supportsVision?: boolean }>;
@@ -118,17 +126,12 @@ function normalizeEnableModePreference(
 }
 
 function normalizeModelCatalog(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const seen = new Set<string>();
-  const models: string[] = [];
-  for (const item of value) {
-    const model = String(item ?? '').trim();
-    const key = model.toLowerCase();
-    if (!model || seen.has(key)) continue;
-    seen.add(key);
-    models.push(model);
-  }
+  const models = normalizeCodexModelProviderCatalog(value);
   return models.length > 0 ? models : undefined;
+}
+
+function normalizeModelSelection(value: unknown, catalog: readonly string[]): string | undefined {
+  return normalizeCodexModelProviderCatalogSelection(value, catalog);
 }
 
 export function normalizeModelContextWindows(
@@ -381,6 +384,18 @@ function toValidProviderList(raw: unknown): CodexModelProvider[] {
       modelCatalog:
         normalizeModelCatalog((item as { modelCatalog?: unknown }).modelCatalog) ??
         presetModelCatalogForBaseUrl(baseUrl),
+      defaultModel: normalizeModelSelection(
+        (item as { defaultModel?: unknown }).defaultModel,
+        normalizeModelCatalog((item as { modelCatalog?: unknown }).modelCatalog) ??
+          presetModelCatalogForBaseUrl(baseUrl) ??
+          [],
+      ),
+      reviewModel: normalizeModelSelection(
+        (item as { reviewModel?: unknown }).reviewModel,
+        normalizeModelCatalog((item as { modelCatalog?: unknown }).modelCatalog) ??
+          presetModelCatalogForBaseUrl(baseUrl) ??
+          [],
+      ),
       modelContextWindows: normalizeModelContextWindows(
         (item as { modelContextWindows?: unknown }).modelContextWindows,
         normalizeModelCatalog((item as { modelCatalog?: unknown }).modelCatalog) ??
@@ -552,6 +567,8 @@ export async function createCodexModelProvider(input: {
   baseUrl: string;
   sourceTag?: string;
   modelCatalog?: string[];
+  defaultModel?: string;
+  reviewModel?: string;
   modelContextWindows?: Record<string, number>;
   supportsVision?: boolean;
   modelCapabilities?: Record<string, { supportsVision?: boolean }>;
@@ -578,15 +595,17 @@ export async function createCodexModelProvider(input: {
   }
   const now = Date.now();
   const wireApi = normalizeWireApi(input.wireApi);
+  const modelCatalog =
+    normalizeModelCatalog(input.modelCatalog) ?? presetModelCatalogForBaseUrl(baseUrl);
   const provider: CodexModelProvider = {
     id: createProviderId(),
     name,
     baseUrl,
     sourceTag: sanitizeName(input.sourceTag ?? '') || undefined,
     integrationType: normalizeIntegrationType(input.integrationType),
-    modelCatalog:
-      normalizeModelCatalog(input.modelCatalog) ??
-      presetModelCatalogForBaseUrl(baseUrl),
+    modelCatalog,
+    defaultModel: normalizeModelSelection(input.defaultModel, modelCatalog ?? []),
+    reviewModel: normalizeModelSelection(input.reviewModel, modelCatalog ?? []),
     modelContextWindows: normalizeModelContextWindows(
       input.modelContextWindows,
       normalizeModelCatalog(input.modelCatalog) ??
@@ -623,6 +642,8 @@ export async function updateCodexModelProvider(
     baseUrl?: string;
     sourceTag?: string | null;
     modelCatalog?: string[] | null;
+    defaultModel?: string | null;
+    reviewModel?: string | null;
     modelContextWindows?: Record<string, number> | null;
     supportsVision?: boolean;
     modelCapabilities?: Record<string, { supportsVision?: boolean }> | null;
@@ -670,6 +691,24 @@ export async function updateCodexModelProvider(
         : normalizeModelCatalog(patch.modelCatalog);
   } else if (!provider.modelCatalog || provider.modelCatalog.length === 0) {
     provider.modelCatalog = presetModelCatalogForBaseUrl(nextBaseUrl);
+  }
+  if (patch.defaultModel !== undefined || patch.modelCatalog !== undefined) {
+    provider.defaultModel =
+      patch.defaultModel === null
+        ? undefined
+        : normalizeModelSelection(
+            patch.defaultModel ?? provider.defaultModel,
+            provider.modelCatalog ?? [],
+          );
+  }
+  if (patch.reviewModel !== undefined || patch.modelCatalog !== undefined) {
+    provider.reviewModel =
+      patch.reviewModel === null
+        ? undefined
+        : normalizeModelSelection(
+            patch.reviewModel ?? provider.reviewModel,
+            provider.modelCatalog ?? [],
+          );
   }
   if (patch.modelContextWindows !== undefined) {
     provider.modelContextWindows = normalizeModelContextWindows(
@@ -955,6 +994,18 @@ export async function upsertCodexModelProviderFromCredential(
       modelCatalog:
         normalizeModelCatalog(input.modelCatalog) ??
         presetModelCatalogForBaseUrl(apiBaseUrl),
+      defaultModel: normalizeModelSelection(
+        input.defaultModel,
+        normalizeModelCatalog(input.modelCatalog) ??
+          presetModelCatalogForBaseUrl(apiBaseUrl) ??
+          [],
+      ),
+      reviewModel: normalizeModelSelection(
+        input.reviewModel,
+        normalizeModelCatalog(input.modelCatalog) ??
+          presetModelCatalogForBaseUrl(apiBaseUrl) ??
+          [],
+      ),
       supportsVision: input.supportsVision === true,
       modelCapabilities: normalizeModelCapabilities(input.modelCapabilities),
       visionRoutingModel: sanitizeName(input.visionRoutingModel ?? '') || undefined,
@@ -993,6 +1044,20 @@ export async function upsertCodexModelProviderFromCredential(
     normalizeModelCatalog(input.modelCatalog) ??
     provider.modelCatalog ??
     presetModelCatalogForBaseUrl(apiBaseUrl);
+  // Credential updates commonly omit model selections. Keep an existing choice unless
+  // the caller explicitly changes a selection or refreshes the catalog itself.
+  if (input.defaultModel !== undefined || input.modelCatalog !== undefined) {
+    provider.defaultModel = normalizeModelSelection(
+      input.defaultModel ?? provider.defaultModel,
+      provider.modelCatalog ?? [],
+    );
+  }
+  if (input.reviewModel !== undefined || input.modelCatalog !== undefined) {
+    provider.reviewModel = normalizeModelSelection(
+      input.reviewModel ?? provider.reviewModel,
+      provider.modelCatalog ?? [],
+    );
+  }
   if (input.modelContextWindows !== undefined) {
     provider.modelContextWindows = normalizeModelContextWindows(
       input.modelContextWindows,

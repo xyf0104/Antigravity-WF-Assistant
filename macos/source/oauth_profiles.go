@@ -18,8 +18,6 @@ import (
 	"antigravity-wf-assistant/internal/oauthflow"
 	"antigravity-wf-assistant/internal/storage"
 	"antigravity-wf-assistant/internal/upstream"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
@@ -397,10 +395,11 @@ func (a *App) beginProfileOAuthAuthorization(profile OAuthProviderProfile, draft
 	if callback != nil {
 		callback.start(a.loopbackOAuthCallbackHandler(authorization.SessionID, callback))
 	}
-	if a.ctx != nil {
-		runtime.BrowserOpenURL(a.ctx, authorization.URL)
-	}
+	openError := a.openExternalURL(authorization.URL)
 	message := "已在浏览器打开授权页；授权后请粘贴完整回调 URL 或授权码。"
+	if openError != nil {
+		message = "无法自动打开授权页，请复制授权链接到浏览器后继续。"
+	}
 	if automaticCallback {
 		message = "已在浏览器打开授权页；授权完成后将自动返回助手。若浏览器没有自动回到助手，可粘贴完整回调 URL 或授权码完成。"
 	} else if loopbackFallback {

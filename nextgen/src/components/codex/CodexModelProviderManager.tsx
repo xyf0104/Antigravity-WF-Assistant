@@ -42,6 +42,7 @@ import {
   contextWindowDraftsFromRecord,
   parseContextWindowDrafts,
 } from "../../utils/codexModelContextWindows";
+import { mergeCodexModelProviderCatalogOptions } from "../../utils/codexModelProviderCatalog";
 import {
   getCodexLocalAccessState,
 } from "../../services/codexLocalAccessService";
@@ -77,19 +78,16 @@ import {
   CODEX_API_KEY_USAGE_REFRESHED_EVENT,
   readCodexApiKeyUsageCache,
 } from "../../services/codexApiKeyUsageRefreshService";
-import { formatModelProviderUsageMoney } from "../../services/modelProviderUsageService";
-import { useSponsorStore } from "../../stores/useSponsorStore";
+import {
+  formatModelProviderUsageMoney,
+  listModelProviderModels,
+} from "../../services/modelProviderUsageService";
 import { useCodexAccountStore } from "../../stores/useCodexAccountStore";
-import type { Sponsor } from "../../types/sponsor";
 import {
   CODEX_API_PROVIDER_CUSTOM_ID,
   findCodexApiProviderPresetById,
   resolveCodexApiProviderPresetId,
 } from "../../utils/codexProviderPresets";
-import {
-  normalizeApiKeyFunOfficialUrl,
-  resolveApiKeyFunWireApi,
-} from "../../utils/apikeyFunLinks";
 import {
   getCodexPlanFilterKey,
   isCodexApiKeyAccount,
@@ -178,20 +176,6 @@ function visionModelTextFromCapabilities(
     .map(([model]) => model)
     .sort()
     .join("\n");
-}
-
-function isSponsorProvider(
-  provider: CodexModelProvider,
-  sponsorTemplates: SponsorProviderTemplate[],
-): boolean {
-  if (provider.sourceTag) {
-    return sponsorTemplates.some((template) => template.id === provider.sourceTag);
-  }
-  const normalizedBaseUrl = normalizeCodexModelProviderBaseUrl(provider.baseUrl);
-  return sponsorTemplates.some(
-    (template) =>
-      normalizeCodexModelProviderBaseUrl(template.baseUrl) === normalizedBaseUrl,
-  );
 }
 
 function readCodexInstanceSortPreference(): {
@@ -355,6 +339,8 @@ interface ProviderFormState {
   name: string;
   baseUrl: string;
   modelCatalogText: string;
+  defaultModel: string;
+  reviewModel: string;
   modelContextWindowsDraft: Record<string, string>;
   supportsVision: boolean;
   visionModelText: string;
@@ -382,6 +368,8 @@ const EMPTY_FORM: ProviderFormState = {
   name: "",
   baseUrl: "",
   modelCatalogText: "",
+  defaultModel: "",
+  reviewModel: "",
   modelContextWindowsDraft: {},
   supportsVision: false,
   visionModelText: "",
@@ -395,19 +383,6 @@ const EMPTY_FORM: ProviderFormState = {
   newApiKeyName: "",
   newApiKey: "",
 };
-
-interface SponsorProviderTemplate {
-  id: string;
-  sponsor: Sponsor;
-  name: string;
-  baseUrl: string;
-  modelCatalog: string[];
-  supportsVision: boolean;
-  website: string;
-  apiKeyUrl: string;
-  wireApi?: CodexProviderWireApi | null;
-  integrationType?: "sub2api" | "new_api" | null;
-}
 
 interface ProviderPreviewPaths {
   providerStorePath: string;
@@ -451,7 +426,7 @@ function resolveProviderApiKeyLabel(
 }
 
 const DEFAULT_PROVIDER_PREVIEW_PATHS: ProviderPreviewPaths = {
-  providerStorePath: "~/.antigravity_cockpit/codex_model_providers.json",
+  providerStorePath: "~/.xiass_tools/codex_model_providers.json",
   codexConfigPath: "~/.codex/config.toml",
   codexAuthPath: "~/.codex/auth.json",
 };
@@ -567,8 +542,6 @@ export function useCodexModelProviderManagerController({
   const updateAccountInstanceAccess = useCodexAccountStore(
     (state) => state.updateAccountInstanceAccess,
   );
-  const sponsorModule = useSponsorStore((state) => state.state.sponsorModule);
-  const fetchSponsorState = useSponsorStore((state) => state.fetchState);
   const [providers, setProviders] = useState<CodexModelProvider[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -586,6 +559,8 @@ export function useCodexModelProviderManagerController({
   const [testingProviderId, setTestingProviderId] = useState<string | null>(
     null,
   );
+  const [discoveringModels, setDiscoveringModels] = useState(false);
+  const [discoveredModelCatalog, setDiscoveredModelCatalog] = useState<string[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [form, setForm] = useState<ProviderFormState>(EMPTY_FORM);
   const [currentAccount, setCurrentAccount] = useState<CodexAccount | null>(
@@ -603,7 +578,6 @@ export function useCodexModelProviderManagerController({
   const [selectedPresetId, setSelectedPresetId] = useState<string>(
     CODEX_API_PROVIDER_CUSTOM_ID,
   );
-  const [selectedSponsorTemplateId, setSelectedSponsorTemplateId] = useState<string | null>(null);
   const [providerUsageMap, setProviderUsageMap] = useState<
     Record<string, ProviderUsageState>
   >(() => readProviderUsageCache());
@@ -689,41 +663,6 @@ export function useCodexModelProviderManagerController({
     null,
   );
   const cancelledBatchTestRunIdsRef = useRef<Set<string>>(new Set());
-
-  const sponsorProviderTemplates = useMemo<SponsorProviderTemplate[]>(() => {
-    const sponsors = sponsorModule?.sponsors ?? [];
-    const templates: SponsorProviderTemplate[] = [];
-    for (const sponsor of sponsors) {
-      const integration = sponsor.integration;
-      if (
-        !integration?.enabled ||
-        !integration.quickConfigure ||
-        !integration.baseUrl?.trim()
-      ) {
-        continue;
-      }
-      templates.push({
-        id: `relay:${sponsor.id}`,
-        sponsor,
-        name: sponsor.name,
-        baseUrl: integration.baseUrl.trim(),
-        modelCatalog: integration.models ?? [],
-        supportsVision: integration.supportsVision === true,
-        website: normalizeApiKeyFunOfficialUrl(integration.website || sponsor.url),
-        apiKeyUrl: normalizeApiKeyFunOfficialUrl(integration.apiKeyUrl || sponsor.url),
-        wireApi: resolveApiKeyFunWireApi(
-          integration.baseUrl,
-          integration.wireApi ?? null,
-        ),
-        integrationType: integration.type ?? null,
-      });
-    }
-    return templates.sort((a, b) => {
-      const priority = a.sponsor.priority - b.sponsor.priority;
-      if (priority !== 0) return priority;
-      return a.name.localeCompare(b.name);
-    });
-  }, [sponsorModule?.sponsors]);
 
   const providerCustomSortOrderIndex = useMemo(() => {
     const map = new Map<string, number>();
@@ -957,12 +896,10 @@ export function useCodexModelProviderManagerController({
     void reloadCurrentAccount();
     void reloadLocalAccessState();
     void reloadCodexInstances();
-    void fetchSponsorState();
     void listCodexAccounts()
       .then((items) => setOauthAccounts(items.filter((item) => item.auth_mode !== "apikey")))
       .catch(() => setOauthAccounts([]));
   }, [
-    fetchSponsorState,
     reloadProviders,
     reloadCurrentAccount,
     reloadLocalAccessState,
@@ -1030,7 +967,7 @@ export function useCodexModelProviderManagerController({
         const home = await homeDir();
         const [providerStorePath, codexConfigPath, codexAuthPath] =
           await Promise.all([
-            join(home, ".antigravity_cockpit", "codex_model_providers.json"),
+            join(home, ".xiass_tools", "codex_model_providers.json"),
             join(home, ".codex", "config.toml"),
             join(home, ".codex", "auth.json"),
           ]);
@@ -1529,17 +1466,12 @@ export function useCodexModelProviderManagerController({
     () => findCodexApiProviderPresetById(selectedPresetId),
     [selectedPresetId],
   );
-  const selectedSponsorTemplate = useMemo(
-    () =>
-      sponsorProviderTemplates.find((template) => template.id === selectedSponsorTemplateId) ??
-      null,
-    [selectedSponsorTemplateId, sponsorProviderTemplates],
-  );
   const openCreateModal = useCallback(() => {
     setNotice(null);
     setFormError(null);
     setExistingApiKeySearchQuery("");
     setEditingApiKey(null);
+    setDiscoveredModelCatalog([]);
     setForm({
       ...EMPTY_FORM,
       wireApi: resolveDefaultProviderWireApi(CODEX_API_PROVIDER_CUSTOM_ID),
@@ -1548,7 +1480,6 @@ export function useCodexModelProviderManagerController({
       ),
     });
     setSelectedPresetId(CODEX_API_PROVIDER_CUSTOM_ID);
-    setSelectedSponsorTemplateId(null);
     setShowModal(true);
   }, []);
 
@@ -1585,12 +1516,15 @@ export function useCodexModelProviderManagerController({
     setFormError(null);
     setExistingApiKeySearchQuery("");
     setEditingApiKey(null);
+    setDiscoveredModelCatalog(provider.modelCatalog ?? []);
     const resolvedWireApi = resolveProviderWireApi(provider);
     setForm({
       providerId: provider.id,
       name: provider.name,
       baseUrl: provider.baseUrl,
       modelCatalogText: (provider.modelCatalog ?? []).join("\n"),
+      defaultModel: provider.defaultModel ?? "",
+      reviewModel: provider.reviewModel ?? "",
       modelContextWindowsDraft: contextWindowDraftsFromRecord(
         provider.modelContextWindows,
         provider.modelCatalog ?? [],
@@ -1614,7 +1548,6 @@ export function useCodexModelProviderManagerController({
       newApiKey: "",
     });
     setSelectedPresetId(resolveCodexApiProviderPresetId(provider.baseUrl));
-    setSelectedSponsorTemplateId(null);
     setShowModal(true);
   }, []);
 
@@ -1639,18 +1572,20 @@ export function useCodexModelProviderManagerController({
   const handleSelectProviderPreset = useCallback(
     (presetId: string) => {
       setSelectedPresetId(presetId);
-      setSelectedSponsorTemplateId(null);
       if (presetId === CODEX_API_PROVIDER_CUSTOM_ID) {
         mutateForm({ supportsWebsockets: false });
         return;
       }
       const preset = findCodexApiProviderPresetById(presetId);
       if (!preset) return;
+      setDiscoveredModelCatalog(preset.modelCatalog ?? []);
       const wireApi = resolveDefaultProviderWireApi(preset.id);
       mutateForm({
         name: preset.name,
         baseUrl: preset.baseUrls[0] ?? "",
         modelCatalogText: (preset.modelCatalog ?? []).join("\n"),
+        defaultModel: preset.modelCatalog?.[0] ?? "",
+        reviewModel: preset.modelCatalog?.[0] ?? "",
         modelContextWindowsDraft: contextWindowDraftsFromRecord(
           undefined,
           preset.modelCatalog ?? [],
@@ -1672,43 +1607,149 @@ export function useCodexModelProviderManagerController({
     [mutateForm],
   );
 
-  const handleSelectSponsorTemplate = useCallback(
-    (template: SponsorProviderTemplate) => {
-      setSelectedSponsorTemplateId(template.id);
-      setSelectedPresetId(CODEX_API_PROVIDER_CUSTOM_ID);
-      const wireApi = resolveDefaultProviderWireApi(
-        null,
-        template.wireApi ?? null,
-      );
-      mutateForm({
-        name: template.name,
-        baseUrl: template.baseUrl,
-        modelCatalogText: template.modelCatalog.join("\n"),
-        modelContextWindowsDraft: contextWindowDraftsFromRecord(
-          undefined,
-          template.modelCatalog,
-        ),
-        supportsVision: template.supportsVision,
-        visionModelText: "",
-        visionRoutingModel: "",
-        website: template.website,
-        apiKeyUrl: template.apiKeyUrl,
-        wireApi,
-        supportsWebsockets: false,
-        enableModePreference: resolveEnableModePreferenceForWireApi(wireApi),
-        integrationType: template.integrationType ?? "",
-      });
-    },
-    [mutateForm],
-  );
-
   const handleSelectPresetEndpoint = useCallback(
     (baseUrl: string) => {
-      setSelectedSponsorTemplateId(null);
       mutateForm({ baseUrl });
     },
     [mutateForm],
   );
+
+  const handleDiscoverProviderModels = useCallback(async () => {
+    if (discoveringModels || saving) return;
+
+    const baseUrl = form.baseUrl.trim();
+    const apiKey =
+      form.newApiKey.trim() ||
+      currentEditingProvider?.apiKeys[0]?.apiKey.trim() ||
+      "";
+    if (!normalizeCodexModelProviderBaseUrl(baseUrl)) {
+      setFormError(
+        t(
+          "codex.modelProviders.validation.baseUrlInvalid",
+          "Base URL 格式无效",
+        ),
+      );
+      return;
+    }
+    if (!apiKey) {
+      setFormError(
+        t(
+          "codex.modelProviders.validation.apiKeyRequired",
+          "API Key 不能为空",
+        ),
+      );
+      return;
+    }
+
+    setDiscoveringModels(true);
+    setFormError(null);
+    try {
+      const result = await listModelProviderModels({ baseUrl, apiKey });
+      const models = parseModelCatalogText(
+        result.models.map((model) => model.id).join("\n"),
+      );
+      if (!models.length) {
+        setFormError(
+          t(
+            "codex.modelProviders.discovery.empty",
+            "未获取到可用模型，请检查 API 地址、Key 和权限后重试。",
+          ),
+        );
+        return;
+      }
+      const retain = (value: string) =>
+        models.find((model) => model.toLowerCase() === value.trim().toLowerCase()) ?? "";
+      const defaultModel = retain(form.defaultModel) || models[0];
+      const reviewModel = retain(form.reviewModel) || defaultModel;
+      setDiscoveredModelCatalog(models);
+      mutateForm({
+        modelCatalogText: models.join("\n"),
+        defaultModel,
+        reviewModel,
+      });
+      setNotice({
+        tone: "success",
+        text: t(
+          "codex.modelProviders.discovery.success",
+          "已获取 {{count}} 个上游模型。请选择默认会话模型和 Review 模型后保存。",
+          { count: models.length },
+        ),
+      });
+    } catch {
+      // Do not surface raw upstream errors: they can contain provider details.
+      setFormError(
+        t(
+          "codex.modelProviders.discovery.failed",
+          "获取上游模型失败。请检查 API 地址、Key 和网络后重试。",
+        ),
+      );
+    } finally {
+      setDiscoveringModels(false);
+    }
+  }, [
+    currentEditingProvider?.apiKeys,
+    discoveringModels,
+    form.baseUrl,
+    form.defaultModel,
+    form.newApiKey,
+    form.reviewModel,
+    mutateForm,
+    saving,
+    t,
+  ]);
+
+  const selectedModelCatalog = useMemo(
+    () => parseModelCatalogText(form.modelCatalogText),
+    [form.modelCatalogText],
+  );
+  const availableModelCatalog = useMemo(
+    () => mergeCodexModelProviderCatalogOptions(discoveredModelCatalog, selectedModelCatalog),
+    [discoveredModelCatalog, selectedModelCatalog],
+  );
+  const selectedModelCatalogKeys = useMemo(
+    () => new Set(selectedModelCatalog.map((model) => model.toLowerCase())),
+    [selectedModelCatalog],
+  );
+  const isAllAvailableModelCatalogSelected =
+    availableModelCatalog.length > 0
+    && availableModelCatalog.every((model) => selectedModelCatalogKeys.has(model.toLowerCase()));
+
+  const updateSelectedModelCatalog = useCallback(
+    (nextModels: string[]) => {
+      const models = parseModelCatalogText(nextModels.join("\n"));
+      const retainedDefault = models.find(
+        (model) => model.toLowerCase() === form.defaultModel.trim().toLowerCase(),
+      );
+      const retainedReview = models.find(
+        (model) => model.toLowerCase() === form.reviewModel.trim().toLowerCase(),
+      );
+      mutateForm({
+        modelCatalogText: models.join("\n"),
+        defaultModel: retainedDefault ?? models[0] ?? "",
+        reviewModel: retainedReview ?? "",
+      });
+    },
+    [form.defaultModel, form.reviewModel, mutateForm],
+  );
+
+  const toggleDiscoveredModel = useCallback(
+    (model: string) => {
+      const key = model.trim().toLowerCase();
+      const isSelected = selectedModelCatalogKeys.has(key);
+      updateSelectedModelCatalog(
+        isSelected
+          ? selectedModelCatalog.filter((item) => item.toLowerCase() !== key)
+          : [...selectedModelCatalog, model],
+      );
+    },
+    [selectedModelCatalog, selectedModelCatalogKeys, updateSelectedModelCatalog],
+  );
+
+  const toggleAllDiscoveredModels = useCallback(() => {
+    updateSelectedModelCatalog(
+      isAllAvailableModelCatalogSelected ? [] : availableModelCatalog,
+    );
+  }, [availableModelCatalog, isAllAvailableModelCatalogSelected, updateSelectedModelCatalog]);
 
   const parseServiceError = useCallback(
     (err: unknown): string => {
@@ -2206,8 +2247,9 @@ export function useCodexModelProviderManagerController({
         savedProvider = await createCodexModelProvider({
           name,
           baseUrl,
-          sourceTag: selectedSponsorTemplate?.id,
           modelCatalog,
+          defaultModel: form.defaultModel || undefined,
+          reviewModel: form.reviewModel || undefined,
           modelContextWindows: parsedWindows.windows,
           supportsVision: form.supportsVision,
           modelCapabilities,
@@ -2225,8 +2267,10 @@ export function useCodexModelProviderManagerController({
         savedProvider = await updateCodexModelProvider(form.providerId, {
           name,
           baseUrl,
-          sourceTag: selectedSponsorTemplate?.id ?? null,
+          sourceTag: currentEditingProvider?.sourceTag ?? null,
           modelCatalog,
+          defaultModel: form.defaultModel || null,
+          reviewModel: form.reviewModel || null,
           modelContextWindows: parsedWindows.windows,
           supportsVision: form.supportsVision,
           modelCapabilities,
@@ -2342,7 +2386,7 @@ export function useCodexModelProviderManagerController({
     parseServiceError,
     reloadProviders,
     saving,
-    selectedSponsorTemplate?.id,
+    currentEditingProvider?.sourceTag,
     t,
   ]);
 
@@ -3444,9 +3488,12 @@ export function useCodexModelProviderManagerController({
     handleRenameApiKey,
     handleSaveApiKeyEdit,
     handleSaveProvider,
+    handleDiscoverProviderModels,
+    toggleAllDiscoveredModels,
+    toggleDiscoveredModel,
+    updateSelectedModelCatalog,
     handleSelectPresetEndpoint,
     handleSelectProviderPreset,
-    handleSelectSponsorTemplate,
     handleStartBatchProviderTest,
     handleTestProvider,
     instancePickerProviderId,
@@ -3455,7 +3502,6 @@ export function useCodexModelProviderManagerController({
     isCurrentProviderActive,
     isInstanceReady,
     isProviderCustomSortActive,
-    isSponsorProvider,
     loading,
     maskAccountText,
     maskApiKey,
@@ -3514,11 +3560,12 @@ export function useCodexModelProviderManagerController({
     searchQuery,
     selectedPreset,
     selectedPresetId,
+    selectedModelCatalogKeys,
+    availableModelCatalog,
+    isAllAvailableModelCatalogSelected,
     selectedProviderApiKeyMap,
     selectedProviderIds,
     selectedProviderOauthAccount,
-    selectedSponsorTemplate,
-    selectedSponsorTemplateId,
     selectFailedBatchTestResults,
     setApiKeyPickerProviderId,
     setBatchTestFilter,
@@ -3549,10 +3596,10 @@ export function useCodexModelProviderManagerController({
     showModal,
     showProviderCustomSortModal,
     showQuickConfigModal,
-    sponsorProviderTemplates,
     stopProviderCustomSortDragging,
     t,
     testingProviderId,
+    discoveringModels,
     toggleAllVisibleBatchTestProviders,
     toggleAllVisibleBatchTestResults,
     toggleBatchTestProvider,

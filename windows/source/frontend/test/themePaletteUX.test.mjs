@@ -20,8 +20,13 @@ test("dark theme secondary copy remains legible on high-density displays", () =>
   assert.match(globalStyles, /--text-quaternary: rgba\(203, 218, 229, 0\.64\);/);
 });
 
-test("light theme keeps navigation and supporting copy visibly darker than separators", () => {
-  assert.match(globalStyles, /--text-secondary: rgba\(27, 43, 66, 0\.9\);/);
-  assert.match(globalStyles, /--text-tertiary: rgba\(38, 55, 80, 0\.78\);/);
-  assert.match(globalStyles, /--text-quaternary: rgba\(48, 66, 92, 0\.64\);/);
+test("light theme uses the original Cockpit canvas, hierarchy and text contrast", () => {
+  assert.match(globalStyles, /--bg-base: #f6f5f2;/);
+  assert.match(globalStyles, /--bg-elevated: #ffffff;/);
+  assert.match(globalStyles, /--bg-card: rgba\(255, 255, 255, 0\.75\);/);
+  assert.match(globalStyles, /--text-primary: #0f172a;/);
+  assert.match(globalStyles, /--text-secondary: #475569;/);
+  assert.match(globalStyles, /--text-tertiary: #64748b;/);
+  assert.match(globalStyles, /--text-quaternary: #94a3b8;/);
+  assert.match(globalStyles, /--accent: #1d4ed8;/);
 });

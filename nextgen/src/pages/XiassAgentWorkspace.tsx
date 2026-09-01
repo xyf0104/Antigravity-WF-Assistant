@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Blocks,
   CircleAlert,
@@ -18,9 +27,20 @@ import {
   UserRoundCheck,
   Users,
 } from 'lucide-react';
-import { renderPlatformIcon } from '../utils/platformMeta';
+import { PlatformGroupSwitcher } from '../components/platform/PlatformGroupSwitcher';
+import {
+  findGroupByPlatform,
+  resolveGroupChildName,
+  usePlatformLayoutStore,
+} from '../stores/usePlatformLayoutStore';
+import { getPlatformLabel } from '../utils/platformMeta';
 import type { PlatformId } from '../types/platform';
-import { getWfBridgeSession, type WfBridgeSession } from '../services/wfBridgeService';
+import {
+  getWfBridgeSession,
+  handleWfBridgeHostAction,
+  type WfBridgeHostActionRequest,
+  type WfBridgeSession,
+} from '../services/wfBridgeService';
 import {
   navigateXiassWorkspacePanel,
   type XiassWorkspacePanelNavigateDetail,
@@ -98,6 +118,47 @@ function panelItem(
     icon,
     target: { kind: 'panel', panelId, panelNavigation },
   };
+}
+
+const WF_HOST_ACTION_KINDS = new Set<WfBridgeHostActionRequest['kind']>([
+  'open_url',
+  'open_file',
+  'open_directory',
+  'save_file',
+  'claude_code_account_candidates',
+  'claude_code_apply_account',
+]);
+
+const EMBEDDED_WORKSPACE_MIN_HEIGHT = 520;
+const EMBEDDED_WORKSPACE_MAX_HEIGHT = 32_000;
+const EMBEDDED_WORKSPACE_MAX_SCROLL_DELTA = 1_200;
+
+function normalizeEmbeddedWorkspaceHeight(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const height = Math.ceil(value);
+  if (height < EMBEDDED_WORKSPACE_MIN_HEIGHT || height > EMBEDDED_WORKSPACE_MAX_HEIGHT) {
+    return null;
+  }
+  return height;
+}
+
+function normalizeEmbeddedWorkspaceScrollDelta(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(
+    -EMBEDDED_WORKSPACE_MAX_SCROLL_DELTA,
+    Math.min(EMBEDDED_WORKSPACE_MAX_SCROLL_DELTA, value),
+  );
+}
+
+function isWfBridgeHostActionRequest(value: unknown): value is WfBridgeHostActionRequest {
+  if (!value || typeof value !== 'object') return false;
+  const request = value as Partial<WfBridgeHostActionRequest>;
+  return (
+    typeof request.requestId === 'string'
+    && /^[0-9a-f]{64}$/.test(request.requestId)
+    && typeof request.kind === 'string'
+    && WF_HOST_ACTION_KINDS.has(request.kind as WfBridgeHostActionRequest['kind'])
+  );
 }
 
 function navigationItemsForModule(module: XiassCoreModule): WorkspaceNavigationItem[] {
@@ -183,19 +244,52 @@ export function XiassAgentWorkspace({
   initialView,
   requestedView,
 }: XiassAgentWorkspaceProps) {
+  const { t } = useTranslation();
+  const { platformGroups } = usePlatformLayoutStore();
   const navigationItems = useMemo(() => navigationItemsForModule(module), [module]);
   const [view, setView] = useState(() => readRememberedView(module, navigationItems, initialView));
   const [session, setSession] = useState<WfBridgeSession | null>(null);
   const [loading, setLoading] = useState(false);
+  const [iframeReady, setIframeReady] = useState(false);
+  const [iframeContentHeight, setIframeContentHeight] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>(() =>
     document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
   );
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const handledHostActionIdsRef = useRef(new Set<string>());
   const activeItem = navigationItems.find((item) => item.id === view) ?? navigationItems[0];
   const activeTarget = activeItem?.target;
   const activePanelId = activeTarget?.kind === 'panel' ? activeTarget.panelId : null;
   const panelIdSet = useMemo(() => new Set(panels.map((panel) => panel.id)), [panels]);
+  const currentGroup = useMemo(
+    () => findGroupByPlatform(platformGroups, platformId),
+    [platformGroups, platformId],
+  );
+  const currentPlatformLabel = useMemo(
+    () => getPlatformLabel(platformId, t),
+    [platformId, t],
+  );
+  const groupSwitcherOptions = useMemo(() => {
+    const platformIds = currentGroup ? currentGroup.platformIds : [platformId];
+    return platformIds.map((candidatePlatformId) => ({
+      platformId: candidatePlatformId,
+      label: currentGroup
+        ? resolveGroupChildName(
+            currentGroup,
+            candidatePlatformId,
+            getPlatformLabel(candidatePlatformId, t),
+          )
+        : getPlatformLabel(candidatePlatformId, t),
+    }));
+  }, [currentGroup, platformId, t]);
+  const groupSwitcherLabel = useMemo(
+    () =>
+      currentGroup
+        ? resolveGroupChildName(currentGroup, platformId, currentPlatformLabel)
+        : currentPlatformLabel,
+    [currentGroup, currentPlatformLabel, platformId],
+  );
 
   const loadNativeWorkspace = useCallback(async () => {
     setLoading(true);
@@ -269,6 +363,68 @@ export function XiassAgentWorkspace({
     return url.toString();
   }, [activeTarget, module, resolvedTheme, session]);
 
+  useEffect(() => {
+    setIframeReady(false);
+    setIframeContentHeight(null);
+  }, [iframeUrl]);
+
+  useEffect(() => {
+    handledHostActionIdsRef.current.clear();
+  }, [session?.port, session?.token]);
+
+  useEffect(() => {
+    if (!session) return;
+    const expectedOrigin = new URL(session.url).origin;
+    const handleEmbeddedMessage = (event: MessageEvent) => {
+      if (
+        event.origin !== expectedOrigin
+        || event.source !== iframeRef.current?.contentWindow
+      ) {
+        return;
+      }
+
+      if (event.data?.type === 'xiass-wf-ready') {
+        setIframeReady(true);
+        return;
+      }
+      if (event.data?.type === 'xiass-wf-content-height') {
+        const contentHeight = normalizeEmbeddedWorkspaceHeight(event.data?.height);
+        if (contentHeight !== null) {
+          setIframeContentHeight((current) =>
+            current !== null && Math.abs(current - contentHeight) < 2
+              ? current
+              : contentHeight,
+          );
+        }
+        return;
+      }
+      if (event.data?.type === 'xiass-wf-scroll') {
+        const deltaX = normalizeEmbeddedWorkspaceScrollDelta(event.data?.deltaX) ?? 0;
+        const deltaY = normalizeEmbeddedWorkspaceScrollDelta(event.data?.deltaY) ?? 0;
+        if (deltaX === 0 && deltaY === 0) return;
+        document.querySelector<HTMLElement>('.main-wrapper')?.scrollBy({
+          left: deltaX,
+          top: deltaY,
+          behavior: 'auto',
+        });
+        return;
+      }
+      if (event.data?.type !== 'xiass-wf-host-action') return;
+
+      const request = event.data.request;
+      if (
+        !isWfBridgeHostActionRequest(request)
+        || handledHostActionIdsRef.current.has(request.requestId)
+      ) {
+        return;
+      }
+      handledHostActionIdsRef.current.add(request.requestId);
+      void handleWfBridgeHostAction(session.port, request).catch(() => undefined);
+    };
+    window.addEventListener('message', handleEmbeddedMessage);
+    return () => window.removeEventListener('message', handleEmbeddedMessage);
+  }, [session]);
+
   const deliverToken = useCallback(() => {
     if (!session || !iframeRef.current?.contentWindow) return;
     iframeRef.current.contentWindow.postMessage(
@@ -284,52 +440,65 @@ export function XiassAgentWorkspace({
     }
   };
 
+  const embeddedFrameStyle = useMemo<CSSProperties | undefined>(
+    () =>
+      activeTarget?.kind !== 'native' || iframeContentHeight === null
+        ? undefined
+        : { '--xiass-embedded-frame-height': `${iframeContentHeight}px` } as CSSProperties,
+    [activeTarget?.kind, iframeContentHeight],
+  );
+
   return (
-    <section className="xiass-agent-workspace" data-module={module}>
-      <header className="xiass-agent-workspace__masthead">
-        <div className="xiass-agent-workspace__identity">
-          <div className="xiass-agent-workspace__icon" aria-hidden="true">
-            {renderPlatformIcon(platformId, 30)}
-          </div>
-          <div>
-            <span className="xiass-agent-workspace__kicker">XIASS 统一工作台</span>
-            <h1>{title}</h1>
-            <p>{description}</p>
-          </div>
+    <section
+      className="xiass-agent-workspace"
+      data-module={module}
+      aria-label={`${title}：${description}`}
+    >
+      <header className="page-top-strip xiass-agent-workspace__top-strip">
+        <div className="page-top-strip-left xiass-agent-workspace__top-strip-left">
+          <span className="page-top-strip-label xiass-agent-workspace__page-label">
+            账号
+          </span>
         </div>
-        <div className="xiass-agent-workspace__trust">
-          <ShieldCheck size={15} />
-          <span>本机安全运行</span>
-        </div>
+        <div className="page-top-strip-right-placeholder" aria-hidden="true" />
       </header>
 
-      <nav
-        className="xiass-agent-workspace__navigation"
-        aria-label={`${title} 功能导航`}
-        role="tablist"
-      >
-        {navigationItems.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            aria-selected={view === item.id}
-            className={view === item.id ? 'active' : ''}
-            onClick={() => selectItem(item)}
-          >
-            <span className="xiass-agent-workspace__navigation-icon" aria-hidden="true">
-              {item.icon}
-            </span>
-            <span>
-              <strong>{item.label}</strong>
-              <small>{item.caption}</small>
-            </span>
-          </button>
-        ))}
-      </nav>
+      <div className="page-tabs-row page-tabs-center page-tabs-row-with-leading xiass-agent-workspace__tabs-row">
+        <div className="page-tabs-leading">
+          <PlatformGroupSwitcher
+            currentPlatformId={platformId}
+            currentLabel={groupSwitcherLabel}
+            options={groupSwitcherOptions}
+            currentGroupId={currentGroup?.id ?? null}
+          />
+        </div>
+        <nav
+          className="page-tabs filter-tabs xiass-agent-workspace__navigation"
+          aria-label={`${title} 功能导航`}
+          role="tablist"
+        >
+          {navigationItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={view === item.id}
+              className={`filter-tab${view === item.id ? ' active' : ''}`}
+              title={item.caption}
+              onClick={() => selectItem(item)}
+            >
+              <span className="xiass-agent-workspace__navigation-icon" aria-hidden="true">
+                {item.icon}
+              </span>
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
 
       <main
         className="xiass-agent-workspace__canvas"
+        style={embeddedFrameStyle}
         aria-busy={activeTarget?.kind === 'native' && loading}
       >
         <header className="xiass-agent-workspace__section-head">
@@ -343,8 +512,11 @@ export function XiassAgentWorkspace({
         </header>
 
         <div className="xiass-agent-workspace__surface">
-          <div className="xiass-agent-workspace__native" hidden={activeTarget?.kind !== 'native'}>
-            {loading && (
+          <div
+            className="xiass-agent-workspace__native"
+            hidden={activeTarget?.kind !== 'native'}
+          >
+            {(loading || (session && !iframeReady)) && (
               <div className="xiass-agent-workspace__state" role="status">
                 <RefreshCw size={22} className="spin" />
                 <h2>正在加载工作台</h2>
@@ -365,11 +537,12 @@ export function XiassAgentWorkspace({
             {!loading && session && activeTarget?.kind === 'native' && (
               <iframe
                 ref={iframeRef}
-                className="xiass-agent-workspace__iframe"
+                className={`xiass-agent-workspace__iframe${iframeReady ? ' is-ready' : ''}`}
                 src={iframeUrl}
                 name={session.token}
                 title={`${title} ${activeItem?.label}`}
                 onLoad={deliverToken}
+                aria-hidden={!iframeReady}
                 allow="clipboard-read; clipboard-write"
               />
             )}

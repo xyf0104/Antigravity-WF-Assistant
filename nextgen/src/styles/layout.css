@@ -2,15 +2,28 @@
    App Layout - Sidebar Layout
    ============================================ */
 
-/* 顶部固定拖拽区域 */
+/*
+ * The draggable area must never form an invisible sheet above content. Agent
+ * workspaces intentionally begin near the top edge, so retain a small handle
+ * in the gutter between the side navigation and the canvas instead.
+ */
 .drag-region {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   height: 46px;
-  /* Keep title-bar drag area above modal overlays so window can still move when dialogs are open. */
-  z-index: 13050;
+  z-index: 1100;
+  pointer-events: none;
+}
+
+.drag-region__handle {
+  position: absolute;
+  top: 0;
+  left: 112px;
+  width: 64px;
+  height: 46px;
+  pointer-events: auto;
   -webkit-app-region: drag;
   user-select: none;
 }
@@ -24,8 +37,12 @@
 }
 
 .app-container-windows .drag-region {
-  /* Windows 上拖拽层不能压过侧边菜单，否则缩放/布局变化后图标会被透明层截获点击。 */
+  /* Keep the Windows drag handle below overlays but above the empty canvas gutter. */
   z-index: 900;
+}
+
+.app-container-side-nav-classic .drag-region__handle {
+  left: calc(var(--side-nav-classic-width-expanded) + 8px);
 }
 
 .app-container-windows .side-nav,
@@ -35,13 +52,16 @@
 
 .app-container-side-nav-classic {
   --side-nav-classic-width-expanded: 264px;
-  --side-nav-classic-width-collapsed: 96px;
+  --side-nav-classic-width-collapsed: 112px;
   --side-nav-classic-top-padding: 58px;
   --side-nav-classic-brand-margin-top: 2px;
   --side-nav-classic-brand-height: 72px;
-  --side-nav-classic-handle-width: 40px;
-  --side-nav-classic-handle-height: 44px;
+  --side-nav-classic-handle-width: 48px;
+  --side-nav-classic-handle-height: 48px;
   --side-nav-classic-main-gap: 40px;
+  --side-nav-classic-content-start: calc(
+    var(--side-nav-classic-width-expanded) + var(--side-nav-classic-main-gap)
+  );
 }
 
 /* SideNav - 左侧悬浮胶囊 */
@@ -394,7 +414,7 @@
   --side-nav-classic-sub-item-padding-inline-scaled: calc(12px * var(--side-nav-classic-adaptive-scale));
   --side-nav-classic-sub-item-icon-size-scaled: calc(16px * var(--side-nav-classic-adaptive-scale));
   --side-nav-classic-sub-item-text-size-scaled: calc(13px * var(--side-nav-classic-adaptive-scale));
-  --side-nav-classic-collapsed-item-width-scaled: calc(44px * var(--side-nav-classic-adaptive-scale));
+  --side-nav-classic-collapsed-item-width-scaled: clamp(54px, calc(58px * var(--side-nav-classic-adaptive-scale)), 60px);
   width: var(--side-nav-classic-width-expanded);
   min-height: 100vh;
   max-height: 100vh;
@@ -449,6 +469,10 @@
   margin: var(--side-nav-classic-brand-margin-top-scaled) var(--side-nav-classic-brand-margin-inline-scaled) 0;
   border-bottom: 1px solid rgba(151, 194, 224, 0.1);
   min-height: var(--side-nav-classic-brand-height-scaled);
+}
+
+.side-nav.side-nav-classic .side-nav-classic-handle {
+  flex: 0 0 auto;
 }
 
 .side-nav-brand-main {
@@ -661,7 +685,12 @@
 }
 
 .app-container-side-nav-classic .main-wrapper {
-  margin-inline-start: calc(var(--side-nav-classic-width-expanded) + var(--side-nav-classic-main-gap));
+  margin-inline-start: var(--side-nav-classic-content-start);
+  max-width: calc(100% - var(--side-nav-classic-content-start));
+  overflow-x: hidden;
+  overflow-y: auto;
+  height: 100vh;
+  height: 100dvh;
 }
 
 .side-nav.side-nav-classic.side-nav-classic-collapsed {
@@ -675,8 +704,10 @@
 }
 
 .side-nav.side-nav-classic.side-nav-classic-collapsed .nav-brand {
+  flex-direction: column;
   justify-content: center;
   align-items: center;
+  gap: 10px;
   padding: 0 0 var(--side-nav-classic-brand-padding-bottom-scaled);
   margin: var(--side-nav-classic-brand-margin-top-scaled) 0 0;
   width: 100%;
@@ -684,6 +715,7 @@
 
 .side-nav.side-nav-classic.side-nav-classic-collapsed .side-nav-brand-main {
   flex: 0 0 auto;
+  order: 2;
 }
 
 .side-nav.side-nav-classic.side-nav-classic-collapsed .side-nav-brand-title {
@@ -697,6 +729,8 @@
 
 .side-nav.side-nav-classic.side-nav-classic-collapsed .nav-item {
   width: var(--side-nav-classic-collapsed-item-width-scaled);
+  min-height: var(--side-nav-classic-collapsed-item-width-scaled);
+  height: var(--side-nav-classic-collapsed-item-width-scaled);
   padding: 0;
   justify-content: center;
 }
@@ -707,14 +741,8 @@
 }
 
 .side-nav-classic-handle {
-  position: fixed;
-  top: calc(
-    (var(--side-nav-classic-top-padding) * var(--side-nav-classic-adaptive-scale, 1))
-    + (var(--side-nav-classic-brand-margin-top) * var(--side-nav-classic-adaptive-scale, 1))
-    + ((var(--side-nav-classic-brand-height) * var(--side-nav-classic-adaptive-scale, 1)) - (var(--side-nav-classic-handle-height) * var(--side-nav-classic-adaptive-scale, 1))) / 2
-  );
-  left: 0;
-  transform: translate(calc(var(--side-nav-classic-width-expanded) - 24px), -50%);
+  position: static;
+  transform: none;
   width: calc(var(--side-nav-classic-handle-width) * var(--side-nav-classic-adaptive-scale, 1));
   height: calc(var(--side-nav-classic-handle-height) * var(--side-nav-classic-adaptive-scale, 1));
   border: 1px solid var(--border-light);
@@ -725,10 +753,9 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  z-index: 1001;
+  z-index: 1;
   box-shadow: 0 10px 20px rgba(15, 23, 42, 0.14);
-  /* 使用 transform 替代 left 的过度动画，开启 GPU 硬件加速避免 Reflow */
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.25s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
   padding: 0;
 }
 
@@ -758,11 +785,26 @@ html[data-theme="dark"] .side-nav-classic-handle:hover {
 }
 
 .side-nav-classic-handle-collapsed {
-  transform: translate(calc(var(--side-nav-classic-width-collapsed) - 24px), -50%);
+  order: 1;
 }
 
 .app-container-side-nav-classic-collapsed .main-wrapper {
-  margin-inline-start: calc(var(--side-nav-classic-width-collapsed) + var(--side-nav-classic-main-gap));
+  --side-nav-classic-content-start: calc(
+    var(--side-nav-classic-width-collapsed) + var(--side-nav-classic-main-gap)
+  );
+}
+
+.app-container-side-nav-classic .main-wrapper > :is(.main-content, .app-page-keep-alive) {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A full-width classic sidebar leaves limited room on common laptop windows. */
+@media (max-width: 1280px) {
+  .app-container-side-nav-classic {
+    --side-nav-classic-main-gap: 28px;
+  }
 }
 
 .side-nav-more-popover {

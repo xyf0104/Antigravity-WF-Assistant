@@ -6,6 +6,9 @@ import {
   CodexApiProviderMode,
   CodexAppSpeed,
   CodexAppSpeedConfig,
+  CodexConfigBackupInfo,
+  CodexConfigBackupVerification,
+  CodexConfigRestoreResult,
   CodexFingerprintMode,
   CodexBatchDeleteJobStatus,
   CodexProviderWireApi,
@@ -46,6 +49,25 @@ export async function getCodexConfigTomlPath(): Promise<string> {
 /** 打开当前 Codex config.toml */
 export async function openCodexConfigToml(): Promise<void> {
   return await invoke('open_codex_config_toml');
+}
+
+/** List metadata-only, checksum-protected Codex config recovery points. */
+export async function listCodexConfigBackups(): Promise<CodexConfigBackupInfo[]> {
+  return await invoke('list_codex_config_backups');
+}
+
+/** Perform a fresh SHA-256 and TOML verification before a restore can proceed. */
+export async function verifyCodexConfigBackup(
+  backupId: string,
+): Promise<CodexConfigBackupVerification> {
+  return await invoke('verify_codex_config_backup', { backupId });
+}
+
+/** Restore one verified recovery point and create a new safety recovery point first. */
+export async function restoreCodexConfigBackup(
+  backupId: string,
+): Promise<CodexConfigRestoreResult> {
+  return await invoke('restore_codex_config_backup', { backupId });
 }
 
 /** 获取 Codex config.toml 快捷配置 */

@@ -673,6 +673,13 @@ fn repair_session_visibility_for_instances_with_options(
             Some(instance),
         );
         let running = is_instance_running(instance, &process_entries);
+        if !options.dry_run {
+            recover_incomplete_session_visibility_repairs(
+                &instance.data_dir,
+                &instance.id,
+                running,
+            )?;
+        }
         let target_provider = selection.target_provider_for(&instance.data_dir)?;
         let rollout_facts = if options.collect_rollout_thread_facts {
             Some(collect_rollout_thread_facts(
@@ -857,12 +864,13 @@ fn repair_session_visibility_for_instances_with_options(
             total_instances,
             Some(instance),
         );
+        let include_sqlite = sqlite_rows_to_update > 0
+            || sqlite_timestamp_rows_to_update > 0
+            || catalog_scan.total() > 0;
         let backup_dir = backup_instance_files(
             &instance.data_dir,
             &rollout_changes,
-            sqlite_rows_to_update > 0
-                || sqlite_timestamp_rows_to_update > 0
-                || catalog_scan.total() > 0,
+            include_sqlite,
             session_index_scan.entries_to_add > 0 || session_index_scan.entries_to_update > 0,
             global_state_entries_to_update > 0,
             &instance.id,
@@ -870,6 +878,19 @@ fn repair_session_visibility_for_instances_with_options(
             options,
         )?;
         let backup_dir_string = backup_dir.to_string_lossy().to_string();
+        let backup_scope_dir = session_visibility_repair_backup_scope_dir(&instance.data_dir)?;
+        set_session_visibility_repair_operation_status(
+            &backup_scope_dir,
+            &backup_dir,
+            SessionVisibilityRepairOperationStatus::Applying,
+            "修复写入已开始",
+        )
+        .map_err(|error| {
+            format!(
+                "无法记录 Codex 历史会话修复开始状态，未执行写入 ({}): {}",
+                instance.name, error
+            )
+        })?;
 
         report_repair_progress(
             progress_reporter,
@@ -902,9 +923,7 @@ fn repair_session_visibility_for_instances_with_options(
                 let restore_result = restore_instance_files_from_backup(
                     &instance.data_dir,
                     &backup_dir,
-                    sqlite_rows_to_update > 0
-                        || sqlite_timestamp_rows_to_update > 0
-                        || catalog_scan.total() > 0,
+                    include_sqlite,
                 );
                 if let Err(restore_error) = restore_result {
                     return Err(format!(
@@ -912,6 +931,20 @@ fn repair_session_visibility_for_instances_with_options(
                         instance.name,
                         error,
                         restore_error,
+                        backup_dir.display()
+                    ));
+                }
+                if let Err(status_error) = set_session_visibility_repair_operation_status(
+                    &backup_scope_dir,
+                    &backup_dir,
+                    SessionVisibilityRepairOperationStatus::RolledBack,
+                    "修复失败后已自动回滚",
+                ) {
+                    return Err(format!(
+                        "修复实例历史会话可见性失败 ({}): {}；已自动回滚，但无法记录回滚状态: {}；备份目录: {}",
+                        instance.name,
+                        error,
+                        status_error,
                         backup_dir.display()
                     ));
                 }
@@ -923,6 +956,48 @@ fn repair_session_visibility_for_instances_with_options(
                 ));
             }
         };
+
+        if let Err(commit_error) = set_session_visibility_repair_operation_status(
+            &backup_scope_dir,
+            &backup_dir,
+            SessionVisibilityRepairOperationStatus::Committed,
+            "修复写入已验证并提交",
+        ) {
+            let restore_result = restore_instance_files_from_backup(
+                &instance.data_dir,
+                &backup_dir,
+                include_sqlite,
+            );
+            if let Err(restore_error) = restore_result {
+                return Err(format!(
+                    "修复实例历史会话可见性后无法提交操作状态 ({}): {}；自动回滚也失败: {}；备份目录: {}",
+                    instance.name,
+                    commit_error,
+                    restore_error,
+                    backup_dir.display()
+                ));
+            }
+            if let Err(status_error) = set_session_visibility_repair_operation_status(
+                &backup_scope_dir,
+                &backup_dir,
+                SessionVisibilityRepairOperationStatus::RolledBack,
+                "无法提交操作状态，已自动回滚",
+            ) {
+                return Err(format!(
+                    "修复实例历史会话可见性后无法提交操作状态 ({}): {}；已自动回滚，但无法记录回滚状态: {}；备份目录: {}",
+                    instance.name,
+                    commit_error,
+                    status_error,
+                    backup_dir.display()
+                ));
+            }
+            return Err(format!(
+                "修复实例历史会话可见性后无法提交操作状态 ({}): {}；已自动回滚，备份目录: {}",
+                instance.name,
+                commit_error,
+                backup_dir.display()
+            ));
+        }
 
         let applied_rollout_count = rollout_changes
             .len()

@@ -77,7 +77,8 @@
         "sharedCreditPackage": "Sdílený balíček kreditů",
         "account": "Účet",
         "createdAt": "Čas vytvoření",
-        "userId": "ID uživatele"
+        "userId": "ID uživatele",
+        "teamName": "Název týmu"
       },
       "empty": {
         "title": "Žádné účty"
@@ -738,8 +739,6 @@
       "floatingCardShowNowAction": "Zobrazit plovoucí kartu",
       "dataDir": "Datový adresář",
       "dataDirDesc": "Umístění pro uložení účtů a konfiguračních souborů.",
-      "topRightAdVisible": "Zobrazit horní promo",
-      "topRightAdVisibleDesc": "Skryje horní promo pozici v aplikaci. Stránka sponzorů zůstane beze změny.",
       "opencodeTitle": "Integrace OpenCode",
       "opencodeRestart": "Restartovat OpenCode při přepnutí Codex",
       "opencodeRestartDesc": "Synchronizovat informace o účtu Codex v OpenCode",
@@ -1196,7 +1195,7 @@
       "importModalDesc": "Vyberte, co chcete importovat. Starší zálohy účtů se zpracují jako import pouze účtů.",
       "selectionTitle": "Rozsah dat",
       "accountsOptionTitle": "Data účtů",
-      "accountsOptionDesc": "Obsahuje obnovitelné zálohy účtů jednotlivých platforem a zachovává kompatibilitu se starším JSON účtů. Přihlašovací údaje Grok CLI nejsou zahrnuty; oficiální soubor auth.json importujte samostatně.",
+      "accountsOptionDesc": "Obsahuje účty XIASS a účty, poskytovatele modelů a nastavení Antigravity WF. JSON obsahuje přihlašovací údaje a vzniká jen při volbě zálohy účtů; Codex auth.json se nikdy nečte ani nezahrnuje.",
       "configOptionTitle": "Konfigurační data",
       "configOptionDesc": "Obsahuje nastavení aplikace, skupiny, instance, úlohy probuzení a konfiguraci poskytovatelů modelů.",
       "exportConfirm": "Exportovat data",
@@ -4806,7 +4805,11 @@
     "subscription": "Předplatné",
     "injectToCursor": "Přepnout na Cursor",
     "quota": {
-      "onDemand": "Na vyžádání"
+      "onDemand": "Na vyžádání",
+      "totalUsage": "Celkové využití",
+      "autoComposer": "Automaticky + Composer",
+      "apiUsage": "Využití API",
+      "usageDetails": "Podrobnosti využití"
     },
     "title": "Správa účtů Cursor",
     "instances": {
@@ -4844,7 +4847,8 @@
       "quotaFailed": "Dotaz kvóty selhal ({{count}})",
       "cleanQuotaFailedAction": "Smazat účty s neúspěšným dotazem kvóty ({{count}})",
       "cleanQuotaFailedConfirm": "Odstranit všech {{count}} účtů, u kterých selhal dotaz kvóty?"
-    }
+    },
+    "authId": "ID autorizace"
   },
   "breakout": {
     "gameOver": "Konec hry",
@@ -5838,16 +5842,16 @@
   },
   "apiKeyFun": {
     "eyebrow": "Přepojení",
-    "title": "Relay APIKEY.FUN",
+    "title": "Relay XIASS API",
     "description": "Oficiální partnerský relay XIASS poskytuje stabilní, otevřený a cenově výhodný API přístup k velkým modelům. Podporuje hlavní modely jako Claude, OpenAI a Gemini a hodí se pro jednotnou konfiguraci v Codex, Gemini CLI, Claude Code a dalších vývojářských nástrojích. Registrací přes exkluzivní odkaz XIASS můžete získat trvalou slevu až 5% na dobíjení.",
     "register": "Exkluzivní odkaz",
     "docs": "Oficiální dokumentace",
     "viewNow": "Zobrazit",
     "queryTitle": "Kvóta klíče",
-    "queryDesc": "Zadejte API Key APIKEY.FUN pro automatickou kontrolu kvóty.",
+    "queryDesc": "Zadejte API Key XIASS API pro automatickou kontrolu kvóty.",
     "keyNotSet": "Klíč nezadán",
     "apiKeyLabel": "Klíč API",
-    "apiKeyPlaceholder": "Vložte API Key vytvořený v konzoli APIKEY.FUN",
+    "apiKeyPlaceholder": "Vložte API Key vytvořený v konzoli XIASS API",
     "hideKey": "Skrýt",
     "showKey": "Zobrazit",
     "endpointLabel": "Přístupový bod",
@@ -5858,7 +5862,7 @@
     "saving": "Zápis",
     "saveSuccess": "Zapsáno do Codex Provider: {{name}}",
     "toolsTitle": "Zapsat config klienta",
-    "toolsDesc": "Přímo zapisuje lokální konfigurační soubory podle dokumentace APIKEY.FUN a rozložení CC Switch.",
+    "toolsDesc": "Přímo zapisuje lokální konfigurační soubory podle dokumentace XIASS API a rozložení XIASS Tools.",
     "endpoint": {
       "global": "Globální linka",
       "globalDesc": "Oficiální výchozí API Base pro většinu sítí.",
@@ -5954,7 +5958,7 @@
       "claudeShort": "Claude CLI"
     },
     "prefill": {
-      "claudeDesktopReady": "Nastavení APIKEY.FUN je vyplněno. Potvrďte přidání do Claude."
+      "claudeDesktopReady": "Nastavení XIASS API je vyplněno. Potvrďte přidání do Claude."
     },
     "copyKey": "Copy Key​",
     "clearKey": "Clear input​"
@@ -6130,7 +6134,7 @@
     "apiKey": {
       "desc": "Uloží Claude CLI API Key jako samostatné přihlašovací údaje. Přepnutí nebo spuštění CLI zapíše env hodnoty poskytovatele do Claude Code settings.json a nezapisuje přihlášení Claude.",
       "nameLabel": "Název účtu",
-      "namePlaceholder": "Volitelné, např. APIKEY.FUN",
+      "namePlaceholder": "Volitelné, např. XIASS API",
       "keyLabel": "Klíč API",
       "placeholder": "Vložte API Key poskytovatele",
       "hide": "Skrýt API Key",
