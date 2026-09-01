@@ -68,8 +68,10 @@ test('Windows clean-install policy keeps offline WebView2 and exercises both ins
     path.resolve(projectRoot, '..', '.github', 'scripts', 'smoke-windows-installers.ps1'),
     'utf8',
   );
-  assert.match(installerSmoke, /Start-Process msiexec\.exe -ArgumentList @\('\/i'/);
-  assert.match(installerSmoke, /Start-Process -FilePath \$nsis\[0\]\.FullName -ArgumentList @\('\/S'\)/);
+  assert.match(installerSmoke, /function Invoke-XiassInstallerOperation/);
+  assert.match(installerSmoke, /\$InstallerOperationTimeoutSeconds = 300/);
+  assert.match(installerSmoke, /Invoke-XiassInstallerOperation -FilePath 'msiexec\.exe' -ArgumentList @\('\/i'/);
+  assert.match(installerSmoke, /Invoke-XiassInstallerOperation -FilePath \$nsis\[0\]\.FullName -ArgumentList @\('\/S'\)/);
   assert.match(installerSmoke, /Wait-XiassFrontend \$msiApp/);
   assert.match(installerSmoke, /Wait-XiassFrontend \$nsisApp/);
 });
@@ -138,9 +140,9 @@ test('platform CI workflows launch built applications before uploading artifacts
   assert.match(windowsWorkflow, /smoke-windows-installers\.ps1/);
   assert.match(windowsWorkflow, /BridgeSmokeScript \(Resolve-Path 'scripts\/release\/smoke_wf_bridge_sidecar\.mjs'\)\.Path/);
   assert.match(windowsWorkflow, /HasExited/);
-  assert.match(windowsWorkflow, /MSI administrative extraction failed/);
-  assert.match(windowsWorkflow, /NSIS extraction failed/);
-  assert.match(windowsWorkflow, /Packaged license resource missing or empty/);
+  assert.match(windowsWorkflow, /Installer payload contents are verified by the clean installation lifecycle smoke test/);
+  assert.doesNotMatch(windowsWorkflow, /msiexec\.exe -ArgumentList @\('\/a'/);
+  assert.doesNotMatch(releaseWorkflow, /msiexec\.exe -ArgumentList @\('\/a'/);
   assert.match(windowsWorkflow, /\[Diagnostics\] 前端已就绪/);
   assert.match(windowsWorkflow, /\[Diagnostics\] 前端启动超时/);
   assert.match(releaseWorkflow, /Smoke-test release DMG installation and app startup/);
@@ -173,9 +175,11 @@ test('platform CI workflows launch built applications before uploading artifacts
     path.resolve(projectRoot, '..', '.github', 'scripts', 'smoke-windows-installers.ps1'),
     'utf8',
   );
-  assert.match(windowsInstallerSmoke, /Start-Process msiexec\.exe[\s\S]*?'\/i'/);
-  assert.match(windowsInstallerSmoke, /Start-Process msiexec\.exe[\s\S]*?'\/x'/);
-  assert.match(windowsInstallerSmoke, /Start-Process -FilePath \$nsis\[0\]\.FullName -ArgumentList @\('\/S'\)/);
+  assert.match(windowsInstallerSmoke, /function Invoke-XiassInstallerOperation/);
+  assert.match(windowsInstallerSmoke, /\$InstallerOperationTimeoutSeconds = 300/);
+  assert.match(windowsInstallerSmoke, /Invoke-XiassInstallerOperation -FilePath 'msiexec\.exe' -ArgumentList @\('\/i'/);
+  assert.match(windowsInstallerSmoke, /Invoke-XiassInstallerOperation -FilePath 'msiexec\.exe' -ArgumentList @\('\/x'/);
+  assert.match(windowsInstallerSmoke, /Invoke-XiassInstallerOperation -FilePath \$nsis\[0\]\.FullName -ArgumentList @\('\/S'\)/);
   assert.match(windowsInstallerSmoke, /\[Diagnostics\] 前端已就绪/);
   assert.match(windowsInstallerSmoke, /Assert-XiassInstalledPayload \$msiApp 'MSI'/);
   assert.match(windowsInstallerSmoke, /Assert-XiassInstalledPayload \$nsisApp 'NSIS'/);
@@ -198,6 +202,7 @@ test('platform CI workflows launch built applications before uploading artifacts
   assert.match(windowsInstallerSmoke, /function Assert-XiassOfflineWebView2Payload/);
   assert.match(windowsInstallerSmoke, /80MB/);
   assert.match(windowsInstallerSmoke, /Assert-XiassOfflineWebView2Payload \$msi\[0\] \$nsis\[0\]/);
+  assert.match(windowsInstallerSmoke, /CLIProxyAPI-MIT\.txt/);
   assert.match(windowsInstallerSmoke, /function Stop-XiassSmokeProcessTree/);
   assert.match(windowsInstallerSmoke, /taskkill\.exe \/PID \$Process\.Id \/T \/F/);
   assert.match(windowsInstallerSmoke, /Stop-XiassSmokeProcessTree \$process/);

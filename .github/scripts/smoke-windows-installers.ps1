@@ -12,6 +12,21 @@ $ProductName = 'XIASS Tools'
 $ExecutableName = 'xiass-tools.exe'
 $OfflineWebView2RuntimeName = 'MicrosoftEdgeWebView2RuntimeInstaller.exe'
 $MinimumOfflineInstallerBytes = 80MB
+$InstallerOperationTimeoutSeconds = 300
+$RequiredLicenseNames = @(
+  'CC-BY-NC-SA-4.0-LEGALCODE.txt',
+  'XIASS-Tools-MIT.txt',
+  'XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt',
+  'ORIGIN_AND_LICENSE.md',
+  'THIRD_PARTY_NOTICES.md',
+  'Tauri-APACHE-2.0.txt',
+  'Tauri-MIT.txt',
+  'jsQR-APACHE-2.0.txt',
+  'Lucide-ISC-and-MIT.txt',
+  'protobufjs-BSD-3-Clause.txt',
+  'React-MIT.txt',
+  'CLIProxyAPI-MIT.txt'
+)
 $BridgeSmokeScript = (Resolve-Path -LiteralPath $BridgeSmokeScript -ErrorAction Stop).Path
 $UninstallRoots = @(
   'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -85,9 +100,8 @@ function Assert-XiassOfflineWebView2Payload([System.IO.FileInfo]$Msi, [System.IO
     throw "MSI does not contain the expected offline WebView2 Binary table entry: $OfflineWebView2RuntimeName"
   }
 
-  # NSIS extraction is already required by the package inspection step. Listing
-  # its entries here proves that the same offline payload is embedded in Setup,
-  # instead of merely trusting the tauri.conf.json setting.
+  # Listing the installer directly proves that the same offline payload is
+  # embedded in Setup, instead of merely trusting the tauri.conf.json setting.
   $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
   $nsisEntries = @(& $sevenZip l -ba $Nsis.FullName)
   if ($LASTEXITCODE -ne 0) {
@@ -142,11 +156,7 @@ function Assert-XiassInstalledPayload([System.IO.FileInfo]$App, [string]$Label) 
       throw "$Label installation is missing sidecar $sidecarPattern"
     }
   }
-  foreach ($license in @(
-    'XIASS-Tools-MIT.txt',
-    'XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt',
-    'THIRD_PARTY_NOTICES.md'
-  )) {
+  foreach ($license in $RequiredLicenseNames) {
     $matches = @(Get-ChildItem $installRoot -Recurse -File -Filter $license -ErrorAction SilentlyContinue)
     if ($matches.Count -ne 1 -or $matches[0].Length -le 0) {
       throw "$Label installation is missing license resource $license"
@@ -210,6 +220,27 @@ function Stop-XiassSmokeProcessTree([System.Diagnostics.Process]$Process) {
   # would leave a child bridge running through the next installer lifecycle.
   & taskkill.exe /PID $Process.Id /T /F 2>$null | Out-Null
   $Process.WaitForExit()
+}
+
+function Invoke-XiassInstallerOperation {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+    [Parameter(Mandatory = $true)]
+    [string[]]$ArgumentList,
+    [Parameter(Mandatory = $true)]
+    [string]$Label,
+    [int]$TimeoutSeconds = $InstallerOperationTimeoutSeconds
+  )
+
+  $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru
+  if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+    $process.WaitForExit(10000) | Out-Null
+    throw "$Label did not finish within $TimeoutSeconds seconds"
+  }
+  $process.Refresh()
+  return $process.ExitCode
 }
 
 function Wait-XiassFrontend([System.IO.FileInfo]$App, [string]$DataDirectory, [string]$Label) {
@@ -278,8 +309,8 @@ if (Get-XiassUninstallEntry) { throw "$ProductName is already installed on the c
 Assert-XiassOfflineWebView2Payload $msi[0] $nsis[0]
 
 try {
-  $msiInstall = Start-Process msiexec.exe -ArgumentList @('/i', $msi[0].FullName, '/quiet', '/norestart') -Wait -PassThru
-  if ($msiInstall.ExitCode -ne 0) { throw "MSI installation failed with code $($msiInstall.ExitCode)" }
+  $msiInstallExitCode = Invoke-XiassInstallerOperation -FilePath 'msiexec.exe' -ArgumentList @('/i', $msi[0].FullName, '/quiet', '/norestart') -Label 'MSI installation'
+  if ($msiInstallExitCode -ne 0) { throw "MSI installation failed with code $msiInstallExitCode" }
   $msiApp = Find-XiassExecutable
   Assert-XiassInstalledPayload $msiApp 'MSI'
   Invoke-XiassInstalledWFBridgeSmoke $msiApp 'MSI'
@@ -287,15 +318,15 @@ try {
 }
 finally {
   if (Get-XiassUninstallEntry) {
-    $msiUninstall = Start-Process msiexec.exe -ArgumentList @('/x', $msi[0].FullName, '/quiet', '/norestart') -Wait -PassThru
-    if ($msiUninstall.ExitCode -ne 0) { throw "MSI uninstall failed with code $($msiUninstall.ExitCode)" }
+    $msiUninstallExitCode = Invoke-XiassInstallerOperation -FilePath 'msiexec.exe' -ArgumentList @('/x', $msi[0].FullName, '/quiet', '/norestart') -Label 'MSI uninstall'
+    if ($msiUninstallExitCode -ne 0) { throw "MSI uninstall failed with code $msiUninstallExitCode" }
     Wait-XiassUninstalled 'MSI'
   }
 }
 
 try {
-  $nsisInstall = Start-Process -FilePath $nsis[0].FullName -ArgumentList @('/S') -Wait -PassThru
-  if ($nsisInstall.ExitCode -ne 0) { throw "NSIS installation failed with code $($nsisInstall.ExitCode)" }
+  $nsisInstallExitCode = Invoke-XiassInstallerOperation -FilePath $nsis[0].FullName -ArgumentList @('/S') -Label 'NSIS installation'
+  if ($nsisInstallExitCode -ne 0) { throw "NSIS installation failed with code $nsisInstallExitCode" }
   $nsisApp = Find-XiassExecutable
   Assert-XiassInstalledPayload $nsisApp 'NSIS'
   Invoke-XiassInstalledWFBridgeSmoke $nsisApp 'NSIS'
@@ -314,8 +345,8 @@ finally {
     if (-not $uninstaller -or -not (Test-Path $uninstaller -PathType Leaf)) {
       throw 'NSIS uninstaller was not found from the uninstall registration'
     }
-    $nsisUninstall = Start-Process -FilePath $uninstaller -ArgumentList @('/S') -Wait -PassThru
-    if ($nsisUninstall.ExitCode -ne 0) { throw "NSIS uninstall failed with code $($nsisUninstall.ExitCode)" }
+    $nsisUninstallExitCode = Invoke-XiassInstallerOperation -FilePath $uninstaller -ArgumentList @('/S') -Label 'NSIS uninstall'
+    if ($nsisUninstallExitCode -ne 0) { throw "NSIS uninstall failed with code $nsisUninstallExitCode" }
     Wait-XiassUninstalled 'NSIS'
     Assert-XiassShortcutsRemoved 'NSIS'
   }

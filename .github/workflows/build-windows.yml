@@ -91,42 +91,14 @@ jobs:
           $nsis = @(Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle -Recurse -Filter '*-setup.exe')
           if ($msi.Count -ne 1) { throw "Expected one MSI, found $($msi.Count)" }
           if ($nsis.Count -ne 1) { throw "Expected one NSIS installer, found $($nsis.Count)" }
-          $licenseNames = @(
-            'CC-BY-NC-SA-4.0-LEGALCODE.txt',
-            'XIASS-Tools-MIT.txt',
-            'XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt',
-            'ORIGIN_AND_LICENSE.md',
-            'THIRD_PARTY_NOTICES.md',
-            'Tauri-APACHE-2.0.txt',
-            'Tauri-MIT.txt',
-            'jsQR-APACHE-2.0.txt',
-            'Lucide-ISC-and-MIT.txt',
-            'protobufjs-BSD-3-Clause.txt',
-            'React-MIT.txt',
-            'CLIProxyAPI-MIT.txt'
-          )
-          $inspectionRoot = Join-Path $env:RUNNER_TEMP ("xiass-tools-package-inspection-" + [guid]::NewGuid().ToString('N'))
-          $msiRoot = Join-Path $inspectionRoot 'msi'
-          $nsisRoot = Join-Path $inspectionRoot 'nsis'
-          New-Item -ItemType Directory -Path $msiRoot, $nsisRoot | Out-Null
-          try {
-            $msiExtract = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', $msi[0].FullName, '/qn', "TARGETDIR=$msiRoot") -Wait -PassThru
-            if ($msiExtract.ExitCode -ne 0) { throw "MSI administrative extraction failed with code $($msiExtract.ExitCode)" }
-            $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
-            & $sevenZip x -y "-o$nsisRoot" $nsis[0].FullName | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed with code $LASTEXITCODE" }
-            foreach ($packageRoot in @($msiRoot, $nsisRoot)) {
-              foreach ($licenseName in $licenseNames) {
-                $matches = @(Get-ChildItem $packageRoot -Recurse -File -Filter $licenseName -ErrorAction SilentlyContinue)
-                if ($matches.Count -ne 1 -or $matches[0].Length -le 0) {
-                  throw "Packaged license resource missing or empty: package=$packageRoot file=$licenseName"
-                }
-              }
-            }
-          }
-          finally {
-            Remove-Item -LiteralPath $inspectionRoot -Recurse -Force -ErrorAction SilentlyContinue
-          }
+          if ($msi[0].Length -le 0) { throw "MSI is empty: $($msi[0].FullName)" }
+          if ($nsis[0].Length -le 0) { throw "NSIS Setup is empty: $($nsis[0].FullName)" }
+          # The lifecycle smoke below installs each package, validates every
+          # required resource in the installed application, starts it, then
+          # uninstalls it. Avoid a separate msiexec /a pass here: on hosted
+          # runners that administrative extraction can wait indefinitely while
+          # adding no coverage beyond the real install lifecycle.
+          Write-Host 'Installer payload contents are verified by the clean installation lifecycle smoke test.'
 
       - name: Smoke-test packaged Windows app startup
         shell: pwsh
