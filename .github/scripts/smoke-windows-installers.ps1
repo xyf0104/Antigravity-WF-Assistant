@@ -77,8 +77,9 @@ function Get-XiassMsiBinaryNames([string]$MsiPath) {
     }
   }
   finally {
-    if ($view) { $view.Close() }
-    if ($database) { $database.Close() }
+    # The Windows Installer COM wrappers exposed on hosted Windows runners do
+    # not consistently surface a Close() method. Releasing the COM references
+    # is sufficient and works across both Windows PowerShell and PowerShell 7.
     foreach ($comObject in @($record, $view, $database, $installer)) {
       if ($null -ne $comObject -and [System.Runtime.InteropServices.Marshal]::IsComObject($comObject)) {
         [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($comObject)

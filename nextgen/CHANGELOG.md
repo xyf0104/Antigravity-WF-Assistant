@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.5] - 2026-09-01
+
+### Fixed
+
+- Isolated the local CLI proxy runtime authentication state so a fresh account session cannot inherit another runtime's auth directory or model registration.
+- Fixed the Windows installer lifecycle verifier on GitHub hosted runners by releasing Windows Installer COM objects without calling an unsupported `Close()` method. MSI and Setup validation still checks the embedded offline WebView2 payload before exercising clean install, app startup, bridge startup and uninstall.
+
 ## [1.7.4] - 2026-09-01
 
 ### Fixed
