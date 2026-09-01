@@ -65,6 +65,17 @@ jobs:
       - name: Build unsigned Windows x64 installers
         run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target x86_64-pc-windows-msvc
 
+      - name: Print WiX linker diagnostic after failed installer build
+        if: failure()
+        shell: pwsh
+        run: |
+          if ($env:XIASS_WIX_LIGHT_LOG -and (Test-Path $env:XIASS_WIX_LIGHT_LOG -PathType Leaf)) {
+            Get-Content $env:XIASS_WIX_LIGHT_LOG -Raw | Write-Host
+          }
+          else {
+            Write-Host 'WiX linker diagnostic log was not created.'
+          }
+
       - name: Verify Windows sidecars and installers
         shell: pwsh
         run: |

@@ -1,11 +1,11 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Tauri 2.9 uses WiX 3.14. Its linker invokes a few ICE checks through the
-# legacy Windows scripting engine, which is not registered on hosted runners.
-# Download the exact Tauri-pinned toolset, verify it, then wrap only light.exe
-# to suppress those host-only checks. Packaging remains covered by extraction,
-# silent installation, app startup, and WF bridge smoke tests.
+# Tauri 2.9 uses WiX 3.14. Its validation pass depends on legacy Windows
+# scripting components absent from hosted runners. Download the exact
+# Tauri-pinned toolset, verify it, then wrap only light.exe. Packaging remains
+# covered by extraction, silent installation, app startup, and WF bridge smoke
+# tests.
 $wixArchiveUrl = 'https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip'
 $expectedSha256 = '6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31'
 $wixDirectory = Join-Path $env:LOCALAPPDATA 'tauri\WixTools314'
@@ -59,6 +59,15 @@ if ($LASTEXITCODE -ne 0) {
   throw "Failed to compile the WiX linker wrapper (exit=$LASTEXITCODE)"
 }
 
+$diagnosticPath = Join-Path $env:RUNNER_TEMP 'xiass-wix-light.log'
+Remove-Item -LiteralPath $diagnosticPath -Force -ErrorAction SilentlyContinue
+"XIASS_WIX_LIGHT_LOG=$diagnosticPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+& $originalLight '-?'
+if ($LASTEXITCODE -ne 0) {
+  throw "Prepared WiX linker wrapper failed its startup check (exit=$LASTEXITCODE)"
+}
+
 if (
   -not (Test-Path $originalLight -PathType Leaf) -or
   -not (Test-Path $realLight -PathType Leaf) -or
@@ -67,4 +76,4 @@ if (
   throw 'WiX linker wrapper preparation did not produce the required linker runtime files'
 }
 
-Write-Host 'Prepared verified WiX 3.14 linker wrapper for hosted Windows ICE compatibility.'
+Write-Host "Prepared verified WiX 3.14 linker wrapper. Diagnostics: $diagnosticPath"

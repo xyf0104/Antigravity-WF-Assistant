@@ -365,6 +365,17 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --ci --config src-tauri/tauri.release.generated.conf.json --target x86_64-pc-windows-msvc
 
+      - name: Print WiX linker diagnostic after failed installer build
+        if: failure()
+        shell: pwsh
+        run: |
+          if ($env:XIASS_WIX_LIGHT_LOG -and (Test-Path $env:XIASS_WIX_LIGHT_LOG -PathType Leaf)) {
+            Get-Content $env:XIASS_WIX_LIGHT_LOG -Raw | Write-Host
+          }
+          else {
+            Write-Host 'WiX linker diagnostic log was not created.'
+          }
+
       - name: Stage and verify Windows release assets
         shell: pwsh
         run: |
