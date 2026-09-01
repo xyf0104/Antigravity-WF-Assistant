@@ -1983,6 +1983,69 @@ func TestSidecarRuntimeRegistersManifestCodexAccessTokenAuths(t *testing.T) {
 	}
 }
 
+func TestSidecarRuntimeKeepsDefaultAuthStoresBoundToTheirOwnAuthDirs(t *testing.T) {
+	makeFixture := func(name, token string) (*config.Config, *manifest, string) {
+		t.Helper()
+		tempDir := t.TempDir()
+		authDir := filepath.Join(tempDir, "auths")
+		if err := os.MkdirAll(authDir, 0o755); err != nil {
+			t.Fatalf("create %s auth dir: %v", name, err)
+		}
+		configPath := filepath.Join(tempDir, "config.json")
+		if err := os.WriteFile(configPath, []byte(`{}`), 0o644); err != nil {
+			t.Fatalf("write %s config: %v", name, err)
+		}
+		authFile := name + ".json"
+		if err := os.WriteFile(filepath.Join(authDir, authFile), []byte(`{"type":"codex","access_token":"`+token+`"}`), 0o600); err != nil {
+			t.Fatalf("write %s auth: %v", name, err)
+		}
+		account := &accountSpec{
+			ID:       name,
+			AuthID:   authFile,
+			AuthKind: "access_token",
+		}
+		m := &manifest{
+			Accounts:        []accountSpec{*account},
+			ModelIDs:        []string{"gpt-5.4"},
+			accountByID:     map[string]*accountSpec{name: account},
+			accountByAuthID: map[string]*accountSpec{authFile: account},
+			accountByAPIKey: map[string]*accountSpec{},
+		}
+		return &config.Config{AuthDir: authDir}, m, configPath
+	}
+
+	firstCfg, firstManifest, firstConfigPath := makeFixture("first-account", "first-token")
+	secondCfg, secondManifest, secondConfigPath := makeFixture("second-account", "second-token")
+
+	// Build both managers before starting either runtime. Before the instance-
+	// owned storage fix, constructing the second manager changed the global
+	// store used by the first manager and made it load the second auth directory.
+	firstManager := buildCoreAuthManager(firstCfg, &cockpitSelector{manifest: firstManifest}, &authHook{manifest: firstManifest}, firstManifest, nil, newRequestUsageTracker())
+	secondManager := buildCoreAuthManager(secondCfg, &cockpitSelector{manifest: secondManifest}, &authHook{manifest: secondManifest}, secondManifest, nil, newRequestUsageTracker())
+
+	firstRuntime, err := newSidecarRuntime(context.Background(), firstConfigPath, firstCfg, firstManifest, firstManager)
+	if err != nil {
+		t.Fatalf("start first runtime: %v", err)
+	}
+	defer firstRuntime.Stop()
+	secondRuntime, err := newSidecarRuntime(context.Background(), secondConfigPath, secondCfg, secondManifest, secondManager)
+	if err != nil {
+		t.Fatalf("start second runtime: %v", err)
+	}
+	defer secondRuntime.Stop()
+
+	for _, auth := range firstManager.List() {
+		if auth != nil && auth.Metadata != nil && auth.Metadata["access_token"] == "second-token" {
+			t.Fatalf("first runtime loaded an auth from the second runtime directory: %#v", auth)
+		}
+	}
+	for _, auth := range secondManager.List() {
+		if auth != nil && auth.Metadata != nil && auth.Metadata["access_token"] == "first-token" {
+			t.Fatalf("second runtime loaded an auth from the first runtime directory: %#v", auth)
+		}
+	}
+}
+
 func TestManifestRegistryModelsPreservesStaticThinkingSupport(t *testing.T) {
 	models := manifestRegistryModels(&manifest{
 		ModelIDs: []string{"gpt-5.2"},

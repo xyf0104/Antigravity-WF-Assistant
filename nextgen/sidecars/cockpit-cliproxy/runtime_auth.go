@@ -219,8 +219,12 @@ func newSidecarRuntime(ctx context.Context, configPath string, cfg *config.Confi
 		return nil, err
 	}
 
+	// A sidecar may be recreated while another app/runtime is still active. Keep
+	// the compatibility auth manager bound to this runtime's auth directory
+	// instead of mutating the SDK process-wide token store.
+	runtimeTokenStore := newSidecarFileTokenStore(cfg)
 	authManager := sdkauth.NewManager(
-		sdkauth.GetTokenStore(),
+		runtimeTokenStore,
 		sdkauth.NewCodexAuthenticator(),
 		sdkauth.NewClaudeAuthenticator(),
 		sdkauth.NewAntigravityAuthenticator(),
@@ -287,6 +291,17 @@ func newSidecarRuntime(ctx context.Context, configPath string, cfg *config.Confi
 	service.RebindRuntimeExecutors()
 
 	return &sidecarRuntime{manager: manager, service: service, cancel: cancel, done: done}, nil
+}
+
+// newSidecarFileTokenStore returns storage owned by exactly one sidecar
+// runtime. The SDK's global store is suitable for a single CLI process, but a
+// desktop app can create multiple runtimes with different AuthDir values.
+func newSidecarFileTokenStore(cfg *config.Config) *sdkauth.FileTokenStore {
+	store := sdkauth.NewFileTokenStore()
+	if cfg != nil {
+		store.SetBaseDir(cfg.AuthDir)
+	}
+	return store
 }
 
 func registerConfigCodexAPIKeyAuths(ctx context.Context, service *cliproxy.Service, cfg *config.Config, m *manifest) error {

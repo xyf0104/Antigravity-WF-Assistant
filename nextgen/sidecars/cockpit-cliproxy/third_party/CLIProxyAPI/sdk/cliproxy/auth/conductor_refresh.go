@@ -118,6 +118,9 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 	if hasUnauthorizedAuthFailure(a) {
 		return false
 	}
+	if isStaticAccessTokenAuth(a) {
+		return false
+	}
 	if !a.NextRefreshAfter.IsZero() && now.Before(a.NextRefreshAfter) {
 		return false
 	}
@@ -167,6 +170,28 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 		return now.Sub(lastRefresh) >= *lead
 	}
 	return true
+}
+
+// isStaticAccessTokenAuth reports credentials that are intentionally supplied
+// as a personal access token. They are routable OAuth-shaped records, but they
+// cannot be refreshed and must never enter the automatic refresh scheduler.
+func isStaticAccessTokenAuth(a *Auth) bool {
+	if a == nil {
+		return false
+	}
+	for _, value := range []string{
+		authAttribute(a, AttributeAuthKind),
+		authMetadataString(a, "auth_mode"),
+		authMetadataString(a, "openai_auth_mode"),
+	} {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "access_token", "access-token", "access token", "accesstoken",
+			"personal_access_token", "personal-access-token", "personal access token",
+			"pat", "at":
+			return true
+		}
+	}
+	return false
 }
 
 func authPreferredInterval(a *Auth) time.Duration {
@@ -517,6 +542,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	auth := m.auths[id]
 	var exec ProviderExecutor
 	if auth != nil {
+		auth = auth.Clone()
 		// Use the same effective provider key as request execution so OpenAI-compat
 		// auths registered under namespaced keys still resolve for refresh.
 		exec = m.executors[executorKeyFromAuth(auth)]

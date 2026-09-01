@@ -70,6 +70,33 @@ func TestNextRefreshCheckAt_APIKeyUnschedule(t *testing.T) {
 	}
 }
 
+func TestStaticAccessTokenAuthDoesNotEnterAutoRefresh(t *testing.T) {
+	now := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
+	lead := 10 * time.Minute
+	setRefreshLeadFactory(t, "static-access-token", func() *time.Duration {
+		d := lead
+		return &d
+	})
+	auth := &Auth{
+		ID:       "a1",
+		Provider: "static-access-token",
+		Attributes: map[string]string{
+			AttributeAuthKind: "access_token",
+		},
+		Metadata: map[string]any{
+			"access_token":     "pat-token",
+			"openai_auth_mode": "personal_access_token",
+		},
+	}
+
+	if _, ok := nextRefreshCheckAt(now, auth, 15*time.Minute); ok {
+		t.Fatal("static access token must not be scheduled for automatic refresh")
+	}
+	if (&Manager{}).shouldRefresh(auth, now) {
+		t.Fatal("static access token must not be refreshed")
+	}
+}
+
 func TestNextRefreshCheckAt_NextRefreshAfterGate(t *testing.T) {
 	now := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
 	nextAfter := now.Add(30 * time.Minute)

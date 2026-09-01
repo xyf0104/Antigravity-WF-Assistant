@@ -26,8 +26,6 @@ import (
 
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 
-	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
-
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -1625,11 +1623,12 @@ func buildCoreAuthManager(cfg *config.Config, selector coreauth.Selector, hook c
 	return buildCoreAuthManagerWithStore(cfg, selector, hook, m, quota, tracker, nil)
 }
 
-// buildCoreAuthManagerWithStore allows isolated embedded runtimes to provide a
-// private backing store without changing the production global-store behavior.
+// buildCoreAuthManagerWithStore allows tests and embedded callers to provide a
+// specific backing store. Production creates a fresh file store for each
+// runtime so another instance cannot change this manager's AuthDir.
 func buildCoreAuthManagerWithStore(cfg *config.Config, selector coreauth.Selector, hook coreauth.Hook, m *manifest, quota *quotaReserveStateStore, tracker *requestUsageTracker, tokenStore coreauth.Store) *coreauth.Manager {
 	if tokenStore == nil {
-		tokenStore = sdkauth.GetTokenStore()
+		tokenStore = newSidecarFileTokenStore(cfg)
 	}
 	if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok && cfg != nil {
 		dirSetter.SetBaseDir(cfg.AuthDir)
