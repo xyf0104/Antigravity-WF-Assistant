@@ -355,6 +355,10 @@ jobs:
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         run: node scripts/release/generate_tauri_release_config.cjs --repo "$env:GITHUB_REPOSITORY"
 
+      - name: Prepare verified WiX linker for hosted runner validation
+        shell: pwsh
+        run: ./scripts/ci/prepare-wix-light-wrapper.ps1
+
       - name: Build signed-updater Windows x64 installers
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

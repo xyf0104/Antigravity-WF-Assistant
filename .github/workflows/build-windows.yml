@@ -58,6 +58,10 @@ jobs:
           node scripts/check_brand_and_license.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Prepare verified WiX linker for hosted runner validation
+        shell: pwsh
+        run: ./scripts/ci/prepare-wix-light-wrapper.ps1
+
       - name: Build unsigned Windows x64 installers
         run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target x86_64-pc-windows-msvc
 

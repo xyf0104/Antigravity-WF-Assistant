@@ -74,6 +74,31 @@ test('Windows clean-install policy keeps offline WebView2 and exercises both ins
   assert.match(installerSmoke, /Wait-XiassFrontend \$nsisApp/);
 });
 
+test('Windows CI prepares a verified WiX linker wrapper before both installer builds', () => {
+  const workflowsRoot = path.resolve(projectRoot, '..', '.github', 'workflows');
+  const wrapperScript = path.join(projectRoot, 'scripts', 'ci', 'prepare-wix-light-wrapper.ps1');
+  const wrapperSource = path.join(projectRoot, 'scripts', 'ci', 'wix-light-wrapper.rs');
+  const wrapper = fs.readFileSync(wrapperScript, 'utf8');
+  const wrapperRust = fs.readFileSync(wrapperSource, 'utf8');
+
+  for (const workflowName of ['build-windows.yml', 'release.yml']) {
+    const workflow = fs.readFileSync(path.join(workflowsRoot, workflowName), 'utf8');
+    assert.match(workflow, /Prepare verified WiX linker for hosted runner validation/);
+    assert.match(workflow, /prepare-wix-light-wrapper\.ps1/);
+  }
+
+  assert.match(wrapper, /Get-FileHash -LiteralPath \$archivePath -Algorithm SHA256/);
+  assert.match(wrapper, /6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31/);
+  assert.match(wrapper, /Move-Item -LiteralPath \$originalLight -Destination \$realLight/);
+  assert.match(wrapper, /Copy-Item -LiteralPath \$originalLightConfig -Destination \$realLightConfig/);
+  assert.match(wrapper, /rustc --edition 2021 \$wrapperSource -O -o \$originalLight/);
+  assert.match(wrapperRust, /with_file_name\("light\.real\.exe"\)/);
+  assert.match(wrapperRust, /-sice:ICE09/);
+  assert.match(wrapperRust, /-sice:ICE32/);
+  assert.match(wrapperRust, /-sice:ICE61/);
+  assert.match(wrapperRust, /\.args\(env::args_os\(\)\.skip\(1\)\)/);
+});
+
 test('platform CI workflows launch built applications before uploading artifacts', () => {
   const workflowsRoot = path.resolve(projectRoot, '..', '.github', 'workflows');
   const frontendEntry = fs.readFileSync(path.join(projectRoot, 'src', 'main.tsx'), 'utf8');

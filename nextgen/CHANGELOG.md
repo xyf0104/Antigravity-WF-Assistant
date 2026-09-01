@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.7.4] - 2026-09-01
+
+### Fixed
+
+- Kept the offline Windows WebView2 runtime while fixing WiX 3.14 MSI linking on GitHub hosted runners missing the legacy ICE scripting engine. The build now verifies the official WiX SHA-256 and still performs extraction, installation, app-startup, and local bridge smoke validation.
+
 ## [1.7.3] - 2026-09-01
 
 ### Fixed
