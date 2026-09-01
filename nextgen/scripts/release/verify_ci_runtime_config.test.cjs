@@ -187,6 +187,10 @@ test('platform CI workflows launch built applications before uploading artifacts
   assert.match(windowsInstallerSmoke, /function Get-XiassStartMenuShortcut/);
   assert.match(windowsInstallerSmoke, /Assert-XiassShortcuts 'NSIS'/);
   assert.match(windowsInstallerSmoke, /Assert-XiassShortcutsRemoved 'NSIS'/);
+  assert.match(
+    windowsInstallerSmoke,
+    /foreach \(\$shortcut in @\(\s*\(Get-XiassDesktopShortcut\),\s*\(Get-XiassStartMenuShortcut\)\s*\)\)/s,
+  );
   assert.match(windowsInstallerSmoke, /xiass-wf-bridge\*\.exe/);
   assert.match(windowsInstallerSmoke, /xiass-cliproxy\*\.exe/);
   assert.match(windowsInstallerSmoke, /function Invoke-XiassInstalledWFBridgeSmoke/);

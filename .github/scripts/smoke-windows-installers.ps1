@@ -204,7 +204,10 @@ function Assert-XiassShortcuts([string]$Label) {
 }
 
 function Assert-XiassShortcutsRemoved([string]$Label) {
-  foreach ($shortcut in @(Get-XiassDesktopShortcut, Get-XiassStartMenuShortcut)) {
+  foreach ($shortcut in @(
+    (Get-XiassDesktopShortcut),
+    (Get-XiassStartMenuShortcut)
+  )) {
     if ($shortcut -and (Test-Path $shortcut -PathType Leaf)) {
       throw "$Label uninstall left a $ProductName shortcut behind: $shortcut"
     }
