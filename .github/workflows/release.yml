@@ -307,7 +307,9 @@ jobs:
 
   windows:
     needs: prepare
-    runs-on: windows-latest
+    # WiX 3.14's linker is not reliable on the current Windows Server 2025 image.
+    # Pin the release lane to the supported Windows Server 2022 toolchain.
+    runs-on: windows-2022
     defaults:
       run:
         working-directory: nextgen

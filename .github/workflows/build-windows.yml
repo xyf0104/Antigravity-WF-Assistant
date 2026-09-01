@@ -15,7 +15,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Keep CI on the same stable WiX toolchain as the signed release workflow.
+    runs-on: windows-2022
     defaults:
       run:
         working-directory: nextgen

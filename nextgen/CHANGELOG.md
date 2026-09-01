@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.7.3] - 2026-09-01
+
+### Fixed
+
+- Pinned Windows package builds to the stable Windows Server 2022 runner after the current Windows Server 2025 image repeatedly failed while linking the MSI with WiX 3.14.
+
 ## [1.7.2] - 2026-09-01
 
 ### Added
