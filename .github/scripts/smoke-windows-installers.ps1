@@ -11,8 +11,16 @@ $ErrorActionPreference = 'Stop'
 $ProductName = 'XIASS Tools'
 $ExecutableName = 'xiass-tools.exe'
 $OfflineWebView2RuntimeName = 'MicrosoftEdgeWebView2RuntimeInstaller.exe'
+$WebView2RuntimeAppGuid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
 $MinimumOfflineInstallerBytes = 80MB
 $InstallerOperationTimeoutSeconds = 300
+$WebView2PrerequisiteTimeoutSeconds = 300
+$InstallerDiagnosticLogTailLines = 160
+$WebView2RuntimeRegistryPaths = @(
+  "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2RuntimeAppGuid",
+  "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$WebView2RuntimeAppGuid",
+  "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$WebView2RuntimeAppGuid"
+)
 $RequiredLicenseNames = @(
   'CC-BY-NC-SA-4.0-LEGALCODE.txt',
   'XIASS-Tools-MIT.txt',
@@ -114,6 +122,105 @@ function Assert-XiassOfflineWebView2Payload([System.IO.FileInfo]$Msi, [System.IO
   if ($offlineRuntimeEntries.Count -eq 0) {
     throw "NSIS Setup does not contain the expected offline WebView2 payload: $OfflineWebView2RuntimeName"
   }
+}
+
+function Get-XiassWebView2RuntimeVersions {
+  $versions = [System.Collections.Generic.List[string]]::new()
+  foreach ($registryPath in $WebView2RuntimeRegistryPaths) {
+    if (-not (Test-Path -LiteralPath $registryPath)) { continue }
+    try {
+      $version = Get-ItemPropertyValue -LiteralPath $registryPath -Name 'pv' -ErrorAction Stop
+    }
+    catch {
+      continue
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$version)) {
+      $versions.Add("$registryPath=$version")
+    }
+  }
+  return $versions.ToArray()
+}
+
+function Test-XiassWebView2RuntimeInstalled {
+  return (@(Get-XiassWebView2RuntimeVersions).Count -gt 0)
+}
+
+function Wait-XiassWebView2Runtime([string]$Label) {
+  for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    if (Test-XiassWebView2RuntimeInstalled) { return }
+    Start-Sleep -Seconds 1
+  }
+  throw "$Label completed without creating any WebView2 runtime registry entry expected by the Tauri MSI template"
+}
+
+function Export-XiassMsiBinary([string]$MsiPath, [string]$BinaryName, [string]$DestinationPath) {
+  $installer = $null
+  $database = $null
+  $view = $null
+  $record = $null
+  $output = $null
+  try {
+    $escapedBinaryName = $BinaryName.Replace("'", "''")
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $database = $installer.OpenDatabase($MsiPath, 0)
+    $view = $database.OpenView("SELECT `Name`, `Data` FROM `Binary` WHERE `Name` = '$escapedBinaryName'")
+    $view.Execute()
+    $record = $view.Fetch()
+    if ($null -eq $record) {
+      throw "MSI Binary table does not contain $BinaryName"
+    }
+
+    $destinationDirectory = Split-Path -Parent $DestinationPath
+    if ($destinationDirectory) {
+      New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
+    }
+    $output = [System.IO.File]::Open(
+      $DestinationPath,
+      [System.IO.FileMode]::Create,
+      [System.IO.FileAccess]::Write,
+      [System.IO.FileShare]::None
+    )
+    $byteEncoding = [System.Text.Encoding]::GetEncoding('iso-8859-1')
+    $chunkLength = 32768
+    while ($true) {
+      $chunk = [string]$record.ReadStream(2, $chunkLength, 1)
+      if ($chunk.Length -eq 0) { break }
+      [byte[]]$bytes = $byteEncoding.GetBytes($chunk)
+      $output.Write($bytes, 0, $bytes.Length)
+      if ($bytes.Length -lt $chunkLength) { break }
+    }
+  }
+  finally {
+    if ($output) { $output.Dispose() }
+    foreach ($comObject in @($record, $view, $database, $installer)) {
+      if ($null -ne $comObject -and [System.Runtime.InteropServices.Marshal]::IsComObject($comObject)) {
+        [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($comObject)
+      }
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
+    throw "MSI Binary table export did not create $DestinationPath"
+  }
+  $exported = Get-Item -LiteralPath $DestinationPath
+  if ($exported.Length -lt $MinimumOfflineInstallerBytes) {
+    throw "MSI Binary table export is too small for the offline WebView2 runtime ($($exported.Length) bytes)"
+  }
+  $headerStream = $null
+  try {
+    $headerStream = [System.IO.File]::OpenRead($DestinationPath)
+    [byte[]]$header = New-Object byte[] 2
+    if ($headerStream.Read($header, 0, $header.Length) -ne $header.Length) {
+      throw 'MSI Binary table export is too short to be a PE executable payload'
+    }
+  }
+  finally {
+    if ($headerStream) { $headerStream.Dispose() }
+  }
+  if ($header[0] -ne 0x4D -or $header[1] -ne 0x5A) {
+    throw 'MSI Binary table export is not a PE executable payload'
+  }
+  return $exported
 }
 
 function Find-XiassExecutable {
@@ -226,6 +333,47 @@ function Stop-XiassSmokeProcessTree([System.Diagnostics.Process]$Process) {
   $Process.WaitForExit()
 }
 
+function Write-XiassInstallerDiagnostics([string]$Label, [string]$DiagnosticLogPath) {
+  Write-Host "[Diagnostics] $Label timed out or failed."
+  $runtimeVersions = @(Get-XiassWebView2RuntimeVersions)
+  if ($runtimeVersions.Count -eq 0) {
+    Write-Host '[Diagnostics] No Tauri-compatible WebView2 runtime registry entry was found.'
+  } else {
+    Write-Host '[Diagnostics] WebView2 runtime registry entries:'
+    $runtimeVersions | ForEach-Object { Write-Host "[Diagnostics] $_" }
+  }
+
+  try {
+    $installerProcesses = @(
+      Get-CimInstance Win32_Process -ErrorAction Stop |
+        Where-Object {
+          $_.Name -in @(
+            'msiexec.exe',
+            'MicrosoftEdgeWebView2RuntimeInstaller.exe',
+            'MicrosoftEdgeWebview2Setup.exe',
+            'MicrosoftEdgeUpdate.exe'
+          )
+        } |
+        Select-Object ProcessId, ParentProcessId, Name, CommandLine
+    )
+    if ($installerProcesses.Count -eq 0) {
+      Write-Host '[Diagnostics] No active MSI, WebView2, or Edge Update process was found.'
+    } else {
+      Write-Host '[Diagnostics] Active MSI/WebView2 process tree:'
+      $installerProcesses | Format-Table -AutoSize | Out-String | Write-Host
+    }
+  }
+  catch {
+    Write-Host "[Diagnostics] Could not enumerate installer processes: $($_.Exception.Message)"
+  }
+
+  if ($DiagnosticLogPath -and (Test-Path -LiteralPath $DiagnosticLogPath -PathType Leaf)) {
+    Write-Host "[Diagnostics] Tail of $DiagnosticLogPath:"
+    Get-Content -LiteralPath $DiagnosticLogPath -Tail $InstallerDiagnosticLogTailLines -ErrorAction SilentlyContinue |
+      Write-Host
+  }
+}
+
 function Invoke-XiassInstallerOperation {
   param(
     [Parameter(Mandatory = $true)]
@@ -234,17 +382,45 @@ function Invoke-XiassInstallerOperation {
     [string[]]$ArgumentList,
     [Parameter(Mandatory = $true)]
     [string]$Label,
-    [int]$TimeoutSeconds = $InstallerOperationTimeoutSeconds
+    [int]$TimeoutSeconds = $InstallerOperationTimeoutSeconds,
+    [string]$DiagnosticLogPath = ''
   )
 
   $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru
   if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    Write-XiassInstallerDiagnostics -Label $Label -DiagnosticLogPath $DiagnosticLogPath
     & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
     $process.WaitForExit(10000) | Out-Null
     throw "$Label did not finish within $TimeoutSeconds seconds"
   }
   $process.Refresh()
   return $process.ExitCode
+}
+
+function Invoke-XiassOfflineWebView2Prerequisite([System.IO.FileInfo]$Msi, [string]$SmokeRoot) {
+  $runtimeVersions = @(Get-XiassWebView2RuntimeVersions)
+  if ($runtimeVersions.Count -gt 0) {
+    Write-Host "WebView2 runtime is already present: $($runtimeVersions -join '; ')"
+    return
+  }
+
+  # Tauri's MSI runs this same payload from a deferred custom action. Install
+  # it first so the subsequent real MSI lifecycle does not nest an installer
+  # under Windows Installer on hosted runners.
+  $payloadPath = Join-Path $SmokeRoot $OfflineWebView2RuntimeName
+  $payload = Export-XiassMsiBinary -MsiPath $Msi.FullName -BinaryName $OfflineWebView2RuntimeName -DestinationPath $payloadPath
+  $prerequisiteArguments = @{
+    FilePath = $payload.FullName
+    ArgumentList = @('/silent', '/install')
+    Label = 'Embedded offline WebView2 runtime prerequisite'
+    TimeoutSeconds = $WebView2PrerequisiteTimeoutSeconds
+  }
+  $exitCode = Invoke-XiassInstallerOperation @prerequisiteArguments
+  if ($exitCode -notin @(0, 3010)) {
+    Write-XiassInstallerDiagnostics -Label 'Embedded offline WebView2 runtime prerequisite' -DiagnosticLogPath ''
+    throw "Embedded offline WebView2 runtime prerequisite failed with code $exitCode"
+  }
+  Wait-XiassWebView2Runtime 'Embedded offline WebView2 runtime prerequisite'
 }
 
 function Wait-XiassFrontend([System.IO.FileInfo]$App, [string]$DataDirectory, [string]$Label) {
@@ -311,9 +487,11 @@ if ($msi.Count -ne 1) { throw "Expected one MSI installer, found $($msi.Count)" 
 if ($nsis.Count -ne 1) { throw "Expected one NSIS installer, found $($nsis.Count)" }
 if (Get-XiassUninstallEntry) { throw "$ProductName is already installed on the clean CI runner" }
 Assert-XiassOfflineWebView2Payload $msi[0] $nsis[0]
+Invoke-XiassOfflineWebView2Prerequisite $msi[0] $root
+$msiInstallLog = Join-Path $root 'msi-install.log'
 
 try {
-  $msiInstallExitCode = Invoke-XiassInstallerOperation -FilePath 'msiexec.exe' -ArgumentList @('/i', $msi[0].FullName, '/quiet', '/norestart') -Label 'MSI installation'
+  $msiInstallExitCode = Invoke-XiassInstallerOperation -FilePath 'msiexec.exe' -ArgumentList @('/i', $msi[0].FullName, '/quiet', '/norestart', '/l*v', $msiInstallLog) -Label 'MSI installation' -DiagnosticLogPath $msiInstallLog
   if ($msiInstallExitCode -ne 0) { throw "MSI installation failed with code $msiInstallExitCode" }
   $msiApp = Find-XiassExecutable
   Assert-XiassInstalledPayload $msiApp 'MSI'
