@@ -368,7 +368,7 @@ function Write-XiassInstallerDiagnostics([string]$Label, [string]$DiagnosticLogP
   }
 
   if ($DiagnosticLogPath -and (Test-Path -LiteralPath $DiagnosticLogPath -PathType Leaf)) {
-    Write-Host "[Diagnostics] Tail of $DiagnosticLogPath:"
+    Write-Host "[Diagnostics] Tail of ${DiagnosticLogPath}:"
     Get-Content -LiteralPath $DiagnosticLogPath -Tail $InstallerDiagnosticLogTailLines -ErrorAction SilentlyContinue |
       Write-Host
   }

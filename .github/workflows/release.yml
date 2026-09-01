@@ -340,6 +340,22 @@ jobs:
 
       - run: npm ci
 
+      - name: Validate Windows installer smoke script syntax
+        shell: pwsh
+        run: |
+          $smokeScript = (Resolve-Path '../.github/scripts/smoke-windows-installers.ps1').Path
+          $parseTokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            $smokeScript,
+            [ref]$parseTokens,
+            [ref]$parseErrors
+          ) | Out-Null
+          if ($null -ne $parseErrors -and $parseErrors.Count -gt 0) {
+            $parseErrors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+
       - name: Run release preflight
         shell: pwsh
         run: |

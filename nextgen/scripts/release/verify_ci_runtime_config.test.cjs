@@ -62,6 +62,8 @@ test('Windows clean-install policy keeps offline WebView2 and exercises both ins
     assert.match(workflow, /npx tauri build --ci .*--target x86_64-pc-windows-msvc/);
     assert.match(workflow, /Smoke-test (?:release )?MSI and Setup installation lifecycle/);
     assert.match(workflow, /smoke-windows-installers\.ps1/);
+    assert.match(workflow, /Validate Windows installer smoke script syntax/);
+    assert.match(workflow, /System\.Management\.Automation\.Language\.Parser\]::ParseFile/);
   }
 
   const installerSmoke = fs.readFileSync(
