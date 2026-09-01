@@ -22,6 +22,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
@@ -2319,7 +2320,7 @@ func TestSidecarRuntimeDoesNotSelectAccountWithExcludedModel(t *testing.T) {
 	}
 
 	cfg := &config.Config{AuthDir: authDir}
-	manager := buildCoreAuthManager(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil, newRequestUsageTracker())
+	manager := buildCoreAuthManagerWithStore(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil, newRequestUsageTracker(), sdkauth.NewFileTokenStore())
 	runtime, err := newSidecarRuntime(context.Background(), configPath, cfg, m, manager)
 	if err != nil {
 		t.Fatalf("newSidecarRuntime: %v", err)

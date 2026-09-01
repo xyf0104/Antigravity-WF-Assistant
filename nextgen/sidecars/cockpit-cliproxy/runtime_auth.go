@@ -537,12 +537,19 @@ func (r *sidecarRuntime) Stop() {
 		return
 	}
 	r.cancel()
-	if r.done == nil {
+	if r.done != nil {
+		select {
+		case <-r.done:
+		case <-time.After(10 * time.Second):
+		}
+	}
+	if r.manager == nil {
 		return
 	}
-	select {
-	case <-r.done:
-	case <-time.After(10 * time.Second):
+	for _, auth := range r.manager.List() {
+		if auth != nil && strings.TrimSpace(auth.ID) != "" {
+			cliproxy.GlobalModelRegistry().UnregisterClient(auth.ID)
+		}
 	}
 }
 

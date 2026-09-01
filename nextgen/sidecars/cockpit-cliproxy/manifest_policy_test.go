@@ -20,6 +20,7 @@ import (
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -1879,7 +1880,7 @@ func TestSidecarRuntimeRegistersConfigCodexAPIKeyAuths(t *testing.T) {
 		accountByAPIKey: map[string]*accountSpec{"sk-upstream": account},
 		ModelIDs:        []string{"gpt-5.4"},
 	}
-	manager := buildCoreAuthManager(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil, newRequestUsageTracker())
+	manager := buildCoreAuthManagerWithStore(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil, newRequestUsageTracker(), sdkauth.NewFileTokenStore())
 
 	runtime, err := newSidecarRuntime(context.Background(), configPath, cfg, m, manager)
 	if err != nil {
@@ -1947,7 +1948,7 @@ func TestSidecarRuntimeRegistersManifestCodexAccessTokenAuths(t *testing.T) {
 		accountByEmail:   map[string]*accountSpec{"token@example.com": account},
 		ModelIDs:         []string{"gpt-5.4"},
 	}
-	manager := buildCoreAuthManager(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil, newRequestUsageTracker())
+	manager := buildCoreAuthManagerWithStore(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil, newRequestUsageTracker(), sdkauth.NewFileTokenStore())
 
 	runtime, err := newSidecarRuntime(context.Background(), configPath, cfg, m, manager)
 	if err != nil {

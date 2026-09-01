@@ -1622,7 +1622,15 @@ func buildCoreAuthSelector(cfg *config.Config, selector coreauth.Selector, m *ma
 }
 
 func buildCoreAuthManager(cfg *config.Config, selector coreauth.Selector, hook coreauth.Hook, m *manifest, quota *quotaReserveStateStore, tracker *requestUsageTracker) *coreauth.Manager {
-	tokenStore := sdkauth.GetTokenStore()
+	return buildCoreAuthManagerWithStore(cfg, selector, hook, m, quota, tracker, nil)
+}
+
+// buildCoreAuthManagerWithStore allows isolated embedded runtimes to provide a
+// private backing store without changing the production global-store behavior.
+func buildCoreAuthManagerWithStore(cfg *config.Config, selector coreauth.Selector, hook coreauth.Hook, m *manifest, quota *quotaReserveStateStore, tracker *requestUsageTracker, tokenStore coreauth.Store) *coreauth.Manager {
+	if tokenStore == nil {
+		tokenStore = sdkauth.GetTokenStore()
+	}
 	if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok && cfg != nil {
 		dirSetter.SetBaseDir(cfg.AuthDir)
 	}
