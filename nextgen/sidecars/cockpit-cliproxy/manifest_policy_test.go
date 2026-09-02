@@ -2046,6 +2046,43 @@ func TestSidecarRuntimeKeepsDefaultAuthStoresBoundToTheirOwnAuthDirs(t *testing.
 	}
 }
 
+func TestSidecarRuntimeRegistersManifestAuthsBeforeStartingAutoRefresh(t *testing.T) {
+	tempDir := t.TempDir()
+	authDir := filepath.Join(tempDir, "auths")
+	if errMkdir := os.MkdirAll(authDir, 0o755); errMkdir != nil {
+		t.Fatalf("create auth dir: %v", errMkdir)
+	}
+	configPath := filepath.Join(tempDir, "config.json")
+	if errWrite := os.WriteFile(configPath, []byte(`{}`), 0o644); errWrite != nil {
+		t.Fatalf("write config: %v", errWrite)
+	}
+	authFile := "runtime-account.json"
+	if errWrite := os.WriteFile(filepath.Join(authDir, authFile), []byte(`{"type":"codex","access_token":"runtime-token"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth: %v", errWrite)
+	}
+	account := &accountSpec{ID: "runtime-account", AuthID: authFile, AuthKind: "access_token", AccessTokenOnly: true}
+	m := &manifest{
+		Accounts:        []accountSpec{*account},
+		ModelIDs:        []string{"gpt-5.4"},
+		accountByID:     map[string]*accountSpec{account.ID: account},
+		accountByAuthID: map[string]*accountSpec{authFile: account},
+		accountByAPIKey: map[string]*accountSpec{},
+	}
+	cfg := &config.Config{AuthDir: authDir}
+	manager := buildCoreAuthManager(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil, newRequestUsageTracker())
+
+	runtime, errRuntime := newSidecarRuntime(context.Background(), configPath, cfg, m, manager)
+	if errRuntime != nil {
+		t.Fatalf("newSidecarRuntime: %v", errRuntime)
+	}
+	defer runtime.Stop()
+
+	if _, exists := manager.GetByID(authFile); !exists {
+		t.Fatalf("manifest auth %q was not registered before runtime returned", authFile)
+	}
+	manager.StopAutoRefresh()
+}
+
 func TestManifestRegistryModelsPreservesStaticThinkingSupport(t *testing.T) {
 	models := manifestRegistryModels(&manifest{
 		ModelIDs: []string{"gpt-5.2"},

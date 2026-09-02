@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -143,6 +144,106 @@ func TestFileTokenStoreSaveExistingMetadataSetsFileAttributes(t *testing.T) {
 				t.Errorf("saved auth file = %s, want JSON equal to %s", persisted, expected)
 			}
 		})
+	}
+}
+
+func TestFileTokenStoreSaveMetadataReplacesExistingFileWithoutPartialJSON(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "atomic.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"codex","access_token":"old"}`), 0o600); errWrite != nil {
+		t.Fatalf("seed auth file: %v", errWrite)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auth := &cliproxyauth.Auth{
+		ID:       "atomic.json",
+		FileName: "atomic.json",
+		Metadata: map[string]any{
+			"type":         "codex",
+			"access_token": "new",
+		},
+	}
+	if _, errSave := store.Save(context.Background(), auth); errSave != nil {
+		t.Fatalf("Save() error = %v", errSave)
+	}
+
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		t.Fatalf("read saved auth file: %v", errRead)
+	}
+	var metadata map[string]any
+	if errUnmarshal := json.Unmarshal(raw, &metadata); errUnmarshal != nil {
+		t.Fatalf("saved auth file is not complete JSON: %v (raw=%q)", errUnmarshal, raw)
+	}
+	if got := metadata["access_token"]; got != "new" {
+		t.Fatalf("access_token = %#v, want new", got)
+	}
+	if info, errStat := os.Stat(path); errStat != nil {
+		t.Fatalf("stat saved auth file: %v", errStat)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("saved auth file mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestFileTokenStoreSaveMetadataKeepsConcurrentReadersOnCompleteJSON(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "concurrent.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"codex","access_token":"seed"}`), 0o600); errWrite != nil {
+		t.Fatalf("seed auth file: %v", errWrite)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	stopReaders := make(chan struct{})
+	readerDone := make(chan struct{})
+	readerErr := make(chan error, 1)
+	go func() {
+		defer close(readerDone)
+		for {
+			select {
+			case <-stopReaders:
+				return
+			default:
+			}
+			raw, errRead := os.ReadFile(path)
+			if errRead != nil {
+				readerErr <- errRead
+				return
+			}
+			var metadata map[string]any
+			if errUnmarshal := json.Unmarshal(raw, &metadata); errUnmarshal != nil {
+				readerErr <- errUnmarshal
+				return
+			}
+		}
+	}()
+
+	for index := 0; index < 64; index++ {
+		token := "first"
+		if index%2 != 0 {
+			token = "second"
+		}
+		auth := &cliproxyauth.Auth{
+			ID:       "concurrent.json",
+			FileName: "concurrent.json",
+			Metadata: map[string]any{
+				"type":         "codex",
+				"access_token": token,
+			},
+		}
+		if _, errSave := store.Save(context.Background(), auth); errSave != nil {
+			close(stopReaders)
+			<-readerDone
+			t.Fatalf("Save() error = %v", errSave)
+		}
+	}
+	close(stopReaders)
+	<-readerDone
+	select {
+	case errRead := <-readerErr:
+		t.Fatalf("concurrent reader observed an invalid auth file: %v", errRead)
+	default:
 	}
 }
 

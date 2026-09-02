@@ -5,6 +5,7 @@
 ### Fixed
 
 - Isolated the local CLI proxy runtime authentication state so a fresh account session cannot inherit another runtime's auth directory or model registration.
+- Delayed runtime credential refresh until manifest-backed accounts are fully registered, and made OAuth/token auth-file updates atomic so a concurrent request never reads a partial JSON document.
 - Fixed the Windows installer lifecycle verifier on GitHub hosted runners by releasing Windows Installer COM objects without calling an unsupported `Close()` method. MSI and Setup validation still checks the embedded offline WebView2 payload before exercising clean install, app startup, bridge startup and uninstall.
 - Fixed explicit quoting for Windows MSI and installer-log paths during lifecycle validation so a product filename containing spaces cannot leave `msiexec` waiting without a UI.
 - Restored the transparent XIASS brand mark in the Antigravity account empty state and fixed light-theme control, hover and selected-tab contrast without changing Cockpit layout or account workflows.

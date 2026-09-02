@@ -237,6 +237,7 @@ func newSidecarRuntime(ctx context.Context, configPath string, cfg *config.Confi
 		WithConfigPath(configPath).
 		WithAuthManager(authManager).
 		WithCoreAuthManager(manager).
+		WithoutRuntimeAutoRefresh().
 		WithHooks(cliproxy.Hooks{
 			OnAfterStart: func(*cliproxy.Service) {
 				readyOnce.Do(func() { close(readyCh) })
@@ -289,6 +290,10 @@ func newSidecarRuntime(ctx context.Context, configPath string, cfg *config.Confi
 		registerManifestModelsForAuth(manager, m, auth)
 	}
 	service.RebindRuntimeExecutors()
+	// The runtime loader can normalize and persist an auth record. Start refresh
+	// only after manifest-backed files were read and registered, so startup never
+	// races a file rewrite against the initial manifest read.
+	manager.StartAutoRefresh(runtimeCtx, 15*time.Minute)
 
 	return &sidecarRuntime{manager: manager, service: service, cancel: cancel, done: done}, nil
 }

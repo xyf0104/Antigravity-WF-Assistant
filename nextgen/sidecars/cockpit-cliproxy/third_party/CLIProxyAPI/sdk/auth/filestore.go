@@ -117,8 +117,8 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		if setter, ok := auth.Storage.(metadataSetter); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
-		if err = auth.Storage.SaveTokenToFile(path); err != nil {
-			return "", err
+		if err = atomicSaveAuthStorage(path, auth.Storage.SaveTokenToFile); err != nil {
+			return "", fmt.Errorf("auth filestore: save token storage failed: %w", err)
 		}
 	case auth.Metadata != nil:
 		auth.Metadata["disabled"] = auth.Disabled
@@ -130,23 +130,15 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 			if jsonEqual(existing, raw) {
 				break
 			}
-			file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
-			if errOpen != nil {
-				return "", fmt.Errorf("auth filestore: open existing failed: %w", errOpen)
-			}
-			if _, errWrite := file.Write(raw); errWrite != nil {
-				_ = file.Close()
-				return "", fmt.Errorf("auth filestore: write existing failed: %w", errWrite)
-			}
-			if errClose := file.Close(); errClose != nil {
-				return "", fmt.Errorf("auth filestore: close existing failed: %w", errClose)
+			if errWrite := atomicWriteAuthFile(path, raw); errWrite != nil {
+				return "", errWrite
 			}
 			break
 		} else if !os.IsNotExist(errRead) {
 			return "", fmt.Errorf("auth filestore: read existing failed: %w", errRead)
 		}
-		if errWrite := os.WriteFile(path, raw, 0o600); errWrite != nil {
-			return "", fmt.Errorf("auth filestore: write file failed: %w", errWrite)
+		if errWrite := atomicWriteAuthFile(path, raw); errWrite != nil {
+			return "", errWrite
 		}
 	default:
 		return "", fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
@@ -164,6 +156,74 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	}
 
 	return path, nil
+}
+
+// atomicWriteAuthFile replaces an auth JSON document only after its complete
+// payload reaches a sibling temporary file. Readers therefore see either the
+// previous valid credential or the next valid credential, never a truncated
+// document while a refresh is in progress.
+func atomicWriteAuthFile(path string, raw []byte) error {
+	return atomicWriteAuthPayload(path, func(tmpPath string) error {
+		if errWrite := os.WriteFile(tmpPath, raw, 0o600); errWrite != nil {
+			return fmt.Errorf("write temp file: %w", errWrite)
+		}
+		return nil
+	})
+}
+
+// atomicSaveAuthStorage lets provider-specific TokenStorage implementations
+// keep their native JSON schema while still publishing the completed document
+// with one atomic replacement.
+func atomicSaveAuthStorage(path string, save func(string) error) error {
+	if save == nil {
+		return fmt.Errorf("token storage save function is nil")
+	}
+	return atomicWriteAuthPayload(path, func(tmpPath string) error {
+		if errSave := save(tmpPath); errSave != nil {
+			return fmt.Errorf("save token storage: %w", errSave)
+		}
+		return nil
+	})
+}
+
+func atomicWriteAuthPayload(path string, write func(string) error) error {
+	if write == nil {
+		return fmt.Errorf("auth file writer is nil")
+	}
+	dir := filepath.Dir(path)
+	tmp, errCreate := os.CreateTemp(dir, ".auth-*.tmp")
+	if errCreate != nil {
+		return fmt.Errorf("auth filestore: create temp file failed: %w", errCreate)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	if errClose := tmp.Close(); errClose != nil {
+		return fmt.Errorf("auth filestore: close temp file failed: %w", errClose)
+	}
+	if errWrite := write(tmpPath); errWrite != nil {
+		return errWrite
+	}
+	if errMode := os.Chmod(tmpPath, 0o600); errMode != nil {
+		return fmt.Errorf("auth filestore: set temp file mode failed: %w", errMode)
+	}
+	sealed, errOpen := os.Open(tmpPath)
+	if errOpen != nil {
+		return fmt.Errorf("auth filestore: open temp file for sync failed: %w", errOpen)
+	}
+	if errSync := sealed.Sync(); errSync != nil {
+		_ = sealed.Close()
+		return fmt.Errorf("auth filestore: sync temp file failed: %w", errSync)
+	}
+	if errClose := sealed.Close(); errClose != nil {
+		return fmt.Errorf("auth filestore: close temp file failed: %w", errClose)
+	}
+	if errRename := os.Rename(tmpPath, path); errRename != nil {
+		return fmt.Errorf("auth filestore: replace auth file failed: %w", errRename)
+	}
+	return nil
 }
 
 // List enumerates all auth JSON files under the configured directory.

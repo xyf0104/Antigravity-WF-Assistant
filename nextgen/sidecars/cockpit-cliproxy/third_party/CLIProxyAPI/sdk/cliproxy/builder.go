@@ -48,6 +48,10 @@ type Builder struct {
 	// coreManager handles core authentication and execution.
 	coreManager *coreauth.Manager
 
+	// deferRuntimeAutoRefresh keeps the automatic credential refresh loop paused
+	// until an embedding host has completed its own runtime initialization.
+	deferRuntimeAutoRefresh bool
+
 	// cooldownStateStore overrides runtime cooldown persistence.
 	cooldownStateStore coreauth.CooldownStateStore
 
@@ -146,6 +150,14 @@ func (b *Builder) WithRequestAccessManager(mgr *sdkaccess.Manager) *Builder {
 // WithCoreAuthManager overrides the runtime auth manager responsible for request execution.
 func (b *Builder) WithCoreAuthManager(mgr *coreauth.Manager) *Builder {
 	b.coreManager = mgr
+	return b
+}
+
+// WithoutRuntimeAutoRefresh keeps StartRuntime from starting credential refresh
+// automatically. Embedding hosts that register additional runtime-only auths
+// can start it explicitly after registration is complete.
+func (b *Builder) WithoutRuntimeAutoRefresh() *Builder {
+	b.deferRuntimeAutoRefresh = true
 	return b
 }
 
@@ -265,19 +277,20 @@ func (b *Builder) Build() (*Service, error) {
 	}
 
 	service := &Service{
-		cfg:                 b.cfg,
-		configPath:          b.configPath,
-		tokenProvider:       tokenProvider,
-		apiKeyProvider:      apiKeyProvider,
-		watcherFactory:      watcherFactory,
-		hooks:               b.hooks,
-		authManager:         authManager,
-		accessManager:       accessManager,
-		coreManager:         coreManager,
-		cooldownStateStore:  cooldownStateStore,
-		pluginHost:          pluginHost,
-		appliedRoutingState: appliedRoutingState,
-		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
+		cfg:                     b.cfg,
+		configPath:              b.configPath,
+		tokenProvider:           tokenProvider,
+		apiKeyProvider:          apiKeyProvider,
+		watcherFactory:          watcherFactory,
+		hooks:                   b.hooks,
+		authManager:             authManager,
+		accessManager:           accessManager,
+		coreManager:             coreManager,
+		deferRuntimeAutoRefresh: b.deferRuntimeAutoRefresh,
+		cooldownStateStore:      cooldownStateStore,
+		pluginHost:              pluginHost,
+		appliedRoutingState:     appliedRoutingState,
+		serverOptions:           append([]api.ServerOption(nil), b.serverOptions...),
 	}
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))

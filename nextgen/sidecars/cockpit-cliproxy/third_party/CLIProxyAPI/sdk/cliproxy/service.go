@@ -89,6 +89,10 @@ type Service struct {
 	// coreManager handles core authentication and execution.
 	coreManager *coreauth.Manager
 
+	// deferRuntimeAutoRefresh is set by embedded hosts that need to finish
+	// registering runtime auth records before any refresh may persist them.
+	deferRuntimeAutoRefresh bool
+
 	// cooldownStateStore persists runtime cooldown state when enabled.
 	cooldownStateStore coreauth.CooldownStateStore
 
