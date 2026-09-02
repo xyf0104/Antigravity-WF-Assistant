@@ -1,0 +1,2 @@
+# Keep the bundled jsQR license byte-for-byte identical to its upstream source.
+nextgen/src-tauri/licenses/jsQR-APACHE-2.0.txt whitespace=-blank-at-eof
