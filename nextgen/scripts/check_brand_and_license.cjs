@@ -54,7 +54,7 @@ requireMatch(
 );
 
 const requiredBundleLicenseResources = {
-  '../../LICENSE': 'licenses/XIASS-Tools-MIT.txt',
+  'licenses/XIASS-Tools-MIT.txt': 'licenses/XIASS-Tools-MIT.txt',
   '../CC-BY-NC-SA-4.0-LEGALCODE.txt': 'licenses/CC-BY-NC-SA-4.0-LEGALCODE.txt',
   '../LICENSE': 'licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt',
   '../ORIGIN_AND_LICENSE.md': 'licenses/ORIGIN_AND_LICENSE.md',
@@ -67,6 +67,11 @@ const requiredBundleLicenseResources = {
   '../node_modules/react/LICENSE': 'licenses/React-MIT.txt',
   '../sidecars/cockpit-cliproxy/third_party/CLIProxyAPI/LICENSE': 'licenses/CLIProxyAPI-MIT.txt',
 };
+const bundledXiassMitLicense = read('nextgen/src-tauri/licenses/XIASS-Tools-MIT.txt');
+const repositoryMitLicense = read('LICENSE');
+if (bundledXiassMitLicense !== repositoryMitLicense) {
+  throw new Error('The bundled XIASS MIT license must exactly match the repository LICENSE.');
+}
 const bundleResources = tauriConfig?.bundle?.resources || {};
 for (const [source, destination] of Object.entries(requiredBundleLicenseResources)) {
   if (bundleResources[source] !== destination) {
