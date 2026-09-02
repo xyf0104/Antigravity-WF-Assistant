@@ -14,6 +14,22 @@ function readBuffer(relativeToRepository) {
   return fs.readFileSync(path.join(repositoryRoot, relativeToRepository));
 }
 
+function matchesCanonicalBundleResource(bundledRelativePath, canonicalRelativePath) {
+  const bundled = readBuffer(bundledRelativePath);
+  const canonical = readBuffer(canonicalRelativePath);
+  if (bundled.equals(canonical)) {
+    return true;
+  }
+
+  // npm may materialize package-license text with CRLF on Windows. Keep binary
+  // resources byte-exact, while treating newline representation as nonsemantic
+  // for bundled text notices, scripts and SVG files.
+  if (!/\.(?:cjs|md|svg|txt)$/i.test(bundledRelativePath)) {
+    return false;
+  }
+  return bundled.toString('utf8').replace(/\r\n?/g, '\n') === canonical.toString('utf8').replace(/\r\n?/g, '\n');
+}
+
 function requireMatch(source, pattern, message) {
   if (!pattern.test(source)) {
     throw new Error(message);
@@ -145,7 +161,7 @@ for (const [source, { destination, canonicalSource }] of Object.entries(required
   if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile() || fs.statSync(sourcePath).size === 0) {
     throw new Error(`Bundled Tauri resource is missing or empty: ${source}`);
   }
-  if (!readBuffer(path.join('nextgen', 'src-tauri', source)).equals(readBuffer(canonicalSource))) {
+  if (!matchesCanonicalBundleResource(path.join('nextgen', 'src-tauri', source), canonicalSource)) {
     throw new Error(`Bundled Tauri resource no longer matches its canonical source: ${source}`);
   }
 }
