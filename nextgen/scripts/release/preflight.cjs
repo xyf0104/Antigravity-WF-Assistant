@@ -69,6 +69,11 @@ const cliProxyDirectory = path.join(
   'sidecars',
   'cockpit-cliproxy'
 );
+const cliProxySDKDirectory = path.join(
+  cliProxyDirectory,
+  'third_party',
+  'CLIProxyAPI'
+);
 const wfFrontendTests = fs
   .readdirSync(path.join(wfFrontendDirectory, 'test'))
   .filter((name) => name.endsWith('.test.mjs'))
@@ -161,6 +166,12 @@ if (!hasFlag('--skip-go-test')) {
       command: 'go',
       args: ['test', './...'],
       cwd: cliProxyDirectory,
+    },
+    {
+      name: 'Codex API sidecar auth lifecycle tests',
+      command: 'go',
+      args: ['test', './sdk/cliproxy/auth'],
+      cwd: cliProxySDKDirectory,
     },
   );
 }

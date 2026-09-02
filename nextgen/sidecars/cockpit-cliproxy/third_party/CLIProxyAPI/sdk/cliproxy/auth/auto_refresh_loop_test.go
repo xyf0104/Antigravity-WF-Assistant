@@ -1,9 +1,14 @@
 package auth
 
 import (
+	"context"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 type testRefreshEvaluator struct{}
@@ -182,5 +187,104 @@ func TestNextRefreshCheckAt_RefreshEvaluatorFallback(t *testing.T) {
 	want := now.Add(interval)
 	if !got.Equal(want) {
 		t.Fatalf("nextRefreshCheckAt() = %s, want %s", got, want)
+	}
+}
+
+type blockingAutoRefreshExecutor struct {
+	id      string
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (e *blockingAutoRefreshExecutor) Identifier() string { return e.id }
+
+func (*blockingAutoRefreshExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (*blockingAutoRefreshExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, nil
+}
+
+func (e *blockingAutoRefreshExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
+	e.once.Do(func() { close(e.started) })
+	<-e.release
+	return auth.Clone(), nil
+}
+
+func (*blockingAutoRefreshExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (*blockingAutoRefreshExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
+func TestStopAutoRefreshAndWaitWaitsForInFlightWorker(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWorker)
+
+	executor := &blockingAutoRefreshExecutor{
+		id:      "blocking-auto-refresh",
+		started: make(chan struct{}),
+		release: release,
+	}
+	manager.RegisterExecutor(executor)
+	auth := &Auth{
+		ID:       "blocking-refresh-auth",
+		Provider: executor.id,
+		Attributes: map[string]string{
+			AttributeAuthKind: AuthKindOAuth,
+		},
+		Metadata: map[string]any{
+			"access_token":  "access-token",
+			"refresh_token": "refresh-token",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
+	t.Cleanup(runtimeCancel)
+	loop := newAuthAutoRefreshLoop(manager, time.Hour, 1)
+	manager.mu.Lock()
+	manager.refreshCancel = runtimeCancel
+	manager.refreshLoop = loop
+	manager.mu.Unlock()
+	go loop.run(runtimeCtx)
+	loop.jobs <- auth.ID
+
+	select {
+	case <-executor.started:
+	case <-time.After(time.Second):
+		t.Fatal("auto-refresh worker did not enter Refresh")
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+	defer stopCancel()
+	stopped := make(chan bool, 1)
+	go func() {
+		stopped <- manager.StopAutoRefreshAndWait(stopCtx)
+	}()
+
+	select {
+	case stoppedEarly := <-stopped:
+		t.Fatalf("StopAutoRefreshAndWait returned before the refresh worker exited: %v", stoppedEarly)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseWorker()
+	select {
+	case stoppedCleanly := <-stopped:
+		if !stoppedCleanly {
+			t.Fatal("StopAutoRefreshAndWait timed out after the refresh worker exited")
+		}
+	case <-stopCtx.Done():
+		t.Fatalf("StopAutoRefreshAndWait did not wait for refresh worker shutdown: %v", stopCtx.Err())
 	}
 }

@@ -22,6 +22,8 @@ type authAutoRefreshLoop struct {
 
 	wakeCh chan struct{}
 	jobs   chan string
+	done   chan struct{}
+	doneMu sync.Once
 }
 
 func newAuthAutoRefreshLoop(manager *Manager, interval time.Duration, concurrency int) *authAutoRefreshLoop {
@@ -43,6 +45,7 @@ func newAuthAutoRefreshLoop(manager *Manager, interval time.Duration, concurrenc
 		dirty:       make(map[string]struct{}),
 		wakeCh:      make(chan struct{}, 1),
 		jobs:        make(chan string, jobBuffer),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -60,7 +63,11 @@ func (l *authAutoRefreshLoop) queueReschedule(authID string) {
 }
 
 func (l *authAutoRefreshLoop) run(ctx context.Context) {
-	if l == nil || l.manager == nil {
+	if l == nil {
+		return
+	}
+	defer l.doneMu.Do(func() { close(l.done) })
+	if l.manager == nil {
 		return
 	}
 
@@ -68,11 +75,36 @@ func (l *authAutoRefreshLoop) run(ctx context.Context) {
 	if workers <= 0 {
 		workers = refreshMaxConcurrency
 	}
+	var workerGroup sync.WaitGroup
 	for i := 0; i < workers; i++ {
-		go l.worker(ctx)
+		workerGroup.Add(1)
+		go func() {
+			defer workerGroup.Done()
+			l.worker(ctx)
+		}()
 	}
 
 	l.loop(ctx)
+	workerGroup.Wait()
+}
+
+// wait reports whether the scheduler loop and all refresh workers stopped
+// before ctx expired. A stopped loop can still own a file handle briefly while
+// an in-flight token refresh publishes its credentials, so callers that remove
+// an auth directory must wait for this boundary.
+func (l *authAutoRefreshLoop) wait(ctx context.Context) bool {
+	if l == nil || l.done == nil {
+		return true
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-l.done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (l *authAutoRefreshLoop) worker(ctx context.Context) {
@@ -81,10 +113,19 @@ func (l *authAutoRefreshLoop) worker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case authID := <-l.jobs:
+			// A buffered job and cancellation can be ready at the same time.
+			// Do not begin another refresh after shutdown has started, because a
+			// refresh may persist an auth file while its runtime is being removed.
+			if ctx.Err() != nil {
+				return
+			}
 			if authID == "" {
 				continue
 			}
 			l.manager.refreshAuth(ctx, authID)
+			if ctx.Err() != nil {
+				return
+			}
 			l.queueReschedule(authID)
 		}
 	}

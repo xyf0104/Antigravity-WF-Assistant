@@ -115,6 +115,7 @@ jobs:
           go-version-file: nextgen/sidecars/cockpit-cliproxy/go.mod
           cache-dependency-path: |
             nextgen/sidecars/cockpit-cliproxy/go.sum
+            nextgen/sidecars/cockpit-cliproxy/third_party/CLIProxyAPI/go.sum
             macos/source/go.sum
 
       - uses: actions/setup-node@v4
@@ -330,6 +331,7 @@ jobs:
           go-version-file: nextgen/sidecars/cockpit-cliproxy/go.mod
           cache-dependency-path: |
             nextgen/sidecars/cockpit-cliproxy/go.sum
+            nextgen/sidecars/cockpit-cliproxy/third_party/CLIProxyAPI/go.sum
             windows/source/go.sum
 
       - uses: actions/setup-node@v4

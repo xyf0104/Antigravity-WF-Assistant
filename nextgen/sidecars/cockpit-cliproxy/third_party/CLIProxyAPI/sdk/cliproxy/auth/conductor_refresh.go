@@ -68,11 +68,13 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 	go loop.run(ctx)
 }
 
-// StopAutoRefresh cancels the background refresh loop, if running.
-// It also stops the selector if it implements StoppableSelector.
-func (m *Manager) StopAutoRefresh() {
+func (m *Manager) stopAutoRefresh() *authAutoRefreshLoop {
+	if m == nil {
+		return nil
+	}
 	m.mu.Lock()
 	cancel := m.refreshCancel
+	loop := m.refreshLoop
 	m.refreshCancel = nil
 	m.refreshLoop = nil
 	m.mu.Unlock()
@@ -83,6 +85,21 @@ func (m *Manager) StopAutoRefresh() {
 	if stoppable, ok := m.selector.(StoppableSelector); ok {
 		stoppable.Stop()
 	}
+	return loop
+}
+
+// StopAutoRefresh cancels the background refresh loop, if running.
+// It also stops the selector if it implements StoppableSelector.
+func (m *Manager) StopAutoRefresh() {
+	_ = m.stopAutoRefresh()
+}
+
+// StopAutoRefreshAndWait cancels the scheduler and waits for every refresh
+// worker to exit. It is intended for runtimes that are about to remove or
+// replace auth files and therefore need a strict no-writer boundary.
+func (m *Manager) StopAutoRefreshAndWait(ctx context.Context) bool {
+	loop := m.stopAutoRefresh()
+	return loop.wait(ctx)
 }
 
 func (m *Manager) queueRefreshReschedule(authID string) {

@@ -286,7 +286,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			s.watcherCancel()
 		}
 		if s.coreManager != nil {
-			s.coreManager.StopAutoRefresh()
+			s.coreManager.StopAutoRefreshAndWait(ctx)
 		}
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {
