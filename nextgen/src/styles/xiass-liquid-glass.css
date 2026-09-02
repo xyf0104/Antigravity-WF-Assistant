@@ -18,8 +18,8 @@ html[data-theme='light'] {
   --bg-hover: rgba(15, 23, 42, 0.06);
   --text-primary: #0f172a;
   --text-secondary: #475569;
-  --text-tertiary: #64748b;
-  --text-muted: #94a3b8;
+  --text-tertiary: #475569;
+  --text-muted: #64748b;
   --border: rgba(15, 23, 42, 0.12);
   --border-light: rgba(15, 23, 42, 0.08);
   --shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.08);
@@ -166,7 +166,7 @@ button:not(:disabled),
 :where([role='button'], [role='tab'])[aria-disabled='true'] {
   cursor: not-allowed !important;
   filter: saturate(0.62);
-  opacity: 0.5;
+  opacity: 0.62;
   transform: none !important;
 }
 

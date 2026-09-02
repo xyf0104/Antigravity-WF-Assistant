@@ -1598,6 +1598,28 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   color: var(--text-muted);
 }
 
+/* The account empty state uses the same transparent XIASS mark as the shell.
+ * The existing 80px Cockpit icon container is retained so this does not change
+ * the original empty-state geometry. */
+.empty-state .empty-state-brand-mark__asset {
+  display: block;
+  width: 54px;
+  height: 54px;
+  object-fit: contain;
+}
+
+.empty-state .empty-state-brand-mark__asset--light {
+  display: none;
+}
+
+html[data-theme='light'] .empty-state .empty-state-brand-mark__asset--dark {
+  display: none;
+}
+
+html[data-theme='light'] .empty-state .empty-state-brand-mark__asset--light {
+  display: block;
+}
+
 .empty-state h3 {
   font-size: 18px;
   margin-bottom: 8px;

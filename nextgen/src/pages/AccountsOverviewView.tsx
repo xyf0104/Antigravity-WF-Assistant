@@ -20,6 +20,8 @@ import { MultiSelectFilterDropdown } from '../components/MultiSelectFilterDropdo
 import { AccountTagFilterDropdown } from '../components/AccountTagFilterDropdown';
 import { getMfaOtpToken, loadSavedMfaRecords } from '../utils/mfaVault';
 import type { AccountsFilterType, useAccountsPageController } from "./AccountsPage";
+import xiassToolsLogo from '../../src-tauri/icons/app-icon-source.png';
+import xiassToolsLightLogo from '../assets/xiass-tools-logo-light.png';
 
 export type AccountsOverviewViewProps = ReturnType<typeof useAccountsPageController>;
 
@@ -582,8 +584,17 @@ export function AccountsOverviewView(props: AccountsOverviewViewProps) {
           </div>
         ) : accounts.length === 0 ? (
           <div className="empty-state">
-            <div className="icon">
-              <Rocket size={40} />
+            <div className="icon empty-state-brand-mark" aria-hidden="true">
+              <img
+                className="empty-state-brand-mark__asset empty-state-brand-mark__asset--dark"
+                src={xiassToolsLogo}
+                alt=""
+              />
+              <img
+                className="empty-state-brand-mark__asset empty-state-brand-mark__asset--light"
+                src={xiassToolsLightLogo}
+                alt=""
+              />
             </div>
             <h3>{t('accounts.empty.title')}</h3>
             <p>{t('accounts.empty.desc')}</p>

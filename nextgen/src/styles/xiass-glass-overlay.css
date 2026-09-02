@@ -258,6 +258,61 @@ html[data-theme='light'] .brand-logo__asset--light {
   }
 }
 
+/* The material layer must retain Cockpit's semantic selection contrast. The
+ * broad glass rule above intentionally styles every control, but without this
+ * explicit selected state it would replace a blue tab background while leaving
+ * its original white text in place. */
+.modal-tab.active {
+  border-color: rgba(255, 255, 255, 0.44) !important;
+  background: var(--gradient-primary) !important;
+  color: #fff !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.36),
+    0 9px 20px color-mix(in srgb, var(--primary) 30%, transparent) !important;
+}
+
+.modal-tab:not(.active) {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme='light'] .modal-tab:not(.active) {
+  background: color-mix(in srgb, #fff 92%, var(--primary-light)) !important;
+}
+
+html[data-theme='light'] .modal-tab:not(.active):hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--xiass-glass-border)) !important;
+  background: color-mix(in srgb, #fff 76%, var(--primary-light)) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme='light'] :is(
+  .btn:not(.btn-primary),
+  .filter-tab,
+  .nav-item,
+  .nav-sub-item,
+  .view-btn,
+  .action-btn,
+  .card-action-btn,
+  .folder-icon-btn,
+  .sort-direction-btn,
+  .tag-filter-btn,
+  .card-footer-action,
+  .header-action-btn,
+  .settings-tab,
+  .single-select-dropdown-trigger,
+  .multi-select-filter-trigger,
+  .single-select-filter-trigger,
+  .platform-group-switcher-trigger
+):hover:not(:disabled) {
+  background: color-mix(in srgb, #fff 76%, var(--primary-light)) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme='light'] .btn.btn-primary:hover:not(:disabled) {
+  background: var(--gradient-primary) !important;
+  color: #fff !important;
+}
+
 :is(.btn, .filter-tab, .nav-item, .view-btn, .action-btn, .card-action-btn):active:not(:disabled) {
   transform: translateY(0) scale(0.985);
 }

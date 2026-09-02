@@ -490,6 +490,27 @@ test('light theme restores the original Cockpit canvas and avoids dark loading f
   }
 });
 
+test('light material keeps interactive text legible and restores the transparent XIASS empty-state mark', () => {
+  const material = read('src/styles/xiass-glass-overlay.css');
+  const lightTokens = read('src/styles/xiass-liquid-glass.css');
+  const accountsOverview = read('src/pages/AccountsOverviewView.tsx');
+  const components = read('src/styles/components.css');
+
+  assert.match(lightTokens, /--text-tertiary:\s*#475569;/);
+  assert.match(lightTokens, /--text-muted:\s*#64748b;/);
+  assert.match(material, /\.modal-tab\.active\s*\{[\s\S]*?background:\s*var\(--gradient-primary\) !important;[\s\S]*?color:\s*#fff !important;/);
+  assert.match(material, /html\[data-theme='light'\] \.modal-tab:not\(\.active\):hover:not\(:disabled\)\s*\{[\s\S]*?color:\s*var\(--text-primary\) !important;/);
+  assert.match(material, /html\[data-theme='light'\] \.btn\.btn-primary:hover:not\(:disabled\)\s*\{[\s\S]*?color:\s*#fff !important;/);
+  assert.match(accountsOverview, /import xiassToolsLogo from '\.\.\/\.\.\/src-tauri\/icons\/app-icon-source\.png';/);
+  assert.match(accountsOverview, /import xiassToolsLightLogo from '\.\.\/assets\/xiass-tools-logo-light\.png';/);
+  assert.match(accountsOverview, /className="icon empty-state-brand-mark"/);
+  assert.match(accountsOverview, /empty-state-brand-mark__asset--dark/);
+  assert.match(accountsOverview, /empty-state-brand-mark__asset--light/);
+  assert.match(components, /\.empty-state \.empty-state-brand-mark__asset\s*\{/);
+  assert.match(components, /html\[data-theme='light'\] \.empty-state \.empty-state-brand-mark__asset--dark\s*\{[\s\S]*?display:\s*none;/);
+  assert.match(components, /html\[data-theme='light'\] \.empty-state \.empty-state-brand-mark__asset--light\s*\{[\s\S]*?display:\s*block;/);
+});
+
 test('browser preview reads the app version from the release source of truth', () => {
   const source = read('src/main.tsx');
 
