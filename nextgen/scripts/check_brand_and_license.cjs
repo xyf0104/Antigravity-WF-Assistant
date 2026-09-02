@@ -56,7 +56,7 @@ requireMatch(
 const requiredBundleLicenseResources = {
   'licenses/XIASS-Tools-MIT.txt': 'licenses/XIASS-Tools-MIT.txt',
   '../CC-BY-NC-SA-4.0-LEGALCODE.txt': 'licenses/CC-BY-NC-SA-4.0-LEGALCODE.txt',
-  '../LICENSE': 'licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt',
+  'licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt': 'licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt',
   '../ORIGIN_AND_LICENSE.md': 'licenses/ORIGIN_AND_LICENSE.md',
   '../THIRD_PARTY_NOTICES.md': 'licenses/THIRD_PARTY_NOTICES.md',
   '../node_modules/@tauri-apps/api/LICENSE_APACHE-2.0': 'licenses/Tauri-APACHE-2.0.txt',
@@ -71,6 +71,11 @@ const bundledXiassMitLicense = read('nextgen/src-tauri/licenses/XIASS-Tools-MIT.
 const repositoryMitLicense = read('LICENSE');
 if (bundledXiassMitLicense !== repositoryMitLicense) {
   throw new Error('The bundled XIASS MIT license must exactly match the repository LICENSE.');
+}
+const bundledXiassNextgenLicense = read('nextgen/src-tauri/licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt');
+const nextgenLicense = read('nextgen/LICENSE');
+if (bundledXiassNextgenLicense !== nextgenLicense) {
+  throw new Error('The bundled XIASS Nextgen license must exactly match nextgen/LICENSE.');
 }
 const bundleResources = tauriConfig?.bundle?.resources || {};
 for (const [source, destination] of Object.entries(requiredBundleLicenseResources)) {

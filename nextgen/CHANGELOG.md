@@ -10,6 +10,8 @@
 - Fixed the Windows installer lifecycle verifier on GitHub hosted runners by releasing Windows Installer COM objects without calling an unsupported `Close()` method. MSI and Setup validation still checks the embedded offline WebView2 payload before exercising clean install, app startup, bridge startup and uninstall.
 - Fixed explicit quoting for Windows MSI and installer-log paths during lifecycle validation so a product filename containing spaces cannot leave `msiexec` waiting without a UI.
 - Restored the transparent XIASS brand mark in the Antigravity account empty state and fixed light-theme control, hover and selected-tab contrast without changing Cockpit layout or account workflows.
+- Restored the original transparent XIASS dark/light logo pair, removed the synthetic logo tile from the shell, About view and account empty state, and strengthened light-material secondary text contrast.
+- Made the XIASS Nextgen license a self-contained Tauri resource so both Windows installer formats ship it reliably; release checks now verify the bundled copy against the canonical license text.
 - Restored the original Cockpit account, OAuth, 2FA, quota, provider-template, model-discovery, and model-testing entry points in all five workspaces. XIASS changes now remain limited to branding and visual material rather than replacing original functions or layout.
 - Unified the embedded macOS and Windows WF frontend, public assets, bridge contract, and version projections, with byte-for-byte cross-platform parity enforced during release preflight.
 

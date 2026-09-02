@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -7,6 +8,13 @@ const NEXTGEN_ROOT = path.resolve(__dirname, '../..');
 
 function read(relativePath) {
   return fs.readFileSync(path.join(NEXTGEN_ROOT, relativePath), 'utf8');
+}
+
+function sha256(relativePath) {
+  return crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(path.join(NEXTGEN_ROOT, relativePath)))
+    .digest('hex');
 }
 
 function escapeRegExp(value) {
@@ -492,17 +500,28 @@ test('light theme restores the original Cockpit canvas and avoids dark loading f
 
 test('light material keeps interactive text legible and restores the transparent XIASS empty-state mark', () => {
   const material = read('src/styles/xiass-glass-overlay.css');
-  const lightTokens = read('src/styles/xiass-liquid-glass.css');
   const accountsOverview = read('src/pages/AccountsOverviewView.tsx');
   const components = read('src/styles/components.css');
 
-  assert.match(lightTokens, /--text-tertiary:\s*#475569;/);
-  assert.match(lightTokens, /--text-muted:\s*#64748b;/);
+  assert.match(material, /--text-tertiary:\s*#475569;/);
+  assert.match(material, /--text-muted:\s*#64748b;/);
   assert.match(material, /\.modal-tab\.active\s*\{[\s\S]*?background:\s*var\(--gradient-primary\) !important;[\s\S]*?color:\s*#fff !important;/);
   assert.match(material, /html\[data-theme='light'\] \.modal-tab:not\(\.active\):hover:not\(:disabled\)\s*\{[\s\S]*?color:\s*var\(--text-primary\) !important;/);
   assert.match(material, /html\[data-theme='light'\] \.btn\.btn-primary:hover:not\(:disabled\)\s*\{[\s\S]*?color:\s*#fff !important;/);
+  assert.match(
+    material,
+    /\.brand-logo,[\s\S]*?\.empty-state \.icon\.empty-state-brand-mark[\s\S]*?background:\s*transparent !important;[\s\S]*?border-color:\s*transparent !important;[\s\S]*?box-shadow:\s*none !important;/,
+  );
   assert.match(accountsOverview, /import xiassToolsLogo from '\.\.\/\.\.\/src-tauri\/icons\/app-icon-source\.png';/);
   assert.match(accountsOverview, /import xiassToolsLightLogo from '\.\.\/assets\/xiass-tools-logo-light\.png';/);
+  assert.equal(
+    sha256('src-tauri/icons/app-icon-source.png'),
+    '6ff633ce51267a5b68d3ad2955a9118855ccb87539d4af2474ec8e57e81de40a',
+  );
+  assert.equal(
+    sha256('src/assets/xiass-tools-logo-light.png'),
+    '2a75295971df94aa20f4dfe9ea0eff7b9aa0c64df41afae6540161b153f3511c',
+  );
   assert.match(accountsOverview, /className="icon empty-state-brand-mark"/);
   assert.match(accountsOverview, /empty-state-brand-mark__asset--dark/);
   assert.match(accountsOverview, /empty-state-brand-mark__asset--light/);

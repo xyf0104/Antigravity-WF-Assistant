@@ -17,7 +17,9 @@
   --xiass-glass-blur: blur(18px) saturate(125%);
   --xiass-glass-control-blur: blur(13px) saturate(118%);
   --xiass-glass-ease: cubic-bezier(0.16, 1, 0.3, 1);
-  --text-tertiary: #64748b;
+  /* Keep secondary information readable over the light glass material. */
+  --text-tertiary: #475569;
+  --text-muted: #64748b;
 }
 
 html[data-theme='dark'] {
@@ -207,6 +209,20 @@ select option {
 
 .brand-logo__asset--light {
   display: none;
+}
+
+/* The XIASS mark already contains its own transparent dark/light artwork.
+ * Preserve Cockpit's original boxes and click targets, but never draw an
+ * additional tile behind the product mark. */
+:is(
+  .brand-logo,
+  .side-nav.side-nav-classic .brand-logo,
+  .app-icon-squircle,
+  .empty-state .icon.empty-state-brand-mark
+) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 html[data-theme='light'] .brand-logo__asset--dark {
