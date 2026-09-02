@@ -501,6 +501,9 @@ test('light theme restores the original Cockpit canvas and avoids dark loading f
 test('light material keeps interactive text legible and restores the transparent XIASS empty-state mark', () => {
   const material = read('src/styles/xiass-glass-overlay.css');
   const accountsOverview = read('src/pages/AccountsOverviewView.tsx');
+  const sideNav = read('src/components/layout/SideNav.tsx');
+  const settings = read('src/pages/SettingsPageView.tsx');
+  const apiKeyFun = read('src/pages/ApiKeyFunPage.tsx');
   const components = read('src/styles/components.css');
 
   assert.match(material, /--text-tertiary:\s*#475569;/);
@@ -512,15 +515,18 @@ test('light material keeps interactive text legible and restores the transparent
     material,
     /\.brand-logo,[\s\S]*?\.empty-state \.icon\.empty-state-brand-mark[\s\S]*?background:\s*transparent !important;[\s\S]*?border-color:\s*transparent !important;[\s\S]*?box-shadow:\s*none !important;/,
   );
-  assert.match(accountsOverview, /import xiassToolsLogo from '\.\.\/\.\.\/src-tauri\/icons\/app-icon-source\.png';/);
+  assert.match(accountsOverview, /import xiassToolsLogo from '\.\.\/\.\.\/src-tauri\/icons\/icon\.png';/);
   assert.match(accountsOverview, /import xiassToolsLightLogo from '\.\.\/assets\/xiass-tools-logo-light\.png';/);
+  for (const source of [sideNav, settings, apiKeyFun]) {
+    assert.match(source, /src-tauri\/icons\/icon\.png/);
+  }
   assert.equal(
-    sha256('src-tauri/icons/app-icon-source.png'),
-    '6ff633ce51267a5b68d3ad2955a9118855ccb87539d4af2474ec8e57e81de40a',
+    sha256('src-tauri/icons/icon.png'),
+    '578a1efa0454ab664a8616c4f0d448f433ae85c615396fd4c4638a95ead16d12',
   );
   assert.equal(
     sha256('src/assets/xiass-tools-logo-light.png'),
-    '2a75295971df94aa20f4dfe9ea0eff7b9aa0c64df41afae6540161b153f3511c',
+    '4c07e8f4c3b7e1c9d9ced303441d1958278522ccde45981eb2e7470274badc0c',
   );
   assert.match(accountsOverview, /className="icon empty-state-brand-mark"/);
   assert.match(accountsOverview, /empty-state-brand-mark__asset--dark/);

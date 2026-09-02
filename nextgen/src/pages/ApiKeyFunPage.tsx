@@ -34,7 +34,7 @@ import {
   getApiKeyFunPrefillPage,
   type ApiKeyFunPrefillTarget,
 } from '../utils/apiKeyFunPrefill';
-import xiassToolsLogo from '../../src-tauri/icons/app-icon-source.png';
+import xiassToolsLogo from '../../src-tauri/icons/icon.png';
 import './ApiKeyFunPage.css';
 
 type ManagedApiKey = {

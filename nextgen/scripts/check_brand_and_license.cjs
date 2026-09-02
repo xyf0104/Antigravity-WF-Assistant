@@ -10,6 +10,10 @@ function read(relativeToRepository) {
   return fs.readFileSync(path.join(repositoryRoot, relativeToRepository), 'utf8');
 }
 
+function readBuffer(relativeToRepository) {
+  return fs.readFileSync(path.join(repositoryRoot, relativeToRepository));
+}
+
 function requireMatch(source, pattern, message) {
   if (!pattern.test(source)) {
     throw new Error(message);
@@ -53,38 +57,96 @@ requireMatch(
   'Third-party notices must identify the bundled sidecar and desktop runtimes.',
 );
 
-const requiredBundleLicenseResources = {
-  'licenses/XIASS-Tools-MIT.txt': 'licenses/XIASS-Tools-MIT.txt',
-  '../CC-BY-NC-SA-4.0-LEGALCODE.txt': 'licenses/CC-BY-NC-SA-4.0-LEGALCODE.txt',
-  'licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt': 'licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt',
-  '../ORIGIN_AND_LICENSE.md': 'licenses/ORIGIN_AND_LICENSE.md',
-  '../THIRD_PARTY_NOTICES.md': 'licenses/THIRD_PARTY_NOTICES.md',
-  '../node_modules/@tauri-apps/api/LICENSE_APACHE-2.0': 'licenses/Tauri-APACHE-2.0.txt',
-  '../node_modules/@tauri-apps/api/LICENSE_MIT': 'licenses/Tauri-MIT.txt',
-  '../node_modules/jsqr/LICENSE': 'licenses/jsQR-APACHE-2.0.txt',
-  '../node_modules/lucide-react/LICENSE': 'licenses/Lucide-ISC-and-MIT.txt',
-  '../node_modules/protobufjs/LICENSE': 'licenses/protobufjs-BSD-3-Clause.txt',
-  '../node_modules/react/LICENSE': 'licenses/React-MIT.txt',
-  '../sidecars/cockpit-cliproxy/third_party/CLIProxyAPI/LICENSE': 'licenses/CLIProxyAPI-MIT.txt',
+const requiredBundleResources = {
+  'licenses/XIASS-Tools-MIT.txt': {
+    destination: 'licenses/XIASS-Tools-MIT.txt',
+    canonicalSource: 'LICENSE',
+  },
+  'licenses/CC-BY-NC-SA-4.0-LEGALCODE.txt': {
+    destination: 'licenses/CC-BY-NC-SA-4.0-LEGALCODE.txt',
+    canonicalSource: 'nextgen/CC-BY-NC-SA-4.0-LEGALCODE.txt',
+  },
+  'licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt': {
+    destination: 'licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt',
+    canonicalSource: 'nextgen/LICENSE',
+  },
+  'licenses/ORIGIN_AND_LICENSE.md': {
+    destination: 'licenses/ORIGIN_AND_LICENSE.md',
+    canonicalSource: 'nextgen/ORIGIN_AND_LICENSE.md',
+  },
+  'licenses/THIRD_PARTY_NOTICES.md': {
+    destination: 'licenses/THIRD_PARTY_NOTICES.md',
+    canonicalSource: 'nextgen/THIRD_PARTY_NOTICES.md',
+  },
+  'licenses/Tauri-APACHE-2.0.txt': {
+    destination: 'licenses/Tauri-APACHE-2.0.txt',
+    canonicalSource: 'nextgen/node_modules/@tauri-apps/api/LICENSE_APACHE-2.0',
+  },
+  'licenses/Tauri-MIT.txt': {
+    destination: 'licenses/Tauri-MIT.txt',
+    canonicalSource: 'nextgen/node_modules/@tauri-apps/api/LICENSE_MIT',
+  },
+  'licenses/jsQR-APACHE-2.0.txt': {
+    destination: 'licenses/jsQR-APACHE-2.0.txt',
+    canonicalSource: 'nextgen/node_modules/jsqr/LICENSE',
+  },
+  'licenses/Lucide-ISC-and-MIT.txt': {
+    destination: 'licenses/Lucide-ISC-and-MIT.txt',
+    canonicalSource: 'nextgen/node_modules/lucide-react/LICENSE',
+  },
+  'licenses/protobufjs-BSD-3-Clause.txt': {
+    destination: 'licenses/protobufjs-BSD-3-Clause.txt',
+    canonicalSource: 'nextgen/node_modules/protobufjs/LICENSE',
+  },
+  'licenses/React-MIT.txt': {
+    destination: 'licenses/React-MIT.txt',
+    canonicalSource: 'nextgen/node_modules/react/LICENSE',
+  },
+  'licenses/CLIProxyAPI-MIT.txt': {
+    destination: 'licenses/CLIProxyAPI-MIT.txt',
+    canonicalSource: 'nextgen/sidecars/cockpit-cliproxy/third_party/CLIProxyAPI/LICENSE',
+  },
+  'scripts/claude-desktop-auth-helper.cjs': {
+    destination: 'scripts/claude-desktop-auth-helper.cjs',
+    canonicalSource: 'nextgen/scripts/claude-desktop-auth-helper.cjs',
+  },
+  'native-menu-icons/antigravity-menu.png': {
+    destination: 'native-menu-icons/antigravity-menu.png',
+    canonicalSource: 'nextgen/src/assets/icons/antigravity-menu.png',
+  },
+  'native-menu-icons/claude.png': {
+    destination: 'native-menu-icons/claude.png',
+    canonicalSource: 'nextgen/src/assets/icons/claude.png',
+  },
+  'native-menu-icons/codex.svg': {
+    destination: 'native-menu-icons/codex.svg',
+    canonicalSource: 'nextgen/src/assets/icons/codex.svg',
+  },
+  'native-menu-icons/cursor-menu.png': {
+    destination: 'native-menu-icons/cursor-menu.png',
+    canonicalSource: 'nextgen/src/assets/icons/cursor-menu.png',
+  },
+  'native-menu-icons/windsurf.svg': {
+    destination: 'native-menu-icons/windsurf.svg',
+    canonicalSource: 'nextgen/src/assets/icons/windsurf.svg',
+  },
 };
-const bundledXiassMitLicense = read('nextgen/src-tauri/licenses/XIASS-Tools-MIT.txt');
-const repositoryMitLicense = read('LICENSE');
-if (bundledXiassMitLicense !== repositoryMitLicense) {
-  throw new Error('The bundled XIASS MIT license must exactly match the repository LICENSE.');
-}
-const bundledXiassNextgenLicense = read('nextgen/src-tauri/licenses/XIASS-Tools-Nextgen-CC-BY-NC-SA-4.0.txt');
-const nextgenLicense = read('nextgen/LICENSE');
-if (bundledXiassNextgenLicense !== nextgenLicense) {
-  throw new Error('The bundled XIASS Nextgen license must exactly match nextgen/LICENSE.');
-}
 const bundleResources = tauriConfig?.bundle?.resources || {};
-for (const [source, destination] of Object.entries(requiredBundleLicenseResources)) {
+for (const source of Object.keys(bundleResources)) {
+  if (source.startsWith('../')) {
+    throw new Error(`Tauri bundle resources must be staged inside src-tauri, found external source: ${source}`);
+  }
+}
+for (const [source, { destination, canonicalSource }] of Object.entries(requiredBundleResources)) {
   if (bundleResources[source] !== destination) {
     throw new Error(`Tauri bundle must ship ${source} as ${destination}.`);
   }
   const sourcePath = path.resolve(repositoryRoot, 'nextgen', 'src-tauri', source);
   if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile() || fs.statSync(sourcePath).size === 0) {
-    throw new Error(`Bundled license resource is missing or empty: ${source}`);
+    throw new Error(`Bundled Tauri resource is missing or empty: ${source}`);
+  }
+  if (!readBuffer(path.join('nextgen', 'src-tauri', source)).equals(readBuffer(canonicalSource))) {
+    throw new Error(`Bundled Tauri resource no longer matches its canonical source: ${source}`);
   }
 }
 requireMatch(
@@ -134,7 +196,7 @@ forbidMatch(
 );
 requireMatch(
   sideNav,
-  /src-tauri\/icons\/app-icon-source\.png/,
+  /src-tauri\/icons\/icon\.png/,
   'The product shell must use the user-provided transparent XIASS logo.',
 );
 

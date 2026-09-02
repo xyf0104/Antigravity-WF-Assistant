@@ -6,7 +6,7 @@ import { useEscClose } from '../hooks/useEscClose';
 import { loadLegalNotices, type LegalNoticeDocument } from '../services/legalNoticesService';
 import './settings/Settings.css';
 import { Github, User, Save, AlertCircle, RefreshCw, FileText, Download, X } from 'lucide-react';
-import xiassToolsLogo from '../../src-tauri/icons/app-icon-source.png';
+import xiassToolsLogo from '../../src-tauri/icons/icon.png';
 import xiassToolsLightLogo from '../assets/xiass-tools-logo-light.png';
 import type { PlatformId } from '../types/platform';
 import type { useSettingsPageController } from "./SettingsPage";

@@ -29,7 +29,7 @@ if (!/assets\/icons\/windsurf\.svg/.test(windsurfIcon) || /devin\.png/.test(wind
 }
 
 const sideNav = read('src/components/layout/SideNav.tsx');
-if (!/src-tauri\/icons\/app-icon-source\.png/.test(sideNav)) {
+if (!/src-tauri\/icons\/icon\.png/.test(sideNav)) {
   fail('The product shell must use the user-provided transparent XIASS source logo.');
 }
 

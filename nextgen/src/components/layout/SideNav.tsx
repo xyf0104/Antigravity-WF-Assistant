@@ -2,7 +2,7 @@ import { Settings, GaugeCircle, LayoutGrid, SlidersHorizontal, FileText, Chevron
 import { useTranslation } from 'react-i18next';
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import xiassToolsLogo from '../../../src-tauri/icons/app-icon-source.png';
+import xiassToolsLogo from '../../../src-tauri/icons/icon.png';
 import xiassToolsLightLogo from '../../assets/xiass-tools-logo-light.png';
 import { Page } from '../../types/navigation';
 import { isMenuVisiblePlatform, PlatformId, PLATFORM_PAGE_MAP } from '../../types/platform';

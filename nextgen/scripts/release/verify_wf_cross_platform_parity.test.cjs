@@ -88,6 +88,32 @@ test('embedded WF renderer source and XIASS visual assets are identical on macOS
   assertIdenticalTree('public');
 });
 
+test('every embedded WF surface keeps the original XIASS Tools logo asset', () => {
+  const originalLogo = fs.readFileSync(path.join(nextgenRoot, 'src-tauri', 'icons', 'icon.png'));
+  const originalLogoHash = '578a1efa0454ab664a8616c4f0d448f433ae85c615396fd4c4638a95ead16d12';
+  const actualHash = require('node:crypto').createHash('sha256').update(originalLogo).digest('hex');
+
+  assert.equal(actualHash, originalLogoHash, 'the host must keep the v1.7.0 XIASS Tools logo source');
+  for (const platform of platforms) {
+    const sourceRoot = path.join(repositoryRoot, platform, 'source');
+    assert.deepEqual(
+      fs.readFileSync(path.join(sourceRoot, 'frontend', 'public', 'xiass-tools-logo.png')),
+      originalLogo,
+      `${platform} embedded WF logo must use the original XIASS Tools mark`,
+    );
+    assert.deepEqual(
+      fs.readFileSync(path.join(sourceRoot, 'frontend', 'public', 'xiass-tools-appicon.png')),
+      originalLogo,
+      `${platform} embedded WF app icon must use the original XIASS Tools mark`,
+    );
+    assert.deepEqual(
+      fs.readFileSync(path.join(sourceRoot, 'build', 'appicon.png')),
+      originalLogo,
+      `${platform} embedded WF build icon must use the original XIASS Tools mark`,
+    );
+  }
+});
+
 test('embedded WF native bridge exposes the same public App contract on macOS and Windows', () => {
   const [macosMethods, windowsMethods] = platforms.map(publicAppMethods);
   assert.ok(macosMethods.length > 0, 'macOS App must expose Wails methods');

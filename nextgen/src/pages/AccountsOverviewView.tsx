@@ -20,7 +20,7 @@ import { MultiSelectFilterDropdown } from '../components/MultiSelectFilterDropdo
 import { AccountTagFilterDropdown } from '../components/AccountTagFilterDropdown';
 import { getMfaOtpToken, loadSavedMfaRecords } from '../utils/mfaVault';
 import type { AccountsFilterType, useAccountsPageController } from "./AccountsPage";
-import xiassToolsLogo from '../../src-tauri/icons/app-icon-source.png';
+import xiassToolsLogo from '../../src-tauri/icons/icon.png';
 import xiassToolsLightLogo from '../assets/xiass-tools-logo-light.png';
 
 export type AccountsOverviewViewProps = ReturnType<typeof useAccountsPageController>;
