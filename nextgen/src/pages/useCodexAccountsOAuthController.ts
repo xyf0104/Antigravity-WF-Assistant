@@ -23,7 +23,7 @@ import { resolveCodexProviderCapabilityProfile } from "../utils/codexProviderGat
 import { findCodexModelProviderById, findCodexModelProviderByBaseUrl, listCodexModelProviders, type CodexModelProvider } from "../services/codexModelProviderService";
 import { readCodexApiKeyUsageCache, type CodexApiKeyUsageState } from "../services/codexApiKeyUsageRefreshService";
 import { parseMfaCredentialInput, upsertSavedMfaRecord } from "../utils/mfaVault";
-import { DEFAULT_CODEX_API_BASE_URL, DEFAULT_CODEX_API_PROVIDER_ID, getDefaultApiProviderPresetId, isSameHttpBaseUrl, normalizeHttpBaseUrl, OPENAI_OFFICIAL_PRESET_ID, parseApiModelCatalogText, resolveApiProviderPresetDefaults, type OAuthBindingQuotaReserveFieldErrors, type OAuthBindingTargetKind, type SponsorApiProviderTemplate } from "./codexAccountsControllerModel";
+import { DEFAULT_CODEX_API_BASE_URL, DEFAULT_CODEX_API_PROVIDER_ID, getDefaultApiProviderPresetId, isSameHttpBaseUrl, normalizeHttpBaseUrl, normalizeSponsorApiProviderTemplates, OPENAI_OFFICIAL_PRESET_ID, parseApiModelCatalogText, resolveApiProviderPresetDefaults, type OAuthBindingQuotaReserveFieldErrors, type OAuthBindingTargetKind, type SponsorApiProviderTemplate } from "./codexAccountsControllerModel";
 import type { useCodexAccountsBaseController } from "./useCodexAccountsBaseController";
 
 /** 封装 useCodexAccountsPageController 的 useCodexAccountsOAuthController 业务域状态与动作。 */
@@ -37,6 +37,7 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
   | "cockpitApiPanelAccountId"
   | "fetchAccounts"
   | "fetchCurrentAccount"
+  | "fetchSponsorState"
   | "localAccessCollection"
   | "openPendingOAuthNoteModal"
   | "page"
@@ -59,6 +60,7 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
   | "setSavingPendingOAuthAccount"
   | "showAddModal"
   | "sortBy"
+  | "sponsorModule"
   | "syncImportedAccountsToApiService"
   | "updateApiKeyBoundOAuthAccount"
   | "t"
@@ -73,6 +75,7 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
     cockpitApiPanelAccountId,
     fetchAccounts,
     fetchCurrentAccount,
+    fetchSponsorState,
     localAccessCollection,
     openPendingOAuthNoteModal,
     page,
@@ -95,6 +98,7 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
     setSavingPendingOAuthAccount,
     showAddModal,
     sortBy,
+    sponsorModule,
     syncImportedAccountsToApiService,
     updateApiKeyBoundOAuthAccount,
     t,
@@ -285,10 +289,16 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
       () => findCodexApiProviderPresetById(apiProviderPresetId),
       [apiProviderPresetId],
     );
-    const sponsorApiProviderTemplates = useMemo<SponsorApiProviderTemplate[]>(() => [], []);
-    const selectedSponsorApiProviderTemplate = useMemo<SponsorApiProviderTemplate | null>(
-      () => null,
-      [],
+    const sponsorApiProviderTemplates = useMemo(
+      () => normalizeSponsorApiProviderTemplates(sponsorModule?.sponsors),
+      [sponsorModule?.sponsors],
+    );
+    const selectedSponsorApiProviderTemplate = useMemo(
+      () =>
+        sponsorApiProviderTemplates.find(
+          (template) => template.id === apiProviderPresetId,
+        ) ?? null,
+      [apiProviderPresetId, sponsorApiProviderTemplates],
     );
     const defaultApiProviderPresetId = useMemo(
       () => getDefaultApiProviderPresetId(sponsorApiProviderTemplates),
@@ -339,12 +349,14 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
           baseUrl: apiBaseUrlInput,
           wireApi:
             selectedManagedProvider?.wireApi ??
+            selectedSponsorApiProviderTemplate?.wireApi ??
             null,
         }).wireApi === "responses",
       [
         apiBaseUrlInput,
         apiProviderPresetId,
         selectedManagedProvider?.wireApi,
+        selectedSponsorApiProviderTemplate?.wireApi,
       ],
     );
     const editingApiModelCatalogSyncAvailable = useMemo(
@@ -556,6 +568,22 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
           return { apiProviderMode: "openai_builtin" };
         }
 
+        const sponsorTemplate = sponsorApiProviderTemplates.find(
+          (template) => template.id === providerPresetId,
+        );
+        if (sponsorTemplate) {
+          return {
+            apiProviderMode: "custom",
+            apiProviderId: sponsorTemplate.id,
+            apiProviderName: sponsorTemplate.name,
+            apiModelCatalog: sponsorTemplate.modelCatalog,
+            apiWireApi: sponsorTemplate.wireApi ?? undefined,
+            apiSupportsVision: sponsorTemplate.supportsVision,
+            accountName: sponsorTemplate.name,
+            sponsorTemplate,
+          };
+        }
+
         const managedProvider = findCodexModelProviderById(
           managedProviders,
           providerId,
@@ -625,7 +653,7 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
           accountName: customProviderDisplayName,
         };
       },
-      [managedProviders],
+      [managedProviders, sponsorApiProviderTemplates],
     );
 
     const resolveManagedProviderIdForAccount = useCallback(
@@ -733,6 +761,10 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
     }, [reloadManagedProviders]);
 
     useEffect(() => {
+      void fetchSponsorState();
+    }, [fetchSponsorState]);
+
+    useEffect(() => {
       if (!showAddModal) {
         apiProviderPresetExplicitlySelectedRef.current = false;
         if (!pendingApiKeyFunCodexPrefillRef.current) {
@@ -763,6 +795,56 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
         setApiModelCatalogError(null);
       }
     }, [defaultApiProviderPresetId, showAddModal, sponsorApiProviderTemplates]);
+
+    useEffect(() => {
+      if (!showAddModal || addTab !== "apikey") {
+        return;
+      }
+      if (sponsorApiProviderTemplates.length === 0) {
+        return;
+      }
+      if (apiProviderPresetExplicitlySelectedRef.current) {
+        return;
+      }
+      const shouldUseDefaultProvider =
+        apiProviderPresetId === DEFAULT_CODEX_API_PROVIDER_ID ||
+        !apiProviderPresetId.trim();
+      const nextProviderPresetId = shouldUseDefaultProvider
+        ? defaultApiProviderPresetId
+        : apiProviderPresetId;
+      const shouldSyncSponsorDefaults =
+        shouldUseDefaultProvider ||
+        (sponsorApiProviderTemplates.some(
+          (template) => template.id === nextProviderPresetId,
+        ) &&
+          normalizeHttpBaseUrl(apiBaseUrlInput) ===
+            normalizeHttpBaseUrl(DEFAULT_CODEX_API_BASE_URL));
+      if (apiProviderPresetId !== nextProviderPresetId) {
+        setApiProviderPresetId(nextProviderPresetId);
+      }
+      if (shouldSyncSponsorDefaults) {
+        const defaultProvider = resolveApiProviderPresetDefaults(
+          nextProviderPresetId,
+          sponsorApiProviderTemplates,
+        );
+        setApiBaseUrlInput(defaultProvider.baseUrl);
+        setNewManagedProviderNameInput(defaultProvider.providerName);
+        const defaultModels =
+          sponsorApiProviderTemplates.find(
+            (template) => template.id === nextProviderPresetId,
+          )?.modelCatalog ??
+          findCodexApiProviderPresetById(nextProviderPresetId)?.modelCatalog ??
+          [];
+        setApiModelCatalogInput(defaultModels.join("\n"));
+      }
+    }, [
+      addTab,
+      apiBaseUrlInput,
+      apiProviderPresetId,
+      defaultApiProviderPresetId,
+      showAddModal,
+      sponsorApiProviderTemplates,
+    ]);
 
     useEffect(() => {
       if (showAddModal && addTab === "apikey") {

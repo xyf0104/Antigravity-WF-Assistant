@@ -7,6 +7,7 @@ import { loadLegalNotices, type LegalNoticeDocument } from '../services/legalNot
 import './settings/Settings.css';
 import { Github, User, Save, AlertCircle, RefreshCw, FileText, Download, X } from 'lucide-react';
 import xiassToolsLogo from '../../src-tauri/icons/app-icon-source.png';
+import xiassToolsLightLogo from '../assets/xiass-tools-logo-light.png';
 import type { PlatformId } from '../types/platform';
 import type { useSettingsPageController } from "./SettingsPage";
 import { SettingsGeneralPanel } from "./SettingsGeneralPanel";
@@ -587,7 +588,16 @@ export function SettingsPageView(props: SettingsPageViewProps) {
                 onMouseDown={(event) => event.preventDefault()}
                 aria-label={t('settings.about.appName')}
               >
-                <img src={xiassToolsLogo} alt="" />
+                <img
+                  className="app-icon-squircle__asset app-icon-squircle__asset--dark"
+                  src={xiassToolsLogo}
+                  alt=""
+                />
+                <img
+                  className="app-icon-squircle__asset app-icon-squircle__asset--light"
+                  src={xiassToolsLightLogo}
+                  alt=""
+                />
               </button>
               <div className="app-info">
                 <h2>{t('settings.about.appName')}</h2>

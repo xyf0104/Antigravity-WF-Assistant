@@ -1,18 +1,14 @@
 /* ============================================
-   XIASS Tools - Design System
-   Light baseline: Cockpit's original neutral canvas and surface hierarchy.
-   XIASS-specific deep-sea treatment is isolated to the explicit dark branch.
+   Cockpit Tools - Design System
+   Brand Direction: floating dashboard with soft gradients
    ============================================ */
 
 :root {
   /* Typography */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
-    'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Inter', 'Segoe UI',
-    sans-serif;
+  --font-sans: 'Inter', 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', monospace;
 
-  /* Original Cockpit light palette. Keep this at the base layer so every
-     component has a correct light value before the optional XIASS layer loads. */
+  /* Brand Colors */
   --primary: #1d4ed8;
   --primary-hover: #1e40af;
   --primary-light: rgba(29, 78, 216, 0.12);
@@ -37,7 +33,6 @@
   /* Text Colors */
   --text-primary: #0f172a;
   --text-secondary: #475569;
-  --text-tertiary: #64748b;
   --text-muted: #94a3b8;
 
   /* Border Colors */
@@ -55,55 +50,48 @@
   --gradient-danger: linear-gradient(135deg, #f97316 0%, #ef4444 100%);
 
   /* Radius */
-  --radius-sm: 10px;
-  --radius-md: 14px;
-  --radius-lg: 20px;
-  --radius-xl: 26px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
   --radius-full: 9999px;
 
   /* Component sizing */
   --modal-close-icon-size: 16px;
-  --control-height: 42px;
-  --control-radius: 14px;
-  --focus-ring-width: 3px;
-  --motion-fast: 160ms;
-  --motion-standard: 220ms;
-  --motion-ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* === Dark Theme === */
 [data-theme="dark"] {
   /* Brand Colors - slightly brighter for dark mode */
-  --primary: #ff8a3d;
-  --primary-hover: #ff9e62;
-  --primary-light: rgba(255, 138, 61, 0.16);
-  --accent: #66a6d1;
+  --primary: #3b82f6;
+  --primary-hover: #2563eb;
+  --primary-light: rgba(59, 130, 246, 0.15);
+  --accent: #14b8a6;
 
   /* Status Colors */
-  --success: #4ade80;
-  --warning: #fbbf24;
-  --warning-strong: #fb923c;
-  --danger: #fb7185;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --warning-strong: #f97316;
+  --danger: #ef4444;
 
   /* Background Colors - dark palette */
-  --bg-primary: #06131f;
+  --bg-primary: #0f172a;
   /* Solid surfaces: dialogs / dropdowns / menus (no transparency) */
-  --bg-secondary: #0d2234;
+  --bg-secondary: #1e293b;
   --bg-surface: var(--bg-secondary);
   /* Soft panels: cards / list rows (slight transparency to show gradient) */
-  --bg-tertiary: #173249;
-  --bg-card: rgba(16, 42, 62, 0.9);
-  --bg-hover: rgba(144, 188, 219, 0.1);
+  --bg-tertiary: #334155;
+  --bg-card: rgba(30, 41, 59, 0.85);
+  --bg-hover: rgba(255, 255, 255, 0.08);
 
   /* Text Colors - inverted */
-  --text-primary: #edf6fc;
-  --text-secondary: #bed0dc;
-  --text-tertiary: #a5bdca;
-  --text-muted: #a5bdca;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
 
   /* Border Colors */
-  --border: rgba(151, 194, 224, 0.22);
-  --border-light: rgba(151, 194, 224, 0.12);
+  --border: rgba(255, 255, 255, 0.12);
+  --border-light: rgba(255, 255, 255, 0.06);
 
   /* Shadows - darker */
   --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.25);
@@ -181,16 +169,14 @@ body {
   line-height: 1.6;
   color-scheme: light;
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-  font-synthesis: none;
 }
 
 /* Dark mode body background */
 [data-theme="dark"] body,
 html[data-theme="dark"] body {
-  background: radial-gradient(circle at 15% 6%, rgba(47, 113, 159, 0.22), transparent 42%),
-    radial-gradient(circle at 90% 0%, rgba(249, 115, 22, 0.1), transparent 32%),
-    linear-gradient(160deg, #06131f 0%, #091b2a 58%, #0d2638 100%);
+  background: radial-gradient(circle at 12% 10%, rgba(59, 130, 246, 0.15), transparent 45%),
+    radial-gradient(circle at 90% 5%, rgba(20, 184, 166, 0.12), transparent 40%),
+    linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
   color-scheme: dark;
 }
 

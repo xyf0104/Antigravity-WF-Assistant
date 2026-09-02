@@ -1,0 +1,339 @@
+/*
+ * XIASS visual material layer.
+ *
+ * Cockpit owns layout, dimensions, spacing, typography, scrolling and action
+ * order. This layer intentionally changes only product material and feedback.
+ */
+
+:root {
+  --xiass-glass-surface: rgba(255, 255, 255, 0.72);
+  --xiass-glass-surface-strong: rgba(255, 255, 255, 0.88);
+  --xiass-glass-surface-soft: rgba(238, 247, 250, 0.72);
+  --xiass-glass-border: rgba(58, 99, 117, 0.22);
+  --xiass-glass-border-strong: rgba(39, 113, 133, 0.42);
+  --xiass-glass-highlight: rgba(255, 255, 255, 0.88);
+  --xiass-glass-shadow: 0 16px 36px rgba(31, 61, 80, 0.12);
+  --xiass-glass-shadow-hover: 0 20px 44px rgba(31, 61, 80, 0.18);
+  --xiass-glass-blur: blur(18px) saturate(125%);
+  --xiass-glass-control-blur: blur(13px) saturate(118%);
+  --xiass-glass-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --text-tertiary: #64748b;
+}
+
+html[data-theme='dark'] {
+  --xiass-glass-surface: rgba(7, 31, 43, 0.7);
+  --xiass-glass-surface-strong: rgba(9, 38, 53, 0.86);
+  --xiass-glass-surface-soft: rgba(18, 57, 72, 0.68);
+  --xiass-glass-border: rgba(177, 227, 236, 0.24);
+  --xiass-glass-border-strong: rgba(199, 242, 247, 0.44);
+  --xiass-glass-highlight: rgba(234, 254, 255, 0.16);
+  --xiass-glass-shadow: 0 18px 46px rgba(0, 9, 15, 0.4);
+  --xiass-glass-shadow-hover: 0 24px 58px rgba(0, 8, 14, 0.5);
+  --xiass-glass-blur: blur(20px) saturate(132%);
+  --xiass-glass-control-blur: blur(15px) saturate(128%);
+  --text-tertiary: #a7bfca;
+}
+
+html[data-theme='dark'],
+html[data-theme='dark'] body {
+  background:
+    linear-gradient(180deg, rgba(1, 16, 25, 0.22), rgba(1, 13, 21, 0.52)),
+    url('../assets/xiass-api-space-bg.png') center / cover fixed !important;
+  color-scheme: dark;
+}
+
+html[data-theme='dark'] #app-boot-splash {
+  background:
+    linear-gradient(180deg, rgba(1, 16, 25, 0.22), rgba(1, 13, 21, 0.52)),
+    url('../assets/xiass-api-space-bg.png') center / cover fixed !important;
+}
+
+html[data-theme='dark'] :is(#root, .app-container, .main-wrapper) {
+  background-color: transparent !important;
+}
+
+/* Preserve Cockpit's light hierarchy while giving every existing surface one material. */
+:is(
+  .side-nav,
+  .side-nav.side-nav-classic,
+  .page-tabs.filter-tabs,
+  .toolbar,
+  .account-table-container,
+  .card,
+  .account-card,
+  .codex-account-card,
+  .main-card,
+  .stat-card,
+  .settings-group,
+  .settings-general-fieldset,
+  .settings-card,
+  .settings-service-status,
+  .settings-backup-item,
+  .settings-transfer-card,
+  .settings-webdav-section,
+  .empty-state,
+  .codex-overview-selection-bar,
+  .codex-overview-filter-banner,
+  .codex-api-service-hero,
+  .codex-api-service-section,
+  .codex-api-service-panel,
+  .codex-api-service-summary-card,
+  .ghcp-flow-notice,
+  .mfa-quick-code-select,
+  .about-logo-section,
+  .credit-item,
+  .side-nav-more-popover,
+  .single-select-dropdown-menu,
+  .platform-group-switcher-dropdown,
+  [role='listbox'],
+  .modal,
+  .modal-content,
+  .qs-modal
+) {
+  background:
+    linear-gradient(145deg, var(--xiass-glass-highlight), transparent 34%, rgba(97, 200, 214, 0.05)),
+    var(--xiass-glass-surface) !important;
+  border-color: var(--xiass-glass-border) !important;
+  box-shadow:
+    inset 0 1px 0 var(--xiass-glass-highlight),
+    inset 0 -1px 0 rgba(0, 11, 18, 0.1),
+    var(--xiass-glass-shadow) !important;
+  backdrop-filter: var(--xiass-glass-blur) !important;
+  -webkit-backdrop-filter: var(--xiass-glass-blur) !important;
+}
+
+.side-nav.side-nav-classic {
+  background:
+    linear-gradient(180deg, rgba(227, 253, 255, 0.1), transparent 28%),
+    var(--xiass-glass-surface-strong) !important;
+  border-color: var(--xiass-glass-border) !important;
+}
+
+:is(.side-nav-classic-handle, .side-nav-layout-switch-trigger, .side-nav-more-popover::before) {
+  background: var(--xiass-glass-surface-strong) !important;
+  border-color: var(--xiass-glass-border) !important;
+  box-shadow:
+    inset 0 1px 0 var(--xiass-glass-highlight),
+    0 10px 24px rgba(0, 11, 18, 0.18) !important;
+  backdrop-filter: var(--xiass-glass-control-blur) !important;
+  -webkit-backdrop-filter: var(--xiass-glass-control-blur) !important;
+}
+
+:is(
+  .btn,
+  .filter-tab,
+  .nav-item,
+  .nav-sub-item,
+  .view-btn,
+  .action-btn,
+  .card-action-btn,
+  .folder-icon-btn,
+  .sort-direction-btn,
+  .tag-filter-btn,
+  .card-footer-action,
+  .header-action-btn,
+  .modal-close,
+  .side-nav-more-item,
+  .side-nav-more-sub-item,
+  .side-nav-more-manage,
+  .settings-tab,
+  .modal-tab,
+  .single-select-dropdown-trigger,
+  .multi-select-filter-trigger,
+  .single-select-filter-trigger,
+  .platform-group-switcher-trigger
+) {
+  border-color: var(--xiass-glass-border) !important;
+  background:
+    linear-gradient(145deg, var(--xiass-glass-highlight), transparent 42%),
+    var(--xiass-glass-surface-soft) !important;
+  color: var(--text-primary);
+  box-shadow:
+    inset 0 1px 0 var(--xiass-glass-highlight),
+    0 7px 18px rgba(0, 12, 19, 0.12) !important;
+  backdrop-filter: var(--xiass-glass-control-blur) !important;
+  -webkit-backdrop-filter: var(--xiass-glass-control-blur) !important;
+  transition:
+    transform 180ms var(--xiass-glass-ease),
+    border-color 180ms ease,
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms var(--xiass-glass-ease),
+    opacity 160ms ease !important;
+}
+
+.btn.btn-primary,
+.btn-primary {
+  border-color: rgba(255, 255, 255, 0.44) !important;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--primary) 94%, white), color-mix(in srgb, var(--primary-hover) 72%, var(--accent))) !important;
+  color: #fff !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    0 12px 26px color-mix(in srgb, var(--primary) 34%, transparent) !important;
+}
+
+:is(
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
+  textarea,
+  select,
+  .settings-input,
+  .settings-select,
+  .search-box,
+  .search-box input
+) {
+  background: var(--xiass-glass-surface-strong) !important;
+  border-color: var(--xiass-glass-border) !important;
+  box-shadow:
+    inset 0 1px 0 var(--xiass-glass-highlight),
+    0 7px 16px rgba(0, 12, 19, 0.1) !important;
+  color: var(--text-primary) !important;
+  backdrop-filter: var(--xiass-glass-control-blur) !important;
+  -webkit-backdrop-filter: var(--xiass-glass-control-blur) !important;
+}
+
+select option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+/* The two assets share Cockpit's original logo box; only the source changes by theme. */
+.brand-logo__asset {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.brand-logo__asset--light {
+  display: none;
+}
+
+html[data-theme='light'] .brand-logo__asset--dark {
+  display: none;
+}
+
+html[data-theme='light'] .brand-logo__asset--light {
+  display: block;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :is(
+    .btn,
+    .filter-tab,
+    .nav-item,
+    .nav-sub-item,
+    .view-btn,
+    .action-btn,
+    .card-action-btn,
+    .folder-icon-btn,
+    .sort-direction-btn,
+    .tag-filter-btn,
+    .card-footer-action,
+    .header-action-btn,
+    .settings-tab,
+    .modal-tab,
+    .single-select-dropdown-trigger,
+    .multi-select-filter-trigger,
+    .single-select-filter-trigger,
+    .platform-group-switcher-trigger,
+    .side-nav-classic-handle
+  ):hover:not(:disabled) {
+    border-color: var(--xiass-glass-border-strong) !important;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.24), transparent 44%),
+      color-mix(in srgb, var(--xiass-glass-surface-soft) 88%, var(--primary-light)) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      0 12px 26px rgba(0, 12, 19, 0.18) !important;
+    transform: translateY(-1px);
+  }
+
+  :is(.account-card, .codex-account-card, .main-card, .stat-card, .credit-item):hover {
+    border-color: var(--xiass-glass-border-strong) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.24),
+      var(--xiass-glass-shadow-hover) !important;
+    transform: translateY(-2px);
+  }
+}
+
+:is(.btn, .filter-tab, .nav-item, .view-btn, .action-btn, .card-action-btn):active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+:is(
+  .btn,
+  .filter-tab,
+  .nav-item,
+  .nav-sub-item,
+  .view-btn,
+  .action-btn,
+  .card-action-btn,
+  .folder-icon-btn,
+  .sort-direction-btn,
+  .tag-filter-btn,
+  .card-footer-action,
+  .header-action-btn,
+  .settings-tab,
+  .modal-tab,
+  .single-select-dropdown-trigger,
+  .multi-select-filter-trigger,
+  .single-select-filter-trigger,
+  .platform-group-switcher-trigger,
+  input,
+  textarea,
+  select
+):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 78%, white);
+  outline-offset: 2px;
+}
+
+html[data-reduced-motion='true'] :is(
+  .btn,
+  .filter-tab,
+  .nav-item,
+  .nav-sub-item,
+  .view-btn,
+  .action-btn,
+  .card-action-btn,
+  .folder-icon-btn,
+  .sort-direction-btn,
+  .tag-filter-btn,
+  .card-footer-action,
+  .header-action-btn,
+  .settings-tab,
+  .modal-tab,
+  .account-card,
+  .codex-account-card,
+  .main-card,
+  .stat-card,
+  .credit-item
+) {
+  transition: none !important;
+  transform: none !important;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :is(
+    .side-nav,
+    .side-nav.side-nav-classic,
+    .page-tabs.filter-tabs,
+    .toolbar,
+    .card,
+    .account-card,
+    .codex-account-card,
+    .main-card,
+    .stat-card,
+    .settings-group,
+    .settings-card,
+    .empty-state,
+    .modal,
+    .modal-content,
+    .qs-modal
+  ) {
+    background: var(--xiass-glass-surface-strong) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}

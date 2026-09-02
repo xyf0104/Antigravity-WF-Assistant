@@ -2,14 +2,23 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  ALL_PLATFORM_IDS,
   MENU_HIDDEN_PLATFORM_IDS,
   MENU_VISIBLE_PLATFORM_IDS,
   isMenuVisiblePlatform,
 } from './platform.ts';
 
-test('keeps every imported Cockpit platform available in XIASS navigation', () => {
-  assert.deepEqual(MENU_HIDDEN_PLATFORM_IDS, []);
-  assert.deepEqual(MENU_VISIBLE_PLATFORM_IDS, ALL_PLATFORM_IDS);
-  assert.ok(ALL_PLATFORM_IDS.every(isMenuVisiblePlatform));
+test('exposes only the five XIASS-supported products in navigation', () => {
+  assert.deepEqual(MENU_VISIBLE_PLATFORM_IDS, [
+    'antigravity',
+    'codex',
+    'claude_manager',
+    'cursor',
+    'windsurf',
+  ]);
+  assert.ok(MENU_HIDDEN_PLATFORM_IDS.length > 0);
+  assert.ok(MENU_VISIBLE_PLATFORM_IDS.every(isMenuVisiblePlatform));
+  assert.equal(isMenuVisiblePlatform('codebuddy'), false);
+  assert.equal(isMenuVisiblePlatform('trae'), false);
+  assert.equal(isMenuVisiblePlatform('antigravity_ide'), false);
+  assert.equal(isMenuVisiblePlatform('codex_api_service'), false);
 });

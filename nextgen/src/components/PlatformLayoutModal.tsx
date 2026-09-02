@@ -350,9 +350,12 @@ export function PlatformLayoutModal({
   const { t } = useTranslation();
   useEscClose(open, onClose);
   const sideNavLayoutMode = useSideNavLayoutStore((state) => state.mode);
-  const sidebarSelectionLimit = sideNavLayoutMode === 'classic'
-    ? CLASSIC_SIDEBAR_ENTRY_LIMIT
-    : ORIGINAL_SIDEBAR_ENTRY_LIMIT;
+  const sidebarSelectionLimit = Math.min(
+    sideNavLayoutMode === 'classic'
+      ? CLASSIC_SIDEBAR_ENTRY_LIMIT
+      : ORIGINAL_SIDEBAR_ENTRY_LIMIT,
+    MENU_VISIBLE_PLATFORM_IDS.length,
+  );
   const {
     orderedEntryIds,
     hiddenEntryIds,

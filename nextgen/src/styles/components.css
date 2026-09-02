@@ -69,7 +69,7 @@
   padding: 0 5px;
   background: linear-gradient(135deg, #f97316 0%, #ef4444 100%);
   color: white;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   border-radius: 9px;
   display: flex;
@@ -174,39 +174,19 @@
 .main-wrapper {
   position: relative;
   flex: 1;
-  min-width: 0;
   margin-inline-start: 120px; /* 增加起始侧留白，主要避开 Sidebar */
   padding: 40px 32px 32px 0;
   padding-inline-start: 0;
   padding-inline-end: 32px;
-  /* One scroll surface for every agent workspace. `overlay` is non-standard
-     and caused different wheel/scrollbar behavior between macOS and Windows. */
   height: 100vh;
-  height: 100dvh;
-  overflow-x: clip;
-  overflow-y: auto;
-  overscroll-behavior-y: contain;
-  scroll-padding-block: 16px 32px;
-  scrollbar-gutter: stable;
+  overflow-y: overlay;
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 
-/* Agent workspaces are operational screens, not landing pages. Keep their
-   first actionable content close to the window edge while preserving an
-   intentional gutter around the compact workspace strip. */
-.main-wrapper:has(.xiass-agent-workspace) {
-  gap: 8px;
-  padding-top: 8px;
-  padding-bottom: 24px;
-  scroll-padding-block: 8px 24px;
-}
-
 .main-content {
-  flex: 0 0 auto;
-  min-width: 0;
-  min-height: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -218,7 +198,7 @@
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  animation: fadeUp 0.24s var(--motion-ease, ease) both;
+  animation: fadeUp 0.5s ease both;
 }
 
 .page-heading h1 {
@@ -319,7 +299,7 @@
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(10px);
-  animation: fadeUp 0.24s var(--motion-ease, ease) both;
+  animation: fadeUp 0.55s ease both;
   position: relative;
   z-index: 5;
 }
@@ -415,7 +395,7 @@
   background: rgba(15, 23, 42, 0.08);
   padding: 2px 8px;
   border-radius: var(--radius-full);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .page-tabs {
@@ -604,10 +584,13 @@
 .page-tabs-label {
   position: absolute;
   left: 0;
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--text-primary);
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .page-tabs-center {
@@ -622,10 +605,13 @@
 }
 
 .page-title {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--text-primary);
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .platform-header-title {
@@ -1205,7 +1191,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   border-radius: 999px;
   background: color-mix(in srgb, var(--bg-secondary) 84%, var(--bg-card));
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
@@ -1270,7 +1256,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 .codex-speed-menu-title {
   padding: 1px 7px 5px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1.2;
 }
@@ -1350,13 +1336,13 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 }
 
 .codex-speed-menu.compact .codex-speed-option-desc {
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.15;
 }
 
 .codex-speed-option-desc {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.2;
 }
 
@@ -1376,7 +1362,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   align-items: center;
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1389,7 +1375,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 }
 
 .tier-text {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -1414,7 +1400,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 }
 
 .status-text {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 600;
 }
 
@@ -1460,7 +1446,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .quota-name {
@@ -1505,7 +1491,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 
 .quota-reset {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 10px;
   font-family: var(--font-mono);
   opacity: 1;
   display: inline-block;
@@ -1528,7 +1514,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 
 .quota-credits-label {
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
 }
 
@@ -1640,11 +1626,6 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 0;
-  min-height: 0;
-  padding: 24px;
-  overflow: auto;
-  overscroll-behavior: contain;
   z-index: 10000;
   -webkit-app-region: no-drag;
   animation: fadeIn 0.2s ease-out;
@@ -1656,13 +1637,11 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   border: 1px solid rgba(255, 255, 255, 0.1);
   width: 100%;
   max-width: 560px;
-  max-height: min(85dvh, 100%);
+  max-height: 85vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   position: relative;
-  min-width: 0;
-  min-height: 0;
   box-shadow:
     0 25px 50px -12px rgba(0, 0, 0, 0.35),
     0 0 15px rgba(0, 0, 0, 0.1);
@@ -1712,7 +1691,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   border-radius: var(--radius-full);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: background-color 0.2s, color 0.2s, transform 0.2s;
+  transition: all 0.2s;
 }
 
 .modal-close svg {
@@ -1728,8 +1707,6 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 
 .modal-body {
   padding: 28px;
-  min-width: 0;
-  overflow-x: hidden;
   overflow-y: auto;
   flex: 1;
 }
@@ -1970,7 +1947,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 }
 
 .platform-layout-expand-all-btn {
-  min-height: 40px;
+  min-height: 30px;
   padding: 0 10px;
 }
 
@@ -1990,7 +1967,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 }
 
 .platform-layout-bulk-toggle {
-  min-height: 40px;
+  min-height: 28px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2039,7 +2016,6 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   min-height: 56px;
   padding: 10px 12px;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -2079,8 +2055,8 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   background: transparent;
   padding: 0;
   margin: 0;
-  width: 40px;
-  height: 40px;
+  width: 20px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2093,8 +2069,8 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 }
 
 .platform-layout-expand-trigger {
-  width: 40px;
-  height: 40px;
+  width: 18px;
+  height: 18px;
   border: 0;
   background: transparent;
   color: var(--text-muted);
@@ -2147,7 +2123,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   border: 1px solid rgba(59, 130, 246, 0.25);
   background: rgba(59, 130, 246, 0.1);
   color: var(--primary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
@@ -2157,16 +2133,16 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   margin-left: auto;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) 40px;
+  grid-template-columns: max-content max-content max-content 32px;
   align-items: center;
   justify-content: end;
-  gap: 6px;
-  flex: 1 1 310px;
+  gap: 10px;
+  flex: 0 0 auto;
 }
 
 .platform-layout-controls-grid.is-child-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) 40px 40px;
-  gap: 6px;
+  grid-template-columns: max-content max-content 32px 32px;
+  gap: 8px;
   opacity: 0.95;
 }
 
@@ -2190,12 +2166,12 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 
 .platform-layout-empty-edit-slot {
   display: inline-flex;
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
 }
 
 .platform-layout-disabled-slot {
-  min-height: 40px;
+  min-height: 28px;
   display: inline-flex;
   align-items: center;
   color: var(--text-muted);
@@ -2203,7 +2179,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 }
 
 .platform-layout-toggle {
-  min-height: 40px;
+  min-height: 28px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2683,7 +2659,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 @media (max-width: 1100px) {
   .platform-layout-bulk-header-right,
   .platform-layout-controls-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr)) 40px;
+    grid-template-columns: max-content max-content max-content 30px;
   }
 }
 
@@ -2707,12 +2683,6 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
     min-width: 0;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     justify-content: stretch;
-  }
-
-  .platform-layout-controls-grid {
-    /* The desktop flex-basis represents horizontal width. In the stacked
-       layout it becomes a vertical basis and creates a 310px empty gap. */
-    flex: 0 0 auto;
   }
 
   .platform-layout-row,

@@ -4,7 +4,7 @@
 @import './components/QuickSettingsPopover.css';
 @import './styles/settings-shared.css';
 @import './styles/pages.css';
-@import './styles/xiass-liquid-glass.css';
+@import './styles/xiass-glass-overlay.css';
 
 .quota-alert-modal-content {
   display: flex;
@@ -687,7 +687,7 @@
   border-radius: 6px;
   background: var(--bg-secondary);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -695,7 +695,7 @@
   margin-top: 5px;
   color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
   word-break: break-all;
 }
@@ -703,7 +703,7 @@
 .app-path-candidate-note {
   margin-top: 5px;
   color: var(--warning, #f59e0b);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -764,7 +764,7 @@
 }
 
 .update-quick-action-btn strong {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   opacity: 0.9;
 }

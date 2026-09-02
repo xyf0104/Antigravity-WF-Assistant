@@ -6,11 +6,9 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
-  animation: fadeUp 0.24s var(--motion-ease, ease) both;
+  animation: fadeUp 0.5s ease both;
   width: 100%;
   align-items: stretch;
-  container-type: inline-size;
-  container-name: settings-surface;
 }
 
 .settings-content {
@@ -77,19 +75,8 @@
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition:
-    background-color 0.2s,
-    border-color 0.2s,
-    box-shadow 0.2s,
-    color 0.2s;
+  transition: all 0.2s;
   min-width: 80px;
-}
-
-.settings-tab:focus-visible,
-.app-icon-squircle:focus-visible,
-.credit-item:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--primary) 76%, white);
-  outline-offset: 2px;
 }
 
 .settings-tab:hover {
@@ -151,35 +138,6 @@
 
 .settings-row:last-child {
   border-bottom: none;
-}
-
-.settings-internal-detail {
-  display: none !important;
-}
-
-.settings-service-status {
-  min-height: 76px;
-}
-
-.settings-service-pill {
-  flex: 0 0 auto;
-  min-width: 72px;
-  min-height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 38%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--warning, #f59e0b) 12%, transparent);
-  color: var(--warning, #f59e0b);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.settings-service-pill.is-running {
-  border-color: color-mix(in srgb, var(--success, #22c55e) 38%, transparent);
-  background: color-mix(in srgb, var(--success, #22c55e) 12%, transparent);
-  color: var(--success, #22c55e);
 }
 
 .settings-row--no-border {
@@ -310,7 +268,7 @@
   border-radius: 6px;
   background: var(--bg-secondary);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -318,7 +276,7 @@
   margin-top: 5px;
   color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
   word-break: break-all;
 }
@@ -326,7 +284,7 @@
 .settings-claude-candidate-note {
   margin-top: 5px;
   color: var(--warning, #f59e0b);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -395,10 +353,7 @@
   background-repeat: no-repeat;
   background-position: right 8px center;
   min-width: 140px;
-  transition:
-    background-color 0.2s,
-    border-color 0.2s,
-    box-shadow 0.2s;
+  transition: all 0.2s;
 }
 
 .settings-select:hover {
@@ -486,16 +441,6 @@ input:checked + .slider:before {
   align-items: center;
   gap: 16px;
   margin-bottom: 16px;
-  width: min(100%, 520px);
-  padding: 24px;
-  border: 1px solid var(--xiass-glass-border, var(--border-light));
-  border-radius: 20px;
-  background: var(--xiass-glass-surface-strong, var(--bg-secondary));
-  box-shadow:
-    inset 0 1px 0 var(--xiass-glass-highlight, rgba(255, 255, 255, 0.16)),
-    var(--xiass-glass-shadow, var(--shadow-md));
-  backdrop-filter: blur(22px) saturate(140%);
-  -webkit-backdrop-filter: blur(22px) saturate(140%);
   user-select: none;
   -webkit-user-select: none;
 }
@@ -503,31 +448,16 @@ input:checked + .slider:before {
 .app-icon-squircle {
   width: 80px;
   height: 80px;
-  border-radius: 0;
-  background: transparent;
+  border-radius: 22px;
+  background: var(--gradient-primary);
+  color: white;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: none;
+  box-shadow: var(--shadow-lg);
   position: relative;
   cursor: pointer;
-  padding: 0;
-  border: 0;
-  font: inherit;
   user-select: none;
-}
-
-.app-icon-squircle img {
-  display: block;
-  width: 72px;
-  height: 72px;
-  object-fit: contain;
-  filter: drop-shadow(0 8px 18px rgba(54, 224, 214, 0.2));
-}
-
-[data-theme='light'] .app-icon-squircle img,
-html[data-theme='light'] .app-icon-squircle img {
-  filter: brightness(0.72) contrast(1.42) saturate(1.38) drop-shadow(0 4px 10px rgba(5, 64, 76, 0.2));
 }
 
 .app-icon-squircle.unlock-fireworks-active {
@@ -568,7 +498,6 @@ html[data-theme='light'] .app-icon-squircle img {
   font-weight: 700;
   margin-bottom: 8px;
   text-align: center;
-  color: var(--text-primary);
 }
 
 .version-tag {
@@ -598,11 +527,7 @@ html[data-theme='light'] .app-icon-squircle img {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   cursor: pointer;
-  transition:
-    background-color 0.2s,
-    border-color 0.2s,
-    box-shadow 0.2s,
-    transform 0.2s;
+  transition: all 0.2s;
   text-decoration: none;
   gap: 8px;
 }
@@ -613,25 +538,9 @@ html[data-theme='light'] .app-icon-squircle img {
   border-color: var(--primary);
 }
 
-.credit-item--license-notice {
-  grid-column: 1 / -1;
-}
-
 .credit-icon {
   color: var(--text-secondary);
   margin-bottom: 4px;
-}
-
-.credit-icon--repository {
-  color: var(--text-primary);
-}
-
-.credit-icon--upstream {
-  color: var(--text-secondary);
-}
-
-.credit-icon--license {
-  color: var(--info, #3b82f6);
 }
 
 .credit-item h3 {
@@ -648,174 +557,6 @@ html[data-theme='light'] .app-icon-squircle img {
 .settings-release-history-modal {
   max-width: min(690px, calc(100vw - 56px));
   max-height: min(86vh, 860px);
-}
-
-.settings-license-modal {
-  max-width: min(920px, calc(100vw - 56px));
-  max-height: min(86vh, 900px);
-}
-
-.settings-license-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-
-.settings-license-body > p {
-  margin: 0;
-}
-
-.settings-license-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-light);
-  border-radius: 12px;
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.settings-license-status > span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.settings-license-status-error {
-  align-items: center;
-  justify-content: space-between;
-  border-color: color-mix(in srgb, var(--danger) 38%, var(--border-light));
-  color: var(--danger);
-}
-
-.settings-license-status-error .btn {
-  flex: 0 0 auto;
-}
-
-.settings-license-layout {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.32fr) minmax(0, 1fr);
-  gap: 14px;
-  min-height: 340px;
-  height: min(58dvh, 560px);
-}
-
-.settings-license-tabs {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-  overflow-y: auto;
-  padding: 4px;
-}
-
-.settings-license-tab {
-  width: 100%;
-  min-height: 44px;
-  padding: 10px 12px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.35;
-  text-align: start;
-  overflow-wrap: anywhere;
-}
-
-.settings-license-tab:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.settings-license-tab:focus-visible {
-  position: relative;
-  z-index: 1;
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-}
-
-.settings-license-tab.active {
-  border-color: color-mix(in srgb, var(--primary) 24%, var(--border));
-  background: color-mix(in srgb, var(--primary) 10%, var(--bg-secondary));
-  color: var(--primary);
-}
-
-.settings-license-document {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-  padding: 16px;
-  border: 1px solid var(--border-light);
-  border-radius: 14px;
-  background: var(--bg-tertiary);
-  outline: none;
-}
-
-.settings-license-document:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-}
-
-.settings-license-document h3 {
-  margin: 0 0 12px;
-  color: var(--text-primary);
-  font-size: 15px;
-  line-height: 1.35;
-}
-
-.settings-license-document pre {
-  margin: 0;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-@media (max-width: 720px) {
-  .settings-license-modal {
-    max-width: min(100%, calc(100vw - 28px));
-  }
-
-  .settings-license-layout {
-    grid-template-columns: minmax(0, 1fr);
-    height: auto;
-  }
-
-  .settings-license-tabs {
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding-bottom: 8px;
-  }
-
-  .settings-license-tab {
-    flex: 0 0 auto;
-    width: auto;
-    max-width: min(240px, 72vw);
-  }
-
-  .settings-license-document {
-    min-height: 280px;
-    max-height: 46dvh;
-  }
-
-  .settings-license-status-error {
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 
 .settings-release-history-body {
@@ -894,7 +635,7 @@ html[data-theme='light'] .app-icon-squircle img {
   border-radius: 999px;
   background: var(--bg-tertiary);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.2s ease, border-color 0.2s ease;
@@ -1105,7 +846,7 @@ html[data-theme='light'] .app-icon-squircle img {
   border-radius: 999px;
   background: var(--bg-secondary);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.4;
   white-space: nowrap;
 }
@@ -1428,7 +1169,7 @@ html[data-theme='light'] .app-icon-squircle img {
   background: var(--bg-tertiary);
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.5;
   word-break: break-all;
   max-height: 74px;
@@ -1542,186 +1283,7 @@ html[data-theme='light'] .app-icon-squircle img {
   border-color: rgba(239, 68, 68, 0.35);
 }
 
-/* The classic sidebar can leave the settings canvas narrow while the browser
- * viewport is still wider than the mobile breakpoint. Respond to the canvas
- * itself so WebDAV actions wrap inside their card instead of being clipped. */
-@container settings-surface (max-width: 720px) {
-  .settings-row,
-  .settings-row--align-start {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 12px;
-    padding: 16px;
-  }
-
-  .row-label {
-    width: 100%;
-    min-width: 0;
-    padding-right: 0;
-  }
-
-  .row-title,
-  .row-desc {
-    overflow-wrap: anywhere;
-  }
-
-  .row-control,
-  .row-control--grow,
-  .settings-row--align-start .row-control {
-    align-self: auto;
-    flex: 0 1 auto;
-    flex-wrap: wrap;
-    justify-content: flex-start;
-    width: 100%;
-    min-width: 0;
-  }
-
-  .row-control > .settings-select,
-  .row-control > .settings-input,
-  .row-control > .settings-inline-input {
-    flex: 1 1 100%;
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-  }
-
-  .settings-webdav-status-row {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .settings-webdav-status-row .row-label,
-  .settings-webdav-actions {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .settings-webdav-actions {
-    align-self: auto;
-    flex-wrap: wrap;
-    justify-content: flex-start;
-  }
-}
-
-@container settings-surface (min-width: 721px) and (max-width: 960px) {
-  .row-label {
-    min-width: 0;
-  }
-
-  .row-control {
-    min-width: 0;
-    max-width: 58%;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
-  .row-control--grow {
-    max-width: 64%;
-  }
-
-  .row-control :is(.settings-input, .settings-select, .settings-inline-input) {
-    min-width: 0;
-    max-width: 100%;
-  }
-}
-
 @media (max-width: 760px) {
-  .settings-container,
-  .settings-content,
-  .settings-group {
-    min-width: 0;
-  }
-
-  .settings-container,
-  .settings-content {
-    gap: 16px;
-    align-items: stretch;
-  }
-
-  .settings-tabs-wrapper {
-    justify-content: flex-start;
-    margin: 4px 0 18px;
-  }
-
-  .settings-tabs {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: 100%;
-    border-radius: 18px;
-  }
-
-  .settings-tab {
-    min-width: 0;
-    min-height: 40px;
-    padding: 9px 10px;
-    border-radius: 12px;
-    white-space: normal;
-  }
-
-  .settings-row,
-  .settings-row--align-start {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 12px;
-    padding: 16px;
-  }
-
-  .row-label {
-    width: 100%;
-    min-width: 0;
-    padding-right: 0;
-  }
-
-  .row-title,
-  .row-desc {
-    overflow-wrap: anywhere;
-  }
-
-  .row-control,
-  .row-control--grow,
-  .settings-row--align-start .row-control {
-    align-self: auto;
-    flex: 0 1 auto;
-    flex-wrap: wrap;
-    justify-content: flex-start;
-    width: 100%;
-    min-width: 0;
-  }
-
-  .row-control > .settings-select,
-  .row-control > .settings-input,
-  .row-control > .settings-inline-input {
-    flex: 1 1 100%;
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-  }
-
-  .row-control--grow > div,
-  .settings-claude-launch-row,
-  .settings-claude-scan-root-row {
-    flex-wrap: wrap;
-    width: 100%;
-    min-width: 0;
-  }
-
-  .row-control--grow > div > .settings-input--path,
-  .settings-claude-launch-row > .settings-input--path,
-  .settings-claude-scan-root-row > .settings-input--path {
-    flex: 1 1 100%;
-    width: 100%;
-    min-width: 0;
-  }
-
-  .row-control--grow > div > .btn,
-  .settings-claude-launch-row > .btn,
-  .settings-claude-scan-root-row > .btn {
-    flex: 1 1 120px;
-    min-width: 0;
-    justify-content: center;
-  }
-
   .settings-release-history-modal {
     max-width: calc(100vw - 20px);
   }
@@ -1785,36 +1347,12 @@ html[data-theme='light'] .app-icon-squircle img {
   .settings-backup-migration-actions .btn {
     width: 100%;
   }
-
-  .settings-backup-modal-body .btn.btn-sm {
-    min-height: 40px;
-  }
 }
 
 /* WebDAV 备份专属：让备份列表容器中的卡片背景色保持和外层卡片一致（白色） */
 .settings-webdav-list-wrap .settings-backup-empty,
 .settings-webdav-list-wrap .settings-backup-item {
   background: var(--bg-secondary);
-}
-
-.settings-webdav-remote-toggle {
-  display: inline-flex;
-  min-width: 0;
-  min-height: 44px;
-  align-items: center;
-  align-self: flex-start;
-  gap: 8px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-primary);
-  font: inherit;
-  font-weight: 600;
-  text-align: left;
-}
-
-.settings-webdav-remote-toggle:hover {
-  color: var(--primary);
 }
 
 .settings-webdav-chevron {
@@ -1888,4 +1426,28 @@ html[data-theme='light'] .app-icon-squircle img {
   .settings-codex-policy-email {
     grid-column: 1 / -1;
   }
+}
+
+/* Product-level information boundary requested for XIASS: ports stay internal. */
+.settings-internal-detail {
+  display: none !important;
+}
+
+.app-icon-squircle__asset {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.app-icon-squircle__asset--light {
+  display: none;
+}
+
+html[data-theme='light'] .app-icon-squircle__asset--dark {
+  display: none;
+}
+
+html[data-theme='light'] .app-icon-squircle__asset--light {
+  display: block;
 }

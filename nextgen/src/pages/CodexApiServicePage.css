@@ -13,8 +13,6 @@
   min-height: 100%;
   gap: 12px;
   animation: fadeUp 0.5s ease;
-  container-type: inline-size;
-  container-name: codex-api-service;
 }
 
 .codex-api-service-content {
@@ -108,7 +106,7 @@
   padding: 1px 6px;
   border: 1px solid transparent;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 10.5px;
   font-weight: 700;
   line-height: 1.2;
   white-space: nowrap;
@@ -186,22 +184,6 @@
 .codex-api-service-hero-actions .btn svg {
   width: 13px;
   height: 13px;
-}
-
-/*
- * The unified Agent shell can leave this page much narrower than the browser
- * viewport when the classic sidebar is expanded.  Respond to the page's real
- * width so the action cluster never squeezes the title/status column.
- */
-@container codex-api-service (max-width: 720px) {
-  .codex-api-service-hero {
-    grid-template-columns: minmax(0, 1fr);
-    align-items: start;
-  }
-
-  .codex-api-service-hero-actions {
-    justify-content: flex-start;
-  }
 }
 
 .codex-api-service-page .single-select-dropdown.codex-api-service-title-mode-select {
@@ -397,10 +379,11 @@
 
 .codex-api-service-summary-card span {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 10.5px;
   font-weight: 650;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .codex-api-service-summary-card strong {
@@ -417,7 +400,7 @@
 .codex-api-service-summary-card small {
   min-width: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 10.5px;
   line-height: 1.35;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -476,7 +459,7 @@
 .codex-api-service-panel-desc {
   margin: 4px 0 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.45;
 }
 
@@ -528,7 +511,7 @@
 .codex-api-service-compat-item small {
   min-width: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 10.5px;
   line-height: 1.35;
 }
 
@@ -549,13 +532,10 @@
   background: color-mix(in srgb, var(--bg-secondary) 84%, transparent);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 10.5px;
   line-height: 1.45;
-  white-space: pre-wrap;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  white-space: pre;
+  overflow: auto;
 }
 
 .codex-api-service-compat-models {
@@ -572,7 +552,7 @@
   min-width: 0;
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -588,7 +568,7 @@
 
 .codex-api-service-section-title {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 10.5px;
   font-weight: 760;
   text-transform: uppercase;
 }
@@ -731,7 +711,7 @@
 
 .codex-api-service-field-hint {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -762,7 +742,7 @@
   height: 34px;
   padding: 0 10px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -958,7 +938,7 @@
 .codex-api-service-health-grid span {
   min-width: 0;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -986,7 +966,7 @@
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -1032,7 +1012,7 @@
 
 .codex-api-service-usage-context span {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.35;
 }
 
@@ -1063,13 +1043,13 @@
 
 .codex-api-service-key-last-used small {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 10px;
   line-height: 1;
 }
 
 .codex-api-service-key-last-used strong {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 650;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
@@ -1135,7 +1115,7 @@
 .api-key-token-limit-summary span,
 .api-key-usage-grid span {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 10px;
   line-height: 1.2;
 }
 
@@ -1233,7 +1213,7 @@
 
 .api-key-usage-grid-head span {
   color: var(--primary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -1270,7 +1250,7 @@
   gap: 4px;
   flex: 0 0 auto;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -1353,7 +1333,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 
 .api-key-token-limit-editor small {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.4;
 }
 
@@ -1385,7 +1365,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 .api-key-account-scope-hint {
   min-width: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1410,7 +1390,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
   border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
 }
@@ -1505,7 +1485,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 
 .api-key-account-scope-selection small {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.2;
 }
 
@@ -1592,7 +1572,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
   resize: vertical;
   font: inherit;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -1625,7 +1605,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 .codex-api-service-table-row > span {
   min-width: 0;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1730,7 +1710,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 
 .codex-api-service-mapping-row label span {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .codex-api-service-mapping-row input {
@@ -1752,7 +1732,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
   border-radius: 999px;
   background: color-mix(in srgb, var(--bg-card) 82%, transparent);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -1830,14 +1810,14 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
   border-radius: 9px;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
 }
 
 .codex-api-service-range-tabs button small {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 9px;
   font-weight: 650;
 }
 
@@ -2073,7 +2053,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
   color: var(--text-primary);
   font: inherit;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -2156,7 +2136,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
   border-bottom: 0;
   background: var(--bg-tertiary);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -2214,7 +2194,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
   min-width: 0;
   width: 100%;
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 600;
 }
 
@@ -2401,7 +2381,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 
 .codex-api-service-log-filters label > span {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -2483,7 +2463,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 .codex-api-service-log-row > div:last-child span {
   max-width: 100%;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -2588,15 +2568,6 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 }
 
 @media (max-width: 860px) {
-  .codex-api-service-summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    overflow-x: hidden;
-  }
-
-  .codex-api-service-summary-card:last-child:nth-child(odd) {
-    grid-column: 1 / -1;
-  }
-
   .api-key-token-limit-editor {
     grid-template-columns: 1fr;
     align-items: stretch;
@@ -2647,14 +2618,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 
   .codex-api-service-page .page-tabs.filter-tabs {
     justify-content: flex-start;
-    flex-wrap: wrap;
-    overflow-x: hidden;
-  }
-
-  .codex-api-service-page .page-tabs.filter-tabs .filter-tab {
-    min-width: 0;
-    flex: 1 1 124px;
-    white-space: normal;
+    overflow-x: auto;
   }
 
   .codex-api-service-hero {
@@ -2722,14 +2686,6 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 }
 
 @media (max-width: 620px) {
-  .codex-api-service-summary-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .codex-api-service-summary-card:last-child:nth-child(odd) {
-    grid-column: auto;
-  }
-
   .codex-api-service-health-grid {
     grid-template-columns: 1fr;
   }

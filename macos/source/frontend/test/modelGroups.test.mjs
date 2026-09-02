@@ -30,13 +30,14 @@ test("different direct credentials and account pools stay separate", () => {
   assert.equal(groups.find((group) => group.models.some((model) => model.name === "models/c")).models.length, 2);
 });
 
-test("grouping preserves the supplier card name", () => {
-  const groups = groupModelsByUpstream([
+test("a shared upstream keeps the first non-empty user-managed card name", () => {
+  const models = [
     { name: "models/a", provider: "openai", apiUrl: "https://api.example.test/v1", apiKey: "same", externalModelName: "gpt-a" },
-    { name: "models/b", provider: "openai", apiUrl: "https://api.example.test/v1", apiKey: "same", externalModelName: "gpt-b", upstreamName: "无风" },
-  ]);
+    { name: "models/b", provider: "openai", apiUrl: "https://api.example.test/v1", apiKey: "same", externalModelName: "gpt-b", upstreamName: "XIASS 主线路" },
+  ];
+  const groups = groupModelsByUpstream(models);
   assert.equal(groups.length, 1);
-  assert.equal(groups[0].upstreamName, "无风");
+  assert.equal(groups[0].upstreamName, "XIASS 主线路");
 });
 
 test("legacy models default to enabled while explicit false is preserved", () => {

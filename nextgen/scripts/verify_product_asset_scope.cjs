@@ -64,8 +64,11 @@ if (forbiddenDistFile) {
 const forbiddenDistContentPatterns = [
   { pattern: /apikey\.fun/i, label: 'legacy APIKEY.FUN brand' },
   { pattern: /\bcc[\s_-]*switch\b/i, label: 'legacy CC Switch brand' },
+  // Provider templates use the original sponsor-module transport for
+  // configuration data. Do not treat that account setup feature as a banner
+  // or advertisement; actual ad commands and promotion UI remain forbidden.
   {
-    pattern: /announcement_(?:get|force_refresh)_(?:sponsor_module|top_right_ad)/i,
+    pattern: /announcement_(?:get|force_refresh)_top_right_ad/i,
     label: 'remote promotion command',
   },
   { pattern: /(?:app-)?global-(?:promo|ad-slot)/i, label: 'promotion UI styling' },

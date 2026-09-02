@@ -23,6 +23,8 @@ const LEGACY_COCKPIT_API_PLAN_TYPE: &str = "Cockpit Api";
 const LEGACY_NEW_API_EXCLUSIVE_PLAN_TYPE: &str = "NEW_API_EXCLUSIVE";
 const COCKPIT_API_BASE_URL: &str = "https://api.xiass.com/v1";
 const LEGACY_COCKPIT_API_BASE_URL: &str = "https://chongcodex.cn/v1";
+const XIASS_API_TOKEN_PROFILE_PATH: &str = "/api/xiass-tools/token-profile";
+const LEGACY_COCKPIT_API_TOKEN_PROFILE_PATH: &str = "/api/cockpit-tools/token-profile";
 const CHATGPT_WEB_REFERER: &str = "https://chatgpt.com/";
 const CHATGPT_WEB_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
 const RESET_CREDITS_MOCK_JSON_ENV: &str = "CODEX_RESET_CREDITS_MOCK_JSON";
@@ -1105,6 +1107,24 @@ fn is_cockpit_api_base_url(raw: Option<&str>) -> bool {
         .any(|expected| actual == expected)
 }
 
+fn is_legacy_cockpit_api_base_url(raw: Option<&str>) -> bool {
+    let Some(actual) = normalize_api_base_url_for_match(raw) else {
+        return false;
+    };
+    let Some(expected) = normalize_api_base_url_for_match(Some(LEGACY_COCKPIT_API_BASE_URL)) else {
+        return false;
+    };
+    actual == expected
+}
+
+fn new_api_token_profile_path(base_url: &str) -> &'static str {
+    if is_legacy_cockpit_api_base_url(Some(base_url)) {
+        LEGACY_COCKPIT_API_TOKEN_PROFILE_PATH
+    } else {
+        XIASS_API_TOKEN_PROFILE_PATH
+    }
+}
+
 fn build_new_api_profile_url(account: &CodexAccount) -> Result<String, String> {
     let base_url = account
         .api_base_url
@@ -1117,7 +1137,7 @@ fn build_new_api_profile_url(account: &CodexAccount) -> Result<String, String> {
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("XIASS API Base URL 仅支持 http/https".to_string());
     }
-    parsed.set_path("/api/xiass-tools/token-profile");
+    parsed.set_path(new_api_token_profile_path(base_url));
     parsed.set_query(None);
     parsed.set_fragment(None);
     Ok(parsed.to_string())
@@ -2073,6 +2093,7 @@ async fn refresh_all_quotas_with_options(
 mod tests {
     use super::{
         attach_runtime_snapshot_to_account_ids, build_codex_api_headers, is_cockpit_api_base_url,
+        new_api_token_profile_path,
         normalize_http_error_body_for_display, normalize_remaining_percentage,
         parse_account_check_snapshot, parse_reset_credits_snapshot,
         send_codex_api_request_with_agent_auth_base_url, WindowInfo,
@@ -2195,6 +2216,18 @@ mod tests {
         assert!(is_cockpit_api_base_url(Some("https://api.xiass.com/v1/")));
         assert!(is_cockpit_api_base_url(Some("https://chongcodex.cn/v1")));
         assert!(!is_cockpit_api_base_url(Some("https://api.openai.com/v1")));
+    }
+
+    #[test]
+    fn uses_the_matching_quota_profile_endpoint_for_xiass_and_legacy_accounts() {
+        assert_eq!(
+            new_api_token_profile_path("https://api.xiass.com/v1"),
+            "/api/xiass-tools/token-profile",
+        );
+        assert_eq!(
+            new_api_token_profile_path("https://chongcodex.cn/v1/"),
+            "/api/cockpit-tools/token-profile",
+        );
     }
 
     #[test]

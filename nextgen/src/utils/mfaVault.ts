@@ -29,14 +29,6 @@ const LEGACY_STORAGE_KEY_SAVED_2FA = 'agtools.two_factor_auth.saved.v2';
 const LEGACY_STORAGE_KEY_HISTORY_2FA = 'agtools.two_factor_auth.history.v2';
 const MAX_HISTORY = 50;
 
-const MFA_LEGACY_STORAGE_KEYS = [
-  MFA_STORAGE_KEY_SAVED,
-  MFA_STORAGE_KEY_HISTORY,
-  LEGACY_STORAGE_KEY_SAVED_MFA,
-  LEGACY_STORAGE_KEY_SAVED_2FA,
-  LEGACY_STORAGE_KEY_HISTORY_2FA,
-] as const;
-
 interface GoogleAuthenticatorMigrationOtp {
   secret?: Uint8Array;
   name?: string;
@@ -352,16 +344,6 @@ export function loadMfaHistoryRecords(): MfaRecord[] {
     .filter((item): item is MfaRecord => !!item);
 
   return dedupeMfaRecordsBySecret(merged).slice(0, MAX_HISTORY);
-}
-
-export function clearLegacyMfaBrowserStorage(): void {
-  for (const key of MFA_LEGACY_STORAGE_KEYS) {
-    try {
-      localStorage.removeItem(key);
-    } catch {
-      // Read-only browser profiles may reject storage writes.
-    }
-  }
 }
 
 export function upsertSavedMfaRecord(input: {

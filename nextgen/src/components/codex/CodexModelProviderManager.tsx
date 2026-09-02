@@ -82,12 +82,18 @@ import {
   formatModelProviderUsageMoney,
   listModelProviderModels,
 } from "../../services/modelProviderUsageService";
+import { useSponsorStore } from "../../stores/useSponsorStore";
 import { useCodexAccountStore } from "../../stores/useCodexAccountStore";
+import type { Sponsor } from "../../types/sponsor";
 import {
   CODEX_API_PROVIDER_CUSTOM_ID,
   findCodexApiProviderPresetById,
   resolveCodexApiProviderPresetId,
 } from "../../utils/codexProviderPresets";
+import {
+  normalizeApiKeyFunOfficialUrl,
+  resolveApiKeyFunWireApi,
+} from "../../utils/apikeyFunLinks";
 import {
   getCodexPlanFilterKey,
   isCodexApiKeyAccount,
@@ -176,6 +182,20 @@ function visionModelTextFromCapabilities(
     .map(([model]) => model)
     .sort()
     .join("\n");
+}
+
+function isSponsorProvider(
+  provider: CodexModelProvider,
+  sponsorTemplates: SponsorProviderTemplate[],
+): boolean {
+  if (provider.sourceTag) {
+    return sponsorTemplates.some((template) => template.id === provider.sourceTag);
+  }
+  const normalizedBaseUrl = normalizeCodexModelProviderBaseUrl(provider.baseUrl);
+  return sponsorTemplates.some(
+    (template) =>
+      normalizeCodexModelProviderBaseUrl(template.baseUrl) === normalizedBaseUrl,
+  );
 }
 
 function readCodexInstanceSortPreference(): {
@@ -384,6 +404,19 @@ const EMPTY_FORM: ProviderFormState = {
   newApiKey: "",
 };
 
+interface SponsorProviderTemplate {
+  id: string;
+  sponsor: Sponsor;
+  name: string;
+  baseUrl: string;
+  modelCatalog: string[];
+  supportsVision: boolean;
+  website: string;
+  apiKeyUrl: string;
+  wireApi?: CodexProviderWireApi | null;
+  integrationType?: "sub2api" | "new_api" | null;
+}
+
 interface ProviderPreviewPaths {
   providerStorePath: string;
   codexConfigPath: string;
@@ -539,6 +572,10 @@ export function useCodexModelProviderManagerController({
   onProvidersChanged,
 }: CodexModelProviderManagerProps) {
   const { t } = useTranslation();
+  const sponsorModule = useSponsorStore(
+    (state) => state.state?.sponsorModule ?? null,
+  );
+  const fetchSponsorState = useSponsorStore((state) => state.fetchState);
   const updateAccountInstanceAccess = useCodexAccountStore(
     (state) => state.updateAccountInstanceAccess,
   );
@@ -578,6 +615,9 @@ export function useCodexModelProviderManagerController({
   const [selectedPresetId, setSelectedPresetId] = useState<string>(
     CODEX_API_PROVIDER_CUSTOM_ID,
   );
+  const [selectedSponsorTemplateId, setSelectedSponsorTemplateId] = useState<
+    string | null
+  >(null);
   const [providerUsageMap, setProviderUsageMap] = useState<
     Record<string, ProviderUsageState>
   >(() => readProviderUsageCache());
@@ -663,6 +703,43 @@ export function useCodexModelProviderManagerController({
     null,
   );
   const cancelledBatchTestRunIdsRef = useRef<Set<string>>(new Set());
+
+  const sponsorProviderTemplates = useMemo<SponsorProviderTemplate[]>(() => {
+    const sponsors = sponsorModule?.sponsors ?? [];
+    const templates: SponsorProviderTemplate[] = [];
+    for (const sponsor of sponsors) {
+      const integration = sponsor.integration;
+      if (
+        !integration?.enabled ||
+        !integration.quickConfigure ||
+        !integration.baseUrl?.trim()
+      ) {
+        continue;
+      }
+      templates.push({
+        id: `relay:${sponsor.id}`,
+        sponsor,
+        name: sponsor.name,
+        baseUrl: integration.baseUrl.trim(),
+        modelCatalog: integration.models ?? [],
+        supportsVision: integration.supportsVision === true,
+        website: normalizeApiKeyFunOfficialUrl(integration.website || sponsor.url),
+        apiKeyUrl: normalizeApiKeyFunOfficialUrl(
+          integration.apiKeyUrl || sponsor.url,
+        ),
+        wireApi: resolveApiKeyFunWireApi(
+          integration.baseUrl,
+          integration.wireApi ?? null,
+        ),
+        integrationType: integration.type ?? null,
+      });
+    }
+    return templates.sort((a, b) => {
+      const priority = a.sponsor.priority - b.sponsor.priority;
+      if (priority !== 0) return priority;
+      return a.name.localeCompare(b.name);
+    });
+  }, [sponsorModule?.sponsors]);
 
   const providerCustomSortOrderIndex = useMemo(() => {
     const map = new Map<string, number>();
@@ -896,10 +973,12 @@ export function useCodexModelProviderManagerController({
     void reloadCurrentAccount();
     void reloadLocalAccessState();
     void reloadCodexInstances();
+    void fetchSponsorState();
     void listCodexAccounts()
       .then((items) => setOauthAccounts(items.filter((item) => item.auth_mode !== "apikey")))
       .catch(() => setOauthAccounts([]));
   }, [
+    fetchSponsorState,
     reloadProviders,
     reloadCurrentAccount,
     reloadLocalAccessState,
@@ -1466,6 +1545,13 @@ export function useCodexModelProviderManagerController({
     () => findCodexApiProviderPresetById(selectedPresetId),
     [selectedPresetId],
   );
+  const selectedSponsorTemplate = useMemo(
+    () =>
+      sponsorProviderTemplates.find(
+        (template) => template.id === selectedSponsorTemplateId,
+      ) ?? null,
+    [selectedSponsorTemplateId, sponsorProviderTemplates],
+  );
   const openCreateModal = useCallback(() => {
     setNotice(null);
     setFormError(null);
@@ -1480,6 +1566,7 @@ export function useCodexModelProviderManagerController({
       ),
     });
     setSelectedPresetId(CODEX_API_PROVIDER_CUSTOM_ID);
+    setSelectedSponsorTemplateId(null);
     setShowModal(true);
   }, []);
 
@@ -1548,6 +1635,7 @@ export function useCodexModelProviderManagerController({
       newApiKey: "",
     });
     setSelectedPresetId(resolveCodexApiProviderPresetId(provider.baseUrl));
+    setSelectedSponsorTemplateId(null);
     setShowModal(true);
   }, []);
 
@@ -1572,6 +1660,7 @@ export function useCodexModelProviderManagerController({
   const handleSelectProviderPreset = useCallback(
     (presetId: string) => {
       setSelectedPresetId(presetId);
+      setSelectedSponsorTemplateId(null);
       if (presetId === CODEX_API_PROVIDER_CUSTOM_ID) {
         mutateForm({ supportsWebsockets: false });
         return;
@@ -1607,8 +1696,42 @@ export function useCodexModelProviderManagerController({
     [mutateForm],
   );
 
+  const handleSelectSponsorTemplate = useCallback(
+    (template: SponsorProviderTemplate) => {
+      setSelectedSponsorTemplateId(template.id);
+      setSelectedPresetId(CODEX_API_PROVIDER_CUSTOM_ID);
+      setDiscoveredModelCatalog(template.modelCatalog);
+      const wireApi = resolveDefaultProviderWireApi(
+        null,
+        template.wireApi ?? null,
+      );
+      mutateForm({
+        name: template.name,
+        baseUrl: template.baseUrl,
+        modelCatalogText: template.modelCatalog.join("\n"),
+        defaultModel: template.modelCatalog[0] ?? "",
+        reviewModel: template.modelCatalog[0] ?? "",
+        modelContextWindowsDraft: contextWindowDraftsFromRecord(
+          undefined,
+          template.modelCatalog,
+        ),
+        supportsVision: template.supportsVision,
+        visionModelText: "",
+        visionRoutingModel: "",
+        website: template.website,
+        apiKeyUrl: template.apiKeyUrl,
+        wireApi,
+        supportsWebsockets: false,
+        enableModePreference: resolveEnableModePreferenceForWireApi(wireApi),
+        integrationType: template.integrationType ?? "",
+      });
+    },
+    [mutateForm],
+  );
+
   const handleSelectPresetEndpoint = useCallback(
     (baseUrl: string) => {
+      setSelectedSponsorTemplateId(null);
       mutateForm({ baseUrl });
     },
     [mutateForm],
@@ -2247,6 +2370,7 @@ export function useCodexModelProviderManagerController({
         savedProvider = await createCodexModelProvider({
           name,
           baseUrl,
+          sourceTag: selectedSponsorTemplate?.id,
           modelCatalog,
           defaultModel: form.defaultModel || undefined,
           reviewModel: form.reviewModel || undefined,
@@ -2267,7 +2391,8 @@ export function useCodexModelProviderManagerController({
         savedProvider = await updateCodexModelProvider(form.providerId, {
           name,
           baseUrl,
-          sourceTag: currentEditingProvider?.sourceTag ?? null,
+          sourceTag:
+            selectedSponsorTemplate?.id ?? currentEditingProvider?.sourceTag ?? null,
           modelCatalog,
           defaultModel: form.defaultModel || null,
           reviewModel: form.reviewModel || null,
@@ -2387,6 +2512,7 @@ export function useCodexModelProviderManagerController({
     reloadProviders,
     saving,
     currentEditingProvider?.sourceTag,
+    selectedSponsorTemplate?.id,
     t,
   ]);
 
@@ -3494,6 +3620,7 @@ export function useCodexModelProviderManagerController({
     updateSelectedModelCatalog,
     handleSelectPresetEndpoint,
     handleSelectProviderPreset,
+    handleSelectSponsorTemplate,
     handleStartBatchProviderTest,
     handleTestProvider,
     instancePickerProviderId,
@@ -3502,6 +3629,7 @@ export function useCodexModelProviderManagerController({
     isCurrentProviderActive,
     isInstanceReady,
     isProviderCustomSortActive,
+    isSponsorProvider,
     loading,
     maskAccountText,
     maskApiKey,
@@ -3560,6 +3688,8 @@ export function useCodexModelProviderManagerController({
     searchQuery,
     selectedPreset,
     selectedPresetId,
+    selectedSponsorTemplate,
+    selectedSponsorTemplateId,
     selectedModelCatalogKeys,
     availableModelCatalog,
     isAllAvailableModelCatalogSelected,
@@ -3596,6 +3726,7 @@ export function useCodexModelProviderManagerController({
     showModal,
     showProviderCustomSortModal,
     showQuickConfigModal,
+    sponsorProviderTemplates,
     stopProviderCustomSortDragging,
     t,
     testingProviderId,

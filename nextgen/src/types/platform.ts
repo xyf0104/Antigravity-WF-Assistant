@@ -53,20 +53,16 @@ export function isAccountPlatform(platformId: PlatformId): boolean {
 }
 
 /**
- * The XIASS shell intentionally exposes five independent Agent workspaces.
- * Auxiliary pages such as the Codex API service and the two Antigravity
- * runtimes stay grouped under their owning Agent instead of becoming extra
- * sidebar products. Imported Cockpit modules remain in the data layer solely
- * for backwards-compatible reads and migrations.
+ * Only the five XIASS-supported products are exposed as user-facing products.
+ * Auxiliary runtime IDs remain in the type union because their existing pages,
+ * commands, persisted records, and migration paths still depend on them.
  */
 export const XIASS_AGENT_PLATFORM_IDS: readonly PlatformId[] = [
   'antigravity',
-  'antigravity_ide',
   'codex',
-  'codex_api_service',
   'claude_manager',
-  'windsurf',
   'cursor',
+  'windsurf',
 ];
 
 /** Account domains allowed to execute in production transfer/import workflows. */

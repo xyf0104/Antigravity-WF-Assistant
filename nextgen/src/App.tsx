@@ -21,7 +21,6 @@ import { GlobalModal } from './components/GlobalModal';
 import { WindowsOperationDialog } from './components/WindowsOperationDialog';
 import { CodexSwitchProgressModal } from './components/CodexSwitchProgressModal';
 import { CodexInstanceLaunchProgressModal } from './components/CodexInstanceLaunchProgressModal';
-import { AnnouncementHost } from './components/AnnouncementCenter';
 import type { QuickSettingsType } from './components/QuickSettingsPopover';
 import {
   isMainWindowNavigablePage,
@@ -104,11 +103,6 @@ const DashboardPage = lazy(() =>
 const AccountsPage = lazy(() =>
   import('./pages/AccountsPage').then((module) => ({ default: module.AccountsPage })),
 );
-const XiassAgentWorkspace = lazy(() =>
-  import('./pages/XiassAgentWorkspace').then((module) => ({
-    default: module.XiassAgentWorkspace,
-  })),
-);
 const CodexAccountsPage = lazy(() =>
   import('./pages/CodexAccountsPage').then((module) => ({ default: module.CodexAccountsPage })),
 );
@@ -184,14 +178,6 @@ const RENDERABLE_PAGE_VALUES: readonly Page[] = [
 ];
 const RENDERABLE_PAGE_SET = new Set<string>(RENDERABLE_PAGE_VALUES);
 
-const XIASS_WORKSPACE_PAGE_REDIRECTS: Partial<Record<Page, Page>> = {
-  'codex-api-service': 'codex',
-  'claude-cli': 'claude',
-  instances: 'overview',
-  wakeup: 'overview',
-  verification: 'overview',
-};
-
 function normalizeStoredActivePage(value: string | null): Page | null {
   const normalized = value?.trim();
   if (!normalized) {
@@ -200,8 +186,7 @@ function normalizeStoredActivePage(value: string | null): Page | null {
   if (!RENDERABLE_PAGE_SET.has(normalized) || !isXiassVisiblePage(normalized)) {
     return null;
   }
-  const page = normalized as Page;
-  return XIASS_WORKSPACE_PAGE_REDIRECTS[page] ?? page;
+  return normalized as Page;
 }
 
 /** 启动页偏好：`last` 表示恢复上次页面，其它为具体 Page id */
@@ -213,8 +198,7 @@ function normalizeStartupPagePreference(value: string | null | undefined): 'last
   if (!RENDERABLE_PAGE_SET.has(normalized) || !isXiassVisiblePage(normalized)) {
     return 'last';
   }
-  const page = normalized as Page;
-  return XIASS_WORKSPACE_PAGE_REDIRECTS[page] ?? page;
+  return normalized as Page;
 }
 
 interface GeneralConfigTheme {
@@ -3469,17 +3453,12 @@ function MainApp() {
         </div>
       )}
 
-      {/*
-        Keep the OS drag target away from interactive workspace controls. The
-        full-width title-bar layer used to sit above the compact Agent tabs.
-      */}
-      <div className="drag-region" aria-hidden="true">
-        <div
-          className="drag-region__handle"
-          data-tauri-drag-region
-          onMouseDown={handleDragStart}
-        />
-      </div>
+      {/* 顶部固定拖拽区域 */}
+      <div
+        className="drag-region"
+        data-tauri-drag-region
+        onMouseDown={handleDragStart}
+      />
 
       {/* 左侧悬浮导航 */}
       <SideNav
@@ -3495,8 +3474,6 @@ function MainApp() {
         updateRemindersEnabled={updateRemindersEnabled}
         onOpenLogViewer={() => setShowLogViewer(true)}
       />
-
-      <AnnouncementHost onNavigate={setPage} />
 
       {sideNavLayoutMode !== 'classic' && (
         <button
@@ -3525,7 +3502,7 @@ function MainApp() {
       </Suspense>
 
       <div className="main-wrapper" ref={mainWrapperRef}>
-        {/* overview 现在是合并后的账号总览页面 */}
+        {/* Keep Cockpit's original direct page mounting. */}
         <Suspense fallback={suspenseFallback}>
           <VisibleBootPage when={page === 'dashboard'}>
             <DashboardPage
@@ -3535,111 +3512,44 @@ function MainApp() {
             />
           </VisibleBootPage>
           <VisibleBootPage when={page === 'overview'}>
-            <XiassAgentWorkspace
-              module="antigravity"
-              platformId="antigravity"
-              title="Antigravity WF 工作台"
-              description="模型注入、本地代理、补丁、生图、识图、文件、工具调用、官方登录、多开与诊断均在同一工作台中。"
-              panels={[
-                {
-                  id: 'official-accounts',
-                  managedNavigation: true,
-                  content: <AccountsPage onNavigate={setPage} />,
-                },
-                {
-                  id: 'instances',
-                  managedNavigation: true,
-                  content: <InstancesPage onNavigate={setPage} />,
-                },
-                {
-                  id: 'wakeup',
-                  managedNavigation: true,
-                  content: <WakeupTasksPage onNavigate={setPage} />,
-                },
-                {
-                  id: 'verification',
-                  managedNavigation: true,
-                  content: <WakeupVerificationPage onNavigate={setPage} />,
-                },
-              ]}
-            />
+            <AccountsPage onNavigate={setPage} />
           </VisibleBootPage>
           {/* Codex suite: keep both pages mounted after first visit to avoid empty flash when switching. */}
           {shouldMountCodexSuite && (
             <Suspense fallback={page === 'codex' ? suspenseFallback : null}>
               <div
                 className="app-page-keep-alive"
-                hidden={page !== 'codex' && page !== 'codex-api-service'}
-                aria-hidden={page !== 'codex' && page !== 'codex-api-service'}
+                hidden={page !== 'codex'}
+                aria-hidden={page !== 'codex'}
               >
-                <XiassAgentWorkspace
-                  module="codex"
-                  platformId="codex"
-                  title="Codex 工作台"
-                  description="Provider、模型发现、上下文、历史兼容、OAuth、账号池、API 服务、多开和会话管理均已融合到当前工作台。"
-                  requestedView={page === 'codex-api-service' ? 'panel:api-service' : undefined}
-                  panels={[
-                    {
-                      id: 'account-center',
-                      managedNavigation: true,
-                      content: <CodexAccountsPage />,
-                    },
-                    {
-                      id: 'api-service',
-                      managedNavigation: false,
-                      content: <CodexApiServicePage />,
-                    },
-                  ]}
-                />
-                {page === 'codex' || page === 'codex-api-service' ? <BootReadyMarker /> : null}
+                <CodexAccountsPage />
+                {page === 'codex' ? <BootReadyMarker /> : null}
               </div>
             </Suspense>
           )}
-          <VisibleBootPage when={page === 'claude' || page === 'claude-cli'}>
-            <XiassAgentWorkspace
-              module="claude-code"
-              platformId="claude_manager"
-              title="Claude Code 工作台"
-              description="Claude 与 Claude Code 的官方登录、API Key、网关、模型测试、额度、恢复点和多开均在同一工作台中。"
-              requestedView={page === 'claude-cli' ? 'panel:cli-accounts' : undefined}
-              panels={[
-                {
-                  id: 'account-center',
-                  managedNavigation: true,
-                  content: <ClaudeAccountsPage subPlatform="desktop" />,
-                },
-              ]}
-            />
+          {shouldMountCodexSuite && (
+            <Suspense fallback={page === 'codex-api-service' ? suspenseFallback : null}>
+              <div
+                className="app-page-keep-alive"
+                hidden={page !== 'codex-api-service'}
+                aria-hidden={page !== 'codex-api-service'}
+              >
+                <CodexApiServicePage />
+                {page === 'codex-api-service' ? <BootReadyMarker /> : null}
+              </div>
+            </Suspense>
+          )}
+          <VisibleBootPage when={page === 'claude'}>
+            <ClaudeAccountsPage subPlatform="desktop" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'claude-cli'}>
+            <ClaudeAccountsPage subPlatform="cli" />
           </VisibleBootPage>
           <VisibleBootPage when={page === 'windsurf'}>
-            <XiassAgentWorkspace
-              module="windsurf"
-              platformId="windsurf"
-              title="Windsurf 工作台"
-              description="登录、用量、应用多开、本机安装、MCP 配置、恢复点与启动状态均在同一工作台中。"
-              panels={[
-                {
-                  id: 'account-center',
-                  managedNavigation: true,
-                  content: <WindsurfAccountsPage />,
-                },
-              ]}
-            />
+            <WindsurfAccountsPage />
           </VisibleBootPage>
           <VisibleBootPage when={page === 'cursor'}>
-            <XiassAgentWorkspace
-              module="cursor"
-              platformId="cursor"
-              title="Cursor 工作台"
-              description="官方登录、本地导入、用量、应用多开、MCP 配置、恢复点与启动控制均在同一工作台中。"
-              panels={[
-                {
-                  id: 'account-center',
-                  managedNavigation: true,
-                  content: <CursorAccountsPage />,
-                },
-              ]}
-            />
+            <CursorAccountsPage />
           </VisibleBootPage>
           <VisibleBootPage when={page === 'instances'}>
             <InstancesPage onNavigate={setPage} />

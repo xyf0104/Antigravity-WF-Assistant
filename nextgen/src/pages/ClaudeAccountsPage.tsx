@@ -104,7 +104,7 @@ import {
   CLAUDE_APIKEY_FUN_BASE_URL,
   CLAUDE_APIKEY_FUN_PROVIDER_ID,
   CLAUDE_API_PROVIDER_CUSTOM_ID,
-  XIASS_VISIBLE_CLAUDE_API_PROVIDER_PRESETS,
+  CLAUDE_API_PROVIDER_PRESETS,
   getDefaultClaudeApiProviderPresetId,
   findClaudeApiProviderPresetById,
   inferClaudeApiKeyField,
@@ -113,7 +113,7 @@ import {
 import {
   CLAUDE_DESKTOP_GATEWAY_DEFAULT_MODELS,
   CLAUDE_DESKTOP_GATEWAY_PROVIDER_CUSTOM_ID,
-  XIASS_VISIBLE_CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS,
+  CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS,
   findClaudeDesktopGatewayProviderPresetById,
   getDefaultClaudeDesktopGatewayProviderPresetId,
   inferClaudeDesktopGatewayApiKeyField,
@@ -3615,8 +3615,8 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                     <label>{t('claude.apiKey.providerLabel', '供应商')}</label>
                     <div className="claude-provider-chip-list">
                       {(addTab === 'desktopGateway'
-                        ? XIASS_VISIBLE_CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS
-                        : XIASS_VISIBLE_CLAUDE_API_PROVIDER_PRESETS
+                        ? CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS
+                        : CLAUDE_API_PROVIDER_PRESETS
                       ).map((preset) => (
                         <button
                           key={preset.id}

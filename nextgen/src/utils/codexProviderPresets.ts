@@ -417,22 +417,6 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
   },
 ];
 
-/**
- * XIASS Tools only presents the small set of entry points that are useful for
- * a new configuration. The complete preset catalog above remains available to
- * read and edit accounts imported from older Cockpit/XIASS versions.
- */
-const XIASS_VISIBLE_CODEX_PROVIDER_IDS = new Set([
-  COCKPIT_API_PROVIDER_ID,
-  "openai_official",
-  "azure_openai",
-]);
-
-export const XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS =
-  CODEX_API_PROVIDER_PRESETS.filter((preset) =>
-    XIASS_VISIBLE_CODEX_PROVIDER_IDS.has(preset.id),
-  );
-
 function normalizeCodexProviderBaseUrl(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;

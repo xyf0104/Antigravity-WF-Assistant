@@ -743,17 +743,6 @@ export const CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS: readonly ClaudeDesktopGate
   },
 ];
 
-const XIASS_VISIBLE_CLAUDE_DESKTOP_PROVIDER_IDS = new Set([
-  'xiass_api',
-  'anthropic_official',
-]);
-
-/** Minimal create-account choices; the complete catalog remains for legacy reads. */
-export const XIASS_VISIBLE_CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS =
-  CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS.filter((preset) =>
-    XIASS_VISIBLE_CLAUDE_DESKTOP_PROVIDER_IDS.has(preset.id),
-  );
-
 export function getDefaultClaudeDesktopGatewayProviderPresetId(): string {
   return 'xiass_api';
 }

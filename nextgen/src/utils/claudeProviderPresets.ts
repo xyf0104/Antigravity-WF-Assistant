@@ -656,17 +656,6 @@ export const CLAUDE_API_PROVIDER_PRESETS: readonly ClaudeApiProviderPreset[] = [
   ...CC_SWITCH_DIRECT_CLAUDE_PROVIDER_PRESETS,
 ];
 
-const XIASS_VISIBLE_CLAUDE_PROVIDER_IDS = new Set([
-  CLAUDE_XIASS_PROVIDER_ID,
-  'anthropic_official',
-]);
-
-/** Minimal create-account choices; the complete catalog remains for legacy reads. */
-export const XIASS_VISIBLE_CLAUDE_API_PROVIDER_PRESETS =
-  CLAUDE_API_PROVIDER_PRESETS.filter((preset) =>
-    XIASS_VISIBLE_CLAUDE_PROVIDER_IDS.has(preset.id),
-  );
-
 export function findClaudeApiProviderPresetById(
   id?: string | null,
 ): ClaudeApiProviderPreset | null {

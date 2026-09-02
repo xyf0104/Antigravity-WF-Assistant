@@ -24,7 +24,7 @@ import {
   getOAuthAuthorizationStatus,
   getOAuthLoginProfiles,
   loadAccounts,
-  refreshUpstreamAccountQuota,
+	refreshUpstreamAccountQuota,
   refreshUpstreamOAuthAccount,
   saveUpstreamAccount,
   saveModel,
@@ -36,7 +36,7 @@ import {
   testUpstreamAccountDetailed,
 } from "@/state/appState";
 import {
-  canManuallyCompleteOAuthSession,
+	canManuallyCompleteOAuthSession,
   isAutomaticOAuthPendingSession,
   isTerminalOAuthAuthorizationState,
   redactOAuthAuthorizationStatus,
@@ -145,13 +145,13 @@ const authOptions = [
 ];
 const accountTypeOptions = [
   { label: "API Key", value: "api_key" },
-  { label: "OAuth 授权登录", value: "oauth" },
+	{ label: "OAuth 授权登录", value: "oauth" },
   { label: "Bearer / Access Token", value: "bearer_token" },
   { label: "x-api-key", value: "x_api_key" },
   { label: "Setup Token", value: "setup_token" },
-  { label: "账户凭据 JSON", value: "auth_json" },
-  { label: "Refresh Token / Mobile RT", value: "refresh_token" },
-  { label: "Codex PAT", value: "codex_pat" },
+	{ label: "账户凭据 JSON", value: "auth_json" },
+	{ label: "Refresh Token / Mobile RT", value: "refresh_token" },
+	{ label: "Codex PAT", value: "codex_pat" },
   { label: "自定义认证头", value: "custom_header" },
 ];
 // Keep the first decision deliberately small. OAuth, request credentials and
@@ -165,36 +165,36 @@ const credentialEntryOptions = [
   { label: "账户 JSON", value: "json" },
 ];
 const JSON_IMPORT_TYPE_KEYS = new Set([
-  "auth_json",
-  "oauth_json",
-  "credential_json",
-  "credentials_json",
-  "json_import",
-  "import_json",
-  "account_json",
+	"auth_json",
+	"oauth_json",
+	"credential_json",
+	"credentials_json",
+	"json_import",
+	"import_json",
+	"account_json",
 ]);
 const REFRESH_TOKEN_TYPE_KEYS = new Set([
-  "refresh_token",
-  "mobile_rt",
-  "mobile_refresh_token",
+	"refresh_token",
+	"mobile_rt",
+	"mobile_refresh_token",
 ]);
 
 function credentialTypeKey(type) {
-  return String(type || "").trim().toLowerCase().replace(/[.\s-]+/g, "_");
+	return String(type || "").trim().toLowerCase().replace(/[.\s-]+/g, "_");
 }
 
 function isJSONImportType(type) {
-  return JSON_IMPORT_TYPE_KEYS.has(credentialTypeKey(type));
+	return JSON_IMPORT_TYPE_KEYS.has(credentialTypeKey(type));
 }
 
 function isRefreshTokenType(type) {
-  return REFRESH_TOKEN_TYPE_KEYS.has(credentialTypeKey(type));
+	return REFRESH_TOKEN_TYPE_KEYS.has(credentialTypeKey(type));
 }
 
 function editorCredentialType(type) {
-  if (isJSONImportType(type)) return "auth_json";
-  if (isRefreshTokenType(type)) return "refresh_token";
-  return type || "api_key";
+	if (isJSONImportType(type)) return "auth_json";
+	if (isRefreshTokenType(type)) return "refresh_token";
+	return type || "api_key";
 }
 
 function readText(value) {
@@ -315,14 +315,14 @@ function emptyForm() {
     hasPrivateHeaders: false,
     quotaUrl: "",
     apiKey: "",
-    refreshToken: "",
-    oauth: {
-      authorizationUrl: "",
-      tokenUrl: "",
-      clientId: "",
-      redirectUri: "http://localhost:1455/auth/callback",
-      scopes: "openid profile email offline_access",
-    },
+		refreshToken: "",
+		oauth: {
+			authorizationUrl: "",
+			tokenUrl: "",
+			clientId: "",
+			redirectUri: "http://localhost:1455/auth/callback",
+			scopes: "openid profile email offline_access",
+		},
     enabled: true,
     priority: 50,
     maxConcurrency: 2,
@@ -369,9 +369,9 @@ const oauthLoginDescription = computed(() => {
 });
 const oauthLoginButtonLabel = computed(() => {
   if (oauthAdvancedOpen.value) return "打开授权页";
-  if (profileRequiresClientID.value) {
-    return readText(form.value.oauth?.clientId) ? `${selectedOAuthProfile.value.label} 授权` : "填写我的 Client ID";
-  }
+	if (profileRequiresClientID.value) {
+		return readText(form.value.oauth?.clientId) ? `${selectedOAuthProfile.value.label} 授权` : "填写我的 Client ID";
+	}
 	if (selectedOAuthProfile.value && oauthLoginProfileMode(selectedOAuthProfile.value) === "manual-callback") {
 		return `${selectedOAuthProfile.value.label} 授权`;
 	}
@@ -499,12 +499,12 @@ function formatTime(value) {
 }
 
 function accountToForm(account) {
-  const defaults = emptyForm();
-  const endpointMode = accountEndpointMode(account);
-  return {
-    ...defaults,
+	const defaults = emptyForm();
+	const endpointMode = accountEndpointMode(account);
+	return {
+		...defaults,
     ...account,
-    type: editorCredentialType(account.type),
+		type: editorCredentialType(account.type),
     apiUrl: endpointMode === "auto" ? smartBaseAPIURL(account.apiUrl || defaults.apiUrl) : account.apiUrl,
     endpointMode,
     messagePathMode: account.messagePathMode === "manual" ? "auto" : (account.messagePathMode || "auto"),
@@ -512,8 +512,8 @@ function accountToForm(account) {
     hasPrivateHeaders: account.hasPrivateHeaders === true,
     oauth: { ...defaults.oauth, ...(account.oauth || {}) },
     apiKey: "",
-    refreshToken: "",
-  };
+		refreshToken: "",
+	};
 }
 
 function discoveredModelID(model) {
@@ -655,19 +655,19 @@ async function openNew() {
   } catch {
     // The static defaults keep the editor useful while Wails is starting.
   }
-  form.value = {
-    ...emptyForm(),
-    ...defaults,
-    headersText: "",
-    hasPrivateHeaders: false,
-    oauth: { ...emptyForm().oauth, ...(defaults?.oauth || {}) },
-    apiKey: "",
-  };
+	form.value = {
+		...emptyForm(),
+		...defaults,
+		headersText: "",
+		hasPrivateHeaders: false,
+		oauth: { ...emptyForm().oauth, ...(defaults?.oauth || {}) },
+	apiKey: "",
+	};
 	headersTouched.value = false;
 	if (form.value.endpointMode === "auto") form.value.apiUrl = smartBaseAPIURL(form.value.apiUrl);
   editorError.value = "";
   editorNotice.value = "地址默认只需填写域名。保存后可获取模型并默认全选导入；完整接口地址可随时切换为手动模式。";
-  resetDiscoveredModelSelection();
+	resetDiscoveredModelSelection();
 	selectedOAuthProfileID.value = "";
 	oauthAdvancedOpen.value = false;
 	oauthCredentialSwitchOpen.value = false;
@@ -680,8 +680,8 @@ async function openNew() {
 // the credential-type selector. The existing profile chooser determines which
 // provider-specific fields, if any, are actually required.
 async function openOAuthNew() {
-  await openNew();
-  onTypeChange("oauth");
+	await openNew();
+	onTypeChange("oauth");
 }
 
 function openEdit(account) {
@@ -690,7 +690,7 @@ function openEdit(account) {
 	headersTouched.value = false;
   editorError.value = "";
   editorNotice.value = "为保护已保存的凭据，令牌栏不会回显；留空保存将保留原有凭据。";
-  resetDiscoveredModelSelection();
+	resetDiscoveredModelSelection();
 	selectedOAuthProfileID.value = "";
 	oauthAdvancedOpen.value = false;
 	oauthCredentialSwitchOpen.value = false;
@@ -699,10 +699,10 @@ function openEdit(account) {
 }
 
 function onProviderChange(provider) {
-  if (provider !== form.value.provider) clearOAuthSession();
-  if (selectedOAuthProfile.value?.provider && selectedOAuthProfile.value.provider !== provider) {
-    selectedOAuthProfileID.value = "";
-    oauthAdvancedOpen.value = true;
+	if (provider !== form.value.provider) clearOAuthSession();
+	if (selectedOAuthProfile.value?.provider && selectedOAuthProfile.value.provider !== provider) {
+		selectedOAuthProfileID.value = "";
+		oauthAdvancedOpen.value = true;
   }
   form.value.provider = provider;
   if (form.value.endpointMode === "auto") form.value.apiUrl = smartBaseAPIURL(form.value.apiUrl);
@@ -716,40 +716,40 @@ function onProviderChange(provider) {
 }
 
 function onTypeChange(type) {
-  if (isJSONImportType(type)) {
-    clearOAuthSession();
-    selectedOAuthProfileID.value = "";
-    form.value.type = "auth_json";
-    form.value.apiKey = "";
-    form.value.refreshToken = "";
-    editorError.value = "";
-    editorNotice.value = "账户凭据 JSON 需要通过 JSON 导入解析，不能作为 API Key 保存。";
-    closeEditor();
-    openJSONImport("请粘贴完整的账户 JSON；它将按凭据字段安全导入，而不会被当作普通 API Key。");
-    return;
-  }
+	if (isJSONImportType(type)) {
+		clearOAuthSession();
+		selectedOAuthProfileID.value = "";
+		form.value.type = "auth_json";
+		form.value.apiKey = "";
+		form.value.refreshToken = "";
+		editorError.value = "";
+		editorNotice.value = "账户凭据 JSON 需要通过 JSON 导入解析，不能作为 API Key 保存。";
+		closeEditor();
+		openJSONImport("请粘贴完整的账户 JSON；它将按凭据字段安全导入，而不会被当作普通 API Key。");
+		return;
+	}
 
-  const nextType = isRefreshTokenType(type) ? "refresh_token" : type;
-  clearOAuthSession();
+	const nextType = isRefreshTokenType(type) ? "refresh_token" : type;
+	clearOAuthSession();
 	form.value.type = nextType;
 	if (form.value.type === "oauth") {
 		selectedOAuthProfileID.value = "";
 		oauthAdvancedOpen.value = false;
 		oauthCredentialSwitchOpen.value = false;
-    editorError.value = "";
+		editorError.value = "";
 		editorNotice.value = "正在准备 OpenAI / Codex OAuth 登录…";
-    void loadOAuthLoginProfiles({ autoSelectDefault: true });
-    return;
+		void loadOAuthLoginProfiles({ autoSelectDefault: true });
+		return;
 	}
 	selectedOAuthProfileID.value = "";
 	oauthCredentialSwitchOpen.value = false;
-  if (isRefreshTokenType(form.value.type)) {
-    form.value.apiKey = "";
-  }
-  if (form.value.type === "x_api_key") form.value.authMode = "x_api_key";
-  else if (form.value.type === "custom_header") form.value.authMode = "custom_header";
-  else if (form.value.type === "api_key") form.value.authMode = form.value.provider === "anthropic" ? "x_api_key" : "bearer";
-  else form.value.authMode = "bearer";
+	if (isRefreshTokenType(form.value.type)) {
+		form.value.apiKey = "";
+	}
+	if (form.value.type === "x_api_key") form.value.authMode = "x_api_key";
+	else if (form.value.type === "custom_header") form.value.authMode = "custom_header";
+	else if (form.value.type === "api_key") form.value.authMode = form.value.provider === "anthropic" ? "x_api_key" : "bearer";
+	else form.value.authMode = "bearer";
 }
 
 function selectCredentialEntryMode(mode) {
@@ -975,15 +975,15 @@ function accountPayload() {
     apiKey: form.value.apiKey?.trim(),
     authMode: fixedAuthMode(form.value.type, form.value.provider),
     authHeader: form.value.authHeader?.trim(),
-    quotaUrl: form.value.quotaUrl?.trim(),
+		quotaUrl: form.value.quotaUrl?.trim(),
 		oauth: {
 			upstream: form.value.oauth?.upstream?.trim(),
 			authorizationUrl: form.value.oauth?.authorizationUrl?.trim(),
-      tokenUrl: form.value.oauth?.tokenUrl?.trim(),
-      clientId: form.value.oauth?.clientId?.trim(),
-      redirectUri: form.value.oauth?.redirectUri?.trim(),
-      scopes: form.value.oauth?.scopes?.trim(),
-    },
+			tokenUrl: form.value.oauth?.tokenUrl?.trim(),
+			clientId: form.value.oauth?.clientId?.trim(),
+			redirectUri: form.value.oauth?.redirectUri?.trim(),
+			scopes: form.value.oauth?.scopes?.trim(),
+		},
     priority: Number(form.value.priority),
     maxConcurrency: Number(form.value.maxConcurrency),
   };
@@ -992,7 +992,7 @@ function accountPayload() {
   }
   delete payload.headersText;
 	delete payload.hasPrivateHeaders;
-  delete payload.refreshToken;
+	delete payload.refreshToken;
   return payload;
 }
 
@@ -1000,13 +1000,13 @@ async function saveAccount() {
   editorError.value = "";
   let account;
   try {
-    account = accountPayload();
-    if (!account.apiUrl) throw new Error("请填写 API 地址");
-    if (isJSONImportType(account.type)) throw new Error("账户凭据 JSON 请通过“导入 JSON”导入，不能作为 API Key 直接保存。");
-    if (isRefreshTokenType(account.type)) throw new Error("Refresh Token / Mobile RT 必须先兑换为 OAuth 访问令牌，不能作为 API Key 直接保存。");
-    if (!account.apiKey && !account.id && account.type !== "oauth") {
-      throw new Error("请填写 API Key、访问令牌，或使用 OAuth 授权/JSON 导入账户");
-    }
+		account = accountPayload();
+		if (!account.apiUrl) throw new Error("请填写 API 地址");
+		if (isJSONImportType(account.type)) throw new Error("账户凭据 JSON 请通过“导入 JSON”导入，不能作为 API Key 直接保存。");
+		if (isRefreshTokenType(account.type)) throw new Error("Refresh Token / Mobile RT 必须先兑换为 OAuth 访问令牌，不能作为 API Key 直接保存。");
+		if (!account.apiKey && !account.id && account.type !== "oauth") {
+			throw new Error("请填写 API Key、访问令牌，或使用 OAuth 授权/JSON 导入账户");
+		}
   } catch (error) {
     editorError.value = error.message;
     return;
@@ -1027,34 +1027,34 @@ async function saveAccount() {
 }
 
 async function importRefreshToken() {
-  editorError.value = "";
-  editorNotice.value = "";
-  let account;
-  const refreshToken = String(form.value.refreshToken || "").trim();
-  try {
-    account = accountPayload();
-    if (!account.apiUrl) throw new Error("请填写 API 地址");
-    requireCustomOAuthConfiguration();
-    if (!refreshToken) throw new Error("请填写 Refresh Token 或 Mobile RT。");
-  } catch (error) {
-    editorError.value = error.message;
-    return;
-  }
-  oauthBusy.value = true;
-  try {
-    const result = await importOAuthRefreshToken(account, refreshToken);
-    if (!result?.ok) {
-      editorError.value = result?.message || "刷新令牌兑换失败";
-      return;
-    }
-    form.value.refreshToken = "";
-    editorNotice.value = result.message || "刷新令牌已兑换为 OAuth 账户。";
-    closeEditor();
-  } catch (error) {
-    editorError.value = String(error?.message || error);
-  } finally {
-    oauthBusy.value = false;
-  }
+	editorError.value = "";
+	editorNotice.value = "";
+	let account;
+	const refreshToken = String(form.value.refreshToken || "").trim();
+	try {
+		account = accountPayload();
+		if (!account.apiUrl) throw new Error("请填写 API 地址");
+		requireCustomOAuthConfiguration();
+		if (!refreshToken) throw new Error("请填写 Refresh Token 或 Mobile RT。");
+	} catch (error) {
+		editorError.value = error.message;
+		return;
+	}
+	oauthBusy.value = true;
+	try {
+		const result = await importOAuthRefreshToken(account, refreshToken);
+		if (!result?.ok) {
+			editorError.value = result?.message || "刷新令牌兑换失败";
+			return;
+		}
+		form.value.refreshToken = "";
+		editorNotice.value = result.message || "刷新令牌已兑换为 OAuth 账户。";
+		closeEditor();
+	} catch (error) {
+		editorError.value = String(error?.message || error);
+	} finally {
+		oauthBusy.value = false;
+	}
 }
 
 // Keep only the normal authorization result fields in renderer state. In
@@ -1209,9 +1209,9 @@ function bindOAuthCompletionEvents() {
 
 async function completeOAuth() {
   if (!oauthSession.value?.sessionId) return;
-  if (!oauthCallback.value.trim()) {
-    editorError.value = "请粘贴完整回调 URL 或授权码。";
-    return;
+	if (!oauthCallback.value.trim()) {
+		editorError.value = "请粘贴完整回调 URL 或授权码。";
+		return;
   }
   editorError.value = "";
   const sessionID = oauthSession.value.sessionId;
@@ -1220,58 +1220,58 @@ async function completeOAuth() {
     const result = await completeOAuthAuthorization(sessionID, oauthCallback.value.trim());
     if (oauthSession.value?.sessionId !== sessionID) return;
     if (!result?.ok) {
-      editorError.value = result?.message || "OAuth 授权兑换失败";
-      return;
+			editorError.value = result?.message || "OAuth 授权兑换失败";
+			return;
     }
     editorNotice.value = result.message || "OAuth 授权完成。";
     closeEditor();
-  } catch (error) {
-    editorError.value = String(error?.message || error);
-  } finally {
-    oauthBusy.value = false;
-  }
+	} catch (error) {
+		editorError.value = String(error?.message || error);
+	} finally {
+		oauthBusy.value = false;
+	}
 }
 
 async function copyText(value) {
-  const text = String(value || "").trim();
-  if (!text) return;
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
-    await navigator.clipboard.writeText(text);
-    editorNotice.value = "已复制到剪贴板。";
-  } catch {
-    editorError.value = "无法写入剪贴板，请手动复制。";
-  }
+	const text = String(value || "").trim();
+	if (!text) return;
+	try {
+		if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+		await navigator.clipboard.writeText(text);
+		editorNotice.value = "已复制到剪贴板。";
+	} catch {
+		editorError.value = "无法写入剪贴板，请手动复制。";
+	}
 }
 
 async function refreshOAuthToken(account) {
-  if (!account?.id) return;
-  tokenRefreshBusy.value = account.id;
-  editorError.value = "";
-  try {
-    const result = await refreshUpstreamOAuthAccount(account.id);
-    if (result?.ok) editorNotice.value = result.message || "访问令牌已刷新。";
-    else editorError.value = result?.message || "访问令牌刷新失败";
-  } catch (error) {
-    editorError.value = String(error?.message || error);
-  } finally {
-    tokenRefreshBusy.value = "";
-  }
+	if (!account?.id) return;
+	tokenRefreshBusy.value = account.id;
+	editorError.value = "";
+	try {
+		const result = await refreshUpstreamOAuthAccount(account.id);
+		if (result?.ok) editorNotice.value = result.message || "访问令牌已刷新。";
+		else editorError.value = result?.message || "访问令牌刷新失败";
+	} catch (error) {
+		editorError.value = String(error?.message || error);
+	} finally {
+		tokenRefreshBusy.value = "";
+	}
 }
 
 async function refreshQuota(account) {
-  if (!account?.id) return;
-  quotaRefreshBusy.value = account.id;
-  editorError.value = "";
-  try {
-    const result = await refreshUpstreamAccountQuota(account.id);
-    if (result?.ok) editorNotice.value = result.message || "上游额度快照已更新。";
-    else editorError.value = result?.message || "上游额度查询失败";
-  } catch (error) {
-    editorError.value = String(error?.message || error);
-  } finally {
-    quotaRefreshBusy.value = "";
-  }
+	if (!account?.id) return;
+	quotaRefreshBusy.value = account.id;
+	editorError.value = "";
+	try {
+		const result = await refreshUpstreamAccountQuota(account.id);
+		if (result?.ok) editorNotice.value = result.message || "上游额度快照已更新。";
+		else editorError.value = result?.message || "上游额度查询失败";
+	} catch (error) {
+		editorError.value = String(error?.message || error);
+	} finally {
+		quotaRefreshBusy.value = "";
+	}
 }
 
 function openAccountUsageDetails(account) {
@@ -1307,44 +1307,44 @@ const accountUsageDetailRows = computed(() => {
 });
 
 function formatTokens(value) {
-  const number = Number(value || 0);
-  if (!Number.isFinite(number) || number <= 0) return "0";
-  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
-  if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
-  return String(Math.round(number));
+	const number = Number(value || 0);
+	if (!Number.isFinite(number) || number <= 0) return "0";
+	if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
+	if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
+	return String(Math.round(number));
 }
 
 function accountIdentity(account) {
-  const identity = account?.identity || {};
-  if (identity.email) return identity.email;
-  if (identity.subject) return identity.subject;
-  return "未提供身份资料";
+	const identity = account?.identity || {};
+	if (identity.email) return identity.email;
+	if (identity.subject) return identity.subject;
+	return "未提供身份资料";
 }
 
 function quotaSummary(account) {
-  const quota = account?.quota || {};
-  if (!quota.available) return "上游未返回额度";
-  if (Array.isArray(quota.windows) && quota.windows.length) {
-    return quota.windows.map((window) => {
-      const label = readText(window?.label) || "额度";
-      const used = Number(window?.usedPercent);
-      return Number.isFinite(used) ? `${label} 已用 ${Math.max(0, Math.min(100, Math.round(used)))}%` : label;
-    }).join(" · ");
-  }
-  const values = [];
-  if (quota.requestsRemaining !== undefined && quota.requestsRemaining !== null) {
-    values.push(`请求余量 ${quota.requestsRemaining}`);
-  }
-  if (quota.tokensRemaining !== undefined && quota.tokensRemaining !== null) {
-    values.push(`Token 余量 ${quota.tokensRemaining}`);
-  }
-  if (quota.retryAfter) values.push(`重试 ${quota.retryAfter}`);
-  return values.join(" · ") || "上游已返回额度快照";
+	const quota = account?.quota || {};
+	if (!quota.available) return "上游未返回额度";
+	if (Array.isArray(quota.windows) && quota.windows.length) {
+		return quota.windows.map((window) => {
+			const label = readText(window?.label) || "额度";
+			const used = Number(window?.usedPercent);
+			return Number.isFinite(used) ? `${label} 已用 ${Math.max(0, Math.min(100, Math.round(used)))}%` : label;
+		}).join(" · ");
+	}
+	const values = [];
+	if (quota.requestsRemaining !== undefined && quota.requestsRemaining !== null) {
+		values.push(`请求余量 ${quota.requestsRemaining}`);
+	}
+	if (quota.tokensRemaining !== undefined && quota.tokensRemaining !== null) {
+		values.push(`Token 余量 ${quota.tokensRemaining}`);
+	}
+	if (quota.retryAfter) values.push(`重试 ${quota.retryAfter}`);
+	return values.join(" · ") || "上游已返回额度快照";
 }
 
 function canRefreshAccountQuota(account) {
-  if (readText(account?.quotaUrl)) return true;
-  return readText(account?.oauth?.upstream).toLowerCase() === "openai_codex";
+	if (readText(account?.quotaUrl)) return true;
+	return readText(account?.oauth?.upstream).toLowerCase() === "openai_codex";
 }
 
 function modelID(model) {
@@ -1774,10 +1774,10 @@ async function importAccounts() {
 }
 
 function openJSONImport(notice = "") {
-  if (editorOpen.value) closeEditor();
-  importError.value = "";
-  importNotice.value = notice;
-  importOpen.value = true;
+	if (editorOpen.value) closeEditor();
+	importError.value = "";
+	importNotice.value = notice;
+	importOpen.value = true;
 }
 
 onMounted(() => {
@@ -1799,7 +1799,7 @@ onBeforeUnmount(() => {
     <div class="row between page-head" style="gap: 12px">
       <div class="col" style="gap: 2px">
         <div class="t-title">XIASS 上游账户中心</div>
-        <div class="t-caption">统一管理 OAuth、令牌和 API Key。账户可驱动 Antigravity 的本地代理与模型账户池；Claude Code 仅可复用已启用且 Messages 兼容的账户。这不是外部客户端的原生账号登录或会话导入。</div>
+		<div class="t-caption">统一管理 OAuth、令牌和 API Key。账户可驱动 Antigravity 的本地代理与模型账户池；Claude Code 仅可复用已启用且 Messages 兼容的账户。这不是外部客户端的原生账号登录或会话导入。</div>
       </div>
       <div class="row" style="gap: 7px">
         <Button variant="tinted" @click="openOAuthNew">OAuth 登录</Button>
@@ -1977,7 +1977,7 @@ onBeforeUnmount(() => {
 
     <Modal :open="editorOpen" :title="isExisting ? '编辑上游账户' : '添加上游账户'" wide persistent @close="closeEditor">
       <div class="col editor" style="gap: 15px">
-        <section class="section">
+		<section class="section">
           <div class="credential-entry-selector">
             <span class="t-footnote">添加方式</span>
             <SegmentedControl
@@ -2024,13 +2024,13 @@ onBeforeUnmount(() => {
           </template>
         </section>
 
-        <section v-if="isJSONImportTypeSelected" class="section json-import-box">
-          <div class="t-headline">请通过 JSON 导入凭据</div>
-          <div class="t-caption">仅导入账户级 API Key、Access / Refresh Token、ID Token 与公开 OAuth Client ID。客户端密钥、Cookie、浏览器或桌面会话以及未知私有字段会被忽略。</div>
-          <div class="row" style="justify-content: flex-end; gap: 7px">
-            <Button variant="tinted" @click="openJSONImport('请粘贴完整的账户 JSON；它将按凭据字段安全导入，而不会被当作普通 API Key。')">打开 JSON 导入</Button>
-          </div>
-        </section>
+		<section v-if="isJSONImportTypeSelected" class="section json-import-box">
+		  <div class="t-headline">请通过 JSON 导入凭据</div>
+		  <div class="t-caption">仅导入账户级 API Key、Access / Refresh Token、ID Token 与公开 OAuth Client ID。客户端密钥、Cookie、浏览器或桌面会话以及未知私有字段会被忽略。</div>
+		  <div class="row" style="justify-content: flex-end; gap: 7px">
+			<Button variant="tinted" @click="openJSONImport('请粘贴完整的账户 JSON；它将按凭据字段安全导入，而不会被当作普通 API Key。')">打开 JSON 导入</Button>
+		  </div>
+		</section>
 
 		<section v-else-if="showCredentialSecretField" class="section">
           <div class="t-headline">认证凭据</div>
@@ -2123,25 +2123,25 @@ onBeforeUnmount(() => {
 				<Button variant="plain" size="sm" @click="onTypeChange('refresh_token')">使用 Refresh Token</Button>
 			  </div>
 			  <div v-if="selectedOAuthProfile" class="oauth-profile-selected">
-        <template v-if="oauthLoginProfileMode(selectedOAuthProfile) === 'bring-your-own-client'">
-          <span>已选择 <b>{{ selectedOAuthProfile.label }}</b>。只需填写你自己的公开 Client ID；不会要求或保存 Client Secret。</span>
-        </template>
+				<template v-if="oauthLoginProfileMode(selectedOAuthProfile) === 'bring-your-own-client'">
+				  <span>已选择 <b>{{ selectedOAuthProfile.label }}</b>。只需填写你自己的公开 Client ID；不会要求或保存 Client Secret。</span>
+				</template>
 				<template v-else-if="oauthLoginProfileMode(selectedOAuthProfile) === 'manual-callback'">已选择 <b>{{ selectedOAuthProfile.label }}</b>。浏览器授权后，请粘贴完整回调地址或授权码完成保存。</template>
 				<template v-else>已选择 <b>{{ selectedOAuthProfile.label }}</b>。授权成功后会自动保存为可调度账户。</template>
 			  </div>
-        <div class="oauth-boundary-note">
+			  <div class="oauth-boundary-note">
 				<strong>授权范围</strong>
 				<span>这里管理的是 XIASS Tools 的上游账户，不会读取、替换或导出 Codex、Claude Code、Cursor、Windsurf 或 Antigravity 的原生登录会话。</span>
-        </div>
+			  </div>
 			  <Field
 				v-if="profileRequiresClientID"
 				label="我的公开 Client ID"
 				hint="首次填写你自己注册的 Desktop Client ID 后会保存在本机，后续可直接授权；不需要 Client Secret。"
-          v-model="form.oauth.clientId"
-          placeholder="Desktop OAuth Client ID"
-          mono
-        />
-      </div>
+				v-model="form.oauth.clientId"
+				placeholder="Desktop OAuth Client ID"
+				mono
+			  />
+			</div>
 
 			<div v-if="showOAuthCustomFields" class="oauth-custom-fields">
 			  <div class="row between" style="gap: 8px">
@@ -2160,33 +2160,33 @@ onBeforeUnmount(() => {
 			  <Field label="Scopes（可选）" v-model="form.oauth.scopes" placeholder="openid profile email offline_access" mono />
 			</div>
 
-          <div v-if="isRefreshTokenTypeSelected" class="oauth-result">
-            <Field label="Refresh Token / Mobile RT" hint="仅发送至上方 OAuth 令牌地址；不会作为 API Key 保存或发往模型接口。" type="password" v-model="form.refreshToken" placeholder="粘贴刷新令牌" mono />
-            <div class="t-caption">该值不会作为 API Key 保存或发往模型接口；兑换成功后仅保留 OAuth 访问令牌和刷新凭据。</div>
-            <div class="row" style="justify-content: flex-end; gap: 7px">
-              <Button variant="filled" size="sm" :loading="oauthBusy" @click="importRefreshToken">兑换并保存 OAuth 账户</Button>
-            </div>
-          </div>
-          <div v-else-if="oauthSession" class="oauth-result">
-            <div class="t-footnote">授权链接</div>
-            <code class="oauth-link">{{ oauthSession.authorizationUrl }}</code>
-            <div class="row" style="justify-content: flex-end; gap: 7px">
-              <Button variant="plain" size="sm" @click="copyText(oauthSession.authorizationUrl)">复制链接</Button>
-            </div>
-            <div v-if="!oauthManualCompletionRequired" class="oauth-auto-callback">
-              <div class="t-footnote">正在等待浏览器授权完成</div>
-              <div class="t-caption">自动回调优先。请保持此窗口打开；若浏览器没有自动返回，可在下方粘贴完整回调地址或 code 继续完成。</div>
-            </div>
-            <OAuthTOTPQuickPicker :open="Boolean(oauthSession)" />
-            <label v-if="showOAuthManualFallback" class="text-field">
-              <span class="t-footnote">{{ oauthManualCompletionRequired ? '回调 URL 或授权码' : '手动兜底：回调 URL 或授权码' }}</span>
-              <textarea v-model="oauthCallback" spellcheck="false" placeholder="粘贴浏览器跳转后的完整地址，或仅粘贴 code"></textarea>
-            </label>
-            <div v-if="showOAuthManualFallback" class="row" style="justify-content: flex-end; gap: 7px">
-              <Button variant="filled" size="sm" :loading="oauthBusy" @click="completeOAuth">{{ oauthManualCompletionRequired ? '兑换并保存账户' : '手动兑换并保存账户' }}</Button>
-            </div>
-          </div>
-        </section>
+		  <div v-if="isRefreshTokenTypeSelected" class="oauth-result">
+			<Field label="Refresh Token / Mobile RT" hint="仅发送至上方 OAuth 令牌地址；不会作为 API Key 保存或发往模型接口。" type="password" v-model="form.refreshToken" placeholder="粘贴刷新令牌" mono />
+			<div class="t-caption">该值不会作为 API Key 保存或发往模型接口；兑换成功后仅保留 OAuth 访问令牌和刷新凭据。</div>
+			<div class="row" style="justify-content: flex-end; gap: 7px">
+			  <Button variant="filled" size="sm" :loading="oauthBusy" @click="importRefreshToken">兑换并保存 OAuth 账户</Button>
+			</div>
+		  </div>
+		  <div v-else-if="oauthSession" class="oauth-result">
+				<div class="t-footnote">授权链接</div>
+				<code class="oauth-link">{{ oauthSession.authorizationUrl }}</code>
+				<div class="row" style="justify-content: flex-end; gap: 7px">
+					<Button variant="plain" size="sm" @click="copyText(oauthSession.authorizationUrl)">复制链接</Button>
+				</div>
+				<div v-if="!oauthManualCompletionRequired" class="oauth-auto-callback">
+				  <div class="t-footnote">正在等待浏览器授权完成</div>
+				  <div class="t-caption">自动回调优先。请保持此窗口打开；若浏览器没有自动返回，可在下方粘贴完整回调地址或 code 继续完成。</div>
+				</div>
+				<OAuthTOTPQuickPicker :open="Boolean(oauthSession)" />
+				<label v-if="showOAuthManualFallback" class="text-field">
+				  <span class="t-footnote">{{ oauthManualCompletionRequired ? '回调 URL 或授权码' : '手动兜底：回调 URL 或授权码' }}</span>
+				  <textarea v-model="oauthCallback" spellcheck="false" placeholder="粘贴浏览器跳转后的完整地址，或仅粘贴 code"></textarea>
+				</label>
+				<div v-if="showOAuthManualFallback" class="row" style="justify-content: flex-end; gap: 7px">
+				  <Button variant="filled" size="sm" :loading="oauthBusy" @click="completeOAuth">{{ oauthManualCompletionRequired ? '兑换并保存账户' : '手动兑换并保存账户' }}</Button>
+				</div>
+			</div>
+		</section>
 
         <section v-if="isExisting" class="section discover-box">
           <div class="row between" style="gap: 8px">

@@ -75,21 +75,75 @@ test('Codex provider discovery keeps fetched models as an explicit selectable ca
   assert.match(styles, /\.codex-provider-modal \.codex-provider-model-catalog__item:has\(input:checked\)/);
 });
 
-test('Codex new-provider dialog exposes only XIASS product entry points', () => {
+test('Codex new-provider dialog keeps the complete original provider catalog', () => {
+  const controller = read('src/components/codex/CodexModelProviderManager.tsx');
   const source = read('src/components/codex/CodexModelProviderManagerView.tsx');
+  const addAccountDialog = read('src/pages/CodexAddAccountDialog.tsx');
   const presets = read('src/utils/codexProviderPresets.ts');
-  const visibleIds = presets.match(
-    /const XIASS_VISIBLE_CODEX_PROVIDER_IDS = new Set\(\[([\s\S]*?)\]\);/,
-  )?.[1] || '';
 
-  assert.match(source, /XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS\.map/);
+  assert.match(source, /CODEX_API_PROVIDER_PRESETS\.filter/);
   assert.match(source, /CODEX_API_PROVIDER_CUSTOM_ID/);
-  assert.doesNotMatch(source, /sponsorProviderTemplates\.map/);
-  assert.doesNotMatch(source, /CODEX_API_PROVIDER_PRESETS\.filter/);
-  assert.match(visibleIds, /COCKPIT_API_PROVIDER_ID/);
-  assert.match(visibleIds, /"openai_official"/);
-  assert.match(visibleIds, /"azure_openai"/);
-  assert.equal((visibleIds.match(/,\s*(?:\n|$)/g) || []).length, 3);
+  assert.match(controller, /useSponsorStore/);
+  assert.match(controller, /sponsorProviderTemplates/);
+  assert.match(controller, /handleSelectSponsorTemplate/);
+  assert.match(controller, /sourceTag:\s*selectedSponsorTemplate\?\.id/);
+  assert.match(source, /sponsorProviderTemplates\.map/);
+  assert.match(source, /handleSelectSponsorTemplate\(template\)/);
+  assert.match(addAccountDialog, /sponsorApiProviderTemplates\.map/);
+  assert.match(addAccountDialog, /handleSelectApiProviderPreset\(template\.id\)/);
+  assert.match(presets, /export const CODEX_API_PROVIDER_PRESETS/);
+  assert.doesNotMatch(presets, /XIASS_VISIBLE_CODEX_PROVIDER_IDS/);
+  assert.doesNotMatch(presets, /XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS/);
+});
+
+test('original provider and account-switching controls remain available', () => {
+  const claudePage = read('src/pages/ClaudeAccountsPage.tsx');
+  const claudePresets = read('src/utils/claudeProviderPresets.ts');
+  const claudeDesktopPresets = read('src/utils/claudeDesktopProviderPresets.ts');
+  const quickSettings = read('src/components/QuickSettingsPopover.tsx');
+  const codexSettings = read('src/pages/SettingsCodexPlatformPanel.tsx');
+  const codexController = read('src/pages/useCodexAccountsBaseController.tsx');
+
+  assert.match(claudePage, /CLAUDE_API_PROVIDER_PRESETS/);
+  assert.match(claudePage, /CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS/);
+  assert.doesNotMatch(claudePage, /XIASS_VISIBLE_CLAUDE/);
+  assert.doesNotMatch(claudePresets, /XIASS_VISIBLE_CLAUDE/);
+  assert.doesNotMatch(claudeDesktopPresets, /XIASS_VISIBLE_CLAUDE/);
+  assert.match(codexController, /state\.state\?\.sponsorModule \?\? null/);
+
+  for (const control of [
+    'openclaw_auth_overwrite_on_switch',
+    'hermes_auth_overwrite_on_switch',
+    'opencode_auth_overwrite_on_switch',
+    'opencode_sync_on_switch',
+  ]) {
+    assert.match(quickSettings, new RegExp(control));
+  }
+  for (const control of [
+    'opencodeAuthOverwriteOnSwitch',
+    'openclawAuthOverwriteOnSwitch',
+    'hermesAuthOverwriteOnSwitch',
+    'opencodeSyncOnSwitch',
+    "handlePickAppPath('opencode')",
+  ]) {
+    assert.match(codexSettings, new RegExp(escapeRegExp(control)));
+  }
+});
+
+test('XIASS material layer cannot alter Cockpit geometry or typography', () => {
+  const styles = read('src/styles/xiass-glass-overlay.css');
+  const stylesOutsideDedicatedLogoRules = styles
+    .replace(/\.brand-logo__asset\s*\{[\s\S]*?\n\}/g, '')
+    .replace(/\.brand-logo__asset--light\s*\{[\s\S]*?\n\}/g, '')
+    .replace(/html\[data-theme='light'\] \.brand-logo__asset--(?:dark|light)\s*\{[\s\S]*?\n\}/g, '');
+
+  assert.doesNotMatch(
+    stylesOutsideDedicatedLogoRules,
+    /^\s*(?:width|height|min-width|min-height|max-width|max-height|padding|margin|gap|display|position|inset|top|right|bottom|left|overflow|white-space|text-overflow|overflow-wrap|font-size|line-height|flex|grid|order)\s*:/m,
+  );
+  assert.match(styles, /backdrop-filter:/);
+  assert.match(styles, /box-shadow:/);
+  assert.match(styles, /border-color:/);
 });
 
 test('Codex provider save preview follows XIASS-managed storage instead of legacy paths', () => {
@@ -123,7 +177,7 @@ test('Codex provider save preview follows XIASS-managed storage instead of legac
   assert.match(ptBr.codex.modelProviders.preview.providerStoreTitle, /XIASS Tools/);
 });
 
-test('dashboard stat cards separate navigation from the interactive icon', () => {
+test('dashboard stat cards keep their accessible interaction and original text hierarchy', () => {
   const source = read('src/pages/DashboardPage.tsx');
   const styles = read('src/pages/DashboardPage.css');
 
@@ -132,16 +186,14 @@ test('dashboard stat cards separate navigation from the interactive icon', () =>
     source,
     /aria-label=\{`\$\{label\} · \$\{t\('dashboard\.interactiveIcon', '互动图标'\)\}`\}/,
   );
-  assert.match(source, /className="stat-card-navigation"/);
   assert.doesNotMatch(source, /className=\{`stat-icon-bg[^]*?onClick=\{\(event\) =>/);
-  assert.match(styles, /\.stat-card-navigation\s*\{[^}]*flex:\s*1 1 auto;/s);
 
   const halfLabelRule = styles.match(/\.half-label\s*\{([\s\S]*?)\}/)?.[1] || '';
   const emptySlotRule = styles.match(/\.empty-slot\s*\{([\s\S]*?)\}/)?.[1] || '';
   const emptyTextRule = styles.match(/\.empty-slot-text, \.no-data-text\s*\{([\s\S]*?)\}/)?.[1] || '';
-  assert.match(halfLabelRule, /color:\s*var\(--text-secondary\);/);
-  assert.match(emptySlotRule, /color:\s*var\(--text-secondary\);/);
-  assert.match(emptyTextRule, /color:\s*var\(--text-secondary\);/);
+  assert.match(halfLabelRule, /color:\s*var\(--text-muted\);/);
+  assert.match(emptySlotRule, /color:\s*var\(--text-muted\);/);
+  assert.match(emptyTextRule, /color:\s*var\(--text-muted\);/);
 });
 
 test('theme preference is persisted before a quick Settings-page navigation can restore stale UI', () => {
@@ -194,138 +246,83 @@ test('Codex session title search has an accessible name', () => {
   );
 });
 
-test('Codex session toolbar responds to its workspace width instead of only the viewport', () => {
+test('Codex session toolbar retains the original Cockpit layout rules', () => {
   const styles = read('src/styles/pages/codex-session-manager.css');
-  const managerRule = styles.match(/\.codex-session-manager\s*\{([\s\S]*?)\}/)?.[1] || '';
-  const compactRule = styles.match(/@container\s*\(max-width:\s*620px\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const copyRule = styles.match(/\.codex-session-row__copy-button\s*\{([\s\S]*?)\}/)?.[1] || '';
 
-  assert.match(managerRule, /container-type:\s*inline-size;/);
-  assert.match(compactRule, /\.codex-session-manager__kind-filter/);
-  assert.match(compactRule, /grid-column:\s*1\s*\/\s*-1;/);
-  assert.match(compactRule, /\.single-select-dropdown-trigger/);
-  assert.match(compactRule, /width:\s*100%;/);
+  assert.doesNotMatch(styles, /@container\b/);
+  assert.match(copyRule, /width:\s*28px;/);
+  assert.match(copyRule, /height:\s*28px;/);
 });
 
-test('Codex API service hero responds to the Agent workspace width', () => {
+test('Codex API service retains its original page-level layout', () => {
   const styles = read('src/pages/CodexApiServicePage.css');
-  const pageRule = styles.match(/\.codex-api-service-page\s*\{([\s\S]*?)\}/)?.[1] || '';
 
-  assert.match(pageRule, /container-type:\s*inline-size;/);
-  assert.match(pageRule, /container-name:\s*codex-api-service;/);
-  assert.match(styles, /@container\s+codex-api-service\s*\(max-width:\s*720px\)/);
-  assert.match(
-    styles,
-    /@container\s+codex-api-service[\s\S]*?\.codex-api-service-hero\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/,
-  );
+  assert.doesNotMatch(styles, /@container\b/);
+  assert.match(styles, /\.codex-api-service-hero\s*\{/);
 });
 
-test('WebDAV actions respond to the settings canvas width instead of the viewport', () => {
+test('WebDAV actions keep their original settings controls', () => {
   const source = read('src/components/SettingsWebdavSyncSection.tsx');
   const styles = read('src/pages/settings/Settings.css');
 
   assert.match(source, /settings-webdav-status-row/);
-  assert.match(styles, /container-name:\s*settings-surface;/);
-  assert.match(styles, /@container\s+settings-surface\s*\(max-width:\s*720px\)/);
-  assert.match(styles, /\.settings-webdav-actions\s*\{[\s\S]*?flex-wrap:\s*wrap;/);
+  assert.doesNotMatch(styles, /@container\b/);
   assert.match(source, /className="settings-webdav-remote-toggle"/);
   assert.match(source, /aria-expanded=\{isRemoteExpanded\}/);
   assert.match(source, /<ChevronRight size=\{16\} aria-hidden="true" \/>/);
   assert.doesNotMatch(source, /settings-webdav-remote-header"\s*\n\s*style=\{\{ cursor:/);
 });
 
-test('all settings controls respond to their remaining canvas width', () => {
+test('settings controls retain Cockpit sizing and original responsive behavior', () => {
   const styles = read('src/pages/settings/Settings.css');
 
-  assert.match(styles, /@container\s+settings-surface\s*\(max-width:\s*720px\)/);
-  assert.match(styles, /@container\s+settings-surface[\s\S]*?\.settings-row,[\s\S]*?flex-direction:\s*column;/);
-  assert.match(styles, /@container\s+settings-surface[\s\S]*?\.row-control[\s\S]*?width:\s*100%;/);
-  assert.match(styles, /@container\s+settings-surface\s*\(min-width:\s*721px\)\s*and\s*\(max-width:\s*960px\)/);
+  assert.doesNotMatch(styles, /@container\b/);
+  assert.match(styles, /\.settings-row\s*\{/);
 });
 
-test('Agent workspaces keep Cockpit page hierarchy and one continuous document scroll', () => {
-  const workspaceStyles = read('src/pages/XiassAgentWorkspace.css');
+test('primary pages mount through Cockpit\'s direct page hierarchy', () => {
+  const app = read('src/App.tsx');
   const layoutStyles = read('src/styles/layout.css');
   const componentStyles = read('src/styles/components.css');
-  const workspaceRoot = workspaceStyles.match(/\.xiass-agent-workspace\s*\{([\s\S]*?)\n\}/)?.[1] || '';
-  const tabsRow = workspaceStyles.match(/\.xiass-agent-workspace__tabs-row\s*\{([\s\S]*?)\n\}/)?.[1] || '';
-  const canvas = workspaceStyles.match(/\.xiass-agent-workspace__canvas\s*\{([\s\S]*?)\n\}/)?.[1] || '';
-  const native = workspaceStyles.match(/\.xiass-agent-workspace__native\s*\{([\s\S]*?)\n\}/)?.[1] || '';
-  const panelRules = [...workspaceStyles.matchAll(/(?:^|\n)\.xiass-agent-workspace__panel\s*\{([\s\S]*?)\n\}/g)];
-  const panel = panelRules.at(-1)?.[1] || '';
   const mainWrapper = componentStyles.match(/\.main-wrapper\s*\{([\s\S]*?)\n\}/)?.[1] || '';
-  const workspaceWrapper = componentStyles.match(/\.main-wrapper:has\(\.xiass-agent-workspace\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 
-  assert.match(workspaceStyles, /container-name:\s*xiass-workspace;/);
-  assert.match(workspaceStyles, /@container\s+xiass-workspace\s*\(max-width:\s*900px\)/);
-  assert.match(workspaceRoot, /display:\s*flex;/);
-  assert.match(workspaceRoot, /flex-direction:\s*column;/);
-  assert.match(workspaceRoot, /--workspace-frame-fallback:\s*max\(520px, calc\(100dvh\s*-\s*144px\)\);/);
-  assert.match(workspaceRoot, /gap:\s*0;/);
-  assert.doesNotMatch(workspaceRoot, /(?:^|\n)\s*height:\s*/);
-  assert.match(tabsRow, /min-width:\s*0;/);
-  assert.match(tabsRow, /padding-bottom:\s*10px;/);
-  assert.match(canvas, /display:\s*block;/);
-  assert.match(canvas, /min-height:\s*0;/);
-  assert.match(canvas, /overflow:\s*visible;/);
-  assert.match(native, /height:\s*var\(--xiass-embedded-frame-height, var\(--workspace-frame-fallback\)\);/);
-  assert.match(panel, /height:\s*auto;/);
-  assert.match(panel, /min-height:\s*0;/);
-  assert.match(panel, /overflow:\s*visible;/);
-  assert.match(mainWrapper, /height:\s*100dvh;/);
-  assert.match(mainWrapper, /overflow-y:\s*auto;/);
-  assert.match(mainWrapper, /scrollbar-gutter:\s*stable;/);
-  assert.doesNotMatch(mainWrapper, /overflow-y:\s*overlay;/);
-  assert.match(workspaceWrapper, /padding-top:\s*8px;/);
-  assert.match(workspaceWrapper, /padding-bottom:\s*24px;/);
-  assert.match(workspaceWrapper, /scroll-padding-block:\s*8px\s+24px;/);
-  assert.match(layoutStyles, /--side-nav-classic-content-start:\s*calc\(/);
-  assert.match(layoutStyles, /max-width:\s*calc\(100%\s*-\s*var\(--side-nav-classic-content-start\)\);/);
-
-  const workspace = read('src/pages/XiassAgentWorkspace.tsx');
-  assert.match(workspace, /className="page-tabs-row page-tabs-center page-tabs-row-with-leading xiass-agent-workspace__tabs-row"/);
-  assert.match(workspace, /<PlatformGroupSwitcher/);
-  assert.match(workspace, /className="page-top-strip xiass-agent-workspace__top-strip"/);
-  assert.match(workspace, /<span className="page-top-strip-label xiass-agent-workspace__page-label">\s*账号\s*<\/span>/);
-  assert.doesNotMatch(workspace, /本机工作台/);
-  assert.doesNotMatch(workspace, /xiass-agent-workspace__masthead/);
-  assert.doesNotMatch(workspaceStyles, /grid-template-columns:\s*repeat\(auto-fill, minmax\(228px, 1fr\)\)/);
+  assert.doesNotMatch(app, /XiassAgentWorkspace/);
+  assert.match(app, /<AccountsPage onNavigate=\{setPage\} \/>/);
+  assert.match(app, /<CodexAccountsPage \/>/);
+  assert.match(app, /<ClaudeAccountsPage subPlatform="desktop" \/>/);
+  assert.match(app, /<CursorAccountsPage \/>/);
+  assert.match(app, /<WindsurfAccountsPage \/>/);
+  assert.doesNotMatch(mainWrapper, /height:\s*100dvh;/);
+  assert.doesNotMatch(mainWrapper, /overflow-y:\s*auto;/);
+  assert.match(layoutStyles, /--side-nav-classic-width-expanded:\s*205px;/);
+  assert.match(layoutStyles, /--side-nav-classic-width-collapsed:\s*84px;/);
 });
 
-test('window drag affordance cannot cover compact Agent workspace controls', () => {
+test('window drag affordance retains the original Cockpit title-bar target', () => {
   const app = read('src/App.tsx');
   const layoutStyles = read('src/styles/layout.css');
   const dragRegion = layoutStyles.match(/\.drag-region\s*\{([\s\S]*?)\n\}/)?.[1] || '';
-  const dragHandle = layoutStyles.match(/\.drag-region__handle\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 
-  assert.match(app, /className="drag-region"\s+aria-hidden="true"/);
-  assert.match(app, /className="drag-region__handle"\s+data-tauri-drag-region/);
-  assert.match(dragRegion, /pointer-events:\s*none;/);
-  assert.doesNotMatch(dragRegion, /-webkit-app-region:\s*drag;/);
-  assert.match(dragHandle, /left:\s*112px;/);
-  assert.match(dragHandle, /width:\s*64px;/);
-  assert.match(dragHandle, /pointer-events:\s*auto;/);
-  assert.match(dragHandle, /-webkit-app-region:\s*drag;/);
-  assert.match(
-    layoutStyles,
-    /\.app-container-side-nav-classic \.drag-region__handle\s*\{[\s\S]*?left:\s*calc\(var\(--side-nav-classic-width-expanded\) \+ 8px\);/,
-  );
+  assert.match(app, /className="drag-region"\s+data-tauri-drag-region\s+onMouseDown=\{handleDragStart\}/);
+  assert.doesNotMatch(app, /drag-region__handle/);
+  assert.match(dragRegion, /-webkit-app-region:\s*drag;/);
 });
 
-test('classic sidebar keeps its collapse control inside a full-width collapsed rail', () => {
+test('classic sidebar retains Cockpit\'s external collapse-handle placement', () => {
   const source = read('src/components/layout/SideNav.tsx');
   const styles = read('src/styles/layout.css');
   const handleRule = styles.match(/(?:^|\n)\.side-nav-classic-handle\s*\{([\s\S]*?)\}/)?.[1] || '';
   const handleIndex = source.indexOf('className={`side-nav-classic-handle');
   const closingNavIndex = source.lastIndexOf('</nav>');
 
-  assert.ok(handleIndex >= 0 && handleIndex < closingNavIndex);
-  assert.match(styles, /--side-nav-classic-width-collapsed:\s*112px;/);
-  assert.match(styles, /--side-nav-classic-collapsed-item-width-scaled:\s*clamp\(54px,/);
-  assert.match(handleRule, /position:\s*static;/);
-  assert.doesNotMatch(handleRule, /transform:\s*translate/);
+  assert.ok(handleIndex > closingNavIndex);
+  assert.match(styles, /--side-nav-classic-width-collapsed:\s*84px;/);
+  assert.match(handleRule, /position:\s*fixed;/);
+  assert.match(handleRule, /transform:\s*translate\(var\(--side-nav-classic-width-expanded\), -50%\);/);
 });
 
-test('embedded workspaces paint a theme-matched first frame on both platforms', () => {
+test('2FA restores Cockpit\'s native vault rather than replacing it with an embedded frame', () => {
   const embeddedRoots = [
     path.resolve(NEXTGEN_ROOT, '..', 'macos', 'source', 'frontend'),
     path.resolve(NEXTGEN_ROOT, '..', 'windows', 'source', 'frontend'),
@@ -341,20 +338,12 @@ test('embedded workspaces paint a theme-matched first frame on both platforms', 
     assert.match(app, /type:\s*"xiass-wf-ready"/);
   }
 
-  const workspace = read('src/pages/XiassAgentWorkspace.tsx');
   const twoFactor = read('src/pages/TwoFactorAuthPage.tsx');
-  const twoFactorStyles = read('src/pages/TwoFactorAuthPage.css');
-  assert.match(
-    workspace,
-    /if\s*\(event\.data\?\.type === 'xiass-wf-ready'\)\s*\{\s*setIframeReady\(true\);\s*return;/,
-  );
-  assert.match(workspace, /iframeReady \? ' is-ready' : ''/);
-  assert.match(twoFactor, /event\.data\?\.type !== 'xiass-wf-ready'/);
-  assert.match(twoFactor, /iframeReady \? ' is-ready' : ''/);
-  assert.match(
-    twoFactorStyles,
-    /\.two-factor-secure-page__iframe\s*\{[\s\S]*?--embedded-frame-background:\s*var\(--bg-primary\);/,
-  );
+  const mfaVault = read('src/utils/mfaVault.ts');
+  assert.match(twoFactor, /<MfaVaultManager \/>/);
+  assert.doesNotMatch(twoFactor, /<iframe/);
+  assert.doesNotMatch(twoFactor, /wfBridge/);
+  assert.doesNotMatch(mfaVault, /clearLegacyMfaBrowserStorage/);
 });
 
 test('embedded WF workspaces hand their full document height to the main XIASS scroll surface', () => {
@@ -513,7 +502,6 @@ test('browser preview reads the app version from the release source of truth', (
 test('About keeps upstream attribution behind an accessible license-notice dialog', () => {
   const source = read('src/pages/SettingsPageView.tsx');
   const service = read('src/services/legalNoticesService.ts');
-  const styles = read('src/pages/settings/Settings.css');
 
   assert.match(source, /const \[licenseNoticeOpen, setLicenseNoticeOpen\] = useState\(false\);/);
   assert.match(source, /useEscClose\(licenseNoticeOpen, \(\) => setLicenseNoticeOpen\(false\)\);/);
@@ -534,9 +522,6 @@ test('About keeps upstream attribution behind an accessible license-notice dialo
   assert.match(service, /LEGAL_NOTICE_IDS/);
   assert.match(service, /notices\.length !== LEGAL_NOTICE_IDS\.length/);
   assert.match(service, /returnedIds\.size !== LEGAL_NOTICE_IDS\.length/);
-  assert.match(styles, /\.settings-license-body\s*\{[\s\S]*?overflow:\s*auto;/);
-  assert.match(styles, /\.settings-license-document:focus-visible/);
-  assert.match(styles, /@media \(max-width: 720px\)[\s\S]*?\.settings-license-layout\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/);
   assert.doesNotMatch(source, /github\.com\/jlcodes99\/cockpit-tools|CC BY-NC-SA 4\.0/);
   assert.doesNotMatch(source, /settings\.about\.upstreamAttribution/);
 });
@@ -605,15 +590,13 @@ test('Cursor and Windsurf OAuth progress and errors are live regions', () => {
   assert.match(read('src/pages/WindsurfAccountsPage.tsx'), /htmlFor="windsurf-oauth-manual-callback"/);
 });
 
-test('Codex session copy actions keep a stable desktop hit area and explicit transitions', () => {
+test('Codex session copy actions retain their original compact control geometry', () => {
   const styles = read('src/styles/pages/codex-session-manager.css');
   const copyRule = styles.match(/\.codex-session-row__copy-button\s*\{([\s\S]*?)\}/)?.[1] || '';
 
-  assert.match(copyRule, /width:\s*44px;/);
-  assert.match(copyRule, /height:\s*44px;/);
-  assert.doesNotMatch(copyRule, /transition:\s*all/);
-  assert.match(copyRule, /background-color\s+0\.18s\s+ease/);
-  assert.match(copyRule, /color\s+0\.18s\s+ease/);
+  assert.match(copyRule, /width:\s*28px;/);
+  assert.match(copyRule, /height:\s*28px;/);
+  assert.match(copyRule, /transition:\s*all\s+0\.18s\s+ease;/);
 });
 
 test('all primary shell and embedded WF actions keep a 44px interaction target', () => {
@@ -756,13 +739,13 @@ test('Workbuddy history disclosure button performs one named stateful action', (
   assert.match(disclosure, /aria-expanded=\{isExpanded\}/);
 });
 
-test('page titles use theme text while manual information blocks use vector icons', () => {
+test('page titles retain Cockpit\'s gradient treatment while manual blocks use vector icons', () => {
   const componentStyles = read('src/styles/components.css');
   const manualSource = read('src/pages/ManualPage.tsx');
   const titleRule = componentStyles.match(/\.page-title\s*\{([\s\S]*?)\}/)?.[1] || '';
 
-  assert.match(titleRule, /color:\s*var\(--text-primary\);/);
-  assert.doesNotMatch(titleRule, /gradient|text-fill-color/);
+  assert.match(titleRule, /background:\s*var\(--gradient-primary\);/);
+  assert.match(titleRule, /-webkit-text-fill-color:\s*transparent;/);
   assert.match(manualSource, /<Lightbulb size=\{16\} aria-hidden="true" \/>/);
   assert.match(manualSource, /<ListChecks size=\{16\} aria-hidden="true" \/>/);
   assert.match(manualSource, /<TriangleAlert size=\{16\} aria-hidden="true" \/>/);

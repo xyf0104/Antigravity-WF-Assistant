@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { ArrowDownWideNarrow, ArrowDown, ArrowUp, Check, CircleAlert, ChevronDown, Copy, Clock, Database, ExternalLink, GripVertical, HelpCircle, KeyRound, Link2, LayoutGrid, Pencil, Plus, Rows3, Trash2, X, Search, Settings, Activity, RefreshCw, RotateCw, Play } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowDown, ArrowUp, Check, CircleAlert, ChevronDown, Copy, Clock, Database, ExternalLink, GripVertical, HelpCircle, KeyRound, Link2, LayoutGrid, Pencil, Plus, Rows3, Star, Trash2, X, Search, Settings, Activity, RefreshCw, RotateCw, Play } from "lucide-react";
 import { MultiSelectFilterDropdown } from "../MultiSelectFilterDropdown";
 import { SingleSelectFilterDropdown } from "../SingleSelectFilterDropdown";
 import { SingleSelectDropdown } from "../SingleSelectDropdown";
@@ -7,7 +7,7 @@ import { AccountTagFilterDropdown } from "../AccountTagFilterDropdown";
 import { PaginationControls } from "../PaginationControls";
 import { CodexModelContextWindowTable } from "./CodexModelContextWindowTable";
 import { resolveNewApiQuotaSnapshot } from "../../services/modelProviderUsageService";
-import { CODEX_API_PROVIDER_CUSTOM_ID, DEEPSEEK_API_PROVIDER_ID, XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS, resolveCodexApiProviderPresetId } from "../../utils/codexProviderPresets";
+import { CODEX_API_PROVIDER_CUSTOM_ID, CODEX_API_PROVIDER_PRESETS, DEEPSEEK_API_PROVIDER_ID, resolveCodexApiProviderPresetId } from "../../utils/codexProviderPresets";
 import { normalizeApiKeyFunOfficialUrl } from "../../utils/apikeyFunLinks";
 import { getCodexSubscriptionPresentation } from "../../types/codex";
 import { resolveCodexProviderCapabilityProfile } from "../../utils/codexProviderGateway";
@@ -86,6 +86,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
     updateSelectedModelCatalog,
     handleSelectPresetEndpoint,
     handleSelectProviderPreset,
+    handleSelectSponsorTemplate,
     handleStartBatchProviderTest,
     handleTestProvider,
     instancePickerProviderId,
@@ -94,6 +95,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
     isCurrentProviderActive,
     isInstanceReady,
     isProviderCustomSortActive,
+    isSponsorProvider,
     loading,
     maskAccountText,
     maskApiKey,
@@ -152,6 +154,8 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
     searchQuery,
     selectedPreset,
     selectedPresetId,
+    selectedSponsorTemplate,
+    selectedSponsorTemplateId,
     selectedModelCatalogKeys,
     availableModelCatalog,
     isAllAvailableModelCatalogSelected,
@@ -188,6 +192,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
     showModal,
     showProviderCustomSortModal,
     showQuickConfigModal,
+    sponsorProviderTemplates,
     stopProviderCustomSortDragging,
     t,
     testingProviderId,
@@ -466,6 +471,10 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                   "目标实例尚未初始化，请先到应用多开页启动一次。",
                 );
             const active = isCurrentProviderActive(provider, targetInstance);
+            const sponsorProvider = isSponsorProvider(
+              provider,
+              sponsorProviderTemplates,
+            );
             const selectedApiKeyLine = primaryApiKey
               ? `${t("codex.addModal.token", "API Key")}：${maskApiKey(
                   primaryApiKey.apiKey,
@@ -535,7 +544,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                   : 0;
             return (
               <div
-                className={`codex-account-card codex-provider-card ${active ? "current" : ""}`}
+                className={`codex-account-card codex-provider-card ${active ? "current" : ""} ${sponsorProvider ? "sponsor-api-account" : ""}`}
                 key={provider.id}
               >
                 <div className="card-top">
@@ -1637,7 +1646,7 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                 <label>{t("codex.api.provider.label", "供应商")}</label>
                 <div className="api-provider-chip-list">
                   <button
-                    className={`api-provider-chip ${selectedPresetId === CODEX_API_PROVIDER_CUSTOM_ID ? "active" : ""}`}
+                    className={`api-provider-chip ${selectedPresetId === CODEX_API_PROVIDER_CUSTOM_ID && !selectedSponsorTemplateId ? "active" : ""}`}
                     onClick={() =>
                       handleSelectProviderPreset(CODEX_API_PROVIDER_CUSTOM_ID)
                     }
@@ -1646,7 +1655,21 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                   >
                     <span>{t("codex.api.provider.custom", "自定义")}</span>
                   </button>
-                  {XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS.map((preset) => (
+                  {sponsorProviderTemplates.map((template) => (
+                    <button
+                      key={template.id}
+                      className={`api-provider-chip sponsor ${selectedSponsorTemplateId === template.id ? "active" : ""}`}
+                      onClick={() => handleSelectSponsorTemplate(template)}
+                      type="button"
+                      disabled={saving}
+                    >
+                      <span>{template.name}</span>
+                      <Star size={12} className="api-provider-chip-badge" />
+                    </button>
+                  ))}
+                  {CODEX_API_PROVIDER_PRESETS.filter(
+                    (preset) => !preset.isService,
+                  ).map((preset) => (
                     <button
                       key={preset.id}
                       className={`api-provider-chip ${selectedPresetId === preset.id ? "active" : ""}`}
@@ -1660,6 +1683,9 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                           preset.name,
                         )}
                       </span>
+                      {preset.isPartner && (
+                        <Star size={12} className="api-provider-chip-badge" />
+                      )}
                     </button>
                   ))}
                 </div>
@@ -1708,6 +1734,40 @@ export function CodexModelProviderManagerView(props: CodexModelProviderManagerVi
                       <a
                         className="btn btn-secondary"
                         href={selectedPreset.apiKeyUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <KeyRound size={14} />
+                        {t("codex.api.provider.apiKeyPage", "API Key 页面")}
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
+              {selectedSponsorTemplate && (
+                <div className="api-provider-hint-block sponsor">
+                  <p className="api-provider-hint">
+                    {t(
+                      "codex.modelProviders.sponsorHint",
+                      "已按专属中转站配置自动填写兼容服务地址。输入 API Key 后，卡片会自动查询余额和用量。",
+                    )}
+                  </p>
+                  <div className="api-provider-links">
+                    {selectedSponsorTemplate.website && (
+                      <a
+                        className="btn btn-secondary"
+                        href={selectedSponsorTemplate.website}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <ExternalLink size={14} />
+                        {t("codex.api.provider.website", "官网")}
+                      </a>
+                    )}
+                    {selectedSponsorTemplate.apiKeyUrl && (
+                      <a
+                        className="btn btn-secondary"
+                        href={selectedSponsorTemplate.apiKeyUrl}
                         target="_blank"
                         rel="noreferrer"
                       >

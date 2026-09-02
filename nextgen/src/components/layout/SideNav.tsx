@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import xiassToolsLogo from '../../../src-tauri/icons/app-icon-source.png';
+import xiassToolsLightLogo from '../../assets/xiass-tools-logo-light.png';
 import { Page } from '../../types/navigation';
 import { isMenuVisiblePlatform, PlatformId, PLATFORM_PAGE_MAP } from '../../types/platform';
 import {
@@ -35,6 +36,11 @@ interface SideNavProps {
   onUpdateActionClick: () => void;
   updateRemindersEnabled: boolean;
   onOpenLogViewer: () => void;
+}
+
+interface FlyingRocket {
+  id: number;
+  x: number;
 }
 
 type SideNavEntryId = PlatformLayoutEntryId;
@@ -75,16 +81,6 @@ const PAGE_PLATFORM_MAP: Partial<Record<Page, PlatformId>> = {
 const APP_DISPLAY_NAME =
   import.meta.env.VITE_COCKPIT_TOOLS_PROFILE === 'dev' ? 'XIASS Tools Dev' : 'XIASS Tools';
 
-const XIASS_AGENT_NAV_ORDER: readonly PlatformId[] = [
-  'antigravity',
-  'antigravity_ide',
-  'codex',
-  'codex_api_service',
-  'claude_manager',
-  'cursor',
-  'windsurf',
-];
-
 const CLASSIC_NAV_MIN_SCALE = 0.5;
 const CLASSIC_NAV_SCALE_EPSILON = 0.004;
 const CLASSIC_NAV_SCROLL_EPSILON = 4;
@@ -123,9 +119,9 @@ export function SideNav({
   page,
   setPage,
   onOpenPlatformLayout,
-  easterEggClickCount: _easterEggClickCount,
-  onEasterEggTriggerClick: _onEasterEggTriggerClick,
-  hasBreakoutSession: _hasBreakoutSession,
+  easterEggClickCount,
+  onEasterEggTriggerClick,
+  hasBreakoutSession,
   updateActionState,
   updateProgress,
   onUpdateActionClick,
@@ -134,9 +130,11 @@ export function SideNav({
 }: SideNavProps) {
   const { t } = useTranslation();
   const { showModal } = useGlobalModal();
+  const [flyingRockets, setFlyingRockets] = useState<FlyingRocket[]>([]);
   const [showMore, setShowMore] = useState(false);
   const [classicAdaptiveScale, setClassicAdaptiveScale] = useState(1);
   const [classicNavNeedsScroll, setClassicNavNeedsScroll] = useState(false);
+  const [classicHandleTop, setClassicHandleTop] = useState<number | null>(null);
   const [morePopoverPosition, setMorePopoverPosition] = useState({
     top: 120,
     left: 210,
@@ -151,18 +149,21 @@ export function SideNav({
   const isClassicLayout = sideNavLayoutMode === 'classic';
   const isClassicCollapsed = isClassicLayout && classicCollapsed;
   const showClassicLabels = isClassicLayout && !classicCollapsed;
+  const rocketIdRef = useRef(0);
   const classicSwitchDontAskAgainRef = useRef(false);
   const sideNavRef = useRef<HTMLElement>(null);
   const updateEntryRef = useRef<HTMLDivElement>(null);
   const brandRef = useRef<HTMLDivElement>(null);
   const navItemsRef = useRef<HTMLDivElement>(null);
   const bottomActionsRef = useRef<HTMLDivElement>(null);
+  const logoRef = useRef<HTMLDivElement>(null);
   const morePopoverRef = useRef<HTMLDivElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
 
   const {
     orderedEntryIds,
     hiddenEntryIds,
+    sidebarEntryIds,
     platformGroups,
   } = usePlatformLayoutStore();
   const remoteHiddenPlatformIds = useRemoteConfigStore((state) => state.hiddenPlatformIds);
@@ -177,6 +178,7 @@ export function SideNav({
   );
 
   const hiddenSet = useMemo(() => new Set(hiddenEntryIds), [hiddenEntryIds]);
+  const sidebarSet = useMemo(() => new Set(sidebarEntryIds), [sidebarEntryIds]);
   const remoteHiddenPlatformSet = useMemo(
     () => new Set(remoteHiddenPlatformIds),
     [remoteHiddenPlatformIds],
@@ -241,16 +243,7 @@ export function SideNav({
           group,
         };
       })
-      .filter((entry): entry is SideNavEntry => !!entry)
-      .sort((left, right) => {
-        const rank = (entry: SideNavEntry) => {
-          const ranks = entry.platformIds
-            .map((platformId) => XIASS_AGENT_NAV_ORDER.indexOf(platformId))
-            .filter((index) => index >= 0);
-          return ranks.length > 0 ? Math.min(...ranks) : XIASS_AGENT_NAV_ORDER.length;
-        };
-        return rank(left) - rank(right);
-      });
+      .filter((entry): entry is SideNavEntry => !!entry);
 
     return platformEntries;
   }, [
@@ -263,8 +256,8 @@ export function SideNav({
   ]);
 
   const sidebarVisibleEntries = useMemo(
-    () => orderedEntries.filter((entry) => entry.kind === 'platform'),
-    [orderedEntries],
+    () => orderedEntries.filter((entry) => sidebarSet.has(entry.id)),
+    [orderedEntries, sidebarSet],
   );
 
   const sidebarMenuEntries = useMemo(
@@ -528,6 +521,11 @@ export function SideNav({
     ? ({ '--side-nav-classic-adaptive-scale': classicAdaptiveScale } as CSSProperties)
     : undefined;
 
+  const classicHandleStyle = ({
+    '--side-nav-classic-adaptive-scale': classicAdaptiveScale,
+    ...(classicHandleTop == null ? {} : { top: `${classicHandleTop}px` }),
+  } as CSSProperties);
+
   const handleClassicLayoutEntryClick = useCallback(() => {
     if (hideClassicSwitchPrompt) {
       setSideNavLayoutMode('classic');
@@ -575,7 +573,52 @@ export function SideNav({
     });
   }, [hideClassicSwitchPrompt, setHideClassicSwitchPrompt, setSideNavLayoutMode, showModal, t]);
 
-  const handleLogoClick = useCallback(() => setPage('dashboard'), [setPage]);
+  useLayoutEffect(() => {
+    if (!isClassicLayout || typeof window === 'undefined') {
+      setClassicHandleTop(null);
+      return;
+    }
+
+    const updateClassicHandleTop = () => {
+      const rect = logoRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setClassicHandleTop(rect.top + rect.height / 2);
+    };
+
+    updateClassicHandleTop();
+    const rafId = window.requestAnimationFrame(updateClassicHandleTop);
+    const resizeObserver = typeof ResizeObserver !== 'undefined' && logoRef.current
+      ? new ResizeObserver(updateClassicHandleTop)
+      : null;
+
+    if (resizeObserver && logoRef.current) {
+      resizeObserver.observe(logoRef.current);
+    }
+
+    window.addEventListener('resize', updateClassicHandleTop);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', updateClassicHandleTop);
+      resizeObserver?.disconnect();
+    };
+  }, [isClassicLayout, isClassicCollapsed, shouldShowUpdateActionEntry]);
+
+  const handleLogoClick = useCallback(() => {
+    if (hasBreakoutSession) {
+      onEasterEggTriggerClick();
+      return;
+    }
+
+    const rocket: FlyingRocket = {
+      id: rocketIdRef.current++,
+      x: (Math.random() - 0.5) * 40,
+    };
+    setFlyingRockets((current) => [...current, rocket]);
+    window.setTimeout(() => {
+      setFlyingRockets((current) => current.filter((item) => item.id !== rocket.id));
+    }, 1500);
+    onEasterEggTriggerClick();
+  }, [hasBreakoutSession, onEasterEggTriggerClick]);
 
   useEffect(() => {
     if (!showMore) return;
@@ -792,11 +835,17 @@ export function SideNav({
       <div className="nav-brand" ref={brandRef} style={{ position: 'relative', zIndex: 10 }}>
         <div className="side-nav-brand-main">
           <div
+            ref={logoRef}
             className="brand-logo"
             onClick={handleLogoClick}
-            title={APP_DISPLAY_NAME}
+            title={hasBreakoutSession ? t('breakout.resumeGameNav', '继续游戏') : APP_DISPLAY_NAME}
           >
-            <img src={xiassToolsLogo} alt="" />
+            <img className="brand-logo__asset brand-logo__asset--dark" src={xiassToolsLogo} alt="" />
+            <img className="brand-logo__asset brand-logo__asset--light" src={xiassToolsLightLogo} alt="" />
+            {hasBreakoutSession && <span className="rocket-session-indicator" aria-hidden="true" />}
+            {!hasBreakoutSession && easterEggClickCount > 0 && (
+              <span className="rocket-click-count">{easterEggClickCount}</span>
+            )}
           </div>
 
           {isClassicLayout && !isClassicCollapsed && (
@@ -806,27 +855,27 @@ export function SideNav({
           )}
         </div>
 
-        {isClassicLayout && (
-          <button
-            type="button"
-            className={`side-nav-classic-handle${isClassicCollapsed ? ' side-nav-classic-handle-collapsed' : ''}`}
-            onClick={toggleClassicCollapsed}
-            title={
-              classicCollapsed
-                ? t('nav.expandSidebar', '展开侧边栏')
-                : t('nav.collapseSidebar', '收起侧边栏')
-            }
-            aria-label={
-              classicCollapsed
-                ? t('nav.expandSidebar', '展开侧边栏')
-                : t('nav.collapseSidebar', '收起侧边栏')
-            }
-          >
-            {classicCollapsed
-              ? <PanelLeftOpen size={classicHandleIconSize} />
-              : <PanelLeftClose size={classicHandleIconSize} />}
-          </button>
-        )}
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+          }}
+        >
+          {flyingRockets.map((rocket) => (
+            <span
+              key={rocket.id}
+              className="flying-rocket"
+              style={{ '--rocket-x': `${rocket.x}px` } as CSSProperties}
+            >
+              🚀
+            </span>
+          ))}
+        </div>
       </div>
 
       <div
@@ -963,6 +1012,29 @@ export function SideNav({
       )}
 
       </nav>
+
+      {isClassicLayout && (
+        <button
+          type="button"
+          className={`side-nav-classic-handle${isClassicCollapsed ? ' side-nav-classic-handle-collapsed' : ''}`}
+          onClick={toggleClassicCollapsed}
+          style={classicHandleStyle}
+          title={
+            classicCollapsed
+              ? t('nav.expandSidebar', '展开侧边栏')
+              : t('nav.collapseSidebar', '收起侧边栏')
+          }
+          aria-label={
+            classicCollapsed
+              ? t('nav.expandSidebar', '展开侧边栏')
+              : t('nav.collapseSidebar', '收起侧边栏')
+          }
+        >
+          {classicCollapsed
+            ? <PanelLeftOpen size={classicHandleIconSize} />
+            : <PanelLeftClose size={classicHandleIconSize} />}
+        </button>
+      )}
     </>
   );
 }

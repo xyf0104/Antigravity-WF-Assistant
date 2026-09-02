@@ -3,7 +3,7 @@ import { RefreshCw, Download, X, Globe, KeyRound, Database, Copy, Check, RotateC
 import { MfaQuickCodeSelect } from "../components/MfaQuickCodeSelect";
 import { CodexModelContextWindowTable } from "../components/codex/CodexModelContextWindowTable";
 import { SingleSelectDropdown } from "../components/SingleSelectDropdown";
-import { CODEX_API_PROVIDER_CUSTOM_ID, COCKPIT_API_PROVIDER_ID, XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS } from "../utils/codexProviderPresets";
+import { CODEX_API_PROVIDER_CUSTOM_ID, CODEX_API_PROVIDER_PRESETS, COCKPIT_API_PROVIDER_ID } from "../utils/codexProviderPresets";
 import type { CodexAccountsViewProps } from "./CodexAccountsView";
 
 /** 渲染 CodexAccountsOverviewPanel 的 expr:showAddModal && 业务面板。 */
@@ -104,6 +104,7 @@ export function CodexAddAccountDialog(props: CodexAccountsViewProps) {
     setTokenInput,
     shouldShowPendingOAuthDraftForm,
     showAddModal,
+    sponsorApiProviderTemplates,
     syncImportedToApiService,
     t,
     tokenImportProgress,
@@ -776,7 +777,23 @@ export function CodexAddAccountDialog(props: CodexAccountsViewProps) {
                                 {t("codex.api.provider.custom", "自定义")}
                               </span>
                             </button>
-                            {XIASS_VISIBLE_CODEX_API_PROVIDER_PRESETS.map((preset) => (
+                            {sponsorApiProviderTemplates.map((template) => (
+                              <button
+                                key={template.id}
+                                className={`api-provider-chip sponsor ${apiProviderPresetId === template.id ? "active" : ""}`}
+                                onClick={() =>
+                                  handleSelectApiProviderPreset(template.id)
+                                }
+                                type="button"
+                              >
+                                <span>{template.name}</span>
+                                <Star
+                                  size={12}
+                                  className="api-provider-chip-badge"
+                                />
+                              </button>
+                            ))}
+                            {CODEX_API_PROVIDER_PRESETS.map((preset) => (
                               <button
                                 key={preset.id}
                                 className={`api-provider-chip ${apiProviderPresetId === preset.id ? "active" : ""}`}

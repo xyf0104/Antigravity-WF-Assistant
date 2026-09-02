@@ -88,7 +88,6 @@ import { getPlatformLabel, renderPlatformIcon } from '../utils/platformMeta';
 import { setAntigravityRuntimeTargetFromPlatform } from '../utils/antigravityRuntimeTarget';
 import { useAntigravityRuntimeTarget } from '../hooks/useAntigravityRuntimeTarget';
 import { ManualHelpIconButton } from '../components/ManualHelpIconButton';
-import { AnnouncementCenter } from '../components/AnnouncementCenter';
 import { isPrivacyModeEnabledByDefault, maskSensitiveValue } from '../utils/privacy';
 import { DisplayGroup, getDisplayGroups } from '../services/groupService';
 import {
@@ -3517,7 +3516,6 @@ export function DashboardPage({
           <button className="header-action-btn" onClick={onOpenPlatformLayout}>
             <span>{t('platformLayout.title', '平台布局')}</span>
           </button>
-          <AnnouncementCenter onNavigate={onNavigate} variant="inline" trigger="button" />
         </div>
       </div>
 
@@ -3551,7 +3549,8 @@ export function DashboardPage({
           }
 
           const entryPlatformIds = resolveEntryPlatformIds(entryId, platformGroups).filter(
-            (candidate) => !remoteHiddenPlatformSet.has(candidate),
+            (candidate) =>
+              isMenuVisiblePlatform(candidate) && !remoteHiddenPlatformSet.has(candidate),
           );
           if (entryPlatformIds.length === 0) {
             return null;
@@ -3567,9 +3566,15 @@ export function DashboardPage({
           const groupId = parseGroupEntryId(entryId);
           const group = groupId ? platformGroups.find((item) => item.id === groupId) : null;
           const groupChildLabels = group
-            ? group.platformIds.filter((childPlatformId) => !remoteHiddenPlatformSet.has(childPlatformId)).map((childPlatformId) =>
-              resolveGroupChildName(group, childPlatformId, getPlatformLabel(childPlatformId, t)),
-            )
+            ? group.platformIds
+              .filter(
+                (childPlatformId) =>
+                  isMenuVisiblePlatform(childPlatformId)
+                  && !remoteHiddenPlatformSet.has(childPlatformId),
+              )
+              .map((childPlatformId) =>
+                resolveGroupChildName(group, childPlatformId, getPlatformLabel(childPlatformId, t)),
+              )
             : [];
           const groupExtraCount = Math.max(groupChildLabels.length - 1, 0);
           const groupTooltip = groupChildLabels.join(', ');
