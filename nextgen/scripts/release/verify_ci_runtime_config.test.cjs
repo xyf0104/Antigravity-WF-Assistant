@@ -193,11 +193,13 @@ test('platform CI workflows launch built applications before uploading artifacts
   assert.match(windowsInstallerSmoke, /MicrosoftEdgeWebView2RuntimeInstaller\.exe/);
   assert.match(windowsInstallerSmoke, /\.ReadStream\(2, \$chunkLength, 1\)/);
   assert.match(windowsInstallerSmoke, /\@\('\/silent', '\/install'\)/);
-  assert.match(windowsInstallerSmoke, /\/l\*v', \$msiInstallLog/);
+  assert.match(windowsInstallerSmoke, /\/l\*v', \$quotedMsiInstallLog/);
   assert.match(windowsInstallerSmoke, /function Write-XiassInstallerDiagnostics/);
   assert.match(windowsInstallerSmoke, /MSI Binary table export is not a PE executable payload/);
-  assert.match(windowsInstallerSmoke, /Invoke-XiassInstallerOperation -FilePath 'msiexec\.exe' -ArgumentList @\('\/i'/);
-  assert.match(windowsInstallerSmoke, /Invoke-XiassInstallerOperation -FilePath 'msiexec\.exe' -ArgumentList @\('\/x'/);
+  assert.match(windowsInstallerSmoke, /\$quotedMsiPath = '"\{0\}"' -f \$msi\[0\]\.FullName/);
+  assert.match(windowsInstallerSmoke, /\$quotedMsiInstallLog = '"\{0\}"' -f \$msiInstallLog/);
+  assert.match(windowsInstallerSmoke, /Invoke-XiassInstallerOperation -FilePath 'msiexec\.exe' -ArgumentList @\('\/i', \$quotedMsiPath/);
+  assert.match(windowsInstallerSmoke, /Invoke-XiassInstallerOperation -FilePath 'msiexec\.exe' -ArgumentList @\('\/x', \$quotedMsiPath/);
   assert.match(windowsInstallerSmoke, /Invoke-XiassInstallerOperation -FilePath \$nsis\[0\]\.FullName -ArgumentList @\('\/S'\)/);
   assert.match(windowsInstallerSmoke, /\[Diagnostics\] 前端已就绪/);
   assert.match(windowsInstallerSmoke, /Assert-XiassInstalledPayload \$msiApp 'MSI'/);

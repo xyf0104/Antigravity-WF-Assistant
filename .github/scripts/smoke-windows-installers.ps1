@@ -489,9 +489,14 @@ if (Get-XiassUninstallEntry) { throw "$ProductName is already installed on the c
 Assert-XiassOfflineWebView2Payload $msi[0] $nsis[0]
 Invoke-XiassOfflineWebView2Prerequisite $msi[0] $root
 $msiInstallLog = Join-Path $root 'msi-install.log'
+$quotedMsiPath = '"{0}"' -f $msi[0].FullName
+$quotedMsiInstallLog = '"{0}"' -f $msiInstallLog
 
 try {
-  $msiInstallExitCode = Invoke-XiassInstallerOperation -FilePath 'msiexec.exe' -ArgumentList @('/i', $msi[0].FullName, '/quiet', '/norestart', '/l*v', $msiInstallLog) -Label 'MSI installation' -DiagnosticLogPath $msiInstallLog
+  # Start-Process joins ArgumentList values without adding quotes. The MSI file
+  # name contains a space, so preserve it as one msiexec operand and make the
+  # verbose log path unambiguous as well.
+  $msiInstallExitCode = Invoke-XiassInstallerOperation -FilePath 'msiexec.exe' -ArgumentList @('/i', $quotedMsiPath, '/quiet', '/norestart', '/l*v', $quotedMsiInstallLog) -Label 'MSI installation' -DiagnosticLogPath $msiInstallLog
   if ($msiInstallExitCode -ne 0) { throw "MSI installation failed with code $msiInstallExitCode" }
   $msiApp = Find-XiassExecutable
   Assert-XiassInstalledPayload $msiApp 'MSI'
@@ -500,7 +505,7 @@ try {
 }
 finally {
   if (Get-XiassUninstallEntry) {
-    $msiUninstallExitCode = Invoke-XiassInstallerOperation -FilePath 'msiexec.exe' -ArgumentList @('/x', $msi[0].FullName, '/quiet', '/norestart') -Label 'MSI uninstall'
+    $msiUninstallExitCode = Invoke-XiassInstallerOperation -FilePath 'msiexec.exe' -ArgumentList @('/x', $quotedMsiPath, '/quiet', '/norestart') -Label 'MSI uninstall'
     if ($msiUninstallExitCode -ne 0) { throw "MSI uninstall failed with code $msiUninstallExitCode" }
     Wait-XiassUninstalled 'MSI'
   }
